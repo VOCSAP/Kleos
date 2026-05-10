@@ -397,9 +397,9 @@ fn derive_master_key(
     auth_mode: &str,
     master_password: Option<&str>,
     keyfile: Option<&Path>,
-) -> Result<[u8; KEY_SIZE]> {
+) -> Result<Zeroizing<[u8; KEY_SIZE]>> {
     match auth_mode {
-        "yubikey" => derive_master_key_yubikey(),
+        "yubikey" => derive_master_key_yubikey().map(Zeroizing::new),
         "password" => {
             let password = match master_password {
                 Some(pw) => pw.to_string(),
@@ -428,7 +428,7 @@ fn derive_master_key(
             }
             let mut key = [0u8; KEY_SIZE];
             key.copy_from_slice(&bytes);
-            Ok(key)
+            Ok(Zeroizing::new(key))
         }
         other => {
             anyhow::bail!(
@@ -806,6 +806,20 @@ async fn cmd_init() -> Result<()> {
     let secret = generate_hmac_secret();
     let secret_hex = hex::encode(secret);
 
+    // SECURITY: refuse to print the HMAC secret to a non-terminal stderr to
+    // avoid accidental capture in logs or CI pipelines. Set CRED_ALLOW_PRINT=1
+    // to override when piping output intentionally.
+    {
+        use std::io::IsTerminal;
+        let force_print = std::env::var("CRED_ALLOW_PRINT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !force_print && !std::io::stderr().is_terminal() {
+            eprintln!("ERROR: refusing to print secret -- stderr is not a terminal");
+            eprintln!("Set CRED_ALLOW_PRINT=1 to override");
+            std::process::exit(1);
+        }
+    }
     eprintln!();
     eprintln!("HMAC secret (save this in Bitwarden NOW):");
     eprintln!("  {}", secret_hex);

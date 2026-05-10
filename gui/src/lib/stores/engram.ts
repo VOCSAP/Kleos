@@ -6,13 +6,39 @@ const BASE_URL = typeof window !== 'undefined'
     : '/api')
   : 'http://127.0.0.1:4200';
 
-export const apiKey = writable<string>(
-  typeof window !== 'undefined' ? localStorage.getItem('engram_api_key') || '' : ''
-);
+const KEY_TTL_MS = 24 * 60 * 60 * 1000;
+
+function loadApiKey(): string {
+  if (typeof window === 'undefined') return '';
+  const stored = localStorage.getItem('engram_api_key');
+  const timestamp = localStorage.getItem('engram_api_key_ts');
+  if (stored && timestamp) {
+    if (Date.now() - Number(timestamp) > KEY_TTL_MS) {
+      localStorage.removeItem('engram_api_key');
+      localStorage.removeItem('engram_api_key_ts');
+      return '';
+    }
+  }
+  return stored || '';
+}
+
+export const apiKey = writable<string>(loadApiKey());
 
 apiKey.subscribe((v) => {
-  if (typeof window !== 'undefined' && v) localStorage.setItem('engram_api_key', v);
+  if (typeof window !== 'undefined') {
+    if (v) {
+      localStorage.setItem('engram_api_key', v);
+      localStorage.setItem('engram_api_key_ts', String(Date.now()));
+    } else {
+      localStorage.removeItem('engram_api_key');
+      localStorage.removeItem('engram_api_key_ts');
+    }
+  }
 });
+
+export function logout() {
+  apiKey.set('');
+}
 
 export const isAuthed = derived(apiKey, ($key) => !!$key);
 

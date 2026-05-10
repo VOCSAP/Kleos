@@ -276,6 +276,12 @@ pub async fn auth_middleware(
                             "session auth rejected: signature required for this user");
                         return unauthorized("signature required for this user");
                     }
+                    if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+                        return forbid("write scope required for this method");
+                    }
+                    if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+                        return forbid("read scope required for this method");
+                    }
                     let user_id = auth_ctx.user_id;
                     let mut request = request;
                     request.extensions_mut().insert(auth_ctx);
@@ -566,6 +572,13 @@ pub async fn auth_middleware(
             identity: Some(identity_ctx),
         };
 
+        if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+            return forbid("write scope required for this method");
+        }
+        if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
+            return forbid("read scope required for this method");
+        }
+
         let mut request = Request::from_parts(parts, Body::from(body_bytes));
         request.extensions_mut().insert(auth_ctx);
 
@@ -691,6 +704,30 @@ pub async fn auth_middleware(
                 "identity keys already enrolled; authenticate with an existing \
                  key (X-Kleos-Sig) to enroll additional keys",
             );
+        }
+
+        // Optional bootstrap secret: if KLEOS_BOOTSTRAP_SECRET is set, the
+        // caller must provide the matching value in X-Bootstrap-Secret.
+        // When the env var is unset, bootstrap proceeds unauthenticated
+        // (dev-friendly default). When set, the comparison is constant-time
+        // to prevent timing-based secret enumeration.
+        if let Ok(expected_secret) = std::env::var("KLEOS_BOOTSTRAP_SECRET") {
+            use subtle::ConstantTimeEq;
+            let provided = parts
+                .headers
+                .get("x-bootstrap-secret")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if expected_secret
+                .as_bytes()
+                .ct_eq(provided.as_bytes())
+                .unwrap_u8()
+                != 1
+            {
+                tracing::warn!(client_ip = %req_client_ip,
+                    "bootstrap enrollment rejected: invalid bootstrap secret");
+                return unauthorized("invalid bootstrap secret");
+            }
         }
 
         tracing::info!(client_ip = %req_client_ip,

@@ -1,4 +1,4 @@
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
@@ -14,7 +14,9 @@ use kleos_lib::activity::{process_activity, ActivityReport};
 mod types;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/activity", post(report_activity))
+    Router::new()
+        .route("/activity", post(report_activity))
+        .layer(DefaultBodyLimit::max(16_384)) // 16 KB for activity payloads
 }
 
 async fn report_activity(

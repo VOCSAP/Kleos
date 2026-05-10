@@ -134,11 +134,7 @@ fn sanitize_fts(query: &str) -> String {
 
 /// Hybrid skill search combining FTS5, alias, fuzzy, and vector signals.
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
-pub async fn find_skills(
-    db: &Database,
-    query: &str,
-    opts: FindOpts,
-) -> Result<Vec<FindResult>> {
+pub async fn find_skills(db: &Database, query: &str, opts: FindOpts) -> Result<Vec<FindResult>> {
     let limit = opts.limit.unwrap_or(20).clamp(1, 200);
     let sanitized = sanitize_fts(query);
     let raw_query = query.trim().to_lowercase();
@@ -250,11 +246,7 @@ pub async fn find_skills(
 }
 
 /// Returns the top-N FTS candidate skill ids with their result-set position as rank.
-async fn fts_candidates(
-    db: &Database,
-    sanitized: &str,
-    limit: usize,
-) -> Result<Vec<(i64, usize)>> {
+async fn fts_candidates(db: &Database, sanitized: &str, limit: usize) -> Result<Vec<(i64, usize)>> {
     let q = sanitized.to_string();
     let limit_i = limit as i64;
     db.read(move |conn| {
@@ -282,11 +274,7 @@ async fn fts_candidates(
 }
 
 /// Fetches full `Skill` rows for a candidate id set in a single query.
-async fn fetch_by_ids(
-    db: &Database,
-    ids: &[i64],
-    include_deprecated: bool,
-) -> Result<Vec<Skill>> {
+async fn fetch_by_ids(db: &Database, ids: &[i64], include_deprecated: bool) -> Result<Vec<Skill>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }

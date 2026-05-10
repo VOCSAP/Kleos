@@ -697,9 +697,7 @@ fn apply_schema_v50_skills_cloud(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "skill_records", "source_plugin")? {
         conn.execute_batch("ALTER TABLE skill_records ADD COLUMN source_plugin TEXT;")
             .map_err(|e| {
-                EngError::DatabaseMessage(format!(
-                    "tenant schema v50 (source_plugin) failed: {e}"
-                ))
+                EngError::DatabaseMessage(format!("tenant schema v50 (source_plugin) failed: {e}"))
             })?;
     }
     if !table_has_column(conn, "skill_records", "source_path")? {
@@ -711,9 +709,7 @@ fn apply_schema_v50_skills_cloud(conn: &Connection) -> Result<()> {
     if !table_has_column(conn, "skill_records", "content_hash")? {
         conn.execute_batch("ALTER TABLE skill_records ADD COLUMN content_hash TEXT;")
             .map_err(|e| {
-                EngError::DatabaseMessage(format!(
-                    "tenant schema v50 (content_hash) failed: {e}"
-                ))
+                EngError::DatabaseMessage(format!("tenant schema v50 (content_hash) failed: {e}"))
             })?;
     }
 

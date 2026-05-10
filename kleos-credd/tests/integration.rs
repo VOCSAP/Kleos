@@ -26,9 +26,9 @@ impl TestApp {
 
         let master_password = "test-master-password";
         let master_key = derive_key(1, master_password.as_bytes(), None);
-        let master_token = hex::encode(master_key);
+        let master_token = hex::encode(&*master_key);
 
-        let state = AppState::new(db, master_key);
+        let state = AppState::new(db, *master_key);
         let router = build_router(state);
 
         Self {

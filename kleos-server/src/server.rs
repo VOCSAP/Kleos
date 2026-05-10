@@ -239,6 +239,12 @@ pub fn build_router(state: AppState) -> Router {
             HeaderName::from_static("x-permitted-cross-domain-policies"),
             HeaderValue::from_static("none"),
         ))
+        .layer(SetResponseHeaderLayer::overriding(
+            HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static(
+                "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+            ),
+        ))
         // R7-006 / H-013: baseline CSP. Login page inline style/script were
         // externalised to /_app/login.css and /_app/login.js, so 'unsafe-inline'
         // is no longer required. 'wasm-unsafe-eval' is kept for the ONNX WASM

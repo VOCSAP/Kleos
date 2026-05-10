@@ -4,6 +4,7 @@ use kleos_lib::db::Database;
 use kleos_lib::EngError;
 use rand::Rng;
 use rusqlite::params;
+use subtle::ConstantTimeEq;
 
 use crate::crypto::hash_key;
 use crate::{CredError, Result};
@@ -165,46 +166,45 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
 
     let key = db
         .read(move |conn| {
-            let result = conn.query_row(
-                "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
-                 FROM cred_agent_keys
-                 WHERE key_hash = ?1",
-                params![key_hash],
-                |row| {
-                    let id: i64 = row.get(0)?;
-                    let user_id: i64 = row.get(1)?;
-                    let key_hash: String = row.get(2)?;
-                    let name: String = row.get(3)?;
-                    let permissions_json: String = row.get(4)?;
-                    let created_at: String = row.get(5)?;
-                    let revoked_at: Option<String> = row.get(6)?;
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
+                     FROM cred_agent_keys
+                     WHERE revoked_at IS NULL",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
                     Ok((
-                        id,
-                        user_id,
-                        key_hash,
-                        name,
-                        permissions_json,
-                        created_at,
-                        revoked_at,
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
-                },
-            );
-            match result {
-                Ok((id, user_id, key_hash, name, permissions_json, created_at, revoked_at)) => {
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+            for row in rows {
+                let (id, user_id, stored_hash, name, permissions_json, created_at, revoked_at) =
+                    row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                if key_hash.as_bytes().ct_eq(stored_hash.as_bytes()).into() {
                     let permissions = AgentKeyPermissions::from_json(&permissions_json);
-                    Ok(Some(AgentKey {
+                    return Ok(Some(AgentKey {
                         id,
                         user_id,
-                        key_hash,
+                        key_hash: stored_hash,
                         name,
                         permissions,
                         created_at,
                         revoked_at,
-                    }))
+                    }));
                 }
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(EngError::DatabaseMessage(e.to_string())),
             }
+            Ok(None)
         })
         .await
         .map_err(|e| CredError::Database(e.to_string()))?

@@ -68,7 +68,12 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             info!("credd: deriving master key from password (CREDD_AUTH_MODE=password)");
-            derive_key(1, password.as_bytes(), None)
+            {
+                let k = derive_key(1, password.as_bytes(), None);
+                let mut arr = [0u8; KEY_SIZE];
+                arr.copy_from_slice(&k[..]);
+                arr
+            }
         }
         "keyfile" => {
             let path = args.keyfile.unwrap_or_else(|| {
@@ -117,7 +122,12 @@ async fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("YubiKey challenge: {e}"))?;
             let response = kleos_cred::yubikey::challenge_response(&challenge)
                 .map_err(|e| anyhow::anyhow!("YubiKey response: {e}"))?;
-            Some(kleos_cred::crypto::derive_key(0, b"", Some(&response)))
+            {
+                let k = kleos_cred::crypto::derive_key(0, b"", Some(&response));
+                let mut arr = [0u8; KEY_SIZE];
+                arr.copy_from_slice(&k[..]);
+                Some(arr)
+            }
         }
         _ => {
             let mode_name = format!("{:?}", enc_config.encryption.mode).to_ascii_lowercase();

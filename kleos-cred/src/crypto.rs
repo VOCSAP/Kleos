@@ -7,7 +7,7 @@ use aes_gcm::{
 use argon2::{Algorithm, Argon2, Params, Version};
 use rand::Rng;
 use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::{CredError, Result, SecretData};
 
@@ -54,6 +54,7 @@ const LEGACY_ARGON2_ITERATIONS: u32 = 2;
 /// mode (private cred migration path). It MUST NOT be used for new password-
 /// based key derivation -- use [`derive_key`] instead, which mixes in a
 /// per-user deterministic salt and uses stronger params.
+#[deprecated(since = "1.0.0", note = "use derive_key with modern KDF parameters")]
 pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
     let params = Params::new(
         LEGACY_ARGON2_MEMORY_KIB,
@@ -80,11 +81,14 @@ pub fn derive_key_legacy(yubikey_response: &[u8]) -> [u8; KEY_SIZE] {
 /// and the password material.
 ///
 /// Parameters: m = 64 MiB, t = 3, p = 1, output = 32 bytes (OWASP 2023).
+///
+/// Returns a `Zeroizing` wrapper so the key material is erased from memory
+/// when the value is dropped.
 pub fn derive_key(
     user_id: i64,
     password: &[u8],
     yubikey_response: Option<&[u8]>,
-) -> [u8; KEY_SIZE] {
+) -> Zeroizing<[u8; KEY_SIZE]> {
     // Deterministic 16-byte salt: SHA-256(domain || user_id) truncated.
     let mut salt_hasher = Sha256::new();
     salt_hasher.update(KDF_DOMAIN);
@@ -119,7 +123,7 @@ pub fn derive_key(
     // recovery via core dump, /proc/self/mem, or swap.
     material.zeroize();
 
-    key
+    Zeroizing::new(key)
 }
 
 /// Encrypt secret data with AES-256-GCM.
@@ -388,7 +392,7 @@ mod tests {
         let response = b"yubikey-hmac-response";
         let legacy = derive_key_legacy(response);
         let new = derive_key(0, b"", Some(response));
-        assert_ne!(legacy, new);
+        assert_ne!(legacy, *new);
     }
 
     #[test]

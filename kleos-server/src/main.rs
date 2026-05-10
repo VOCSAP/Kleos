@@ -51,7 +51,12 @@ async fn main() {
                     eprintln!("YubiKey challenge-response failed: {e}");
                     std::process::exit(1);
                 });
-            Some(kleos_cred::crypto::derive_key(0, b"", Some(&response)))
+            {
+                let k = kleos_cred::crypto::derive_key(0, b"", Some(&response));
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&k[..]);
+                Some(arr)
+            }
         }
         _ => {
             let mode_name = format!("{:?}", config.encryption.mode).to_ascii_lowercase();

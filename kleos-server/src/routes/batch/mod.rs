@@ -12,7 +12,12 @@
 // semantics.
 // ============================================================================
 
-use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+use axum::{
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    routing::post,
+    Json, Router,
+};
 use kleos_lib::memory::{self, types::StoreRequest};
 use serde_json::{json, Value};
 
@@ -28,7 +33,9 @@ use types::{BatchOp, BatchRequest, BatchResult, LinkBody, StoreBody, UpdateBody}
 // ---------------------------------------------------------------------------
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/batch", post(batch_handler))
+    Router::new()
+        .route("/batch", post(batch_handler))
+        .layer(DefaultBodyLimit::max(16_384)) // 16 KB for batch payloads
 }
 
 // ---------------------------------------------------------------------------

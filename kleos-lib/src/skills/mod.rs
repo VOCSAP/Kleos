@@ -131,9 +131,8 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
     let tags = req.tags.clone();
     let tool_deps = req.tool_deps.clone();
     let kind = req.kind.clone().unwrap_or_else(|| "skill".to_string());
-    kind.parse::<SkillKind>().map_err(|_| {
-        EngError::InvalidInput(format!("invalid skill kind: '{}'", kind))
-    })?;
+    kind.parse::<SkillKind>()
+        .map_err(|_| EngError::InvalidInput(format!("invalid skill kind: '{}'", kind)))?;
     let source_plugin = req.source_plugin.clone();
     let source_path = req.source_path.clone();
     let content_hash = req.content_hash.clone();
@@ -282,9 +281,8 @@ pub async fn update_skill(
     get_skill(db, id, user_id).await?;
 
     if let Some(ref k) = req.kind {
-        k.parse::<SkillKind>().map_err(|_| {
-            EngError::InvalidInput(format!("invalid skill kind: '{}'", k))
-        })?;
+        k.parse::<SkillKind>()
+            .map_err(|_| EngError::InvalidInput(format!("invalid skill kind: '{}'", k)))?;
     }
 
     let code = req.code.clone();

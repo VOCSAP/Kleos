@@ -26,7 +26,7 @@ use types::{BulkArchiveBody, CreateMemoryBody, LoginForm, UpdateMemoryBody};
 
 type HmacSha256 = Hmac<Sha256>;
 
-const GUI_COOKIE_MAX_AGE: i64 = 7 * 24 * 60 * 60; // 7 days
+const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60; // 24 hours
 const COOKIE_NAME: &str = "engram_auth";
 
 /// Process-lifetime cache for the HMAC secret. Avoids file I/O on every

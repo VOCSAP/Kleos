@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use kleos_cred::crypto::{derive_key, KEY_SIZE};
+use kleos_cred::crypto::derive_key;
 use kleos_cred::types::SecretData;
 use kleos_lib::db::Database;
 use serde::Deserialize;
@@ -106,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
     println!("Found {} entries", entries.len());
 
     // Derive encryption key
-    let encryption_key: [u8; KEY_SIZE] = if args.software_hmac {
+    let encryption_key = if args.software_hmac {
         println!("Using software HMAC (testing mode)");
         let challenge = kleos_cred::yubikey::get_or_create_challenge()?;
         let response = kleos_cred::yubikey::software_hmac(b"test-secret", &challenge);

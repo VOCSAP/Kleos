@@ -462,7 +462,7 @@ mod tests {
     async fn fetch_accepts_public_https() {
         // May fail if DNS is down, which is fine -- we just skip.
         match resolve_and_validate_url("https://example.com/page").await {
-            Ok(()) => {}
+            Ok(_) => {}
             Err(e) => {
                 let msg = format!("{}", e);
                 if msg.contains("DNS resolution failed") {

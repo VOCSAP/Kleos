@@ -260,6 +260,21 @@ async fn download_artifact(
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("Artifact has no data".into())))?;
 
+    // Sanitize the filename to prevent Content-Disposition header injection.
+    // Only alphanumeric characters, dots, hyphens, and underscores are
+    // permitted; any other byte is stripped. Length is capped at 255.
+    let safe_filename: String = artifact
+        .filename
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .take(255)
+        .collect();
+    let safe_filename = if safe_filename.is_empty() {
+        "download".to_string()
+    } else {
+        safe_filename
+    };
+
     Ok((
         StatusCode::OK,
         [
@@ -267,7 +282,7 @@ async fn download_artifact(
             (header::CONTENT_LENGTH, data.len().to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", artifact.filename),
+                format!("attachment; filename=\"{}\"", safe_filename),
             ),
         ],
         data,

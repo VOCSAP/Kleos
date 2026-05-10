@@ -861,7 +861,9 @@ impl Client {
             .get("content-disposition")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| {
-                v.split("filename=").nth(1).map(|f| f.trim_matches('"').to_string())
+                v.split("filename=")
+                    .nth(1)
+                    .map(|f| f.trim_matches('"').to_string())
             })
             .unwrap_or_else(|| "artifact".to_string());
         let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
@@ -2113,8 +2115,8 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                     }
                     for item in &results {
                         let skill = item.get("skill").cloned().unwrap_or(item.clone());
-                        let id = value_as_string(skill.get("id"))
-                            .unwrap_or_else(|| "?".to_string());
+                        let id =
+                            value_as_string(skill.get("id")).unwrap_or_else(|| "?".to_string());
                         let score = item.get("score").and_then(|x| x.as_f64()).unwrap_or(0.0);
                         let name = skill.get("name").and_then(|x| x.as_str()).unwrap_or("?");
                         let kind = skill
@@ -2155,8 +2157,7 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             let id: Option<i64> = match target.parse::<i64>() {
                 Ok(n) => Some(n),
                 Err(_) => {
-                    let body =
-                        json!({ "query": target, "limit": if *top { 1 } else { 5 } });
+                    let body = json!({ "query": target, "limit": if *top { 1 } else { 5 } });
                     match client.post("/skills/find", body).await {
                         Ok(v) => {
                             let results = v
@@ -2208,10 +2209,7 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             .get("source_plugin")
                             .and_then(|x| x.as_str())
                             .unwrap_or("");
-                        let desc = v
-                            .get("description")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("");
+                        let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("");
                         let code = v.get("code").and_then(|x| x.as_str()).unwrap_or("");
                         // Markdown-formatted output ready to paste into a
                         // session as a system / user message.
@@ -2271,23 +2269,21 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                     // importer stored the original; otherwise synthesize a
                     // minimal frontmatter from name + description.
                     let body = v.get("code").and_then(|x| x.as_str()).unwrap_or("");
-                    let desc = v
-                        .get("description")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("");
+                    let desc = v.get("description").and_then(|x| x.as_str()).unwrap_or("");
                     let meta_fm = v
                         .get("metadata")
                         .and_then(|x| x.as_str())
                         .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
                         .and_then(|j| j.get("frontmatter").cloned());
-                    let content = if let Some(fm) = meta_fm.and_then(|f| f.as_str().map(String::from)) {
-                        format!("---\n{}\n---\n\n{}", fm.trim(), body)
-                    } else {
-                        format!(
-                            "---\nname: {}\ndescription: {}\n---\n\n{}",
-                            name, desc, body
-                        )
-                    };
+                    let content =
+                        if let Some(fm) = meta_fm.and_then(|f| f.as_str().map(String::from)) {
+                            format!("---\n{}\n---\n\n{}", fm.trim(), body)
+                        } else {
+                            format!(
+                                "---\nname: {}\ndescription: {}\n---\n\n{}",
+                                name, desc, body
+                            )
+                        };
                     let hash = sha256_hex(&content);
                     if let Err(e) = std::fs::write(&path, &content) {
                         eprintln!("Failed to write {}: {}", path, e);
@@ -2379,12 +2375,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             println!("No aliases.");
                         }
                         for a in &aliases {
-                            let alias =
-                                a.get("alias").and_then(|x| x.as_str()).unwrap_or("?");
+                            let alias = a.get("alias").and_then(|x| x.as_str()).unwrap_or("?");
                             let confidence =
                                 a.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0);
-                            let source =
-                                a.get("source").and_then(|x| x.as_str()).unwrap_or("?");
+                            let source = a.get("source").and_then(|x| x.as_str()).unwrap_or("?");
                             println!("  {} (conf:{:.2} src:{})", alias, confidence, source);
                         }
                     }
@@ -2406,10 +2400,8 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                         for m in &matches {
                             let sid = value_as_string(m.get("skill_id"))
                                 .unwrap_or_else(|| "?".to_string());
-                            let alias =
-                                m.get("alias").and_then(|x| x.as_str()).unwrap_or("?");
-                            let conf =
-                                m.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                            let alias = m.get("alias").and_then(|x| x.as_str()).unwrap_or("?");
+                            let conf = m.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0);
                             println!("  -> #{} via '{}' (conf:{:.2})", sid, alias, conf);
                         }
                     }
@@ -2432,10 +2424,7 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
             }
             for raw in source_overrides {
                 if let Some((k, v)) = raw.split_once('=') {
-                    overrides.insert(
-                        k.to_string(),
-                        std::path::PathBuf::from(shellexpand_home(v)),
-                    );
+                    overrides.insert(k.to_string(), std::path::PathBuf::from(shellexpand_home(v)));
                 } else {
                     eprintln!(
                         "Warning: --source-override expects PLUGIN=PATH, got: {}",
@@ -2470,10 +2459,8 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             let bundle = b.get("bundle").cloned().unwrap_or(b.clone());
                             let bid = value_as_string(bundle.get("id"))
                                 .unwrap_or_else(|| "?".to_string());
-                            let name =
-                                bundle.get("name").and_then(|x| x.as_str()).unwrap_or("?");
-                            let n =
-                                b.get("member_count").and_then(|x| x.as_i64()).unwrap_or(0);
+                            let name = bundle.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                            let n = b.get("member_count").and_then(|x| x.as_i64()).unwrap_or(0);
                             let auto = bundle
                                 .get("auto_generated")
                                 .and_then(|x| x.as_bool())
@@ -2495,12 +2482,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                     Err(e) => eprintln!("Error: {}", e),
                 }
             }
-            BundleCommands::Get { id } => {
-                match client.get(&format!("/bundles/{}", id)).await {
-                    Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-                    Err(e) => eprintln!("Error: {}", e),
-                }
-            }
+            BundleCommands::Get { id } => match client.get(&format!("/bundles/{}", id)).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => eprintln!("Error: {}", e),
+            },
             BundleCommands::Delete { id } => {
                 match client.delete(&format!("/bundles/{}", id)).await {
                     Ok(_) => println!("Deleted bundle #{}", id),
@@ -3553,7 +3538,10 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
                 Ok(v) => {
                     let id = v.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
                     let size = v.get("size_bytes").and_then(|x| x.as_i64()).unwrap_or(0);
-                    println!("Uploaded artifact #{} ({} bytes) -> memory #{}", id, size, memory_id);
+                    println!(
+                        "Uploaded artifact #{} ({} bytes) -> memory #{}",
+                        id, size, memory_id
+                    );
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }
@@ -3568,9 +3556,12 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
                             println!("Artifacts for memory #{}:", memory_id);
                             for a in arts {
                                 let id = a.get("id").and_then(|x| x.as_i64()).unwrap_or(0);
-                                let fname = a.get("filename").and_then(|x| x.as_str()).unwrap_or("?");
-                                let mime = a.get("mime_type").and_then(|x| x.as_str()).unwrap_or("?");
-                                let size = a.get("size_bytes").and_then(|x| x.as_i64()).unwrap_or(0);
+                                let fname =
+                                    a.get("filename").and_then(|x| x.as_str()).unwrap_or("?");
+                                let mime =
+                                    a.get("mime_type").and_then(|x| x.as_str()).unwrap_or("?");
+                                let size =
+                                    a.get("size_bytes").and_then(|x| x.as_i64()).unwrap_or(0);
                                 println!("  #{} {} ({}, {} bytes)", id, fname, mime, size);
                             }
                         }
@@ -3594,7 +3585,12 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
                         None => filename,
                     };
                     match std::fs::write(&out_path, &data) {
-                        Ok(_) => println!("Downloaded artifact #{} -> {} ({} bytes)", id, out_path, data.len()),
+                        Ok(_) => println!(
+                            "Downloaded artifact #{} -> {} ({} bytes)",
+                            id,
+                            out_path,
+                            data.len()
+                        ),
                         Err(e) => eprintln!("Error writing file: {}", e),
                     }
                 }
@@ -3602,11 +3598,9 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
             }
         }
 
-        ArtifactCommands::Stats => {
-            match client.get("/artifacts/stats").await {
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
+        ArtifactCommands::Stats => match client.get("/artifacts/stats").await {
+            Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+            Err(e) => eprintln!("Error: {}", e),
+        },
     }
 }

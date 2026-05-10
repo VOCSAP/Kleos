@@ -74,7 +74,9 @@ pub async fn get(db: &Database, skill_id: i64) -> Result<Option<SkillMaterializa
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
         {
             Ok(Some(SkillMaterialization {
-                skill_id: row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?,
+                skill_id: row
+                    .get(0)
+                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?,
                 target_path: row
                     .get(1)
                     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?,

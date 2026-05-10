@@ -224,10 +224,16 @@ pub fn validate_webhook_url(raw: &str) -> Result<()> {
 /// link-local, CGNAT, cloud metadata, IPv6 ULA). This closes the gap where
 /// `validate_webhook_url` only inspects the literal hostname/IP.
 ///
+/// Returns the pinned `IpAddr` that passed validation so callers can connect
+/// directly to that IP (with a `Host` header for the original hostname),
+/// eliminating the TOCTOU window between DNS resolution and the actual HTTP
+/// request. Returns `None` when the URL already contains a literal IP address
+/// (no DNS resolution needed).
+///
 /// Callers should invoke this at **delivery/request time**, not just at
 /// persist time, because DNS can change between the two.
 #[tracing::instrument(skip(raw))]
-pub async fn resolve_and_validate_url(raw: &str) -> Result<()> {
+pub async fn resolve_and_validate_url(raw: &str) -> Result<Option<IpAddr>> {
     // Fast-path: reject obvious bad schemes, literal IPs, and known names.
     validate_webhook_url(raw)?;
 
@@ -266,9 +272,55 @@ pub async fn resolve_and_validate_url(raw: &str) -> Result<()> {
                 )));
             }
         }
+
+        // Return the first validated IP so the caller can pin the connection
+        // to this specific address, closing the TOCTOU DNS rebinding window.
+        let pinned_ip = addrs[0].ip();
+        return Ok(Some(pinned_ip));
     }
 
-    Ok(())
+    Ok(None)
+}
+
+/// Build a pinned delivery URL by replacing the hostname in `original_url`
+/// with the validated `pinned_ip`. Returns a tuple of `(pinned_url,
+/// original_host)` where `original_host` should be sent as the HTTP `Host`
+/// header so the receiving server can route the request correctly.
+///
+/// When `pinned_ip` is `None` (the URL already contained a literal IP), the
+/// original URL is returned unchanged and no `Host` override is needed.
+fn pin_url_to_ip(original_url: &str, pinned_ip: Option<IpAddr>) -> (String, Option<String>) {
+    let Some(ip) = pinned_ip else {
+        return (original_url.to_string(), None);
+    };
+
+    let Ok(mut parsed) = url::Url::parse(original_url) else {
+        return (original_url.to_string(), None);
+    };
+
+    // Capture the original host for the Host header before we overwrite it.
+    let original_host = parsed.host_str().map(|h| {
+        if let Some(port) = parsed.port() {
+            format!("{}:{}", h, port)
+        } else {
+            h.to_string()
+        }
+    });
+
+    // Replace the host with the pinned IP. IPv6 addresses must be
+    // bracket-wrapped in URLs (RFC 3986 SS3.2.2).
+    let ip_str = match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{}]", v6),
+    };
+
+    if parsed.set_host(Some(&ip_str)).is_err() {
+        // If we cannot set the host (should not happen for valid IPs),
+        // fall back to the original URL rather than blocking delivery.
+        return (original_url.to_string(), None);
+    }
+
+    (parsed.to_string(), original_host)
 }
 
 /// Compute `sha256=<hex>` HMAC signature for outbound delivery. Returns the
@@ -600,15 +652,21 @@ pub async fn list_dead_letters(
 /// Deliver a single webhook with retry (exponential backoff, max 3 attempts).
 /// On exhaustion, writes to the dead-letter table and bumps failure_count.
 /// On success, resets failure_count and updates last_triggered_at.
+///
+/// `pinned_url` is the delivery target with the hostname replaced by the
+/// pre-validated IP (from `resolve_and_validate_url`), eliminating the TOCTOU
+/// DNS rebinding window. `pinned_host_header` carries the original hostname
+/// for the `Host` header so the server can route the request correctly.
 async fn deliver_with_retry(
     db: std::sync::Arc<Database>,
     hook: Webhook,
     event: String,
     body_str: String,
     headers: Vec<(String, String)>,
+    pinned_url: String,
+    pinned_host_header: Option<String>,
 ) {
     let hook_id = hook.id;
-    let url = hook.url.clone();
 
     let mut last_error: Option<String> = None;
     let mut last_status: Option<u16> = None;
@@ -620,9 +678,14 @@ async fn deliver_with_retry(
         }
 
         let mut req = WEBHOOK_CLIENT
-            .post(&url)
+            .post(&pinned_url)
             .body(body_str.clone())
             .timeout(std::time::Duration::from_secs(10));
+        // Set the Host header to the original hostname when connecting via
+        // a pinned IP so the receiver's virtual-hosting can route correctly.
+        if let Some(ref host) = pinned_host_header {
+            req = req.header("Host", host.as_str());
+        }
         for (k, v) in &headers {
             req = req.header(k.as_str(), v.as_str());
         }
@@ -718,10 +781,16 @@ pub async fn emit_webhook_event(
         // SECURITY (SSRF-DNS): re-validate at delivery time with DNS
         // resolution. A row could have been migrated from an older build, or
         // the domain's DNS records could have changed to point at private IPs.
-        if resolve_and_validate_url(&hook.url).await.is_err() {
-            tracing::warn!(hook_id = hook.id, "skipping webhook with disallowed URL");
-            continue;
-        }
+        // The returned IP is pinned so the HTTP request connects to the exact
+        // address we validated, closing the TOCTOU DNS rebinding window.
+        let pinned_ip = match resolve_and_validate_url(&hook.url).await {
+            Ok(ip) => ip,
+            Err(_) => {
+                tracing::warn!(hook_id = hook.id, "skipping webhook with disallowed URL");
+                continue;
+            }
+        };
+        let (pinned_url, pinned_host_header) = pin_url_to_ip(&hook.url, pinned_ip);
 
         let body = serde_json::json!({
             "event": event,
@@ -747,7 +816,15 @@ pub async fn emit_webhook_event(
         // into a detached JoinHandle.
         metrics::counter!("kleos_webhooks_deliver_spawned_total").increment(1);
         tokio::spawn(async move {
-            let fut = deliver_with_retry(db_clone, hook, event_s, body_str, headers);
+            let fut = deliver_with_retry(
+                db_clone,
+                hook,
+                event_s,
+                body_str,
+                headers,
+                pinned_url,
+                pinned_host_header,
+            );
             match tokio::task::spawn(fut).await {
                 Ok(()) => {}
                 Err(join_err) if join_err.is_panic() => {
@@ -817,19 +894,25 @@ pub async fn emit_test_to_webhook(
     }
 
     // SSRF: re-validate the URL via DNS at delivery time. The synchronous
-    // create-time check could have been bypassed by DNS rebinding.
+    // create-time check could have been bypassed by DNS rebinding. The
+    // returned IP is pinned so we connect to the exact address we validated,
+    // closing the TOCTOU DNS rebinding window.
     let started = std::time::Instant::now();
-    if let Err(err) = resolve_and_validate_url(&hook.url).await {
-        return Ok(WebhookTestReceipt {
-            hook_id: hook.id,
-            event: event.to_string(),
-            url: hook.url,
-            dispatched: false,
-            status_code: None,
-            latency_ms: started.elapsed().as_millis() as u64,
-            error: Some(format!("ssrf check rejected url: {}", err)),
-        });
-    }
+    let pinned_ip = match resolve_and_validate_url(&hook.url).await {
+        Ok(ip) => ip,
+        Err(err) => {
+            return Ok(WebhookTestReceipt {
+                hook_id: hook.id,
+                event: event.to_string(),
+                url: hook.url,
+                dispatched: false,
+                status_code: None,
+                latency_ms: started.elapsed().as_millis() as u64,
+                error: Some(format!("ssrf check rejected url: {}", err)),
+            });
+        }
+    };
+    let (pinned_url, pinned_host_header) = pin_url_to_ip(&hook.url, pinned_ip);
 
     let body = serde_json::json!({
         "event": event,
@@ -847,9 +930,13 @@ pub async fn emit_test_to_webhook(
     }
 
     let mut req = WEBHOOK_CLIENT
-        .post(&hook.url)
+        .post(&pinned_url)
         .body(body_str)
         .timeout(std::time::Duration::from_secs(10));
+    // Set Host header to the original hostname when connecting via pinned IP.
+    if let Some(ref host) = pinned_host_header {
+        req = req.header("Host", host.as_str());
+    }
     for (k, v) in &headers {
         req = req.header(k.as_str(), v.as_str());
     }
@@ -1067,7 +1154,7 @@ mod tests {
     async fn dns_resolve_accepts_public_domain() {
         // Skip gracefully if DNS is unavailable.
         match resolve_and_validate_url("https://example.com/webhook").await {
-            Ok(()) => {}
+            Ok(_ip) => {}
             Err(e) => {
                 let msg = format!("{}", e);
                 if msg.contains("DNS resolution failed") {

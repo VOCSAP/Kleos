@@ -94,7 +94,8 @@ pub async fn add_auto_aliases(
         return Ok(());
     }
     db.write(move |conn| {
-        let tx = conn.unchecked_transaction()
+        let tx = conn
+            .unchecked_transaction()
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         for (a, c) in &aliases {
             tx.execute(
@@ -177,11 +178,7 @@ pub async fn list_for_skill(db: &Database, skill_id: i64) -> Result<Vec<SkillAli
 // case-insensitive prefix. Returns up to `limit` matches ordered by
 // confidence DESC. The hybrid search layer combines this with FTS and
 // vector signals; this fn alone is sufficient for "/skill <exact-alias>".
-pub async fn resolve_alias(
-    db: &Database,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<AliasMatch>> {
+pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<Vec<AliasMatch>> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Ok(Vec::new());

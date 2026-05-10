@@ -112,7 +112,6 @@ async fn agent_card() -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "public, max-age=3600"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
         Json(card),
     )
@@ -153,7 +152,6 @@ async fn agent_commerce(State(state): State<AppState>) -> impl IntoResponse {
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "public, max-age=60"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
         Json(descriptor),
     )
@@ -272,7 +270,6 @@ Bearer token (API key) or x402 pay-per-call (USDC on Base L2).
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(header::CACHE_CONTROL, "public, max-age=3600")
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(axum::body::Body::from(text))
         .unwrap_or_else(|_| Response::new(axum::body::Body::empty()))
 }

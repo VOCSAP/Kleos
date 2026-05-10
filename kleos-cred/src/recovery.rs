@@ -328,7 +328,7 @@ mod tests {
         let recovered = recover_master_key(&db, 1, &recovery_key)
             .await
             .expect("recover");
-        assert_eq!(master_key, recovered);
+        assert_eq!(*master_key, recovered);
     }
 
     #[tokio::test]

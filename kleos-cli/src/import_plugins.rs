@@ -41,11 +41,34 @@ const DEFAULT_PINNED: &[&str] = &["ralph-loop", "ralph-wiggum"];
 // LLM second-pass is a future enhancement; the heuristic is "good enough"
 // for the well-known plugin set we're starting with.
 const CODE_DEV_KEYWORDS: &[&str] = &[
-    "review", "refactor", "debug", "test", "verify", "plan", "spec",
-    "architect", "explore", "security", "lint", "format", "commit",
-    " pr ", "pull request", "simplifier", "reviewer", "implementation",
-    "code", "build", "compile", "deploy", "vulnerability", "audit",
-    "scan", "fix", "patch", "diff",
+    "review",
+    "refactor",
+    "debug",
+    "test",
+    "verify",
+    "plan",
+    "spec",
+    "architect",
+    "explore",
+    "security",
+    "lint",
+    "format",
+    "commit",
+    " pr ",
+    "pull request",
+    "simplifier",
+    "reviewer",
+    "implementation",
+    "code",
+    "build",
+    "compile",
+    "deploy",
+    "vulnerability",
+    "audit",
+    "scan",
+    "fix",
+    "patch",
+    "diff",
 ];
 
 // Initial mapping from plugin name to af-phase tags. Plugins not listed
@@ -173,7 +196,10 @@ pub async fn run(client: &Client, args: ImportArgs) {
 
         if SKIP_PLUGINS.contains(&plugin_name.as_str()) {
             stats.plugins_skipped += 1;
-            println!("skip {} ({}): runtime/no-content plugin", plugin_name, marketplace);
+            println!(
+                "skip {} ({}): runtime/no-content plugin",
+                plugin_name, marketplace
+            );
             continue;
         }
 
@@ -341,7 +367,15 @@ fn walk_kind(
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            walk_kind(&path, kind, plugin, marketplace, manifest, restrict_filename, out);
+            walk_kind(
+                &path,
+                kind,
+                plugin,
+                marketplace,
+                manifest,
+                restrict_filename,
+                out,
+            );
             continue;
         }
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -665,7 +699,10 @@ async fn upsert_item(
                 .post("/skills", body)
                 .await
                 .map_err(|e| e.to_string())?;
-            let id = v.get("id").and_then(|x| x.as_i64()).ok_or("no id in /skills response")?;
+            let id = v
+                .get("id")
+                .and_then(|x| x.as_i64())
+                .ok_or("no id in /skills response")?;
             stats.items_inserted += 1;
             println!("    + #{} {}", id, item.qualified_name);
             id
@@ -756,7 +793,10 @@ async fn ensure_plugin_bundle(
         "description": description.unwrap_or(""),
         "auto_generated": true,
     });
-    let v = client.post("/bundles", body).await.map_err(|e| e.to_string())?;
+    let v = client
+        .post("/bundles", body)
+        .await
+        .map_err(|e| e.to_string())?;
     v.get("id")
         .and_then(|x| x.as_i64())
         .ok_or_else(|| format!("no id in /bundles response: {}", v))

@@ -280,9 +280,12 @@ impl ReplayGuard {
         }
 
         let key = (identity_hash_hex.to_string(), nonce_hex.to_string());
-        let mut nonces = self.nonces.lock().unwrap();
+        let mut nonces = self
+            .nonces
+            .lock()
+            .map_err(|_| EngError::Auth("replay guard mutex poisoned".into()))?;
 
-        self.maybe_gc(&mut nonces);
+        self.maybe_gc(&mut nonces)?;
 
         if nonces.contains_key(&key) {
             return Err(EngError::Auth("duplicate nonce (replay)".into()));
@@ -296,13 +299,17 @@ impl ReplayGuard {
         Ok(())
     }
 
-    fn maybe_gc(&self, nonces: &mut HashMap<(String, String), NonceEntry>) {
-        let mut last = self.last_gc.lock().unwrap();
+    fn maybe_gc(&self, nonces: &mut HashMap<(String, String), NonceEntry>) -> Result<()> {
+        let mut last = self
+            .last_gc
+            .lock()
+            .map_err(|_| EngError::Auth("replay guard mutex poisoned".into()))?;
         if last.elapsed() < GC_INTERVAL {
-            return;
+            return Ok(());
         }
         *last = Instant::now();
         nonces.retain(|_, v| v.inserted.elapsed() < NONCE_TTL);
+        Ok(())
     }
 }
 

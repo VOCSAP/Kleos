@@ -20,7 +20,9 @@ use kleos_lib::auth_piv::RequestSigner;
 #[derive(Clone)]
 pub struct AppState {
     pub db: Arc<Database>,
-    pub master_key: Arc<[u8; KEY_SIZE]>,
+    /// Master encryption key wrapped in `Zeroizing` so the key material is
+    /// scrubbed from memory when the last `Arc` reference is dropped.
+    pub master_key: Arc<Zeroizing<[u8; KEY_SIZE]>>,
     pub rate_limiter: Arc<RateLimiter>,
     /// Decrypted bare Kleos bearer loaded from `bootstrap.enc` at startup.
     /// `None` if the blob is absent (the `/bootstrap/kleos-bearer` endpoint
@@ -52,7 +54,7 @@ impl AppState {
         let (piv_9a_pubkeys, piv_9d_pubkey) = load_piv_pubkeys();
         Self {
             db: Arc::new(db),
-            master_key: Arc::new(master_key),
+            master_key: Arc::new(Zeroizing::new(master_key)),
             rate_limiter: Arc::new(RateLimiter::new()),
             bootstrap_master: None,
             file_agent_keys: Arc::new(Mutex::new(FileAgentKeyStore::default())),
@@ -75,7 +77,7 @@ impl AppState {
         let kleos_signer = init_kleos_signer();
         Self {
             db: Arc::new(db),
-            master_key: Arc::new(master_key),
+            master_key: Arc::new(Zeroizing::new(master_key)),
             rate_limiter: Arc::new(RateLimiter::new()),
             bootstrap_master: bootstrap_master.map(Arc::new),
             file_agent_keys: Arc::new(Mutex::new(file_agent_keys)),

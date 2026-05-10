@@ -188,7 +188,8 @@ pub async fn auth_middleware(
     let token = extract_bearer_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Check if it's the master key (try hex-decoded first, then raw)
-    let master_hash = hash_key(state.master_key.as_ref());
+    // Deref through Arc<Zeroizing<[u8;N]>> to get &[u8] for hash_key.
+    let master_hash = hash_key(&**state.master_key);
     let token_bytes = hex::decode(token).unwrap_or_else(|_| token.as_bytes().to_vec());
     let token_hash = hash_key(&token_bytes);
 

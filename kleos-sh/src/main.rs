@@ -142,7 +142,10 @@ fn resolve_key_via_credd() -> Option<String> {
         return None;
     }
 
-    let slot = std::env::var("KLEOS_AGENT_SLOT").unwrap_or_else(|_| "claude-code-wsl".into());
+    let slot = std::env::var("KLEOS_AGENT_SLOT")
+        .unwrap_or_else(|_| "claude-code-wsl".into())
+        .replace(['\r', '\n'], "");
+    let agent_key = agent_key.replace(['\r', '\n'], "");
     let request = format!(
         "GET /bootstrap/kleos-bearer?agent={} HTTP/1.1\r\n\
          Host: localhost\r\n\

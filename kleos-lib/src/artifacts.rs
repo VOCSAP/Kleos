@@ -82,12 +82,7 @@ pub fn is_indexable_mime_type(mime: &str) -> bool {
 
 /// Add an artifact's text content to the FTS index.
 #[tracing::instrument(skip(db, data), fields(artifact_id, mime_type = %mime_type, data_len = data.len()))]
-pub async fn index_artifact(
-    db: &Database,
-    artifact_id: i64,
-    mime_type: &str,
-    data: &[u8],
-) -> bool {
+pub async fn index_artifact(db: &Database, artifact_id: i64, mime_type: &str, data: &[u8]) -> bool {
     if !is_indexable_mime_type(mime_type) {
         return false;
     }
@@ -199,9 +194,7 @@ pub async fn store_artifact(
             .map_err(rusqlite_to_eng_error)?;
 
         if exists.is_none() {
-            return Err(crate::EngError::NotFound(
-                "memory not found".into(),
-            ));
+            return Err(crate::EngError::NotFound("memory not found".into()));
         }
 
         conn.query_row(
@@ -238,10 +231,7 @@ pub async fn store_artifact(
 
 /// List all artifacts attached to a memory.
 #[tracing::instrument(skip(db), fields(memory_id))]
-pub async fn get_artifacts_by_memory(
-    db: &Database,
-    memory_id: i64,
-) -> Result<Vec<ArtifactRow>> {
+pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Vec<ArtifactRow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -264,10 +254,7 @@ pub async fn get_artifacts_by_memory(
 
 /// Retrieve a single artifact's metadata by ID.
 #[tracing::instrument(skip(db), fields(artifact_id))]
-pub async fn get_artifact_by_id(
-    db: &Database,
-    artifact_id: i64,
-) -> Result<Option<ArtifactRow>> {
+pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Option<ArtifactRow>> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT id, memory_id, filename, mime_type, size_bytes, \
@@ -333,10 +320,7 @@ pub async fn enrich_with_artifacts(
 
 /// Retrieve the raw binary data for an artifact.
 #[tracing::instrument(skip(db), fields(artifact_id))]
-pub async fn get_artifact_data(
-    db: &Database,
-    artifact_id: i64,
-) -> Result<Option<Vec<u8>>> {
+pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option<Vec<u8>>> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT data FROM artifacts WHERE id = ?1",

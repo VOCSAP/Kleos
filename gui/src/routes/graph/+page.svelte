@@ -657,7 +657,9 @@
         .cooldownTicks(400);
 
       graphInstance = graph;
-      (window as any).__graph = graph;
+      if (import.meta.env.DEV) {
+          (window as any).__graph = graph;
+      }
 
       // Force canvas background to near-black (belt-and-suspenders with backgroundColor)
       const canvas = graph.renderer().domElement;

@@ -25,7 +25,7 @@ ignore = [
     # which is the primary Marvin vector). Network jitter on real
     # deployments further degrades any timing-based attack. Track upstream
     # rsa fixes; review on every yubikey crate bump.
-    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.x Marvin Attack; transitive via yubikey; not on the RSA decryption path; track upstream" },
+    { id = "RUSTSEC-2023-0071", reason = "rsa 0.9.x Marvin Attack; transitive via yubikey; not on the RSA decryption path; track upstream; reviewed 2026-08-10" },
 ]
 
 [licenses]

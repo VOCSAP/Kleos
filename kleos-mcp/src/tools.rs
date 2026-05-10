@@ -141,9 +141,16 @@ pub fn required_scope(name: &str) -> kleos_lib::auth::Scope {
         // Admin tools -- heavy operations, data-destructive potential
         n if n.starts_with("admin.") => Scope::Admin,
         // Read-only tools
-        "memory.search" | "memory.get" | "memory.list" | "memory.get_by_content_hash" => Scope::Read,
-        "context.assemble_context" | "context.get_header" | "context.generate_prompt" => Scope::Read,
-        "graph.get_neighbors" | "graph.pagerank_top" | "graph.louvain_communities" | "graph.cooccurrence" => Scope::Read,
+        "memory.search" | "memory.get" | "memory.list" | "memory.get_by_content_hash" => {
+            Scope::Read
+        }
+        "context.assemble_context" | "context.get_header" | "context.generate_prompt" => {
+            Scope::Read
+        }
+        "graph.get_neighbors"
+        | "graph.pagerank_top"
+        | "graph.louvain_communities"
+        | "graph.cooccurrence" => Scope::Read,
         "skill.search" => Scope::Read,
         n if n.starts_with("structural.") => Scope::Read,
         // Everything else mutates state

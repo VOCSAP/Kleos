@@ -104,6 +104,7 @@ fn split_argv(cmd: &str) -> Result<Vec<String>, &'static str> {
 /// Resolve `path` against the configured base directory. The final
 /// canonicalized absolute path must start with the base. Returns an
 /// error on traversal, missing base dir, or unresolvable path.
+// NOTE: TOCTOU between canonicalize and use. Mitigated by restricting base dir write access.
 fn confine_path(path: &str) -> Result<PathBuf, String> {
     let base = load_base_dir()
         .ok_or_else(|| format!("{} not configured; file operations denied", ENV_BASE_DIR))?;

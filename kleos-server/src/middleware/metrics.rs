@@ -77,7 +77,17 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/metrics/prometheus", get(metrics_handler))
 }
 
-async fn metrics_handler() -> impl IntoResponse {
+async fn metrics_handler(headers: axum::http::HeaderMap) -> impl IntoResponse {
+    if let Ok(expected) = std::env::var("KLEOS_METRICS_TOKEN") {
+        let provided = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if provided != expected {
+            return (StatusCode::UNAUTHORIZED, "unauthorized".to_string());
+        }
+    }
     match PROM_HANDLE.get() {
         Some(handle) => (StatusCode::OK, handle.render()),
         None => (

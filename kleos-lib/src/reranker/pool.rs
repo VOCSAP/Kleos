@@ -35,9 +35,14 @@ pub struct PooledSession {
 // PooledSession holds exclusive ownership of its Session via Option<Session>.
 // If ort upgrades to expose any thread-local cache or interior-mutable state
 // accessible through a shared reference, this unsafe impl needs re-review.
+// SAFETY REVIEW: 2026-05-10 -- re-verify on every ort version bump.
+#[allow(unsafe_code)]
 unsafe impl Send for SessionPool {}
+#[allow(unsafe_code)]
 unsafe impl Sync for SessionPool {}
+#[allow(unsafe_code)]
 unsafe impl Send for PooledSession {}
+#[allow(unsafe_code)]
 unsafe impl Sync for PooledSession {}
 
 impl SessionPool {
