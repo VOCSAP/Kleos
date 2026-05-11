@@ -51,6 +51,25 @@ Use this table when choosing the right command:
 - Claude hook handlers fail open on transport failures by design. Direct shell
   execution paths default to fail closed unless configured otherwise.
 
+### API key format
+
+Bearer API keys are accepted in three equivalent prefix forms:
+
+| Prefix | Example | Notes |
+|---|---|---|
+| `engram_` | `engram_a1b2c3d4...` | Canonical internal form |
+| `kleos_` | `kleos_a1b2c3d4...` | VOCSAP rebrand alias |
+| `eg_` | `eg_a1b2c3d4...` | Legacy shorthand |
+
+All three map to the same DB lookup. The hex portion after the prefix is
+identical in every case -- only the label differs. If the GUI or a CLI client
+reports "Invalid API Key", check that the key uses one of these three prefixes
+and that the hex portion is 32 or 64 characters.
+
+Keys are generated in `engram_<hex32>` form by the server. A key recorded in
+an env file as `kleos_<hex>` is valid and will authenticate correctly
+(VOCSAP fork, Patch 6 in `docs/dev-notes/local-patches.md`).
+
 ## `kleos-cli`
 
 Synopsis:
@@ -1176,3 +1195,59 @@ If command behavior here and ad hoc prompt instructions disagree, prefer:
 3. Ad hoc prompt text
 
 When in doubt, inspect the source before inventing a new usage pattern.
+
+---
+
+## Troubleshooting
+
+### "Invalid API Key" on the GUI or kleos-cli
+
+**Symptom:** The web GUI shows "Invalid API Key" after entering a key, or
+`kleos-cli` returns a 401 on every call.
+
+**Cause A -- wrong prefix (most common on VOCSAP deployments):**
+
+The server accepts `engram_`, `kleos_`, and `eg_` prefixes. Any other prefix
+is rejected before the DB lookup. If the key was copied from an env file and
+shows a different prefix, the auth will silently fail.
+
+Fix: verify the prefix is one of the three accepted forms. The hex portion
+(32 or 64 chars) must follow immediately after the underscore.
+
+**Cause B -- key not in localStorage:**
+
+The GUI stores the key in `localStorage` under `engram_api_key`. If the
+browser cleared storage (private window, cookie clear), the key is gone.
+Click "Set API Key" in the sidebar and re-enter it.
+
+**Cause C -- pepper mismatch (server-side):**
+
+v2 keys are hashed with `KLEOS_API_KEY_PEPPER`. If the pepper in
+`/etc/kleos/kleos.env` changed since the key was generated, the hash will
+not match. Re-generate a key with the current pepper via
+`kleos-cli admin api-key create`.
+
+---
+
+### GUI shows correct key but all requests fail with 403
+
+The key exists and authenticates but lacks the required scope for the endpoint.
+Check the key scopes with `kleos-cli admin api-key list` and regenerate with
+the necessary scopes if needed.
+
+---
+
+### kleos-sidecar not receiving observations from kleos-sh
+
+kleos-sh looks for the sidecar at `KLEOS_SIDECAR_URL` (default
+`http://127.0.0.1:4201`). The sidecar listens on `KLEOS_SIDECAR_PORT`
+(default `7711`).
+
+These two env vars are **independent**. Set both explicitly:
+
+```bash
+KLEOS_SIDECAR_PORT=7711          # sidecar listen port
+KLEOS_SIDECAR_URL=http://127.0.0.1:7711  # full URL for kleos-sh to reach the sidecar
+```
+
+Omitting the port from `KLEOS_SIDECAR_URL` routes to port 80 and fails silently.
