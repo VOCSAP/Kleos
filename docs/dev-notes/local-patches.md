@@ -239,6 +239,113 @@ le préfixe textuel). Le lookup par `key_prefix` fonctionne donc pour les deux f
 
 ---
 
+## Patch 8 -- GUI : activation et fix CSP SvelteKit
+
+**Concerne :** Déploiement sur LXC 121 (kleos-server Linux musl)
+**Statut upstream :** N/A -- problème de configuration déploiement + patch de fichier statique généré.
+
+Ce patch couvre deux problèmes liés à l'interface web, indépendants mais toujours
+présents ensemble lors d'un redéploiement.
+
+---
+
+### A) 401 sur sous-routes SvelteKit -- SPA_ROUTES match exact
+
+**Symptôme :** La page affiche `401: {"error":"Authentication required..."}` quand
+le navigateur est sur une sous-route comme `/gui/memories`, `/search/details`, etc.
+(rafraîchissement ou bookmark sur un sous-chemin du SvelteKit).
+
+**Cause :** `gui_spa_middleware` utilisait `SPA_ROUTES.contains(&path)` (match exact).
+Les sous-routes comme `/gui/settings` ne sont pas dans la liste, donc le middleware
+tombait en `next.run()` → `api_routes` → `auth_middleware` → 401.
+
+**Fichier :** `kleos-server/src/routes/gui/mod.rs` -- `gui_spa_middleware`.
+
+**Fix (appliqué dans le code) :** Remplacer le `contains` par un matching par préfixe :
+- `"/"` reste exact (pour éviter de capturer toutes les routes)
+- Les autres entrées (`/gui`, `/search`, etc.) matchent aussi leurs sous-chemins via
+  `path.starts_with(&format!("{}/", spa))`
+
+**Statut :** Fix commité. Nécessite rebuild et redéploiement de kleos-server.
+
+---
+
+### B) 401 sur GET / -- variables d'environnement GUI manquantes
+
+**Symptôme :** La page web répond `401: {"error":"Authentication required. Provide
+X-Kleos-Sig header or Bearer token."}` au lieu d'afficher la page de login.
+
+**Cause :** `gui_spa_middleware` n'intercepte les requêtes HTML que si
+`state.config.gui_enabled = true`. Ce flag est positionné uniquement si
+`ENGRAM_GUI_PASSWORD` (traduit depuis `KLEOS_GUI_PASSWORD` par `migrate_env_prefix`)
+est non-vide. Sans lui, le middleware passe la main à `api_routes`, qui applique
+`auth_middleware` → 401.
+
+Fichiers concernés : `kleos-lib/src/config.rs:826` (lit `ENGRAM_GUI_PASSWORD`)
+et `kleos-server/src/routes/gui/mod.rs:722` (condition `!state.config.gui_enabled`).
+
+**Fix :** Vérifier que `/etc/kleos/kleos.env` (sur LXC 121) contient :
+```env
+KLEOS_GUI_PASSWORD=1
+KLEOS_GUI_BUILD_DIR=/usr/local/share/kleos/gui-build
+```
+Ces deux lignes sont déjà dans `deploy/kleos.env`. Si l'env LXC est plus ancien,
+les ajouter manuellement puis `systemctl restart kleos`.
+
+---
+
+### B) Page blanche CSP -- éléments inline SvelteKit bloqués
+
+**Symptôme :** Après login réussi, la page GUI est blanche. La console du navigateur
+affiche :
+```
+Refused to apply inline style because it violates CSP directive "style-src 'self'"
+Refused to execute inline script because it violates CSP directive "script-src 'self'"
+```
+
+**Cause :** SvelteKit (build prod, `adapter-static`) génère dans `index.html` :
+1. `<body style="display: contents">` -- style inline sur `<body>`
+2. Un bloc `<script>` inline d'initialisation (définit `__sveltekit_*`)
+
+Le serveur impose `style-src 'self'; script-src 'self' 'wasm-unsafe-eval'`
+dans son CSP (`kleos-server/src/server.rs`), ce qui bloque les deux.
+
+**Fix : patcher `index.html` sur le LXC et créer deux fichiers compagnons.**
+
+Le build GUI est à `/usr/local/share/kleos/gui-build/`. Ce répertoire est `.gitignored`
+(artefact de build), le patch se re-applique à chaque redéploiement de la GUI.
+
+```bash
+GUI=/usr/local/share/kleos/gui-build
+
+# 1. Externaliser le style inline : remplacer l'attribut style par une classe
+sed -i 's/style="display: contents"/class="sk-root"/' "$GUI/index.html"
+
+# 2. Créer le CSS correspondant
+echo '.sk-root { display: contents }' > "$GUI/_app/root.css"
+
+# 3. Injecter le <link> dans index.html (avant </head>)
+sed -i 's|</head>|    <link href="/_app/root.css" rel="stylesheet">\n</head>|' "$GUI/index.html"
+
+# 4. Extraire le script inline
+#    a. Repérer le bloc <script>...</script> inline dans index.html
+grep -n "<script>" "$GUI/index.html"
+#    b. Copier le contenu du bloc dans _app/init.js (sans les balises <script>)
+#    c. Remplacer le bloc entier par : <script src="/_app/init.js"></script>
+```
+
+**Vérification après patch :**
+```bash
+curl -sI http://localhost:4200/_app/root.css | grep "200"
+curl -sI http://localhost:4200/_app/init.js  | grep "200"
+```
+
+**Note :** Le bloc `<script>` varie à chaque build SvelteKit -- l'extraction manuelle
+est nécessaire. La correction permanente serait de configurer SvelteKit pour externaliser
+son init script (non supporté nativement par `adapter-static` à ce jour).
+
+---
+
 ## Procédure de re-application après un merge upstream
 
 1. Vérifier si upstream a intégré le patch (souvent : non) :
