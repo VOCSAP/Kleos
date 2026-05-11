@@ -112,6 +112,64 @@ Légende : [ ] à faire | [x] terminé | [~] partiel / bloqué | [!] bug ouvert
 - [ ] Vérifier que `track-agent-forge.sh` détecte bien l'utilisation
 - [ ] Tester `agent-forge spec-task` sur une tâche factice
 
+### 2.f. kleos-sh
+
+- [ ] Vérifier présence dans PATH :
+      ```bash
+      kleos-sh --help
+      ```
+- [ ] Vérifier que `KLEOS_API_KEY` et `KLEOS_URL` sont présents dans l'env système
+      ```bash
+      echo $KLEOS_API_KEY
+      echo $KLEOS_URL
+      ```
+- [ ] Test smoke en mode standalone (hors Claude Code) :
+      ```bash
+      KLEOS_API_KEY=$KLEOS_API_KEY KLEOS_URL=$KLEOS_URL \
+        kleos-sh --dry-run "ls -la"
+      ```
+      Ou observer les logs kleos-server (`/gate/check`) lors d'une commande Bash dans Claude Code
+      (si déjà câblé comme hook -- voir 1.c)
+- [ ] Si hook PreToolUse câblé (1.c terminé) : lancer une commande Bash simple dans Claude Code,
+      vérifier dans les logs kleos-server une entrée `gate/check` avec status 2xx
+- [ ] Test résolution de clé via credd (optionnel) :
+      retirer `KLEOS_API_KEY` temporairement de l'env, vérifier que kleos-sh
+      tente `CREDD_BIND=127.0.0.1:4400` et renvoie une erreur de connexion credd
+      (preuve que le fallback TCP est activé)
+- [ ] Remettre `KLEOS_API_KEY` dans l'env
+
+### 2.g. kleos-cli
+
+- [ ] Vérifier présence dans PATH :
+      ```bash
+      kleos-cli --help
+      ```
+- [ ] Health check :
+      ```bash
+      kleos-cli health
+      ```
+      Résultat attendu : JSON `{"status":"ok"}` ou `pong`
+- [ ] Recherche rapide :
+      ```bash
+      kleos-cli search "test" --limit 3
+      ```
+      Résultat attendu : liste (éventuellement vide) sans erreur 401/403
+- [ ] Stockage d'un fait de test :
+      ```bash
+      kleos-cli store "smoke test client Windows OK" -c general -i 1 \
+        -t "smoke,windows" -s "smoke-test"
+      ```
+- [ ] Vérifier que l'entrée apparaît :
+      ```bash
+      kleos-cli list --limit 5
+      ```
+- [ ] Recherche sémantique (retourne JSON) :
+      ```bash
+      kleos-cli context "smoke test windows" --limit 3
+      ```
+      Résultat attendu : JSON avec champ `recall_score`
+- [ ] Nettoyer : supprimer l'entrée de test si un ID est retourné par le store
+
 ---
 
 ## 3. MCP
