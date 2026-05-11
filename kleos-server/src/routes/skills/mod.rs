@@ -165,11 +165,14 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Builds the sub-router for LLM-backed evolution routes with a per-request timeout.
+/// Some endpoints (fix, derive) make multiple sequential LLM calls, so the
+/// route timeout must exceed `per_call_timeout * max_calls`. Fix makes 3 calls.
 fn llm_routes() -> Router<AppState> {
-    let timeout_ms: u64 = std::env::var("OLLAMA_TIMEOUT_BG_MS")
+    let per_call_ms: u64 = std::env::var("OLLAMA_TIMEOUT_BG_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(200_000);
+        .unwrap_or(60_000);
+    let route_timeout_ms = per_call_ms.saturating_mul(4);
     Router::new()
         .route("/skills/evolve", post(evolve_handler))
         .route("/skills/{id}/fix", post(fix_handler))
@@ -177,7 +180,7 @@ fn llm_routes() -> Router<AppState> {
         .route("/skills/capture", post(capture_handler))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
-            Duration::from_millis(timeout_ms),
+            Duration::from_millis(route_timeout_ms),
         ))
 }
 

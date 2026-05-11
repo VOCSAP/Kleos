@@ -13,11 +13,10 @@ use tower_http::trace::TraceLayer;
 /// Default request body limit: 2 MiB. Prevents memory exhaustion from oversized payloads.
 const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
-/// Default request timeout. Slow-loris attacks previously could tie up
-/// connections indefinitely; this provides an upper bound per request.
-/// Raised to 210s so the global timeout exceeds the LLM route timeout
-/// (200s default for multi-call endpoints like skill fix/derive/evolve).
-const REQUEST_TIMEOUT_SECS: u64 = 210;
+/// Default global request timeout. Per-route timeouts (e.g. LLM routes)
+/// may be longer; this is the outermost safety net against slow-loris.
+/// Override with `KLEOS_REQUEST_TIMEOUT_SECS` env var.
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 630;
 
 /// Build a CORS layer from the `ENGRAM_ALLOWED_ORIGINS` env var (comma
 /// separated). When the variable is unset we fall back to the same origin
@@ -214,7 +213,12 @@ pub fn build_router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(BODY_LIMIT_BYTES))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            Duration::from_secs(
+                std::env::var("KLEOS_REQUEST_TIMEOUT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(DEFAULT_REQUEST_TIMEOUT_SECS),
+            ),
         ))
         .layer(build_cors_layer())
         // SECURITY: baseline response hardening headers. Applied as overrides
