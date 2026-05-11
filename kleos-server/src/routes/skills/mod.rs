@@ -169,7 +169,7 @@ fn llm_routes() -> Router<AppState> {
     let timeout_ms: u64 = std::env::var("OLLAMA_TIMEOUT_BG_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(60_000);
+        .unwrap_or(200_000);
     Router::new()
         .route("/skills/evolve", post(evolve_handler))
         .route("/skills/{id}/fix", post(fix_handler))
