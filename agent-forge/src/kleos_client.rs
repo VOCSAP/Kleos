@@ -48,7 +48,7 @@ impl KleosClient {
     /// Create a new client. Returns Err if KLEOS_URL is not set and default is unreachable.
     pub fn new() -> Result<Self, KleosClientError> {
         let base_url =
-            env::var("KLEOS_URL").unwrap_or_else(|_| "http://127.0.0.1:4200".to_string());
+            env::var("KLEOS_URL").unwrap_or_else(|_| "http://localhost:4200".to_string());
         let base_url = base_url.trim_end_matches('/').to_string();
         let api_key = env::var("KLEOS_API_KEY").ok();
 
