@@ -15,9 +15,9 @@ const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Default request timeout. Slow-loris attacks previously could tie up
 /// connections indefinitely; this provides an upper bound per request.
-/// Raised to 120s to accommodate ingestion routes; tighter per-route
-/// timeouts are applied on health (1s), search (10s), and context (30s).
-const REQUEST_TIMEOUT_SECS: u64 = 120;
+/// Raised to 210s so the global timeout exceeds the LLM route timeout
+/// (200s default for multi-call endpoints like skill fix/derive/evolve).
+const REQUEST_TIMEOUT_SECS: u64 = 210;
 
 /// Build a CORS layer from the `ENGRAM_ALLOWED_ORIGINS` env var (comma
 /// separated). When the variable is unset we fall back to the same origin
