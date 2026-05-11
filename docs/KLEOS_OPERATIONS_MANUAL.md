@@ -27,6 +27,7 @@ Use this table when choosing the right command:
 | Need | Command |
 |---|---|
 | Store, search, recall, or hand off knowledge | `kleos-cli` |
+| Report a task lifecycle event (started/progress/completed/blocked/error) | `kleos-cli activity` |
 | Run a shell command through Kleos gate checks | `kleos-sh` |
 | Read code or files safely | `kr` |
 | Write file contents from stdin inside approved roots | `kw` |
@@ -173,6 +174,26 @@ Use for:
 #### `kleos-cli health`
 
 - Fetches `GET /health`.
+
+#### `kleos-cli activity --action ACT --summary TEXT [--project P] [--agent A] [--metadata JSON]`
+
+- Posts a lifecycle event to `POST /activity`.
+- Signed with the local PIV or Ed25519 identity through the standard `Client`
+  auth path -- no bearer token or `cred exec` wrapper required.
+- The single call fans out to Chiasm (tasks), Axon (events), Broca (actions),
+  Thymus (metrics), Skills, and Memory.
+- `--action` is one of `task.started`, `task.progress`, `task.completed`,
+  `task.blocked`, `error.raised`, or any custom event name.
+- `--agent` defaults to `claude-code`.
+- `--metadata` accepts a JSON object string and is mapped onto the
+  `metadata`/`details` field server-side.
+- Prefer this over the legacy `cred exec curl` recipe in
+  `~/.claude/reference/eidolon-activity.md`; that path is only the fallback
+  for hosts without an enrolled identity.
+
+Use for:
+
+- Per sub-task lifecycle reporting from agent sessions.
 
 #### `kleos-cli bootstrap`
 
