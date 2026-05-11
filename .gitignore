@@ -11,10 +11,13 @@
 *.sqlite-wal
 
 # Agent/IDE config (private)
+CLAUDE.md
 .claude/
+.codex
 .worktrees/
 WORKTREE-SPEC.md
 PLAN.md
+_parts/
 
 # Internal docs
 docs/plans/

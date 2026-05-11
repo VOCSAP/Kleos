@@ -567,7 +567,7 @@ async fn recall(
     output.truncate(limit);
     let count = output.len();
 
-    // Build compat profile from static memories for zanmemory clients
+    // Build compat profile from static memories for legacy clients
     let profile: Vec<&str> = static_memories.iter().map(|m| m.content.as_str()).collect();
     let results = output.clone();
 

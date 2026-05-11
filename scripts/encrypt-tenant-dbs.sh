@@ -5,7 +5,7 @@ set -euo pipefail
 # Run ONCE on the production host BEFORE deploying the tenant-encryption code.
 #
 # Usage:
-#   ENGRAM_DB_KEY=<64-hex-chars> ./encrypt-tenant-dbs.sh ./run/data
+#   ENGRAM_DB_KEY=<64-hex-chars> ./encrypt-tenant-dbs.sh /path/to/data
 #
 # Prerequisites:
 #   - sqlcipher in PATH

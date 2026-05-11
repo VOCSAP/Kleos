@@ -21,7 +21,7 @@ struct Cli {
         short = 's',
         long = "server",
         env = "KLEOS_URL",
-        default_value = "http://10.50.0.1:4200"
+        default_value = "http://localhost:4200"
     )]
     server: String,
 
