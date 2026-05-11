@@ -181,12 +181,13 @@ fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
 
 /// Normalise a raw API key to its canonical `engram_<hex>` form.
 ///
-/// SECURITY (SEC-LOW-2): the `eg_` prefix is a legacy shorthand alias kept
-/// for backwards compatibility with older clients. Both prefixes map to the
-/// same canonical form so hash lookups succeed regardless of which prefix the
-/// caller used.
+/// SECURITY (SEC-LOW-2): the `eg_` and `kleos_` prefixes are accepted aliases
+/// for backwards compatibility. All prefixes map to the same canonical form so
+/// hash lookups succeed regardless of which prefix the caller used.
 fn normalize_key(raw_key: &str) -> Option<String> {
     let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
+        rest
+    } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
         rest
     } else {
         raw_key.strip_prefix("eg_")?
