@@ -17,7 +17,7 @@ git show origin/main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
 git show origin/main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
 git show origin/main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
 git show origin/main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
-git show origin/main:kleos-lib/src/auth.rs | grep "kleos_"
+git show origin/main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
 
 # 2. Stasher les patches locaux avant merge
 git stash push -m "local-patches" -- \
