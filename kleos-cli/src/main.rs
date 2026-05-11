@@ -125,6 +125,24 @@ enum Commands {
     },
     /// Check server health
     Health,
+    /// Report an activity event (fans out to Chiasm/Axon/Broca/Thymus/Skills/Memory)
+    Activity {
+        /// Action (e.g. task.started, task.progress, task.completed, task.blocked, error.raised)
+        #[arg(short, long)]
+        action: String,
+        /// Human-readable summary of what happened
+        #[arg(short, long)]
+        summary: String,
+        /// Project label (optional)
+        #[arg(short, long)]
+        project: Option<String>,
+        /// Agent label
+        #[arg(long, default_value = "claude-code")]
+        agent: String,
+        /// Optional JSON object of additional metadata
+        #[arg(short, long)]
+        metadata: Option<String>,
+    },
     /// Durable job queue inspection and control
     #[command(subcommand)]
     Jobs(JobsCommands),
@@ -1342,6 +1360,39 @@ async fn main() {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
             Err(e) => eprintln!("Error: {}", e),
         },
+
+        Commands::Activity {
+            action,
+            summary,
+            project,
+            agent,
+            metadata,
+        } => {
+            let mut body = json!({
+                "agent": agent,
+                "action": action,
+                "summary": summary,
+            });
+            if let Some(p) = project {
+                body["project"] = json!(p);
+            }
+            if let Some(m) = metadata {
+                match serde_json::from_str::<Value>(m) {
+                    Ok(v) => body["metadata"] = v,
+                    Err(e) => {
+                        eprintln!("Error: --metadata is not valid JSON: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            match client.post("/activity", body).await {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
 
         Commands::Jobs(jobs_cmd) => {
             handle_jobs_command(&client, jobs_cmd).await;
