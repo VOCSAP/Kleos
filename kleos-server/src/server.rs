@@ -13,10 +13,10 @@ use tower_http::trace::TraceLayer;
 /// Default request body limit: 2 MiB. Prevents memory exhaustion from oversized payloads.
 const BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
-/// Default global request timeout. Per-route timeouts (e.g. LLM routes)
-/// may be longer; this is the outermost safety net against slow-loris.
+/// Default global request timeout. Must exceed the longest LLM route
+/// (CPU-only skill fix: 3 sequential calls at ~400s each = ~1200s observed).
 /// Override with `KLEOS_REQUEST_TIMEOUT_SECS` env var.
-const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 630;
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 1800;
 
 /// Build a CORS layer from the `ENGRAM_ALLOWED_ORIGINS` env var (comma
 /// separated). When the variable is unset we fall back to the same origin
