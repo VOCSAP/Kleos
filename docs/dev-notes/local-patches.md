@@ -159,35 +159,83 @@ KLEOS_EMBEDDING_DIM=1024
 
 ---
 
-## Patch 6 -- Auth : accepter le préfixe `kleos_` dans normalize_key
+## Patch 6 -- Auth : accepter le préfixe `kleos_` dans normalize_key (REMPLACE PAR PATCH 7)
+
+**Statut :** INCOMPLET. Patch 6 était un premier essai correct dans l'intention mais incorrect
+dans l'implémentation. Remplacé intégralement par Patch 7. Conservé ici pour l'historique.
+
+**Erreur de Patch 6 :** `normalize_key` convertissait `kleos_<hex>` en `engram_<hex>` avant
+le hash. Or les clés pepper-era (générées depuis que `KLEOS_API_KEY_PEPPER` est défini) ont
+leur hash calculé sur la forme `kleos_<hex>`. La conversion produisait un mismatch permanent.
+
+---
+
+## Patch 7 -- Auth : préserver le préfixe original dans normalize_key
 
 **Fichier :** `kleos-lib/src/auth.rs`
 **Statut upstream :** Absent.
-**Symptôme si absent :** GUI et kleos-cli retournent "Invalid API Key" quand la clé commence par `kleos_` (ex: `kleos_ca...`). Les clés `engram_` et `eg_` fonctionnent.
+**Symptôme si absent :** GUI retourne "Invalid API Key" pour toute clé à préfixe `kleos_`.
 
-**Pourquoi :** `normalize_key()` n'accepte que `engram_` et `eg_` comme préfixes valides. Les clés générées pendant la période de rebrand ou saisies avec le préfixe `kleos_` sont rejetées avant même la vérification en base. Le hex sous-jacent est identique -- seul le préfixe textuel change.
+**Cause racine :** Les clés générées depuis que `KLEOS_API_KEY_PEPPER` est configuré ont
+leur hash stocké en DB sur la forme canonique `kleos_<hex>` (c'est le préfixe produit
+lors de la génération). `normalize_key` ne doit donc PAS convertir `kleos_` en `engram_`.
+
+**Deux corrections dans `auth.rs` :**
+
+**A) `normalize_key` -- préserver le préfixe**
 
 ```rust
-// AVANT
-fn normalize_key(raw_key: &str) -> Option<String> {
-    let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
-        rest
-    } else {
-        raw_key.strip_prefix("eg_")?
-    };
-
-// APRES
+// AVANT (Patch 6 -- incorrect)
 fn normalize_key(raw_key: &str) -> Option<String> {
     let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
         rest
     } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
-        rest
+        rest           // extrait le hex mais...
     } else {
         raw_key.strip_prefix("eg_")?
     };
+    Some(format!("engram_{}", hex_portion...))  // ...force toujours engram_ -> mismatch
+}
+
+// APRES (Patch 7 -- correct)
+fn normalize_key(raw_key: &str) -> Option<String> {
+    let (canonical_prefix, hex_portion) =
+        if let Some(rest) = raw_key.strip_prefix("engram_") {
+            ("engram_", rest)   // engram_ reste engram_
+        } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
+            ("kleos_", rest)    // kleos_ reste kleos_ (pepper-era)
+        } else if let Some(rest) = raw_key.strip_prefix("eg_") {
+            ("engram_", rest)   // eg_ -> engram_ (alias court legacy)
+        } else {
+            return None;
+        };
+    // ...validation hex...
+    Some(format!("{}{}", canonical_prefix, hex_portion.to_ascii_lowercase()))
+}
 ```
 
-**Note :** Le lookup DB utilise `key_prefix = hex[0..8]` -- pas le préfixe textuel. Un même secret peut donc être présenté indifféremment comme `engram_<hex>` ou `kleos_<hex>`.
+**B) `validate_key` -- extraction hex robuste**
+
+```rust
+// AVANT -- hypothèse engram_ (7 chars), tronque kleos_ (6 chars) silencieusement
+let hex_portion = normalized_key[7..].to_string();
+
+// APRES -- split_once indépendant de la longueur du préfixe
+let hex_portion = normalized_key
+    .split_once('_')
+    .map(|(_, hex)| hex.to_string())
+    .ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
+```
+
+**Règle de hashing par génération :**
+
+| Époque | Préfixe clé | Forme canonique hash | Hash version |
+|---|---|---|---|
+| Avant PEPPER | `engram_<hex>` | `engram_<hex>` | v1 (SHA-256 nu) |
+| Depuis PEPPER | `kleos_<hex>` | `kleos_<hex>` | v2 (SHA-256 + pepper) |
+
+**Note :** Le champ `key_prefix` en DB contient toujours les 8 premiers chars du hex (sans
+le préfixe textuel). Le lookup par `key_prefix` fonctionne donc pour les deux formes.
 
 ---
 
