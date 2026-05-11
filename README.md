@@ -4,7 +4,7 @@
 
 # Kleos
 
-**The operating system for AI agents. Memory, coordination, skills, security, and supervision in one binary.**
+**Cognitive infrastructure for AI agents. Not a memory engine -- a full operating system for how agents think, learn, coordinate, and stay safe.**
 
 [![License](https://img.shields.io/badge/License-Elastic--2.0-blue.svg)](LICENSE) [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org) [![Native](https://img.shields.io/badge/Native-No%20Python-blueviolet.svg)](#)
 
@@ -14,9 +14,13 @@
 
 ---
 
-AI agents today can write code, search the web, and hold a conversation. But they can't remember what they did yesterday. They can't coordinate with other agents. They can't learn from their own mistakes, and nobody is watching whether they're drifting off-task. You end up gluing together a vector database, a task queue, a credential store, and a supervision layer, all separate services, all separately configured, all separately failing.
+Kleos is not a memory engine. Calling it one is like calling a brain a hard drive.
 
-Kleos replaces that stack. It gives your AI agent long-term memory that decays like a human's, a knowledge graph that tracks how ideas connect, coordination services for tasks and workflows, a skill system that evolves over time, a credential vault sealed to a hardware security key, and a supervisor that watches agent sessions for drift. You run it on your own machine as a single binary. Your data never leaves your hardware.
+Yes, Kleos stores and retrieves memories. But it also consolidates them overnight through a six-stage dream cycle. It builds a knowledge graph with causal reasoning and community detection. It assembles context for LLMs through eight parallel retrieval layers with token budget management. It enforces structured reasoning protocols so agents spec before they code and hypothesize before they debug. It runs seven neuroscience-named coordination services for multi-agent orchestration. It gates every shell command and filesystem operation through a security policy engine. It watches agent sessions in real time and injects corrections when they drift.
+
+The difference between Kleos and a memory tool is the difference between a notebook and a nervous system.
+
+One Rust binary. Self-hosted. Your data never leaves your hardware.
 
 ![Kleos CLI demo](tools/cli-demo.gif)
 
@@ -26,24 +30,103 @@ Kleos replaces that stack. It gives your AI agent long-term memory that decays l
 
 ## What Kleos does
 
-Kleos has six major systems. Most agent infrastructure gives you one of these and tells you to build the rest yourself.
+### Biological memory lifecycle
 
-**Memory.** Store observations. Search by meaning across four channels (vector similarity, full-text, graph traversal, personality signals). Memories strengthen with use and fade when ignored, using the same spaced-repetition algorithm behind Anki. Near-duplicates are caught on store. Contradictions are flagged. Long memories are broken into atomic facts automatically.
+Memory in Kleos follows the same arc as biological memory -- acquisition, consolidation, decay:
 
-**Knowledge graph.** Memories link to each other with typed edges (updates, contradicts, caused_by, prerequisite_for, and more). Community detection finds clusters. PageRank surfaces the most connected ideas. Your agent doesn't just recall. It can traverse.
+- **FSRS-6 spaced repetition** with all 21 trained weights (the algorithm behind Anki). Memories strengthen with use and fade when ignored via power-law forgetting.
+- **Six-stage dream cycle** runs during idle: replay, merge, prune, discover, decorrelate, resolve. Consolidates knowledge autonomously.
+- **Modern Hopfield network** (feature-gated) with softmax attention and capacity exponential in dimension. Backs an associative instinct system with causal edge scoring.
+- **Personality-shaped recall** -- six signal types (preference, value, motivation, decision, emotion, identity) extracted from stored text. Two agents querying the same memories get different results.
+- **On-store processing** -- SimHash deduplication, SVO contradiction detection, atomic fact decomposition, entity extraction, and auto-linking all happen before the store call returns.
 
-**Coordination.** Seven built-in services handle the work that usually requires a separate message broker: an event bus, an action log, a task tracker, an agent registry, a DAG workflow engine, a quality evaluation system, and a cognitive backend. One API call fans out to all of them.
+### Context assembly
 
-**Skills and growth.** Agents store skills with version history, execution tracking, and trust scores. Skills can be evolved, fixed, or derived by an LLM. A growth system lets agents reflect on their own patterns and materialize insights into new memories. A cloud library lets skills be shared.
+The 8-layer system that builds what the agent actually sees:
 
-**Security.** Databases are encrypted with SQLCipher. The encryption key can come from a file, an environment variable, or a hardware security key. A separate credential daemon holds secrets in an AES-256-GCM vault with a two-tier key model. A policy gate checks every agent command before it runs and routes risky operations into a human approval queue. Request signing supports PIV certificates. Every mutation is audit-logged.
+| Layer | What it retrieves |
+|-------|-------------------|
+| Permanent facts | Memories marked as static/always-include |
+| Semantic matches | 4-channel hybrid search (vector + FTS5 + graph + personality) |
+| Evolution hints | Version history and lineage of retrieved memories |
+| Graph neighbors | Memories connected via typed edges or cosine similarity |
+| User preferences | Scoped personality and preference signals |
+| Current state | Key-value pairs representing the active environment |
+| Structured facts | Subject-verb-object triples extracted from text |
+| Episode summaries | High-level summaries of past interaction sessions |
 
-**Supervision.** The Eidolon supervisor watches agent sessions in real time, detects behavioral drift against configurable rules, and alerts the server. The server can inject corrections or block the agent's next action. Shell commands pass through a validation layer that blocks destructive patterns and SSRF attempts before execution reaches the host.
+All eight layers run in parallel. Results are packed into a token budget with priority-based truncation and prompt-injection sandboxing.
+
+### Knowledge graph
+
+- Auto-linking via cosine similarity with typed, weighted edges: `similarity`, `updates`, `extends`, `contradicts`, `caused_by`, `prerequisite_for`, `generalizes`, `resolves`, and more
+- Causal edge scoring with NLP markers (strong/context/weak weighting)
+- Louvain community detection capped at 10K nodes per pass
+- Weighted PageRank with temporal decay (180-day half-life) and deduplicated multi-edges
+- 2-hop graph-augmented search -- initial hits expand into their neighborhood for hidden context
+- Structural analysis: centrality hubs, bridge nodes between isolated communities
+
+### Coordination
+
+Seven neuroscience-named services sharing a single auth, audit, and rate-limit layer:
+
+- **Axon** -- pub/sub event bus with channels, retention windows, cursor-based consumption, and webhook delivery
+- **Broca** -- structured action log with causal tracing back to Axon events
+- **Chiasm** -- task tracker with state machine lifecycle, history reconstruction, and multi-agent project scoping
+- **Soma** -- agent registry with heartbeats, capability declarations, quality scores, and drift flags
+- **Loom** -- DAG workflow engine with state persistence across server restarts
+- **Thymus** -- quality evaluation with feedback signals and reinforcement learning integration
+- **Brain** -- cognitive orchestrator that abstracts over Hopfield network and external backends
+
+One `POST /activity` call fans out to all of them.
+
+### Structured reasoning (Agent Forge)
+
+A protocol that controls how agents think, not just what they remember:
+
+- **Spec before code** -- `spec-task` requires acceptance criteria and edge cases before implementation begins
+- **Hypothesis before fix** -- `log-hypothesis` with confidence scoring, `recall-errors` to prevent repeating mistakes
+- **Verification before done** -- `verify` runs commands against spec criteria, `challenge-code` generates adversarial review
+- **AST-aware code analysis** -- Tree-sitter parsing across Rust, TypeScript, Python, Go, C, C++, JS. `repo-map` builds ranked symbol lists within token budgets.
+- **Session resilience** -- git checkpoints and rollback for recovery from destructive edits
+
+### Skills, growth, and metacognition
+
+- Skills with version history, execution tracking, trust scores, and lineage graphs
+- LLM-backed skill evolution: analyze failure history, propose fixes, derive new skills, capture from natural language
+- Cloud library for sharing skills across agents
+- Growth system: agents reflect on their own patterns and materialize insights into structured memories
+- Insights feed back into the spaced-repetition loop so useful self-knowledge stays accessible
+
+### Security and policy enforcement
+
+- **Encryption** -- SQLCipher at rest, key from file, env var, or YubiKey HMAC-SHA1 challenge-response
+- **Credential vault** -- separate daemon (`kleos-credd`) with AES-256-GCM, master/agent two-tier key model, zero-knowledge agent bootstrapping via ECDH + PIV
+- **Request signing** -- ECDSA-P256 or Ed25519 with replay-resistant nonces
+- **Pre-action gate** -- every agent command checked against allow/warn/block policy before execution, with a human approval queue for risky operations
+- **Shell command gating** (`kleos-sh`) -- static validation, SSRF guard, metacharacter blocking, Claude Code hook integration
+- **Filesystem sandboxing** (`kleos-fs`) -- AST-aware read/write/edit with configurable allowed roots and path traversal prevention
+- **Agent-marked shells** -- `cred get` blocked in agent contexts to prevent secret exfiltration; agents must use `cred exec` for subprocess injection
+- **Audit log on every mutation**
+
+### Real-time supervision
+
+- **Eidolon supervisor** watches agent session transcripts as they're written, using async file-system monitoring with LRU-cached file positions
+- **Rule-based detection** -- regex pattern matching on assistant text, tool commands, and commit messages
+- **Retry loop detection** -- catches agents stuck repeating the same failing command (3+ consecutive repeats)
+- **Scope enforcement** -- validates file modifications stay within allowed directory prefixes
+- **Three-destination alerting** -- Kleos inbox (human review), Axon event bus (automation), supervisor inject (direct agent intervention)
+- **Cooldown management** -- per-rule throttling prevents alert fatigue from runaway processes
+- **Server can inject corrections or block the agent's next action**
 
 ---
 
 <details>
 <summary><strong>Quick start</strong></summary>
+
+<br>
+
+**Build and run:**
 
 ```bash
 git clone https://github.com/Ghost-Frame/Kleos.git && cd Kleos
@@ -53,76 +136,92 @@ KLEOS_BOOTSTRAP_SECRET=pick-a-secret ./target/release/kleos-server
 
 Server starts on `127.0.0.1:4200`. In another terminal:
 
+**Bootstrap your admin key (one-time):**
+
 ```bash
-# Mint your admin key (one-time setup)
 curl -X POST http://localhost:4200/bootstrap \
   -H "Content-Type: application/json" \
   -d '{"secret": "pick-a-secret"}'
+```
 
-# Store a memory
+**Store a memory:**
+
+```bash
 curl -X POST http://localhost:4200/store \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"content": "Production DB is PostgreSQL 16 on db.example.com:5432", "category": "reference"}'
+```
 
-# Search by meaning
+**Search by meaning:**
+
+```bash
 curl -X POST http://localhost:4200/search \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"query": "database connection info"}'
 ```
 
-For Claude Code hook integration, encryption setup, the session sidecar, and client SDKs, see the [Getting Started](https://github.com/Ghost-Frame/Kleos/wiki/Getting-Started) guide.
+For Claude Code hooks, encryption setup, the session sidecar, and client SDKs, see the [Getting Started](https://github.com/Ghost-Frame/Kleos/wiki/Getting-Started) guide.
 
 </details>
 
 <details>
 <summary><strong>For developers: integration and architecture</strong></summary>
 
+<br>
+
 ### Connecting your agent
 
 Kleos speaks three protocols:
 
-1. **HTTP API.** 56 route modules covering memory, search, graph, coordination, skills, growth, ingestion, approvals, and admin. Bearer token or signed-request auth.
-2. **Model Context Protocol (MCP).** 59 tools over stdio. Drop it into Claude Code, Cursor, or any MCP-compatible client.
-3. **Client SDKs.** TypeScript, Python (Pydantic v2 + httpx), Go (stdlib only). First-party, typed, tested.
+| Protocol | Details |
+|----------|---------|
+| **HTTP API** | 56 route modules -- memory, search, graph, coordination, skills, growth, ingestion, approvals, admin. Bearer token or signed-request auth. |
+| **MCP** | 59 tools over stdio. Drop into Claude Code, Cursor, or any MCP-compatible client. |
+| **Client SDKs** | TypeScript, Python (Pydantic v2 + httpx), Go (stdlib only). First-party, typed, tested. |
 
 ### Claude Code integration
 
-Kleos ships ready-to-use hooks in `hooks/`. Two versions:
+Kleos ships ready-to-use hooks in `hooks/`:
 
-- **Simple.** Session start/end, per-turn memory recall, tool observation. Bash + curl.
-- **Full.** Adds Eidolon brain-aware context, automatic sidecar startup, Chiasm task tracking, growth materialization, Agent-Forge protocol enforcement, and session quality scoring.
+- **Simple** -- session start/end, per-turn memory recall, tool observation. Bash + curl.
+- **Full** -- adds Eidolon brain-aware context, automatic sidecar startup, Chiasm task tracking, growth materialization, Agent-Forge protocol enforcement, and session quality scoring.
 
-Copy the hooks, configure `settings.json`, and your Claude Code agent has persistent memory and coordination across sessions.
+Copy the hooks, configure `settings.json`, and your agent has persistent memory, coordination, structured reasoning, and real-time supervision across sessions.
 
 ### What runs inside
 
 16-crate Rust workspace. The server handles:
 
-- **Multi-tenancy.** Each tenant gets its own encrypted SQLite database, connection pools, and quota limits.
-- **8 middleware layers.** Auth, per-tenant rate limiting, audit log, IP extraction, JSON depth limits, Prometheus metrics, safe-mode, compression/timeouts.
-- **7 coordination services.** Event bus (Axon), action log (Broca), task tracker (Chiasm), agent registry (Soma), DAG workflow engine (Loom), quality evaluation (Thymus), cognitive backend (Brain).
-- **Skills platform.** CRUD, versioned evolution, execution tracking, trust scoring, judgments, cloud library, LLM-backed fix/derive/capture.
-- **Growth engine.** Self-reflection, pattern observation, insight materialization.
-- **Ingestion pipeline.** Markdown, JSON/JSONL, CSV, PDF, ZIP. Semantic chunking, format-aware parsing, Mem0/SuperMemory import support.
-- **Resilience.** Circuit breakers, exponential backoff with jitter, dead-letter queue for failed operations.
+- **Multi-tenancy** -- each tenant gets its own encrypted SQLite database, connection pools, and quota limits
+- **8 middleware layers** -- auth, per-tenant rate limiting, audit log, IP extraction, JSON depth limits, Prometheus metrics, safe-mode, compression/timeouts
+- **7 coordination services** -- Axon, Broca, Chiasm, Soma, Loom, Thymus, Brain
+- **Skills platform** -- CRUD, versioned evolution, execution tracking, trust scoring, judgments, cloud library, LLM-backed fix/derive/capture
+- **Growth engine** -- self-reflection, pattern observation, insight materialization
+- **Ingestion pipeline** -- Markdown, JSON/JSONL, CSV, PDF, ZIP. Semantic chunking, format-aware parsing, Mem0/SuperMemory import
+- **Resilience** -- circuit breakers, exponential backoff with jitter, dead-letter queue for failed operations
 
 ### Session sidecar
 
-`kleos-sidecar` sits between your agent and the server. Instead of blocking on every memory write, the agent emits observations to the sidecar, which buffers them in memory, optionally compresses via a local Ollama instance, and flushes in batches. File-watching and persistent session support included.
+`kleos-sidecar` sits between your agent and the server:
+
+- Buffers observations in memory instead of blocking on every write
+- Optional compression via local Ollama
+- Batched flushing to the server
+- File-watching and persistent session support
 
 ### Security model
 
-- SQLCipher encryption at rest. Key from a file, an env var, or a hardware security key (YubiKey HMAC-SHA1 challenge-response).
-- Bearer tokens hashed with SHA-256 and peppered.
-- Request signing via ECDSA-P256 or Ed25519 with replay-resistant nonces.
-- Separate credential daemon (`kleos-credd`) with AES-256-GCM vault and two-tier key model (master + agent keys).
-- Zero-knowledge agent bootstrapping via ECDH key agreement with PIV.
-- Pre-action gate system: allow, warn, or block agent commands, with a human approval queue for risky operations.
-- Shell command gating with static validation, SSRF guard, and AST-aware filesystem operations.
-- Session grants with configurable TTL for managed environments.
-- Audit log on every mutation.
+- SQLCipher encryption at rest -- key from file, env var, or YubiKey HMAC-SHA1
+- Bearer tokens hashed with SHA-256 and peppered
+- Request signing via ECDSA-P256 or Ed25519 with replay-resistant nonces
+- Credential daemon (`kleos-credd`) -- AES-256-GCM vault, master/agent two-tier key model
+- Zero-knowledge agent bootstrapping via ECDH + PIV
+- Pre-action gate: allow/warn/block with human approval queue
+- Shell command gating with static validation and SSRF guard
+- Session grants with configurable TTL
+- Audit log on every mutation
 
 ### Building from source
 
@@ -139,53 +238,86 @@ Requires Rust 1.94+, `protoc`, and `libpcsclite-dev` (Linux) for smartcard suppo
 <details>
 <summary><strong>For researchers: the cognitive science</strong></summary>
 
+<br>
+
 ### Spaced repetition (FSRS-6)
 
-All 21 trained weights from the Free Spaced Repetition Scheduler, the same algorithm behind Anki's scheduling. Each memory carries a dual-strength tuple: storage strength accumulates with use, retrieval strength decays via power-law forgetting. Live retrievability modulates search scores in real time. Memories the agent uses stay sharp. Ones it ignores drift out of the way without being deleted.
+- All 21 trained weights from the Free Spaced Repetition Scheduler (same algorithm behind Anki)
+- Dual-strength model: storage strength accumulates with use, retrieval strength decays via power-law forgetting
+- Live retrievability modulates search scores in real time
+- Memories the agent uses stay sharp; ignored ones drift out of the way without deletion
 
 ### Hybrid retrieval
 
 Four channels run per query:
 
-1. **Vector similarity.** BAAI/bge-m3 ONNX embeddings (1024-dim), LanceDB ANN index.
-2. **Full-text.** FTS5 BM25 scoring.
-3. **Graph traversal.** 2-hop expansion weighted by typed edges and PageRank.
-4. **Personality signals.** Preference, value, motivation, decision, emotion, identity.
+| Channel | Implementation |
+|---------|---------------|
+| **Vector similarity** | BAAI/bge-m3 ONNX embeddings (1024-dim), LanceDB ANN index |
+| **Full-text** | FTS5 BM25 scoring |
+| **Graph traversal** | 2-hop expansion weighted by typed edges and PageRank |
+| **Personality signals** | Preference, value, motivation, decision, emotion, identity |
 
-Results merge through Reciprocal Rank Fusion. Question-type detection classifies the query (fact recall, preference, reasoning, generalization, timeline) and reweights channels before an IBM Granite cross-encoder reranks the top-K. Contradiction damping suppresses memories containing "no longer," "switched from," and similar markers.
+- Results merge through Reciprocal Rank Fusion
+- Question-type detection classifies the query (fact recall, preference, reasoning, generalization, timeline) and reweights channels
+- IBM Granite cross-encoder reranks the top-K
+- Contradiction damping suppresses stale markers ("no longer," "switched from," etc.)
 
 ### Knowledge graph
 
-Auto-linking by cosine similarity. Six typed edges: similarity, updates, extends, contradicts, caused_by, prerequisite_for. Link-type weights so a "causes" edge outranks an "extends" edge. Louvain community detection capped at 10K nodes per pass. Weighted PageRank with deduplicated multi-edges. Sliding-window entity cooccurrence. Structural and impact analysis.
+- Auto-linking by cosine similarity with six typed edges: `similarity`, `updates`, `extends`, `contradicts`, `caused_by`, `prerequisite_for`
+- Link-type weights so a "causes" edge outranks an "extends" edge
+- Louvain community detection capped at 10K nodes per pass
+- Weighted PageRank with deduplicated multi-edges
+- Sliding-window entity cooccurrence
+- Structural and impact analysis
 
 ### Hopfield network (feature-gated)
 
-A continuous Hopfield network (Ramsauer et al. 2020) with softmax attention and capacity exponential in dimension. Embedding compression via PCA using power iteration and deflation, no LAPACK dependency. A six-stage dream cycle runs during idle: replay, merge, prune, discover, decorrelate, resolve.
+- Continuous Hopfield network (Ramsauer et al. 2020) with softmax attention and capacity exponential in dimension
+- Embedding compression via PCA using power iteration and deflation -- no LAPACK dependency
+- Six-stage dream cycle during idle: replay, merge, prune, discover, decorrelate, resolve
 
 ### Personality engine
 
-Six signal types extracted from stored text. Each carries a subject, valence (positive/negative/neutral/mixed), intensity in [0,1], and the reasoning that produced it. The agent's recall is shaped by its own personality context. Two agents querying the same memories get different results.
+- Six signal types extracted from stored text: preference, value, motivation, decision, emotion, identity
+- Each signal carries a subject, valence (positive/negative/neutral/mixed), intensity in [0,1], and the reasoning that produced it
+- Recall is shaped by personality context -- two agents querying the same memories get different results
 
 ### Growth and self-reflection
 
-Agents generate observations about their own patterns by reflecting on recent activity. A materialization step converts raw observations into structured insight memories. The growth system avoids duplicating existing observations and integrates with the spaced-repetition loop so useful insights stay accessible.
+- Agents reflect on recent activity to generate pattern observations
+- Materialization converts raw observations into structured insight memories
+- Deduplication against existing observations
+- Integration with the spaced-repetition loop so useful insights stay accessible
 
 ### On-store processing
 
-SimHash near-duplicate suppression. SVO contradiction detection against a structured-fact triple store. Atomic fact decomposition (LLM-first with rule-based fallbacks) that splits long memories into self-contained facts linked via `has_fact` edges.
+- SimHash near-duplicate suppression
+- SVO contradiction detection against a structured-fact triple store
+- Atomic fact decomposition (LLM-first with rule-based fallbacks) -- splits long memories into self-contained facts linked via `has_fact` edges
 
 ### Skill evolution
 
-Skills are versioned, tracked, and judged. When a skill fails, the LLM can analyze execution history and propose a fix. New skills can be derived from existing ones or captured from natural language descriptions. Trust scores aggregate execution success rates and human/agent judgments. A lineage graph tracks which skills evolved from which.
+- Skills are versioned, tracked, and judged
+- LLM analyzes execution history and proposes fixes for failed skills
+- New skills can be derived from existing ones or captured from natural language
+- Trust scores aggregate execution success rates and human/agent judgments
+- Lineage graph tracks which skills evolved from which
 
 </details>
 
 <details>
 <summary><strong>For those evaluating the engineering</strong></summary>
 
+<br>
+
 ### Scope
 
-16 Rust crates. ~204K lines of code. ~6,000 test declarations across 113 test files. Single statically linked binary with the mimalloc allocator. No Python runtime. No external service dependencies at rest.
+- 16 Rust crates, ~204K lines of code
+- ~6,000 test declarations across 113 test files
+- Single statically linked binary with the mimalloc allocator
+- No Python runtime. No external service dependencies at rest.
 
 ### Workspace
 
@@ -199,31 +331,33 @@ Skills are versioned, tracked, and judged. When a skill fails, the LLM can analy
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
 | `kleos-credd` | Credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
 | `kleos-ingest` | Transcript ingest daemon. PIV/software-key request signing, file watching, LLM summarization, real-time observation streaming. |
-| `agent-forge` | Structured reasoning CLI. 20+ subcommands (spec-task, log-hypothesis, verify, challenge-code, session-diff, repo-map, search-code). Tree-sitter AST parsing for 7 languages. |
-| `eidolon-supervisor` | Session drift detection daemon. Watches agent transcripts in real time, fires alerts on rule violations. |
-| `kleos-sh` | Shell command gate. Static validation, SSRF guard, Claude Code hook integration, human approval queue. |
+| `agent-forge` | Structured reasoning CLI. 20+ subcommands. Tree-sitter AST parsing for 7 languages. |
+| `eidolon-supervisor` | Session drift detection daemon. Real-time transcript watching, rule-based alerts. |
+| `kleos-sh` | Shell command gate. Static validation, SSRF guard, human approval queue. |
 | `kleos-fs` | AST-aware filesystem operations. Guarded read/write with agent-forge integration. |
 | `kleos-migrate` | One-shot ETL from encrypted monolith to per-tenant shards. |
 | `kleos-cleanup` | Deduplication and log demotion utility. |
 | `kleos-approval-tui` | Ratatui terminal UI for human-in-the-loop approval workflows. |
 | `sdk` | Client SDKs: TypeScript, Python, Go. |
 
-### Design decisions worth noting
+### Design decisions
 
-- **No external services.** Embeddings run locally via ONNX. Vector storage is embedded LanceDB. Coordination is in-process. No message broker. No Python runtime.
-- **Database-per-tenant isolation.** Not schema-per-tenant, not row-level. Each tenant gets its own SQLite file with its own encryption key and connection pool.
-- **All external calls wrapped in ServiceGuard.** Three-state circuit breaker + exponential backoff + dead-letter queue. Failed work is inspectable and replayable.
-- **Hardware-anchored trust.** The credential daemon and the server both support YubiKey-derived keys. Request signing supports PIV certificates. Agent bootstrapping uses ECDH key agreement so API keys never hit disk in plaintext.
-- **Skills as a first-class system.** Versioned, trust-scored, LLM-evolvable, with execution analytics, judgment history, and lineage tracking. Cloud library for sharing.
-- **Built-in supervision.** The Eidolon supervisor is not an afterthought. It watches agent sessions in real time and can intervene before damage is done.
+- **No external services** -- embeddings run locally via ONNX, vector storage is embedded LanceDB, coordination is in-process. No message broker. No Python runtime.
+- **Database-per-tenant isolation** -- not schema-per-tenant, not row-level. Each tenant gets its own SQLite file with its own encryption key and connection pool.
+- **ServiceGuard on all external calls** -- three-state circuit breaker + exponential backoff + dead-letter queue. Failed work is inspectable and replayable.
+- **Hardware-anchored trust** -- YubiKey-derived keys for both credential daemon and server. PIV request signing. ECDH agent bootstrapping so API keys never hit disk in plaintext.
+- **Skills as a first-class system** -- versioned, trust-scored, LLM-evolvable, with execution analytics, judgment history, and lineage tracking.
+- **Built-in supervision** -- Eidolon watches agent sessions in real time and can intervene before damage is done.
 
 ### Install profiles
 
 The `dist/install.sh` script supports three profiles:
 
-- `server` includes kleos-server, kleos-cli, kleos-mcp
-- `agent-host` includes kleos-cli, kleos-sh, kr, kw, ke, agent-forge, eidolon-supervisor, kleos-cred/credd
-- `full` includes every binary
+| Profile | Includes |
+|---------|----------|
+| `server` | kleos-server, kleos-cli, kleos-mcp |
+| `agent-host` | kleos-cli, kleos-sh, kr, kw, ke, agent-forge, eidolon-supervisor, kleos-cred/credd |
+| `full` | Every binary |
 
 </details>
 
