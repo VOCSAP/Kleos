@@ -204,8 +204,8 @@
     "hash": "a1e0a0457e0be504291d3675a590862d"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-cli\\src\\main.rs": {
-    "mtime": 1778437113.872259,
-    "hash": "712cc4388fd5853599fe2a0ca0ebd8f5"
+    "mtime": 1778531111.0795896,
+    "hash": "debd62adecd9d69247cc168a29c6b1fa"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-cred\\src\\agent_keys.rs": {
     "mtime": 1778437113.87326,
@@ -428,8 +428,8 @@
     "hash": "a2e1efd37286d80243cc85de041b503f"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-lib\\src\\auth.rs": {
-    "mtime": 1778521494.4621677,
-    "hash": "956fc0581ceefc925c54815f93c0a06c"
+    "mtime": 1778532176.3989546,
+    "hash": "20fc45af0510dfff785471f5f2814555"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-lib\\src\\auth_piv.rs": {
     "mtime": 1778437113.8911705,
@@ -1608,8 +1608,8 @@
     "hash": "3b701006de9ae4818f7fb9f9117ff871"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-server\\src\\server.rs": {
-    "mtime": 1778437113.994255,
-    "hash": "679fbdef6c109a2af66ea5e1ccbb2f8a"
+    "mtime": 1778531111.0805964,
+    "hash": "f2a00d70be483bdd85c84c5c013461b5"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-server\\src\\state.rs": {
     "mtime": 1778437113.994255,
@@ -1828,8 +1828,8 @@
     "hash": "55fedc2db6d6c1d6427de56ac327bbfd"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-server\\src\\routes\\gui\\mod.rs": {
-    "mtime": 1778437113.977747,
-    "hash": "d5ff103ad5e072020599e51b158a4d85"
+    "mtime": 1778536148.0076933,
+    "hash": "638cf84b560e7a3640b4adcf13ea16e6"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-server\\src\\routes\\gui\\types.rs": {
     "mtime": 1778437113.977747,
@@ -2016,8 +2016,8 @@
     "hash": "116b637471f62006dbd77d392ef9f734"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-server\\src\\routes\\skills\\mod.rs": {
-    "mtime": 1778437113.9902558,
-    "hash": "c0633e9f84a398198c6a676ea43ab66d"
+    "mtime": 1778531111.0800958,
+    "hash": "e4ae6f6ce036141f2f1376cbf047fee6"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-server\\src\\routes\\skills\\types.rs": {
     "mtime": 1778437113.9907577,
@@ -2116,16 +2116,16 @@
     "hash": "f93500b2759d77feb4e7a4f925705d34"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-sh\\src\\exec.rs": {
-    "mtime": 1778437113.9972584,
-    "hash": "d0bff8592e05f1b4540b7ab38b432aa8"
+    "mtime": 1778604726.4648936,
+    "hash": "55471f947f0cf8c0ad0323c2a65d106e"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-sh\\src\\gate.rs": {
-    "mtime": 1778437113.9977584,
-    "hash": "8d137e15b4ced0e681b3e85facd146c9"
+    "mtime": 1778664758.3113277,
+    "hash": "6efe9b19dad4fd5413fde8c220acc055"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-sh\\src\\main.rs": {
-    "mtime": 1778487290.528969,
-    "hash": "2a403afa0518342907af0b38df82e54d"
+    "mtime": 1778604669.4619322,
+    "hash": "ca2b243ffb98b7189aa8683200bb330c"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\kleos-sh\\src\\observe.rs": {
     "mtime": 1778437113.9977584,
@@ -2272,16 +2272,16 @@
     "hash": "84242339124f26c47e4841df9161503c"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\CLAUDE.md": {
-    "mtime": 1778521574.990247,
-    "hash": "f7407e0fd37e76c2511d5527c8b7270d"
+    "mtime": 1778669853.3699484,
+    "hash": "67459083210b0e225410463ba81255d1"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\CONTRIBUTING.md": {
     "mtime": 1778437113.836036,
     "hash": "ba2c502d160b8775ac80d889ec7119b4"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\README.md": {
-    "mtime": 1778437113.8385358,
-    "hash": "d671cf5f56121f83dc9ac38a7b2730a3"
+    "mtime": 1778531111.0780833,
+    "hash": "c9e80d1697e16626484f2cd454ef6d74"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\SECURITY.md": {
     "mtime": 1778437113.8385358,
@@ -2292,32 +2292,44 @@
     "hash": "170650ebef754c17b70286993d8ff0e8"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\KLEOS_OPERATIONS_MANUAL.md": {
-    "mtime": 1778521691.8842137,
-    "hash": "38f829cc1f31be620fa470be918fc592"
+    "mtime": 1778531111.0785854,
+    "hash": "3e546a34c49bb44dcb048fb5929ee5ac"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\query-plans.md": {
     "mtime": 1778437113.8555405,
     "hash": "17916e3ec88e18c8917b248346e37097"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\client-setup-checklist.md": {
-    "mtime": 1778524351.9423048,
-    "hash": "c22325532961e7848941a174763c71a5"
+    "mtime": 1778530872.5767558,
+    "hash": "a4cfc48fb481ce9f1eaa38aaf9ee59ed"
+  },
+  "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\credd-deploy-plan.md": {
+    "mtime": 1778678287.8517227,
+    "hash": "c5df7c6528194061d2f747f52dcb207f"
+  },
+  "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\credd-todo.md": {
+    "mtime": 1778678286.6571214,
+    "hash": "a90b3d7b0eff379370479061008ca073"
+  },
+  "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\kleos-sh-todo.md": {
+    "mtime": 1778668626.436797,
+    "hash": "667a5f4e9498541f75bd63059ab1b21d"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\kleos-sh-windows-port.md": {
-    "mtime": 1778442084.4418578,
-    "hash": "9ee8133e9b044d0cbab3c26f2a0e97ef"
+    "mtime": 1778669386.2972357,
+    "hash": "8a1ff2185fec3619479d10cc1cf08c11"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\local-patches.md": {
-    "mtime": 1778521553.1074011,
-    "hash": "dbdd6be3793bebc370e3e9f3ee56b301"
+    "mtime": 1778669848.8200214,
+    "hash": "94aef3f0f0c0921b5796a24563f3193a"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\schema-migration-analysis.md": {
-    "mtime": 1778525805.377586,
-    "hash": "e8041f9db9b66eb38258bd31d26d90b7"
+    "mtime": 1778530872.5777547,
+    "hash": "26591fddd2d17ac97ae2bd0c08906ea9"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\docs\\dev-notes\\windows-port-changes.md": {
-    "mtime": 1778445521.9245322,
-    "hash": "6ec97a6f39fbde60098b6fe54bb6b59b"
+    "mtime": 1778530872.5782523,
+    "hash": "3e0264f5281304adce35e3638279e405"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\gui\\README.md": {
     "mtime": 1778437113.860547,
@@ -2388,8 +2400,8 @@
     "hash": "39174e1d7df3f157f7cab7ee773f1626"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\wiki\\Architecture.md": {
-    "mtime": 1778437609.2598753,
-    "hash": "828bb703b3cbb194d3a2f27968478e7e"
+    "mtime": 1778669424.5313,
+    "hash": "23132f675164936133e74c1280fedc8e"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\wiki\\Axon-Events.md": {
     "mtime": 1778437609.2598753,
@@ -2440,8 +2452,8 @@
     "hash": "71af1f8a80676bce097831be9e34e8b8"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\wiki\\Gate-and-Approvals.md": {
-    "mtime": 1778437609.263495,
-    "hash": "06af2624d19f786fe715bdff57491fb3"
+    "mtime": 1778669374.1374984,
+    "hash": "87b95e298212de3d1960973efc94fc12"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\wiki\\Growth-and-Reflection.md": {
     "mtime": 1778437609.263495,
@@ -2452,8 +2464,8 @@
     "hash": "302b19de63cfcc133c12d05bef2c96cd"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\wiki\\Home.md": {
-    "mtime": 1778437609.2639992,
-    "hash": "8782a567384c2de2bbd2979efed91ee4"
+    "mtime": 1778669423.398838,
+    "hash": "2428e30955ed5bcbde189712b3c39f28"
   },
   "C:\\Users\\Olivier\\workspace\\claude-experiment\\Kleos\\wiki\\Integration-Guides.md": {
     "mtime": 1778437609.2639992,
