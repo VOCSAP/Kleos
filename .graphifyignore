@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.git/
+*.generated.*
+build/
+__pycache__/
+target/
