@@ -1,8 +1,16 @@
 # kleos-sh -- Windows Port Analysis
 
-**Date:** 2026-05-10
+**Date:** 2026-05-10 (initial)
+**Updated:** 2026-05-13 (gate.rs subprocess curl fix, see local-patches.md Patch 9A)
 **Author:** Claude (session analysis)
 **Status:** Fix implemented, awaiting upstream PR
+
+> **Scope :** This document covers only the original Unix-socket-vs-TCP split for
+> `resolve_key_via_credd()` (Patches 3/4). The later gate.rs port (Patch 9A --
+> reqwest replaced by curl subprocess, root cause traced to OPNSense + curl
+> Windows `--local-port` behavior) is documented in
+> `docs/dev-notes/local-patches.md` (Patch 9, section A). The full attempt log
+> lives in the source comment at the top of `kleos-sh/src/gate.rs`.
 
 ---
 
