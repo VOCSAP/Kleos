@@ -22,3 +22,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ratatui = "0.30"
 crossterm = "0.28"
+
+# Windows needs bundled SQLCipher since there's no system sqlite3.lib
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", version = "1.0.0", features = ["sqlcipher"] }
