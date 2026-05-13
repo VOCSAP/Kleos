@@ -6,8 +6,13 @@ pub struct ExecResult {
 }
 
 pub async fn run_command(command: &str) -> Result<ExecResult, String> {
-    let mut child = Command::new("/bin/sh")
-        .arg("-c")
+    #[cfg(unix)]
+    let (shell, flag): (&str, &str) = ("/bin/sh", "-c");
+    #[cfg(not(unix))]
+    let (shell, flag): (&str, &str) = ("cmd", "/C");
+
+    let mut child = Command::new(shell)
+        .arg(flag)
         .arg(command)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
