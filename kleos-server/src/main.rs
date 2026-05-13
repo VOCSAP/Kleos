@@ -2,6 +2,7 @@ use kleos_lib::config::{Config, EncryptionMode};
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
+use kleos_lib::embeddings::openai::OpenAiProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
@@ -81,33 +82,65 @@ async fn main() {
     let reranker: Arc<tokio::sync::RwLock<Option<Arc<dyn Reranker>>>> =
         Arc::new(tokio::sync::RwLock::new(None));
 
-    // Spawn background task to load embedding model
+    // Spawn background task to load embedding model.
+    // KLEOS_EMBEDDING_BACKEND=openai uses an OpenAI-compatible HTTP endpoint
+    // (Ollama, LiteLLM, etc.) instead of the local ONNX runtime.
     {
         let embedder = Arc::clone(&embedder);
         let config = config.clone();
+        let embedding_backend = std::env::var("KLEOS_EMBEDDING_BACKEND")
+            .unwrap_or_else(|_| std::env::var("ENGRAM_EMBEDDING_BACKEND").unwrap_or_default());
         tokio::spawn(async move {
-            tracing::info!("loading ONNX embedding model in background...");
-            match OnnxProvider::new(&config).await {
-                Ok(provider) => {
-                    // 6.11 pre-warm: one dummy embed so the first real
-                    // request avoids ONNX session + allocator cold start.
-                    let prewarm_start = std::time::Instant::now();
-                    match provider.embed("warmup").await {
-                        Ok(_) => tracing::info!(
-                            elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
-                            "embedder pre-warm complete"
-                        ),
-                        Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
-                    }
-                    let mut guard = embedder.write().await;
-                    *guard = Some(Arc::new(provider));
-                    tracing::info!("ONNX embedding provider ready");
+            if embedding_backend == "openai" {
+                let base_url = std::env::var("KLEOS_EMBEDDING_OPENAI_BASE_URL")
+                    .or_else(|_| std::env::var("ENGRAM_EMBEDDING_OPENAI_BASE_URL"))
+                    .ok();
+                let api_key = std::env::var("KLEOS_EMBEDDING_OPENAI_API_KEY")
+                    .or_else(|_| std::env::var("ENGRAM_EMBEDDING_OPENAI_API_KEY"))
+                    .unwrap_or_default();
+                let model = std::env::var("KLEOS_EMBEDDING_OPENAI_MODEL")
+                    .or_else(|_| std::env::var("ENGRAM_EMBEDDING_OPENAI_MODEL"))
+                    .ok();
+                tracing::info!(
+                    base_url = base_url.as_deref().unwrap_or("https://api.openai.com/v1"),
+                    model = model.as_deref().unwrap_or("text-embedding-3-small"),
+                    "OpenAI-compatible embedding provider starting"
+                );
+                let provider = OpenAiProvider::new(
+                    reqwest::Client::new(),
+                    base_url,
+                    api_key,
+                    model,
+                    config.embedding_dim,
+                );
+                match provider.embed("warmup").await {
+                    Ok(_) => tracing::info!("OpenAI embedding provider ready"),
+                    Err(e) => tracing::warn!("OpenAI embedding pre-warm failed: {}. Vector search may be degraded.", e),
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
-                        e
-                    );
+                let mut guard = embedder.write().await;
+                *guard = Some(Arc::new(provider));
+            } else {
+                tracing::info!("loading ONNX embedding model in background...");
+                match OnnxProvider::new(&config).await {
+                    Ok(provider) => {
+                        let prewarm_start = std::time::Instant::now();
+                        match provider.embed("warmup").await {
+                            Ok(_) => tracing::info!(
+                                elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
+                                "embedder pre-warm complete"
+                            ),
+                            Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
+                        }
+                        let mut guard = embedder.write().await;
+                        *guard = Some(Arc::new(provider));
+                        tracing::info!("ONNX embedding provider ready");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                            e
+                        );
+                    }
                 }
             }
         });

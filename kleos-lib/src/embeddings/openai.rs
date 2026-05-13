@@ -1,27 +1,39 @@
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
-/// OpenAI embeddings API provider.
+/// OpenAI-compatible embeddings API provider.
 ///
-/// Sends requests to https://api.openai.com/v1/embeddings and returns
-/// Vec<f32> embeddings. Validates that the returned dimension matches
-/// the configured `dim`.
+/// Compatible with any OpenAI-format endpoint (OpenAI, Ollama, LiteLLM, etc.).
+/// Configurable via `base_url` -- defaults to https://api.openai.com/v1.
+/// Validates that the returned dimension matches the configured `dim`.
 pub struct OpenAiProvider {
     http: reqwest::Client,
+    base_url: String,
     api_key: String,
     model: String,
     dim: usize,
 }
 
 impl OpenAiProvider {
-    /// Create a new OpenAI embedding provider.
+    /// Create a new OpenAI-compatible embedding provider.
     ///
-    /// - `api_key`: OpenAI API key (Bearer token)
+    /// - `base_url`: API base URL (e.g. "http://localhost:11434/v1" for Ollama); defaults to OpenAI
+    /// - `api_key`: Bearer token
     /// - `model`: model name; defaults to "text-embedding-3-small" if None
     /// - `dim`: expected embedding dimension for validation
-    pub fn new(http: reqwest::Client, api_key: String, model: Option<String>, dim: usize) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        base_url: Option<String>,
+        api_key: String,
+        model: Option<String>,
+        dim: usize,
+    ) -> Self {
         OpenAiProvider {
             http,
+            base_url: base_url
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string())
+                .trim_end_matches('/')
+                .to_string(),
             api_key,
             model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
             dim,
@@ -44,10 +56,10 @@ impl EmbeddingProvider for OpenAiProvider {
         );
         Box::pin(
             async move {
-                let url = "https://api.openai.com/v1/embeddings";
+                let url = format!("{}/embeddings", self.base_url);
                 let resp = self
                     .http
-                    .post(url)
+                    .post(&url)
                     .header("Authorization", format!("Bearer {}", self.api_key))
                     .json(&serde_json::json!({
                         "input": text,
@@ -109,10 +121,10 @@ impl EmbeddingProvider for OpenAiProvider {
         );
         Box::pin(
             async move {
-                let url = "https://api.openai.com/v1/embeddings";
+                let url = format!("{}/embeddings", self.base_url);
                 let resp = self
                     .http
-                    .post(url)
+                    .post(&url)
                     .header("Authorization", format!("Bearer {}", self.api_key))
                     .json(&serde_json::json!({
                         "input": texts,
