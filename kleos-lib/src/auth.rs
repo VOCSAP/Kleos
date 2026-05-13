@@ -179,18 +179,23 @@ fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
     }
 }
 
-/// Normalise a raw API key to its canonical `engram_<hex>` form.
+/// Normalise a raw API key, preserving its canonical prefix for hash lookups.
 ///
-/// SECURITY (SEC-LOW-2): the `eg_` prefix is a legacy shorthand alias kept
-/// for backwards compatibility with older clients. Both prefixes map to the
-/// same canonical form so hash lookups succeed regardless of which prefix the
-/// caller used.
+/// SECURITY (SEC-LOW-2): `eg_` is a short alias for `engram_` and maps to it.
+/// `kleos_` keys preserve their prefix because hashes were computed on that
+/// form when the PEPPER was introduced (VOCSAP deployment). Converting to
+/// `engram_` would cause a hash mismatch for all pepper-era keys.
 fn normalize_key(raw_key: &str) -> Option<String> {
-    let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
-        rest
-    } else {
-        raw_key.strip_prefix("eg_")?
-    };
+    let (canonical_prefix, hex_portion) =
+        if let Some(rest) = raw_key.strip_prefix("engram_") {
+            ("engram_", rest)
+        } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
+            ("kleos_", rest)
+        } else if let Some(rest) = raw_key.strip_prefix("eg_") {
+            ("engram_", rest)
+        } else {
+            return None;
+        };
 
     // Accept both 32-char (new format) and 64-char (legacy TS format) keys
     let valid_len = hex_portion.len() == 32 || hex_portion.len() == 64;
@@ -198,7 +203,7 @@ fn normalize_key(raw_key: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("engram_{}", hex_portion.to_ascii_lowercase()))
+    Some(format!("{}{}", canonical_prefix, hex_portion.to_ascii_lowercase()))
 }
 
 /// Generate a new random API key.
@@ -392,7 +397,11 @@ pub async fn create_key_with_expiry(
 pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     let normalized_key =
         normalize_key(raw_key).ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
-    let hex_portion = normalized_key[7..].to_string();
+    // Split on '_' to handle prefixes of different lengths (kleos_=6, engram_=7)
+    let hex_portion = normalized_key
+        .split_once('_')
+        .map(|(_, hex)| hex.to_string())
+        .ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
     let key_prefix = hex_portion[..8].to_string();
 
     // Compute hashes for both versions upfront
