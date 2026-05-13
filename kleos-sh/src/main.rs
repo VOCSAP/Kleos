@@ -323,9 +323,18 @@ fn build_client() -> reqwest::Client {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
+    // On Windows, tokio IOCP completion notifications can arrive after 2s even
+    // when the TCP handshake succeeds quickly. Default raised to 5s; override
+    // with KLEOS_SH_CONNECT_TIMEOUT_SECS if needed.
+    let connect_timeout_secs: u64 = std::env::var("KLEOS_SH_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    // Ensure overall timeout is long enough to outlive the connect phase.
+    let effective_timeout = timeout_secs.max(connect_timeout_secs + 2);
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
+        .timeout(Duration::from_secs(effective_timeout))
         .redirect(reqwest::redirect::Policy::limited(1))
         .build()
         .expect("failed to build HTTP client")
