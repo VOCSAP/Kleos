@@ -9,7 +9,6 @@
 //! (for piping into scripts). A warning is emitted to stderr in that case.
 
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 
 fn main() {
     let challenge = kleos_cred::yubikey::get_or_create_challenge().unwrap_or_else(|e| {
@@ -44,16 +43,17 @@ fn main() {
             .map(|s| s.as_str())
             .unwrap_or("db.key");
 
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .unwrap_or_else(|e| {
-                eprintln!("failed to open output file {path}: {e}");
-                std::process::exit(1);
-            });
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(path).unwrap_or_else(|e| {
+            eprintln!("failed to open output file {path}: {e}");
+            std::process::exit(1);
+        });
 
         writeln!(f, "{}", hex_key).unwrap_or_else(|e| {
             eprintln!("failed to write key to {path}: {e}");
