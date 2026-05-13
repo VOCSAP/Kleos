@@ -12,8 +12,6 @@
 
 # Agent/IDE config (private)
 CLAUDE.md
-AGENTS.md
-GEMINI.md
 .claude/
 .codex
 .worktrees/
@@ -48,3 +46,6 @@ _gen_memory.py
 __pycache__/
 .persona/
 GROWTH.md
+
+# Graphify generated output (local knowledge graph, regenerated on demand)
+graphify-out/
