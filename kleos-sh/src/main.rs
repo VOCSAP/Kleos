@@ -133,6 +133,15 @@ fn resolve_api_key() -> Option<String> {
 }
 
 fn resolve_key_via_credd() -> Option<String> {
+    #[cfg(unix)]
+    return resolve_key_via_credd_socket();
+    #[cfg(not(unix))]
+    return resolve_key_via_credd_tcp();
+}
+
+/// Unix branch: contacts kleos-credd via a Unix domain socket (CREDD_SOCKET).
+#[cfg(unix)]
+fn resolve_key_via_credd_socket() -> Option<String> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
@@ -156,6 +165,52 @@ fn resolve_key_via_credd() -> Option<String> {
     );
 
     let mut stream = UnixStream::connect(&socket_path).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+
+    let body = response.split("\r\n\r\n").nth(1)?;
+    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    let key = v.get("key")?.as_str()?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(key.to_string())
+}
+
+/// Non-Unix branch: contacts kleos-credd via TCP HTTP (CREDD_BIND).
+/// kleos-credd exposes the same HTTP API on its TCP listener (default
+/// 127.0.0.1:4400) as on its Unix socket, so the request is identical.
+#[cfg(not(unix))]
+fn resolve_key_via_credd_tcp() -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let bind_addr = std::env::var("CREDD_BIND")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "127.0.0.1:4400".to_string());
+    let agent_key = std::env::var("CREDD_AGENT_KEY").ok()?;
+    if agent_key.is_empty() {
+        return None;
+    }
+
+    let slot = std::env::var("KLEOS_AGENT_SLOT")
+        .unwrap_or_else(|_| "claude-code-wsl".into())
+        .replace(['\r', '\n'], "");
+    let agent_key = agent_key.replace(['\r', '\n'], "");
+    let request = format!(
+        "GET /bootstrap/kleos-bearer?agent={} HTTP/1.1\r\n\
+         Host: localhost\r\n\
+         Authorization: Bearer {}\r\n\
+         Connection: close\r\n\
+         \r\n",
+        slot, agent_key
+    );
+
+    let mut stream = TcpStream::connect(&bind_addr).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
     stream.write_all(request.as_bytes()).ok()?;
 
@@ -229,6 +284,7 @@ fn cred_slot() -> String {
 }
 
 fn read_hostname() -> String {
+    #[cfg(unix)]
     if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
         let trimmed = h.trim().to_string();
         if !trimmed.is_empty() {
@@ -236,6 +292,13 @@ fn read_hostname() -> String {
         }
     }
     if let Ok(h) = std::env::var("HOSTNAME") {
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    // COMPUTERNAME is the standard hostname env var on Windows
+    #[cfg(not(unix))]
+    if let Ok(h) = std::env::var("COMPUTERNAME") {
         if !h.is_empty() {
             return h;
         }
@@ -260,9 +323,18 @@ fn build_client() -> reqwest::Client {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
+    // On Windows, tokio IOCP completion notifications can arrive after 2s even
+    // when the TCP handshake succeeds quickly. Default raised to 5s; override
+    // with KLEOS_SH_CONNECT_TIMEOUT_SECS if needed.
+    let connect_timeout_secs: u64 = std::env::var("KLEOS_SH_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    // Ensure overall timeout is long enough to outlive the connect phase.
+    let effective_timeout = timeout_secs.max(connect_timeout_secs + 2);
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
+        .timeout(Duration::from_secs(effective_timeout))
         .redirect(reqwest::redirect::Policy::limited(1))
         .build()
         .expect("failed to build HTTP client")
