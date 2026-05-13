@@ -21,64 +21,57 @@
 
 ---
 
-## Règle absolue avant tout merge upstream
+## Architecture du repo (depuis rebase v1.1.0 -- 2026-05-13)
 
-**Lire `docs/dev-notes/local-patches.md` avant chaque `git merge origin/main`.**
+Fork de Ghost-Frame/Kleos (anciennement Ghost-Frame/Engram). **Modele branche
+topic** : `main` suit upstream/main exact (fast-forward only), `local/patches`
+est la branche topic VOCSAP avec ~8 commits semantiques au-dessus de `main`.
 
-Ce repo est un fork local de Ghost-Frame/Kleos avec des patches locaux (Windows port,
-embedding backend Ollama). Ces patches ne sont pas dans upstream et seront écrasés
-ou perdus à chaque merge si on ne les vérifie pas.
+Historiquement, le repo avait ete initialise avec `merge --allow-unrelated-histories`
+(2026-05-09 -> 2026-05-12) avant d'etre reconstruit en branche topic propre
+(2026-05-13). La nouvelle structure permet un `git rebase main` standard plutot
+qu'un merge-stash-pop a chaque release upstream.
 
-### Checklist merge upstream
-
-```bash
-# 1. Vérifier quels patches sont encore absents d'upstream
-git show origin/main:agent-forge/Cargo.toml | grep "cfg(windows)"
-git show origin/main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
-git show origin/main:kleos-approval-tui/Cargo.toml | grep "cfg(windows)"
-git show origin/main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
-git show origin/main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
-git show origin/main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
-git show origin/main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
-git show origin/main:kleos-server/src/routes/gui/mod.rs | grep "starts_with.*spa"
-
-# 2. Stasher les patches locaux avant merge
-git stash push -m "local-patches" -- \
-  agent-forge/Cargo.toml \
-  kleos-sidecar/Cargo.toml \
-  kleos-approval-tui/Cargo.toml \
-  kleos-sh/src/main.rs \
-  kleos-sh/src/gate.rs \
-  kleos-sh/src/exec.rs \
-  kleos-cred/src/bin/derive-db-key.rs \
-  kleos-lib/src/embeddings/openai.rs \
-  kleos-lib/src/auth.rs \
-  kleos-server/src/main.rs \
-  kleos-server/src/routes/gui/mod.rs
-
-# 3. Merger
-git merge origin/main --allow-unrelated-histories --no-commit
-# Résoudre les conflits add/add avec --theirs pour les fichiers non-patchés
-# puis git add + git commit
-
-# 4. Re-appliquer les patches
-git checkout stash@{0} -- <fichiers patchés>
-git stash drop
-
-# 5. Vérifier
-cargo check -p kleos-server -p kleos-sh -p agent-forge -p kleos-cred -p kleos-sidecar
-```
+**Patches locaux :** `docs/dev-notes/local-patches.md` (statut + commits par patch)
+**Audit rebase v1.1.0 :** `docs/dev-notes/v1.1.0-rebase-audit.md` (matrice 93 fichiers)
+**Analyse Windows port :** `docs/dev-notes/windows-port-changes.md`
+**Analyse kleos-sh :** `docs/dev-notes/kleos-sh-windows-port.md`
 
 ---
 
-## Architecture du repo
+## Regle absolue avant integration d'une release upstream
 
-Fork de Ghost-Frame/Kleos (anciennement Ghost-Frame/Engram). Pas de merge base
-commune avec upstream -- le merge initial a été fait avec `--allow-unrelated-histories`.
+**Lire `docs/dev-notes/local-patches.md` section "Procedure d'integration des
+releases upstream" avant chaque `git rebase main` de la branche `local/patches`.**
 
-**Patches locaux :** `docs/dev-notes/local-patches.md`
-**Analyse Windows port :** `docs/dev-notes/windows-port-changes.md`
-**Analyse kleos-sh :** `docs/dev-notes/kleos-sh-windows-port.md`
+### Checklist condensee
+
+```bash
+# 1. Sync upstream sur main
+git fetch upstream main
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+
+# 2. Tags de backup
+DATE=$(date +%Y-%m-%d)
+git tag "backup/local-patches-before-rebase-$DATE" local/patches
+git tag "backup/main-before-rebase-$DATE" main
+git push origin --tags
+
+# 3. Verifier quels patches sont absorbes upstream (cf. local-patches.md
+#    section "Verification rapide" pour les greps detailles)
+
+# 4. Rebase de la topic branch
+git checkout local/patches
+git rebase main
+# Drop les commits absorbes upstream, adapter les commits qui touchent une
+# API ayant change upstream (ex: refactor de struct extrait dans une crate).
+
+# 5. Validation + push
+cargo check --workspace --all-features
+git push --force-with-lease origin local/patches
+```
 
 ---
 
