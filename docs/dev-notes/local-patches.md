@@ -266,7 +266,7 @@ tombait en `next.run()` → `api_routes` → `auth_middleware` → 401.
 - Les autres entrées (`/gui`, `/search`, etc.) matchent aussi leurs sous-chemins via
   `path.starts_with(&format!("{}/", spa))`
 
-**Statut :** Fix commité. Nécessite rebuild et redéploiement de kleos-server.
+**Statut :** Fix commité et déployé. Validé le 2026-05-12.
 
 ---
 
@@ -294,7 +294,7 @@ les ajouter manuellement puis `systemctl restart kleos`.
 
 ---
 
-### B) Page blanche CSP -- éléments inline SvelteKit bloqués
+### C) Page blanche CSP -- éléments inline SvelteKit bloqués
 
 **Symptôme :** Après login réussi, la page GUI est blanche. La console du navigateur
 affiche :
@@ -346,12 +346,183 @@ son init script (non supporté nativement par `adapter-static` à ce jour).
 
 ---
 
+## Patch 9 -- Windows : gate.rs subprocess curl + exec.rs Windows shell
+
+**Fichiers :**
+- `kleos-sh/src/gate.rs` -- `send_request()` (cfg-gate Windows via curl subprocess)
+- `kleos-sh/src/main.rs` -- `build_client()` (connect_timeout configurable)
+- `kleos-sh/src/exec.rs` -- `run_command()` (shell Windows)
+
+**Statut upstream :** Absent.
+**Date initiale :** 2026-05-12
+**Date resolution :** 2026-05-13 (Attempt 7)
+
+### A) gate.rs : gate check Windows -- RESOLU (Attempt 7)
+
+**Fichier :** `kleos-sh/src/gate.rs`
+
+#### Symptome (avant fix)
+
+Sur Windows, `kleos-sh.exe --gate-only -c "echo test"` echouait avec :
+- `reqwest async` : "operation timed out" (IOCP ne recoit pas les paquets)
+- `reqwest::blocking` : meme echec (utilise tokio IOCP en interne)
+- `std::net::TcpStream` brut : connect+write OK, read bloque jusqu'au timeout
+- `curl subprocess` (sans contrainte de port) : exit 28, source port=1434 (anormal), 0 octets recus
+
+Pendant ce temps, `curl.exe` lance directement depuis PowerShell sur la meme machine
+contre le meme endpoint retournait 201 en <1s.
+
+#### Cause racine identifiee (2026-05-13)
+
+**Deux problemes superposes** :
+
+1. **OPNSense (firewall homelab Proxmox)** droppait les paquets de retour destines
+   a un source port "registered" (port 1434, plage 1024-49151). Le client TCP
+   ouvrait depuis 1434 parce que la plage dynamique Windows defaut commencait a
+   1024 (consequence d'un `netsh set dynamicport start=1024 num=64511` applique
+   precedemment pour tenter de contourner le probleme).
+
+2. **curl Windows et `--local-port range`** : curl prend uniquement le PREMIER
+   port de la plage et ne scanne PAS les ports suivants. Si ce premier port est
+   en TIME_WAIT (cas typique apres un appel precedent), curl echoue avec exit 7
+   (EADDRINUSE) au lieu de retenter avec le port suivant. Toute plage
+   `--local-port` etait donc inutilisable apres le premier appel.
+
+#### Fix applique (Attempt 7)
+
+1. **OPNSense** nettoye le 2026-05-12 : regle `subnet_admin` (seq=25, quick=1)
+   ajoutee pour autoriser les retours quels que soient les ports.
+2. **netsh dynamicport** restaure aux defauts Microsoft (start=49152, num=16384)
+   pour tcp/udp en ipv4/ipv6.
+3. **gate.rs** : retrait integral de `--local-port` du subprocess curl. L'OS
+   choisit librement un port ephemere a chaque appel, evitant la collision
+   TIME_WAIT.
+4. **Nouvelle env var `KLEOS_SH_APPROVAL_TIMEOUT_SECS`** (defaut 12s) qui
+   pilote `curl --max-time`. Override jusqu'a 121s pour permettre au mode exec
+   d'attendre une approbation humaine via `engram-approval-tui`. Le mode
+   `--claude-hook` n'a pas besoin d'override -- il fail-open silencieusement
+   sur les tools dans `TOOLS_REQUIRING_APPROVAL` au timeout court.
+
+#### Etat du code (gate.rs)
+
+`send_request` reste split en deux implementations cfg-gatees :
+- `#[cfg(unix)]` : reqwest async inchange (Linux/macOS ne souffraient pas du bug).
+- `#[cfg(not(unix))]` : `tokio::process::Command` + curl subprocess, sans
+  `--local-port`, `--max-time` pilote par `KLEOS_SH_APPROVAL_TIMEOUT_SECS`.
+
+Le commentaire dans gate.rs documente l'historique complet (Attempts 1-7) pour
+eviter de re-tenter une approche deja invalidee.
+
+#### Verification de non-regression
+
+```powershell
+# 1. Connectivite base (tool Read = pas d'approval)
+$env:KLEOS_API_KEY="kleos_..."; $env:KLEOS_URL="http://192.168.10.21:4200"
+'{}' | kleos-sh.exe --gate-only --tool-name Read -c "ls"
+# Attendu: {"hookSpecificOutput":{"permissionDecision":"allow",...}} en <1s
+
+# 2. Tool require-approval sans TUI active (timeout court attendu)
+'{}' | kleos-sh.exe --gate-only --tool-name Bash -c "echo test"
+# Attendu: deny "gate timed out..." apres ~12s (fail-closed en mode exec)
+
+# 3. Avec TUI active et approbation manuelle
+$env:KLEOS_SH_APPROVAL_TIMEOUT_SECS="121"
+# Lancer engram-approval-tui dans un autre terminal
+'{}' | kleos-sh.exe --gate-only --tool-name Bash -c "echo test"
+# Approuver dans la TUI, le check renvoie allow dans la limite des 121s
+```
+
+**main.rs `build_client()` :** connect_timeout reste configurable
+(defaut 5s, env var `KLEOS_SH_CONNECT_TIMEOUT_SECS`), conserve pour les
+chemins reqwest (Unix uniquement post-Attempt 7, mais le reglage reste valide
+si une future implementation Windows revient a reqwest).
+
+**Env vars actives :**
+- `KLEOS_SH_APPROVAL_TIMEOUT_SECS` : Windows uniquement -- curl `--max-time`
+  pour `/gate/check`. Defaut 12s. Override 121s recommande pour attendre une
+  approbation humaine en mode exec.
+- `KLEOS_SH_CONNECT_TIMEOUT_SECS` : Unix uniquement -- reqwest connect_timeout.
+  Defaut 5s.
+- `KLEOS_SH_TIMEOUT_SECS` : Unix uniquement -- reqwest timeout total.
+
+---
+
+### B) Windows shell dans exec.rs
+
+**Symptome si absent :** `exec failed: failed to spawn shell: Le chemin d'acces specifie
+est introuvable. (os error 3)` en mode non-hook sur Windows.
+
+**Avant :**
+```rust
+Command::new("/bin/sh").arg("-c").arg(command)
+```
+
+**Apres :**
+```rust
+#[cfg(unix)]
+let (shell, flag): (&str, &str) = ("/bin/sh", "-c");
+#[cfg(not(unix))]
+let (shell, flag): (&str, &str) = ("cmd", "/C");
+
+Command::new(shell).arg(flag).arg(command)
+```
+
+**Note :** Ce bug n'affecte pas le mode `--claude-hook` (qui ne passe pas par exec.rs).
+Affecte uniquement le mode exec direct (`kleos-sh.exe -c "cmd"`).
+
+---
+
+## Patch 10 -- Windows : sqlcipher feature pour kleos-approval-tui
+
+**Fichier :** `kleos-approval-tui/Cargo.toml`
+**Statut upstream :** Absent.
+**Date :** 2026-05-13
+**Symptome si absent :** `LINK : fatal error LNK1181: cannot open input file 'sqlite3.lib'`
+au linkage final de `engram-approval-tui.exe`.
+
+```toml
+# Ajouter a la fin du fichier :
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", version = "1.0.0", features = ["sqlcipher"] }
+```
+
+**Pourquoi :** Identique aux Patches 1 et 2. `kleos-approval-tui` depend de
+`kleos-lib` (alors meme qu'il pourrait s'en passer en tant que pur client HTTP --
+voir TODO de refactoring ci-dessous). `kleos-lib` tire `libsqlite3-sys` sans la
+feature `bundled` par defaut, donc le linker MSVC cherche un `sqlite3.lib`
+systeme inexistant sur Windows. La feature `sqlcipher` de `kleos-lib` active
+SQLCipher embarque qui satisfait le linker.
+
+**TODO de refactoring (non bloquant) :** `kleos-approval-tui` est conceptuellement
+un client HTTP pur (parle a `kleos-server` via reqwest pour `/approvals/pending`,
+`/approvals/{id}/decide`). Il ne devrait pas tirer toute la couche DB de
+`kleos-lib`. Une refactorisation propre consisterait a extraire les types
+partages (proto/DTO) dans un sous-crate `kleos-proto` sans deps DB. Charge
+estimee : moyenne (extraction de structs serde). Hors scope du patch local
+courant.
+
+---
+
 ## Procédure de re-application après un merge upstream
 
 1. Vérifier si upstream a intégré le patch (souvent : non) :
    ```bash
+   # Patches Windows (1-4)
    git show origin/main:agent-forge/Cargo.toml | grep "cfg(windows)"
+   git show origin/main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
+   git show origin/main:kleos-approval-tui/Cargo.toml | grep "cfg(windows)"
+   git show origin/main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
+   git show origin/main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
+   # Patch 5 -- embedding backend
    git show origin/main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
+   # Patch 7 -- auth kleos_ prefix
+   git show origin/main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
+   # Patch 8A -- SPA prefix routing
+   git show origin/main:kleos-server/src/routes/gui/mod.rs | grep "starts_with.*spa"
+   # Patch 9A -- connect_timeout configurable
+   git show origin/main:kleos-sh/src/main.rs | grep "KLEOS_SH_CONNECT_TIMEOUT_SECS"
+   # Patch 9B -- exec.rs Windows shell
+   git show origin/main:kleos-sh/src/exec.rs | grep "cfg(not(unix))"
    ```
 
 2. Si absent : le patch est à re-appliquer. Référencer ce fichier pour le contenu exact.

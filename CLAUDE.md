@@ -1,5 +1,19 @@
 # CLAUDE.md -- Kleos VOCSAP Fork
 
+## Bugs connus et corrections pendantes
+
+**`docs/dev-notes/credd-todo.md`** -- TODOs actifs sur kleos-credd :
+- TODO-1 : timeout 408 sur `POST /secret` quand pas de YubiKey (cause : `yubikey::YubiKey::open()` bloque ~30s sur LXC sans PCSC). Fix : ajouter `KLEOS_IDENTITY_KEY` dans credd.env.
+- TODO-2 : entree `[CRED:v3]` dans kleos-server a creer manuellement a chaque nouvel agent.
+- TODO-3 : `cred` CLI necessite `KLEOS_ENCRYPTION_MODE=env KLEOS_DB_KEY=...` dans l'env pour ouvrir la DB chiffree.
+
+**`docs/dev-notes/kleos-sh-todo.md`** -- TODOs actifs sur kleos-sh (client Windows) :
+- TODO-1 : reformuler le message "gate unreachable" trompeur en cas de timeout HTTP (le serveur a juste mis le gate en hold pour approval -- pas un probleme reseau).
+- TODO-2 : reduire `max_attempts` a 1 en mode exec pour les tools dans `TOOLS_REQUIRING_APPROVAL` (evite 4 entrees "DENIED/TIMEOUT" cote serveur par appel rate).
+- TODO-3 : la GUI Svelte n'expose aucune route pour approuver les gates -- l'approval passe par `engram-approval-tui` (crate `kleos-approval-tui`). Voir wiki/Gate-and-Approvals.md.
+
+---
+
 ## Règle absolue avant tout merge upstream
 
 **Lire `docs/dev-notes/local-patches.md` avant chaque `git merge origin/main`.**
@@ -14,20 +28,26 @@ ou perdus à chaque merge si on ne les vérifie pas.
 # 1. Vérifier quels patches sont encore absents d'upstream
 git show origin/main:agent-forge/Cargo.toml | grep "cfg(windows)"
 git show origin/main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
+git show origin/main:kleos-approval-tui/Cargo.toml | grep "cfg(windows)"
 git show origin/main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
 git show origin/main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
 git show origin/main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
 git show origin/main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
+git show origin/main:kleos-server/src/routes/gui/mod.rs | grep "starts_with.*spa"
 
 # 2. Stasher les patches locaux avant merge
 git stash push -m "local-patches" -- \
   agent-forge/Cargo.toml \
   kleos-sidecar/Cargo.toml \
+  kleos-approval-tui/Cargo.toml \
   kleos-sh/src/main.rs \
+  kleos-sh/src/gate.rs \
+  kleos-sh/src/exec.rs \
   kleos-cred/src/bin/derive-db-key.rs \
   kleos-lib/src/embeddings/openai.rs \
   kleos-lib/src/auth.rs \
-  kleos-server/src/main.rs
+  kleos-server/src/main.rs \
+  kleos-server/src/routes/gui/mod.rs
 
 # 3. Merger
 git merge origin/main --allow-unrelated-histories --no-commit
