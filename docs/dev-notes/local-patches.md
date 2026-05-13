@@ -1,10 +1,73 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
+**Dernière mise à jour :** 2026-05-13 (rebase v1.1.0)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
-sur la branche `main` VOCSAP. À consulter impérativement avant tout `git merge` ou
-`git pull` depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
+sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
+rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
 re-appliquer si perdus.
+
+---
+
+## Statut après rebase v1.1.0 (2026-05-13)
+
+`local/patches` a été reconstruite sur la base `upstream/main = v1.1.0 (a798947)`.
+Branche resultante : 8 commits semantiques au-dessus de v1.1.0.
+
+| Patch | Statut v1.1.0 | Commit |
+|---|---|---|
+| 1, 2, 10 -- Cargo.toml cfg(windows) (agent-forge, sidecar, approval-tui) | RE-APPLIQUE | `618bfa0` |
+| 5B -- kleos-cred derive-db-key cfg(unix) | RE-APPLIQUE | `f6fc0fb` |
+| 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `d66cd45` |
+| 8A/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `1a6a5a5` |
+| 5A, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE | `c8bb8e7` |
+| **activity (kleos-cli PIV)** | **TODO** -- non portable verbatim, voir section dediee | -- |
+| kleos-mcp refonte standalone | **ABANDONNE** | revert `67a0152` |
+
+**ABANDONNE -- kleos-mcp standalone refactor (decision audit 2026-05-13) :** la refonte
+locale ~2000 lignes (Database, LocalModelClient, modules auth/tools/transport) etait
+jamais testee en prod. Le proxy HTTP upstream simple est conserve. Si un jour
+kleos-mcp devient critique, ajouter des patches minimaux cibles, **pas une refonte
+parallele**.
+
+**TAKE_UPSTREAM (fixes automatiquement appliques par la base v1.1.0) :**
+- `kleos-lib/src/{intelligence/*,episodes,facts,pack,services/broca,graph/*}.rs` :
+  fixes SQL `user_id` drop sur tenant-sharded tables (commits upstream a0880ee +
+  a798947). **Fixe un bug latent** qui existait en prod LXC 121 v1.0.0.
+- `kleos-client/*` : nouvelle crate extraite par upstream (Client + routes registry
+  + signed HTTP). Remplace l'inline Client de v1.0.0 dans kleos-cli/main.rs.
+- `kleos-server/src/routes/{auth_keys, graph, intelligence, mcp_schema}` : fixes
+  upstream divers.
+- `kleos-lib/src/db/migrations.rs` : migration 58 `api_key_hash_version_fixup`
+  retiree, migration 19 simplifiee (idempotente directement). La prod LXC 121 a
+  deja applique migration 58 historique, retirer du source ne casse pas la DB.
+
+Reference complete : `docs/dev-notes/v1.1.0-rebase-audit.md`.
+
+---
+
+## TODO -- patch kleos-cli activity (PIV enroll) non porte
+
+Le patch `kleos-cli activity` (+325/-2 lignes) ajoute une sous-commande PIV
+`activity` pour rapporter via `/identity-keys/enroll`. Il n'est **pas portable
+verbatim** sur v1.1.0 :
+
+- En v1.0.0 (local/patches), `struct Client` etait defini inline dans
+  `kleos-cli/src/main.rs` ligne 740, avec champ `http: reqwest::Client`
+  accessible localement.
+- En v1.1.0 (upstream), `Client` a ete extrait dans la crate `kleos-client` ou
+  `http` est devenu **prive** (ligne 12). Seules `apply_auth`, `handle_response`,
+  `post/put/get/delete/patch` sont `pub`.
+- Le patch utilise `client.http.post(&url).header(...).body(...).send()` directement,
+  ce qui ne compile plus.
+
+**Adaptation requise :** reecrire les appels HTTP du patch en utilisant l'API
+publique de `kleos_client::Client` (probablement via `client.post()` qui gere
+deja `apply_auth` + `handle_response` en interne, ou en composant manuellement
+si headers custom requis).
+
+**Priorite :** non bloquante. PIV est en cours de config, pas utilise en prod
+sur LXC 121 (2026-05-13). A traiter dans une session dediee.
 
 ---
 
@@ -33,7 +96,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 ```toml
 # Ajouter à la fin du fichier :
 [target.'cfg(windows)'.dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.0.0", features = ["sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "1.1.0", features = ["sqlcipher"] }
 ```
 
 **Pourquoi :** kleos-lib nécessite SQLCipher sur Windows. Les autres crates (kleos-cli,
@@ -483,7 +546,7 @@ au linkage final de `engram-approval-tui.exe`.
 ```toml
 # Ajouter a la fin du fichier :
 [target.'cfg(windows)'.dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.0.0", features = ["sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "1.1.0", features = ["sqlcipher"] }
 ```
 
 **Pourquoi :** Identique aux Patches 1 et 2. `kleos-approval-tui` depend de
@@ -503,33 +566,68 @@ courant.
 
 ---
 
-## Procédure de re-application après un merge upstream
+## Procédure d'intégration des releases upstream (depuis v1.1.0)
 
-1. Vérifier si upstream a intégré le patch (souvent : non) :
-   ```bash
-   # Patches Windows (1-4)
-   git show origin/main:agent-forge/Cargo.toml | grep "cfg(windows)"
-   git show origin/main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
-   git show origin/main:kleos-approval-tui/Cargo.toml | grep "cfg(windows)"
-   git show origin/main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
-   git show origin/main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
-   # Patch 5 -- embedding backend
-   git show origin/main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
-   # Patch 7 -- auth kleos_ prefix
-   git show origin/main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
-   # Patch 8A -- SPA prefix routing
-   git show origin/main:kleos-server/src/routes/gui/mod.rs | grep "starts_with.*spa"
-   # Patch 9A -- connect_timeout configurable
-   git show origin/main:kleos-sh/src/main.rs | grep "KLEOS_SH_CONNECT_TIMEOUT_SECS"
-   # Patch 9B -- exec.rs Windows shell
-   git show origin/main:kleos-sh/src/exec.rs | grep "cfg(not(unix))"
-   ```
+**Architecture actuelle :** `main` = upstream/main exact (synchronise via fetch +
+fast-forward), `local/patches` = branche topic VOCSAP avec ~8 commits semantiques
+au-dessus de main. Plus de merge `--allow-unrelated-histories` historique.
 
-2. Si absent : le patch est à re-appliquer. Référencer ce fichier pour le contenu exact.
+### Procedure de rebase recommandee
 
-3. Après re-application : `cargo check -p kleos-server -p kleos-sh -p agent-forge -p kleos-cred -p kleos-sidecar`
+```bash
+# 1. Sync upstream sur main
+git fetch upstream main
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
 
-4. Mettre à jour la date et le statut de chaque patch dans ce fichier.
+# 2. Tags de backup avant rebase
+DATE=$(date +%Y-%m-%d)
+git tag "backup/local-patches-before-rebase-$DATE" local/patches
+git tag "backup/main-before-rebase-$DATE" main
+git push origin --tags
+
+# 3. Rebase de la topic branch sur le nouveau main
+git checkout local/patches
+git rebase main
+# Resoudre les conflits patch par patch -- chaque commit local doit etre
+# semantique et auto-contenu (cf. structure adoptee 2026-05-13).
+
+# 4. Validation
+cargo check --workspace --all-features
+
+# 5. Push --force-with-lease (rebase a modifie l'histoire)
+git push --force-with-lease origin local/patches
+```
+
+### Verification rapide : patches deja absorbes par upstream
+
+```bash
+# Patches Windows (1, 2, 5A, 5B, 9, 10)
+git show main:agent-forge/Cargo.toml | grep "cfg(windows)"
+git show main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
+git show main:kleos-approval-tui/Cargo.toml | grep "cfg(windows)"
+git show main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
+git show main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
+# Patch 8B -- embedding backend
+git show main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
+# Patch 7 -- auth kleos_ prefix
+git show main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
+# Patch 8C -- SPA prefix routing
+git show main:kleos-server/src/routes/gui/mod.rs | grep "starts_with.*spa"
+```
+
+Si la commande retourne du contenu : le patch est absorbe upstream, **supprimer**
+le commit local correspondant (drop pendant le rebase interactif). Sinon : le
+commit local s'applique normalement.
+
+### En cas de conflit gros patch (ex: refactor architectural upstream)
+
+Cf. exemple `kleos-cli activity` ci-dessus : si un patch fait reference a une
+API qui a change upstream (struct extrait dans une crate, champ devenu prive,
+signature modifiee), il faut **adapter** plutot que checkout brut. Inspecter
+la nouvelle API publique via `git show main:<crate>/src/<file>.rs | grep "pub "`,
+puis reecrire le commit local.
 
 ---
 
