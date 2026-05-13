@@ -31,5 +31,9 @@ tree-sitter-c = "0.23"
 tree-sitter-json = "0.23"
 reqwest = { workspace = true, features = ["blocking"] }
 
+# Windows needs bundled SQLite since there's no system sqlite3.lib
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+
 [dev-dependencies]
 tempfile = "3"
