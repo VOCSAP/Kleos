@@ -708,7 +708,19 @@ pub async fn gui_spa_middleware(
         .map(|v| v.contains("text/html"))
         .unwrap_or(false);
 
-    if !accepts_html || !SPA_ROUTES.contains(&path) {
+    // Prefix-based matching: "/" is exact-only; other SPA roots also match their
+    // sub-paths (e.g. "/gui" matches "/gui/settings", "/gui/memories/123").
+    // This ensures that a browser refresh on a SvelteKit sub-route is intercepted
+    // here instead of falling through to api_routes where auth_middleware would
+    // return 401.
+    let is_spa_path = SPA_ROUTES.iter().any(|&spa| {
+        if spa == "/" {
+            path == "/"
+        } else {
+            path == spa || path.starts_with(&format!("{}/", spa))
+        }
+    });
+    if !accepts_html || !is_spa_path {
         return next.run(request).await;
     }
 
