@@ -12,6 +12,13 @@
 - TODO-2 : reduire `max_attempts` a 1 en mode exec pour les tools dans `TOOLS_REQUIRING_APPROVAL` (evite 4 entrees "DENIED/TIMEOUT" cote serveur par appel rate).
 - TODO-3 : la GUI Svelte n'expose aucune route pour approuver les gates -- l'approval passe par `engram-approval-tui` (crate `kleos-approval-tui`). Voir wiki/Gate-and-Approvals.md.
 
+**`docs/dev-notes/dreamer-llm-contract.md`** -- contrat Ollama du dreamer / intelligence layer (consulter pour tout switch de modele LLM, ajout de tests, ou migration LiteLLM) :
+- Le code appelle `/api/generate` (Ollama native) et lit uniquement le champ JSON `response`. Il ignore `thinking` / `message.content`.
+- Modeles **reasoning / thinking** (`qwen3.5:*`, `deepseek-r1:*`, etc.) renvoient `response=""` -> `validate_observation` echoue silencieusement -> phases dream muettes. A eviter.
+- Modeles recommandes : `llama3.2:3b` (default code), `qwen2.5:7b-instruct`, `gemma2:2b`, `mistral:7b-instruct`. Non-thinking, 2-4 B params, `num_predict=300` suffit.
+- Bug 2026-05-13 : `qwen3.5:4b` configure depuis 2026-05-07 -> aucune `growth_observation` stockee depuis. Fix : switch `KLEOS_LLM_MODEL` + `OLLAMA_MODEL` vers `llama3.2:3b`.
+- TODO : ajouter smoke-test E2E (bash deploy ou `cargo test --ignored`) qui appelle Ollama avec la config en cours et valide `response` non-vide + `validate_observation`.
+
 ---
 
 ## Règle absolue avant tout merge upstream
