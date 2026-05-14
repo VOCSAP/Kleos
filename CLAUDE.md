@@ -1,5 +1,41 @@
 # CLAUDE.md -- Kleos VOCSAP Fork
 
+## Regle absolue -- documenter toute divergence avec upstream
+
+**Toute divergence de code entre l'upstream (Ghost-Frame/Kleos) et notre fork
+VOCSAP doit etre SYSTEMATIQUEMENT documentee dans `docs/dev-notes/local-patches.md`.**
+
+Cela inclut tout patch ajoute, modifie ou supprime sur la branche `local/patches`
+qui n'est pas present a l'identique dans `upstream/main`. Aucune exception, meme
+pour un one-liner.
+
+**Format minimum exige pour chaque entree** :
+
+1. **Intention** -- objectif fonctionnel et pourquoi le patch existe (quel
+   probleme il resout, quel besoin il couvre).
+2. **Pourquoi pas upstream** -- raison de la divergence (specifique a notre
+   deploiement, en attente d'une PR, refus upstream, etc.).
+3. **Comment** -- description technique : fichiers touches, structure du
+   changement, choix de design.
+4. **Ce qui a ete fait** -- diff conceptuel (avant/apres ou pseudo-code), env
+   vars introduites, comportements attendus.
+5. **Comment reproduire le fix** -- commandes ou snippet exact pour re-appliquer
+   le patch sur une base fraiche si jamais il est perdu.
+
+**Quand documenter** :
+- A chaque commit qui introduit une divergence -- pas en batch, pas a la fin de
+  session.
+- Avant le `cargo check` final, jamais apres le push.
+- Au moment de l'audit rebase (Phase A) : verifier que chaque patch encore
+  divergent a une entree a jour ; supprimer les entrees pour les patches absorbes
+  upstream.
+
+Sans cette discipline, le prochain rebase upstream perd le contexte de chaque
+patch : intention oubliee, fix re-debugge from scratch, divergence accidentelle
+ou supprimee par erreur.
+
+---
+
 ## Bugs connus et corrections pendantes
 
 **`docs/dev-notes/credd-todo.md`** -- TODOs actifs sur kleos-credd :
@@ -130,9 +166,14 @@ KLEOS_API_KEY=kleos_ca...
 KLEOS_URL=http://192.168.10.21:4200
 
 # Utilisées par kleos-sidecar (compression contexte Claude Code)
-# compress_enabled=true par défaut -- OLLAMA_URL/MODEL obligatoires si actif
-OLLAMA_URL=http://192.168.10.16:11434/v1/chat/completions  # format OpenAI-compatible
-OLLAMA_MODEL=ministral-14b-q8-tools
+# compress_enabled=true par défaut -- URL/MODEL obligatoires si actif
+# Patch local 11 : KLEOS_SIDECAR_OLLAMA_* prime sur OLLAMA_* generiques.
+# Voir docs/dev-notes/local-patches.md "Patch 11" pour le rationale.
+KLEOS_SIDECAR_OLLAMA_URL=http://192.168.10.16:11434/v1/chat/completions
+KLEOS_SIDECAR_OLLAMA_MODEL=llama3.2:3b
+# Fallback legacy (utilises si KLEOS_SIDECAR_OLLAMA_* absents) :
+# OLLAMA_URL=...
+# OLLAMA_MODEL=...
 KLEOS_SIDECAR_TOKEN=<token>
 
 # Utilisées par kleos-mcp
