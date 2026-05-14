@@ -21,7 +21,7 @@ Branche resultante : 8 commits semantiques au-dessus de v1.1.0.
 | 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `d66cd45` |
 | 8A/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `1a6a5a5` |
 | 5A, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE | `c8bb8e7` |
-| **activity (kleos-cli PIV)** | **TODO** -- non portable verbatim, voir section dediee | -- |
+| 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE | (a commit) |
 | kleos-mcp refonte standalone | **ABANDONNE** | revert `67a0152` |
 
 **ABANDONNE -- kleos-mcp standalone refactor (decision audit 2026-05-13) :** la refonte
@@ -46,28 +46,25 @@ Reference complete : `docs/dev-notes/v1.1.0-rebase-audit.md`.
 
 ---
 
-## TODO -- patch kleos-cli activity (PIV enroll) non porte
+## Patch kleos-cli activity (PIV) -- DEJA AMONT v1.1.0, rien a porter
 
-Le patch `kleos-cli activity` (+325/-2 lignes) ajoute une sous-commande PIV
-`activity` pour rapporter via `/identity-keys/enroll`. Il n'est **pas portable
-verbatim** sur v1.1.0 :
+**Verification 2026-05-14** : le diff `+325/-2` initialement etiquete "patch
+local activity" entre `c46fc94` (v1.0.0) et `main` (v1.1.0) ne correspondait
+pas a un patch local non porte mais a la **refactorisation upstream** qui a
+extrait `struct Client` (anciennement inline dans `kleos-cli/src/main.rs`)
+vers la crate `kleos-client`.
 
-- En v1.0.0 (local/patches), `struct Client` etait defini inline dans
-  `kleos-cli/src/main.rs` ligne 740, avec champ `http: reqwest::Client`
-  accessible localement.
-- En v1.1.0 (upstream), `Client` a ete extrait dans la crate `kleos-client` ou
-  `http` est devenu **prive** (ligne 12). Seules `apply_auth`, `handle_response`,
-  `post/put/get/delete/patch` sont `pub`.
-- Le patch utilise `client.http.post(&url).header(...).body(...).send()` directement,
-  ce qui ne compile plus.
+- La sous-commande `Commands::Activity` (ajoutee par upstream `725ed3e`,
+  10 mai 2026) est presente en v1.1.0 et utilise directement
+  `client.post("/activity", body).await` (API publique propre).
+- Le bloc `enroll_identity_key` qui appelait jadis `client.http.post(&url)`
+  est en v1.1.0 reecrit en `client.post("/identity-keys/enroll", body).await`
+  (kleos-cli/src/main.rs:1302).
 
-**Adaptation requise :** reecrire les appels HTTP du patch en utilisant l'API
-publique de `kleos_client::Client` (probablement via `client.post()` qui gere
-deja `apply_auth` + `handle_response` en interne, ou en composant manuellement
-si headers custom requis).
-
-**Priorite :** non bloquante. PIV est en cours de config, pas utilise en prod
-sur LXC 121 (2026-05-13). A traiter dans une session dediee.
+**Conclusion** : aucun patch a porter cote VOCSAP. Le code v1.1.0 upstream
+est deja conforme a l'usage souhaite. L'analyse du diff `c46fc94..main` doit
+toujours decouper "diff applique par upstream" vs "patch local divergent",
+sinon on poursuit des fantomes.
 
 ---
 
@@ -563,6 +560,103 @@ un client HTTP pur (parle a `kleos-server` via reqwest pour `/approvals/pending`
 partages (proto/DTO) dans un sous-crate `kleos-proto` sans deps DB. Charge
 estimee : moyenne (extraction de structs serde). Hors scope du patch local
 courant.
+
+---
+
+## Patch 11 -- kleos-sidecar : namespacer OLLAMA_URL/MODEL en KLEOS_SIDECAR_OLLAMA_*
+
+**Fichier :** `kleos-sidecar/src/main.rs`
+**Statut upstream :** Absent. Specifique au poste Windows VOCSAP.
+**Date :** 2026-05-14
+
+### Intention
+
+Permettre au binaire Windows `kleos-sidecar` (compression de contexte Claude
+Code via Ollama) de cibler un endpoint et un modele independants des variables
+generiques `OLLAMA_URL` / `OLLAMA_MODEL` utilisees par d'autres outils
+cote operateur (Claude CLI direct, scripts ponctuels, etc.).
+
+### Pourquoi pas upstream
+
+`OllamaConfig::from_env()` dans `kleos-lib` lit les variables generiques
+`OLLAMA_URL` / `OLLAMA_MODEL`. Toucher cette methode partagee impacterait
+tous les consommateurs (`kleos-server`, `kleos-ingest`, evolver skills) qui
+n'ont pas le meme besoin. Le sidecar Windows est le seul cas ou la collision
+de namespace est genante. Patch garde local.
+
+### Comment
+
+Override applique **uniquement cote sidecar**, sans modifier `kleos-lib`. Apres
+l'appel `OllamaConfig::from_env()`, on lit les variables namespacees et on
+surcharge les champs `url` et `model` si elles sont presentes. `OLLAMA_URL` /
+`OLLAMA_MODEL` restent en fallback pour migration douce (aucun breaking change).
+
+### Ce qui a ete fait
+
+`kleos-sidecar/src/main.rs:317-335` (bloc d'initialisation du LLM) :
+
+```rust
+// AVANT
+let llm_config = OllamaConfig::from_env();
+
+// APRES
+let llm_config = {
+    let mut cfg = OllamaConfig::from_env();
+    if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_URL") {
+        cfg.url = v;
+    }
+    if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_MODEL") {
+        cfg.model = v;
+    }
+    cfg
+};
+```
+
+Comportement attendu :
+
+| Env vars positionnees | URL / model effectifs |
+|---|---|
+| Aucune | defauts de `OllamaConfig::default()` (`127.0.0.1:11434`, `llama3.2:3b`) |
+| `OLLAMA_URL`/`OLLAMA_MODEL` seuls | valeurs `OLLAMA_*` (compat legacy) |
+| `KLEOS_SIDECAR_OLLAMA_URL`/`MODEL` seuls | valeurs sidecar-scoped |
+| Les deux ensembles | `KLEOS_SIDECAR_OLLAMA_*` prime sur `OLLAMA_*` |
+
+Autres parametres `OLLAMA_TIMEOUT_*`, `OLLAMA_CONCURRENCY`, `LLM_API_KEY` :
+non namespaces dans ce patch. Si un besoin sidecar-specifique apparait, etendre
+le bloc override avec la meme logique.
+
+### Comment reproduire le fix
+
+```bash
+# Sur une base fraiche (rebase sans ce patch)
+grep -n "OllamaConfig::from_env()" kleos-sidecar/src/main.rs
+# Doit retourner une seule ligne dans le bloc compress_enabled.
+
+# Remplacer cette ligne par le bloc override (voir section "Ce qui a ete fait").
+# Verifier :
+cargo check -p kleos-sidecar
+# Doit passer 0 erreur.
+```
+
+Variables a positionner cote poste Windows (operateur uniquement) :
+
+```env
+KLEOS_SIDECAR_OLLAMA_URL=http://192.168.10.16:11434/v1/chat/completions
+KLEOS_SIDECAR_OLLAMA_MODEL=llama3.2:3b
+```
+
+Une fois le binaire `kleos-sidecar.exe` recompile et redeploye, les
+`OLLAMA_URL` / `OLLAMA_MODEL` generiques peuvent etre repris pour d'autres
+outils sans impact sur le sidecar.
+
+### Note design : pourquoi pas une refacto kleos-lib ?
+
+Une refacto propre (ajouter `OllamaConfig::from_env_with_prefix(prefix)` dans
+`kleos-lib`) serait portable upstream et benefierait a tous les consommateurs.
+Charge : etendre la methode + adapter trois call sites. Si l'operateur juge
+le besoin generalisable a `kleos-ingest` ou `kleos-server`, ouvrir une PR
+upstream et supprimer ce patch local au merge suivant. En attendant, le patch
+chirurgical cote sidecar minimise la divergence.
 
 ---
 
