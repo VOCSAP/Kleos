@@ -315,7 +315,20 @@ async fn main() {
         .expect("failed to create HTTP client");
 
     let llm: Option<Arc<LocalModelClient>> = if rc.compress_enabled {
-        let llm_config = OllamaConfig::from_env();
+        // VOCSAP local patch: sidecar-scoped env vars override the shared
+        // OLLAMA_URL / OLLAMA_MODEL so the Windows host can target a different
+        // backend than other CLI tools that read the generic vars. Documented
+        // in docs/dev-notes/local-patches.md (Patch 11).
+        let llm_config = {
+            let mut cfg = OllamaConfig::from_env();
+            if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_URL") {
+                cfg.url = v;
+            }
+            if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_MODEL") {
+                cfg.model = v;
+            }
+            cfg
+        };
         let client = LocalModelClient::new(llm_config);
         if client.probe().await {
             tracing::info!(
