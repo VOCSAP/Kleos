@@ -126,6 +126,26 @@ cargo build --release \
 Les binaires Windows vont dans `target/release/`.
 Les binaires Linux vont dans `target/x86_64-unknown-linux-musl/release/`.
 
+### Binaires NON deployes (mode env-key sans YubiKey)
+
+Le crate `kleos-cred` produit 3 binaires (`cred`, `derive-db-key`, `migrate-cred`).
+Dans notre deploiement (KLEOS_ENCRYPTION_MODE=env + KLEOS_DB_KEY=...), seuls
+**`cred`** est deploye. Les deux autres sont skip :
+
+- `derive-db-key` : derive la cle DB depuis la **YubiKey slot 2 challenge-response**
+  (`kleos_cred::yubikey::challenge_response`). Sans YubiKey physique, echoue
+  immediatement. Non pertinent ici.
+- `migrate-cred` : migration **one-shot** d'un backup JSON ancien vers la DB
+  credd. Necessite egalement YubiKey touch slot 2. Inutile sauf migration
+  historique d'un cred ancien.
+
+Cote LXC 121, un binaire `derive-db-key v1.1.0` historique peut subsister
+dans `/usr/local/bin/` mais n'est jamais execute. Ne pas s'en preoccuper lors
+des deploys.
+
+Le binaire `cred-gui` (4eme bin de la crate) est gate derriere `--features gui`
+et n'est pas compile par defaut. Non utilise dans ce deploiement.
+
 ---
 
 ## Variables d'environnement -- serveur (deploy/kleos.env)
