@@ -48,6 +48,28 @@ if (-not $Version) {
     }
 }
 
+# ─── SHA-256 verification helpers ────────────────────────────────────────────
+
+function Get-ExpectedHash {
+    param([string]$Filename, [hashtable]$Manifest)
+    if ($Manifest.ContainsKey($Filename)) { return $Manifest[$Filename] }
+    if ($Manifest.ContainsKey("*$Filename")) { return $Manifest["*$Filename"] }
+    return $null
+}
+
+function Test-BinaryHash {
+    param([string]$Path, [string]$Expected)
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
+    if ($actual -ne $Expected) {
+        Remove-Item -Force $Path
+        Write-Host "FAILED (sha256 mismatch)"
+        Write-Host "    expected: $Expected" -ForegroundColor Red
+        Write-Host "    actual:   $actual" -ForegroundColor Red
+        return $false
+    }
+    return $true
+}
+
 # ─── Install ─────────────────────────────────────────────────────────────────
 
 Write-Host "Installing Kleos v$Version ($Suffix)"
@@ -60,25 +82,64 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $BaseUrl = "https://github.com/$Repo/releases/download/v$Version"
 $Failed = @()
 
+# Fetch SHASUMS256.txt once. Graceful if missing (older releases may not have it).
+$ShaManifest = @{}
+$HasManifest = $false
+try {
+    $raw = (Invoke-WebRequest -Uri "$BaseUrl/SHASUMS256.txt" -UseBasicParsing).Content
+    foreach ($line in ($raw -split "`n")) {
+        $line = $line.Trim()
+        if ($line -and $line -match '^([0-9a-f]{64})\s+(.+)$') {
+            $ShaManifest[$Matches[2]] = $Matches[1]
+        }
+    }
+    if ($ShaManifest.Count -gt 0) {
+        $HasManifest = $true
+        Write-Host "  manifest: SHASUMS256.txt fetched; integrity will be verified"
+    }
+}
+catch {
+    Write-Host "  warn: SHASUMS256.txt not found for this release; integrity NOT verified" -ForegroundColor Yellow
+}
+Write-Host ""
+
 foreach ($bin in $BinList) {
-    $url = "$BaseUrl/$bin-$Suffix.exe"
+    $fname = "$bin-$Suffix.exe"
+    $url = "$BaseUrl/$fname"
     $dest = Join-Path $InstallDir "$bin.exe"
 
     Write-Host -NoNewline ("  {0,-20}" -f $bin)
     try {
         Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-        Write-Host "OK"
     }
     catch {
-        Write-Host "FAILED"
+        Write-Host "FAILED (download)"
         $Failed += $bin
+        continue
+    }
+
+    $expected = Get-ExpectedHash -Filename $fname -Manifest $ShaManifest
+    if ($HasManifest -and -not $expected) {
+        Write-Host "FAILED (no checksum entry)"
+        Remove-Item -Force $dest
+        $Failed += $bin
+        continue
+    }
+    if ($expected) {
+        if (-not (Test-BinaryHash -Path $dest -Expected $expected)) {
+            $Failed += $bin
+            continue
+        }
+        Write-Host "OK (verified)"
+    } else {
+        Write-Host "OK (unverified)"
     }
 }
 
 Write-Host ""
 
 if ($Failed.Count -gt 0) {
-    Write-Warning "Failed to download: $($Failed -join ', ')"
+    Write-Warning "Failed to install: $($Failed -join ', ')"
     Write-Warning "Check https://github.com/$Repo/releases/tag/v$Version"
 }
 
