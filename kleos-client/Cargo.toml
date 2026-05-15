@@ -9,8 +9,12 @@ repository = "https://github.com/Ghost-Frame/Kleos"
 homepage = "https://kleos.syntheos.dev"
 readme = "../README.md"
 
+[features]
+default = ["piv"]
+piv = ["kleos-lib/piv"]
+
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["piv"] }
+kleos-lib = { path = "../kleos-lib", version = "1.1.2" }
 percent-encoding = "2.3"
 reqwest = { workspace = true }
 serde_json = { workspace = true }
