@@ -16,10 +16,14 @@ path = "src/main.rs"
 [lib]
 name = "kleos_server"
 
+[features]
+default = ["piv"]
+piv = ["kleos-mcp/piv"]
+
 [dependencies]
 kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["sqlcipher"] }
 kleos-cred = { path = "../kleos-cred", version = "1.1.2" }
-kleos-mcp = { path = "../kleos-mcp", version = "1.1.2" }
+kleos-mcp = { path = "../kleos-mcp", version = "1.1.2", default-features = false }
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }

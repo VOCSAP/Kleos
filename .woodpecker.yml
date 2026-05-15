@@ -74,14 +74,14 @@ steps:
     environment: *ci_env
     commands:
       - *install_deps
-      - cargo build --release -p kleos-server
-      - cargo build --release -p kleos-cli -p kleos-sidecar
-      - cargo build --release -p kleos-credd -p kleos-cred -p kleos-mcp
-      - cargo build --release -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      - cargo build --profile release-prod -p kleos-server
+      - cargo build --profile release-prod -p kleos-cli -p kleos-sidecar
+      - cargo build --profile release-prod -p kleos-credd -p kleos-cred -p kleos-mcp
+      - cargo build --profile release-prod -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target/release/${bin}"
+          src="target/release-prod/${bin}"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/${bin}-linux-x64"
           fi
@@ -101,14 +101,14 @@ steps:
       - export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
       - export PKG_CONFIG_ALLOW_CROSS=1
       - export CARGO_BUILD_JOBS=4
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
+      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
+      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred
+      - cargo build --profile release-prod --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target/aarch64-unknown-linux-gnu/release/${bin}"
+          src="target/aarch64-unknown-linux-gnu/release-prod/${bin}"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/${bin}-linux-arm64"
           fi
@@ -124,14 +124,14 @@ steps:
       - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add x86_64-pc-windows-gnu
       - export CARGO_BUILD_JOBS=4
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p agent-forge -p eidolon-supervisor
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target/x86_64-pc-windows-gnu/release/${bin}.exe"
+          src="target/x86_64-pc-windows-gnu/release-prod/${bin}.exe"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/${bin}-windows-x64.exe"
           fi
