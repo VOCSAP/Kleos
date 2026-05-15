@@ -87,9 +87,9 @@ steps:
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target/release-prod/${bin}"
+          src="target/release-prod/$bin"
           if [ -f "$src" ]; then
-            cp "$src" "release-artifacts/${bin}-linux-x64"
+            cp "$src" "release-artifacts/$bin-linux-x64"
           fi
         done
       - ls -lh release-artifacts/
@@ -114,9 +114,9 @@ steps:
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target-arm64/aarch64-unknown-linux-gnu/release-prod/${bin}"
+          src="target-arm64/aarch64-unknown-linux-gnu/release-prod/$bin"
           if [ -f "$src" ]; then
-            cp "$src" "release-artifacts/${bin}-linux-arm64"
+            cp "$src" "release-artifacts/$bin-linux-arm64"
           fi
         done
       - ls -lh release-artifacts/
@@ -137,9 +137,9 @@ steps:
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
-          src="target-windows/x86_64-pc-windows-gnu/release-prod/${bin}.exe"
+          src="target-windows/x86_64-pc-windows-gnu/release-prod/$bin.exe"
           if [ -f "$src" ]; then
-            cp "$src" "release-artifacts/${bin}-windows-x64.exe"
+            cp "$src" "release-artifacts/$bin-windows-x64.exe"
           fi
         done
       - ls -lh release-artifacts/
