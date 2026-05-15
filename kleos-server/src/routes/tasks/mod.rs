@@ -120,6 +120,7 @@ async fn get_task_history_handler(
     Path(id): Path<i64>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Value>, AppError> {
+    let _ = get_task(&db, id, auth.user_id).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
     let history = list_task_history(&db, id, auth.user_id, limit).await?;
     Ok(Json(json!({ "history": history, "count": history.len() })))

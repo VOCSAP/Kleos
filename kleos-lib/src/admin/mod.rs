@@ -557,8 +557,8 @@ pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport>
     .await?;
     let conversations = export_table(
         db,
-        "SELECT id, session_id, agent, model, title, message_count, created_at, updated_at \
-         FROM conversations ORDER BY created_at DESC",
+        "SELECT id, session_id, agent, title, metadata, started_at, updated_at \
+         FROM conversations ORDER BY started_at DESC",
     )
     .await?;
     let episodes = export_table(

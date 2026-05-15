@@ -805,7 +805,7 @@ async fn get_quotas(
             })
         })
         .collect();
-    Ok(Json(json!(result)))
+    Ok(Json(json!({ "items": result, "count": result.len() })))
 }
 
 /// PUT /admin/quotas -- upsert per-user storage and rate-limit quotas.
@@ -831,7 +831,9 @@ async fn admin_usage(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
     let rows = kleos_lib::admin::get_usage(&state.db).await?;
-    to_json(rows)
+    let count = rows.len();
+    let items = serde_json::to_value(rows).map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
+    Ok(Json(json!({ "items": items, "count": count })))
 }
 
 /// GET /admin/tenants -- list all tenants known to the server.
@@ -842,7 +844,9 @@ async fn admin_tenants(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
     let rows = kleos_lib::admin::get_tenants(&state.db).await?;
-    to_json(rows)
+    let count = rows.len();
+    let items = serde_json::to_value(rows).map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
+    Ok(Json(json!({ "items": items, "count": count })))
 }
 
 // ---------------------------------------------------------------------------
