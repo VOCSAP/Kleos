@@ -26,6 +26,8 @@ sqlcipher = ["rusqlite/bundled-sqlcipher"]
 # Bundle SQLite from source (needed on Windows where no system sqlite3.lib exists).
 # Mutually exclusive with libsql in the same binary (symbol collision).
 bundled-sqlite = ["rusqlite/bundled"]
+# Vendor OpenSSL from source for cross-compilation targets.
+vendored-openssl = ["openssl/vendored"]
 
 [dependencies]
 rusqlite = { workspace = true }
@@ -78,6 +80,7 @@ ed25519-dalek = { workspace = true }
 hkdf = "0.12"
 aes-gcm = "0.10"
 yubikey = { version = "0.8", optional = true }
+openssl = { version = "0.10", optional = true }
 
 # Vendored protoc binary -- only available for Linux x86_64.
 # Other platforms install protoc via system package manager.

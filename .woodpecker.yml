@@ -11,6 +11,9 @@ variables:
     apt-get install -y --no-install-recommends
     protobuf-compiler libpcsclite-dev pkg-config libssl-dev clang libprotobuf-dev
     && rm -rf /var/lib/apt/lists/*
+  - &ci_env
+    CARGO_TARGET_DIR: target
+    CARGO_BUILD_RUSTC_WRAPPER: ""
 
 steps:
   # ── CI checks (push to main + PRs) ──────────────────────────
@@ -18,6 +21,7 @@ steps:
     image: *rust_image
     when:
       - event: [push, pull_request]
+    environment: *ci_env
     commands:
       - *install_deps
       - cargo check --workspace
@@ -27,6 +31,7 @@ steps:
     when:
       - event: [push, pull_request]
     depends_on: [check]
+    environment: *ci_env
     commands:
       - *install_deps
       - rustup component add clippy
@@ -37,6 +42,7 @@ steps:
     when:
       - event: [push, pull_request]
     depends_on: [check]
+    environment: *ci_env
     commands:
       - *install_deps
       - cargo test --workspace --exclude kleos-migrate
@@ -53,15 +59,19 @@ steps:
     image: *rust_image
     when:
       - event: [push, pull_request]
+    environment: *ci_env
     commands:
       - cargo install --locked cargo-deny
       - cargo deny check
 
   # ── Release builds (tags only) ───────────────────────────────
-  build-binaries:
+  # Three parallel build steps: linux-x64 (native), linux-arm64, windows-x64
+
+  build-linux-x64:
     image: *rust_image
     when:
       - event: tag
+    environment: *ci_env
     commands:
       - *install_deps
       - cargo build --release -p kleos-server
@@ -77,13 +87,62 @@ steps:
           fi
         done
       - ls -lh release-artifacts/
-      - cd release-artifacts && sha256sum * > SHASUMS256.txt && cat SHASUMS256.txt
+
+  build-linux-arm64:
+    image: *rust_image
+    when:
+      - event: tag
+    environment: *ci_env
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-aarch64-linux-gnu libc6-dev-arm64-cross perl make && rm -rf /var/lib/apt/lists/*
+      - rustup target add aarch64-unknown-linux-gnu
+      - export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+      - export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+      - export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+      - export PKG_CONFIG_ALLOW_CROSS=1
+      - export CARGO_BUILD_JOBS=4
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-server
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-cli -p kleos-sidecar
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-cred -p kleos-mcp
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      - mkdir -p release-artifacts
+      - |
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+          src="target/aarch64-unknown-linux-gnu/release/${bin}"
+          if [ -f "$src" ]; then
+            cp "$src" "release-artifacts/${bin}-linux-arm64"
+          fi
+        done
+      - ls -lh release-artifacts/
+
+  build-windows-x64:
+    image: *rust_image
+    when:
+      - event: tag
+    environment: *ci_env
+    commands:
+      - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
+      - rustup target add x86_64-pc-windows-gnu
+      - export CARGO_BUILD_JOBS=4
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-server
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-cli -p kleos-sidecar
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-cred -p kleos-mcp
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-sh -p agent-forge -p eidolon-supervisor
+      - mkdir -p release-artifacts
+      - |
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+          src="target/x86_64-pc-windows-gnu/release/${bin}.exe"
+          if [ -f "$src" ]; then
+            cp "$src" "release-artifacts/${bin}-windows-x64.exe"
+          fi
+        done
+      - ls -lh release-artifacts/
 
   release:
     image: woodpeckerci/plugin-release
     when:
       - event: tag
-    depends_on: [build-binaries]
+    depends_on: [build-linux-x64, build-linux-arm64, build-windows-x64]
     settings:
       files:
         - "release-artifacts/*"
@@ -91,6 +150,8 @@ steps:
         from_secret: github_token
       title: "${CI_COMMIT_TAG}"
       generate_release_notes: true
+      checksum:
+        - sha256
 
   build-docker:
     image: woodpeckerci/plugin-docker-buildx
@@ -111,8 +172,9 @@ steps:
     image: *rust_image
     when:
       - event: tag
-    depends_on: [build-binaries]
+    depends_on: [build-linux-x64]
     environment:
+      <<: *ci_env
       CARGO_REGISTRY_TOKEN:
         from_secret: cargo_registry_token
     commands:
