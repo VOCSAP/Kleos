@@ -53,6 +53,11 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install protoc -y
 
+      - name: Set OpenSSL dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "OPENSSL_DIR=C:/Program Files/OpenSSL" >> "$GITHUB_ENV"
+
       - name: Cache cargo registry and target dir
         uses: Swatinem/rust-cache@v2
 
@@ -101,6 +106,7 @@ jobs:
   # ─── Collect all artifacts and create GitHub release ──────────────────────
   release:
     needs: build
+    if: always() && !cancelled() && contains(toJSON(needs.build.result), 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -115,8 +121,8 @@ jobs:
       - name: Generate checksums
         working-directory: all-artifacts
         run: |
-          sha256sum * > checksums-sha256.txt
-          cat checksums-sha256.txt
+          sha256sum * > SHASUMS256.txt
+          cat SHASUMS256.txt
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
