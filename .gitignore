@@ -49,3 +49,6 @@ GROWTH.md
 
 # Graphify generated output (local knowledge graph, regenerated on demand)
 graphify-out/
+
+# Backup snapshots of deployed binaries (kept locally for rollback)
+backup/
