@@ -832,7 +832,8 @@ async fn admin_usage(
     require_admin(&auth)?;
     let rows = kleos_lib::admin::get_usage(&state.db).await?;
     let count = rows.len();
-    let items = serde_json::to_value(rows).map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
+    let items =
+        serde_json::to_value(rows).map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
     Ok(Json(json!({ "items": items, "count": count })))
 }
 
@@ -845,7 +846,8 @@ async fn admin_tenants(
     require_admin(&auth)?;
     let rows = kleos_lib::admin::get_tenants(&state.db).await?;
     let count = rows.len();
-    let items = serde_json::to_value(rows).map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
+    let items =
+        serde_json::to_value(rows).map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))?;
     Ok(Json(json!({ "items": items, "count": count })))
 }
 

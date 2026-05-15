@@ -342,8 +342,7 @@ async fn get_state_handler(
                     .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
                 let mut result = serde_json::Map::new();
                 for row in rows {
-                    let (k, v) =
-                        row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                    let (k, v) = row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
                     let short_key = k[prefix_len..].to_string();
                     result.insert(short_key, Value::String(v));
                 }
@@ -351,9 +350,7 @@ async fn get_state_handler(
             } else {
                 let prefix_like = format!("{}%", prefix);
                 let mut stmt = conn
-                    .prepare(
-                        "SELECT key, value FROM app_state WHERE key LIKE ?1 ORDER BY key",
-                    )
+                    .prepare("SELECT key, value FROM app_state WHERE key LIKE ?1 ORDER BY key")
                     .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
                 let rows = stmt
                     .query_map(params![prefix_like], |row| {
@@ -362,8 +359,7 @@ async fn get_state_handler(
                     .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
                 let mut result = serde_json::Map::new();
                 for row in rows {
-                    let (k, v) =
-                        row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
+                    let (k, v) = row.map_err(|e| kleos_lib::EngError::Internal(e.to_string()))?;
                     let short_key = k[prefix_len..].to_string();
                     result.insert(short_key, Value::String(v));
                 }
@@ -405,9 +401,8 @@ async fn list_preferences_handler(
 ) -> Result<Json<Value>, AppError> {
     let prefs = kleos_lib::preferences::list_preferences(&db, auth.user_id).await?;
     let count = prefs.len();
-    let items = serde_json::to_value(prefs).map_err(|e| {
-        AppError(kleos_lib::EngError::Internal(e.to_string()))
-    })?;
+    let items = serde_json::to_value(prefs)
+        .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
     Ok(Json(json!({ "items": items, "count": count })))
 }
 

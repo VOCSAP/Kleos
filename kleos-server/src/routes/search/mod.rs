@@ -105,8 +105,7 @@ async fn get_decay_scores(
                     let category: Option<String> = r.get(2)?;
                     let importance: f64 = r.get::<_, Option<f64>>(3)?.unwrap_or(5.0);
                     let decay_score: Option<f64> = r.get(4)?;
-                    let created_at: String =
-                        r.get::<_, Option<String>>(5)?.unwrap_or_default();
+                    let created_at: String = r.get::<_, Option<String>>(5)?.unwrap_or_default();
                     Ok(json!({
                         "id": id, "content": content, "category": category,
                         "importance": importance, "decay_score": decay_score,
