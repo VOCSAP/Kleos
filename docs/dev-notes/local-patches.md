@@ -1,7 +1,7 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-05-13 (rebase v1.1.0)
+**Dernière mise à jour :** 2026-05-15 (rebase v1.1.2)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
@@ -9,20 +9,23 @@ re-appliquer si perdus.
 
 ---
 
-## Statut après rebase v1.1.0 (2026-05-13)
+## Statut après rebase v1.1.2 (2026-05-15)
 
-`local/patches` a été reconstruite sur la base `upstream/main = v1.1.0 (a798947)`.
-Branche resultante : 8 commits semantiques au-dessus de v1.1.0.
+`local/patches-1.1.2` a été reconstruite sur la base `upstream/main = v1.1.2 + fix CI (4669ed5)`.
+Branche resultante : 14 commits semantiques au-dessus de main (sera renommee en
+`local/patches` apres validation + deploy).
 
-| Patch | Statut v1.1.0 | Commit |
+| Patch | Statut v1.1.2 | Commit |
 |---|---|---|
-| 1, 2, 10 -- Cargo.toml cfg(windows) (agent-forge, sidecar, approval-tui) | RE-APPLIQUE | `618bfa0` |
-| 5B -- kleos-cred derive-db-key cfg(unix) | RE-APPLIQUE | `f6fc0fb` |
-| 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `d66cd45` |
-| 8A/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `1a6a5a5` |
-| 5A, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE | `c8bb8e7` |
-| 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE | (a commit) |
-| kleos-mcp refonte standalone | **ABANDONNE** | revert `67a0152` |
+| 1 -- agent-forge/Cargo.toml cfg(windows) bundled rusqlite | **ABSORBE upstream** (26e930b, syntaxe workspace=true) | drop |
+| 2, 10 -- Cargo.toml cfg(windows) sqlcipher (sidecar, approval-tui) | RE-APPLIQUE + bump 1.1.0 -> 1.1.2 | `fe53eef` |
+| 4 -- kleos-cred derive-db-key cfg(unix) | RE-APPLIQUE | `b83f495` |
+| 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `b4fef72` |
+| 5/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `53d1d72` |
+| 3, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE | `2cc1977` |
+| 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE | `fe023d4` |
+| **12 -- hooks bundle preservation** (NOUVEAU v1.1.2) | RE-APPLIQUE | `e86bb03` |
+| kleos-mcp refonte standalone | **ABANDONNE** (decision v1.1.0) | n/a |
 
 **ABANDONNE -- kleos-mcp standalone refactor (decision audit 2026-05-13) :** la refonte
 locale ~2000 lignes (Database, LocalModelClient, modules auth/tools/transport) etait
@@ -43,6 +46,24 @@ parallele**.
   deja applique migration 58 historique, retirer du source ne casse pas la DB.
 
 Reference complete : `docs/dev-notes/v1.1.0-rebase-audit.md`.
+
+**TAKE_UPSTREAM supplementaire en v1.1.2 :**
+- `agent-forge/Cargo.toml` : bloc `[target.'cfg(windows)'.dependencies]` ajoute par
+  upstream (26e930b) avec `rusqlite = { workspace = true, features = ["bundled"] }`.
+  Notre Patch 1 historique (`version = "0.31"`) est rendu redondant et plus
+  divergent que la version upstream (qui s'aligne sur la version workspace). Drop
+  pendant le rebase v1.1.2 via `git checkout --ours agent-forge/Cargo.toml`.
+- `kleos-cli` : sous-commande `Activity` (PIV) et refacto `Client` extraite en
+  crate `kleos-client` deja absorbes en v1.1.0. v1.1.2 ajoute query-string
+  forwarding + percent-encoded params + non-JSON response handling cote client,
+  rien a porter cote VOCSAP.
+- `kleos-lib/src/intelligence/temporal.rs` (+506 lignes) : nouvelle implementation
+  temporal pattern detection upstream. Aucun chevauchement avec nos patches.
+- `kleos-server/src/routes/broca/*` (+997 lignes), `soma/*` (+134), `thymus/*`
+  (+80) : nouvelles routes upstream. Aucun chevauchement avec nos patches.
+- Bump cargo workspace version 1.1.0 -> 1.1.2 sur les 17 crates. Nos patches 2
+  et 10 (Cargo.toml cfg(windows) sqlcipher) ont du etre mis a jour pour referencer
+  `kleos-lib = { ..., version = "1.1.2", ... }` au lieu de "1.1.0".
 
 ---
 
@@ -68,19 +89,20 @@ sinon on poursuit des fantomes.
 
 ---
 
-## Patch 1 -- Windows port : SQLite bundled pour agent-forge
+## Patch 1 -- Windows port : SQLite bundled pour agent-forge (ABSORBE en v1.1.2)
 
-**Fichier :** `agent-forge/Cargo.toml`
-**Statut upstream :** Absent. Jamais soumis en PR.
-**Symptôme si absent :** `LINK : fatal error LNK1181: cannot open input file 'sqlite3.lib'`
+**Statut :** ABSORBE upstream a partir de v1.1.2 (commit `26e930b
+fix(agent-forge): add bundled rusqlite for Windows`). Le bloc upstream utilise
+`rusqlite = { workspace = true, features = ["bundled"] }`, plus aligne sur le
+workspace que notre version historique `version = "0.31"`. Conserve ici pour
+historique.
 
+**Pour les rebases anterieurs a v1.1.2 uniquement** : ajouter a la fin de
+`agent-forge/Cargo.toml` :
 ```toml
-# Ajouter à la fin du fichier :
 [target.'cfg(windows)'.dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
 ```
-
-**Pourquoi :** Pas de sqlite3.lib système sur Windows. `bundled` compile SQLite depuis les sources.
 
 ---
 
@@ -657,6 +679,86 @@ Charge : etendre la methode + adapter trois call sites. Si l'operateur juge
 le besoin generalisable a `kleos-ingest` ou `kleos-server`, ouvrir une PR
 upstream et supprimer ce patch local au merge suivant. En attendant, le patch
 chirurgical cote sidecar minimise la divergence.
+
+---
+
+## Patch 12 -- hooks bundle : preserver hooks/full + hooks/simple en attendant le rewrite upstream
+
+**Fichiers :** `hooks/full/*.sh` (8 scripts) et `hooks/simple/*.sh` (4 scripts)
+**Statut upstream :** Supprime par `bebb537` (chore: repo hygiene). Le nouveau
+`hooks/README.md` upstream documente : "The Kleos hooks bundle is under maintenance
+and not currently shipped. [...] A new hooks bundle will be reintroduced once the
+surface stabilises."
+**Date :** 2026-05-15
+**Commit :** `e86bb03 patch(hooks): preserve VOCSAP bundle pending upstream rewrite`
+
+### Intention
+
+Conserver les 12 scripts hook (session-start, user-prompt, mnemonic-observe,
+session-end, enforce-agent-forge, enforce-kleos-search, lib-eidolon,
+track-agent-forge) tels qu'ils existaient avant `bebb537`, pour pouvoir
+continuer a les iterer cote VOCSAP en attendant que la nouvelle version
+upstream stabilisee soit publiee.
+
+### Pourquoi pas upstream
+
+Decision upstream explicite (cf README) : "removed pending a rewrite that
+decouples them from operator-specific tooling". Le rewrite n'est pas encore
+disponible. Plutot que d'attendre sans hooks fonctionnels, on garde la version
+v1.1.0 era localement.
+
+### Comment
+
+Le `hooks/README.md` upstream (nouveau message "under maintenance") est
+conserve tel quel -- il documente correctement la divergence cote upstream.
+Seuls les 12 scripts .sh sont restaures depuis le tag de backup pre-rebase.
+
+### Ce qui a ete fait
+
+Le commit `e86bb03` recree :
+
+```
+hooks/full/enforce-agent-forge.sh        (3.8K)
+hooks/full/enforce-kleos-search.sh       (3.8K)
+hooks/full/lib-eidolon.sh                (1.6K)
+hooks/full/mnemonic-observe.sh           (1.8K)
+hooks/full/session-end.sh                (7.6K)
+hooks/full/session-start-kleos.sh        (9.2K)
+hooks/full/track-agent-forge.sh          (4.0K)
+hooks/full/user-prompt-lean.sh           (5.4K)
+hooks/simple/mnemonic-observe.sh         (1.6K)
+hooks/simple/session-end.sh              (697B)
+hooks/simple/session-start.sh            (~)
+hooks/simple/user-prompt.sh              (~)
+```
+
+Les blobs sont identiques byte-a-byte a ceux de v1.1.0 era (verifies via
+`git ls-tree` croise avec `backup/local-patches-before-rebase-v1.1.2-2026-05-15`).
+
+### Comment reproduire le fix
+
+Sur une base fraiche apres rebase qui aurait absorbe `bebb537` :
+
+```bash
+# Le tag de backup doit exister pour cette commande -- voir procedure
+# de rebase ci-dessous (etape 2 cree le tag).
+git checkout backup/local-patches-before-rebase-vX.Y.Z-YYYY-MM-DD -- \
+  hooks/full hooks/simple
+git add hooks/full hooks/simple
+git commit -m "patch(hooks): preserve VOCSAP bundle pending upstream rewrite"
+```
+
+### Cycle de vie attendu
+
+Ce patch est **temporaire**. Lorsque upstream publiera le nouveau hook bundle
+(annonce dans hooks/README.md upstream), il faudra :
+
+1. Comparer la nouvelle API hook upstream avec nos scripts actuels.
+2. Migrer nos personnalisations vers le nouveau format.
+3. Dropper ce Patch 12 lors du rebase qui integre le nouveau bundle.
+
+D'ici la, ne pas modifier `hooks/README.md` (qui reste la version upstream
+"under maintenance") pour eviter un conflit inutile au prochain rebase.
 
 ---
 
