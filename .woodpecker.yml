@@ -100,7 +100,7 @@ steps:
       - event: tag
     environment: *ci_env_arm64
     commands:
-      - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross perl make && rm -rf /var/lib/apt/lists/*
+      - dpkg --add-architecture arm64 && apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross liblzma-dev:arm64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add aarch64-unknown-linux-gnu
       - export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
       - export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
