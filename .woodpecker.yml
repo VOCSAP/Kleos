@@ -101,10 +101,10 @@ steps:
       - export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
       - export PKG_CONFIG_ALLOW_CROSS=1
       - export CARGO_BUILD_JOBS=4
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-server
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-cli -p kleos-sidecar
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-cred -p kleos-mcp
-      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred -p kleos-mcp
+      - cargo build --release --target aarch64-unknown-linux-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
@@ -124,10 +124,10 @@ steps:
       - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add x86_64-pc-windows-gnu
       - export CARGO_BUILD_JOBS=4
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-server
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-cli -p kleos-sidecar
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-cred -p kleos-mcp
-      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/bundled-sqlite -p kleos-sh -p agent-forge -p eidolon-supervisor
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cli -p kleos-sidecar
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-cred -p kleos-mcp
+      - cargo build --release --target x86_64-pc-windows-gnu --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-sh -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
         for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
