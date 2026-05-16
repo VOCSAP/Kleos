@@ -23,10 +23,10 @@ if [ -n "${KLEOS_BINARIES:-}" ]; then
 else
     case "$PROFILE" in
         agent-host|agent)
-            BINARIES="kleos-cli kleos-sh kr kw ke agent-forge eidolon-supervisor kleos-cred kleos-credd"
+            BINARIES="kleos-cli kleos-sh kr kw ke agent-forge eidolon-supervisor cred kleos-credd"
             ;;
         full)
-            BINARIES="kleos-server kleos-cli kleos-sidecar kleos-credd kleos-cred kleos-mcp kleos-sh kr kw ke agent-forge eidolon-supervisor"
+            BINARIES="kleos-server kleos-cli kleos-sidecar kleos-credd cred kleos-mcp kleos-sh kr kw ke agent-forge eidolon-supervisor"
             ;;
         *)
             BINARIES="kleos-server kleos-cli kleos-mcp"
