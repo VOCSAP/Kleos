@@ -5092,6 +5092,7 @@ dependencies = [
 name = "kleos-server"
 version = "1.1.2"
 dependencies = [
+ "async-stream",
  "axum 0.8.9",
  "base64 0.22.1",
  "chrono",
