@@ -115,6 +115,7 @@ steps:
     image: woodpeckerci/plugin-release
     when:
       - event: tag
+        status: [success, failure]
     depends_on: [build-linux-x64, build-windows-x64]
     settings:
       files:
@@ -130,6 +131,7 @@ steps:
     image: woodpeckerci/plugin-docker-buildx
     when:
       - event: tag
+    failure: ignore
     settings:
       repo: ghostframe/kleos
       tags:
