@@ -100,10 +100,10 @@ steps:
       - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add x86_64-pc-windows-gnu
       - export CARGO_BUILD_JOBS=4
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-sh -p agent-forge -p eidolon-supervisor
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-cred kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
           src="target-windows/x86_64-pc-windows-gnu/release-prod/$bin.exe"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-windows-x64.exe"
