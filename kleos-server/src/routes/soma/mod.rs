@@ -15,16 +15,16 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::services::soma::{
-    add_agent_to_group, create_group, delete_agent, find_by_capability, get_agent,
-    get_stale_agents, get_stats as get_soma_stats, heartbeat, list_agent_logs, list_agents,
-    list_groups, log_event, register_agent, remove_agent_from_group, set_status,
-    RegisterAgentRequest,
+    add_agent_to_group, create_group, delete_agent, delete_group, find_by_capability, get_agent,
+    get_group, get_group_members, get_stale_agents, get_stats as get_soma_stats, heartbeat,
+    list_agent_logs, list_agents, list_groups, log_event, register_agent, remove_agent_from_group,
+    set_status, update_agent_quality, RegisterAgentRequest,
 };
 
 mod types;
 use types::{
-    AddMemberBody, CreateAgentBody, CreateGroupBody, ListAgentsParams, ListLogsParams,
-    LogEventBody, StaleAgentsParams, UpdateAgentBody,
+    AddMemberBody, CreateAgentBody, CreateGroupBody, HeartbeatBody, ListAgentsParams,
+    ListLogsParams, LogEventBody, StaleAgentsParams, UpdateAgentBody, UpdateQualityBody,
 };
 
 /// Build and return the soma sub-router. Mount this under the server's root
@@ -51,15 +51,29 @@ pub fn router() -> Router<AppState> {
         )
         .route("/soma/agents/{id}/heartbeat", post(heartbeat_handler))
         .route(
+            "/soma/agents/{id}/quality",
+            axum::routing::patch(update_quality_handler),
+        )
+        .route(
             "/soma/agents/{id}/log",
             post(log_event_handler).get(list_logs_handler),
         )
-        .route("/soma/agents/{id}/logs", get(list_logs_handler))
+        .route(
+            "/soma/agents/{id}/logs",
+            post(log_event_handler).get(list_logs_handler),
+        )
         .route(
             "/soma/groups",
             post(create_group_handler).get(list_groups_handler),
         )
-        .route("/soma/groups/{id}/members", post(add_member_handler))
+        .route(
+            "/soma/groups/{id}",
+            get(get_group_handler).delete(delete_group_handler),
+        )
+        .route(
+            "/soma/groups/{id}/members",
+            get(list_group_members_handler).post(add_member_handler),
+        )
         .route(
             "/soma/groups/{id}/members/{agent_id}",
             axum::routing::delete(remove_member_handler),
@@ -111,6 +125,20 @@ async fn list_agents_handler(
         limit,
     )
     .await?;
+
+    let agents = if let Some(ref cap) = params.capability {
+        agents
+            .into_iter()
+            .filter(|a| {
+                a.capabilities
+                    .as_array()
+                    .map(|arr| arr.iter().any(|v| v.as_str() == Some(cap)))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        agents
+    };
 
     Ok(Json(json!({ "agents": agents, "count": agents.len() })))
 }
@@ -188,15 +216,77 @@ async fn delete_agent_handler(
 
 /// Handler for `POST /soma/agents/{id}/heartbeat`.
 ///
-/// Records a heartbeat for the agent and transitions it from `offline` to
-/// `online` if applicable. Returns `{ "ok": true }`.
+/// Records a heartbeat for the agent. When the body carries an optional
+/// `status` field, that value overrides the default `offline -> online`
+/// transition (validated against the allowed status set in the service layer).
+/// An absent body or missing `status` keeps the legacy behavior. Returns
+/// `{ "ok": true }`.
 async fn heartbeat_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(_auth): Auth,
     Path(id): Path<i64>,
+    body: Option<Json<HeartbeatBody>>,
 ) -> Result<Json<Value>, AppError> {
-    heartbeat(&db, id).await?;
-    Ok(Json(json!({ "ok": true })))
+    let status = body.and_then(|Json(b)| b.status);
+    heartbeat(&db, id, status.as_deref()).await?;
+    let agent = get_agent(&db, id, 0).await?;
+    Ok(Json(json!(agent)))
+}
+
+/// Handler for `PATCH /soma/agents/{id}/quality`.
+///
+/// Updates the `quality_score` and/or `drift_flags` columns on an agent.
+/// At least one field must be supplied; `drift_flags` must be a JSON array.
+/// Returns the updated agent row.
+async fn update_quality_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(id): Path<i64>,
+    Json(body): Json<UpdateQualityBody>,
+) -> Result<Json<Value>, AppError> {
+    let agent = update_agent_quality(&db, id, body.quality_score, body.drift_flags).await?;
+    Ok(Json(json!(agent)))
+}
+
+/// Handler for `DELETE /soma/groups/{id}`.
+///
+/// Removes a group and cascades its membership rows. Returns
+/// `{ "removed": bool }`; `removed` is `false` when no such group existed
+/// for the caller's tenant.
+async fn delete_group_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let removed = delete_group(&db, id, auth.user_id).await?;
+    Ok(Json(json!({ "removed": removed })))
+}
+
+/// Handler for `GET /soma/groups/{id}`.
+///
+/// Returns the group row for the given numeric `id` scoped to the authenticated
+/// tenant. Returns 404 when no group with that id exists for the tenant.
+async fn get_group_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(auth): Auth,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let group = get_group(&db, id, auth.user_id).await?;
+    Ok(Json(json!(group)))
+}
+
+/// Handler for `GET /soma/groups/{id}/members`.
+///
+/// Lists all agents that are members of the given group. Returns
+/// `{ members: [...], count: N }`.
+async fn list_group_members_handler(
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
+    Path(group_id): Path<i64>,
+) -> Result<Json<Value>, AppError> {
+    let members = get_group_members(&db, group_id).await?;
+    let count = members.len();
+    Ok(Json(json!({ "members": members, "count": count })))
 }
 
 /// Handler for `GET /soma/stats`.
@@ -293,7 +383,7 @@ async fn list_logs_handler(
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let logs = list_agent_logs(&db, agent_id, limit).await?;
+    let logs = list_agent_logs(&db, agent_id, limit, params.level.as_deref()).await?;
     Ok(Json(json!({ "logs": logs, "count": logs.len() })))
 }
 

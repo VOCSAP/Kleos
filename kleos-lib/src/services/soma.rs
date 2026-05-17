@@ -6,6 +6,7 @@
 //! callers never touch raw SQL.
 
 use crate::db::Database;
+use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
@@ -49,12 +50,23 @@ pub struct RegisterAgentRequest {
     pub user_id: Option<i64>,
 }
 
+/// Per-category count breakdown used inside stats responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatBreakdown {
+    pub name: String,
+    pub count: i64,
+}
+
 /// Aggregate statistics returned by [`get_stats`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SomaStats {
     pub total_agents: i64,
     pub online_agents: i64,
     pub types: i64,
+    #[serde(default)]
+    pub by_type: Vec<StatBreakdown>,
+    #[serde(default)]
+    pub by_status: Vec<StatBreakdown>,
 }
 
 /// Ordered column list shared by every SELECT on `soma_agents`. Positional
@@ -146,24 +158,69 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
         Ok(())
     })
     .await?;
-    get_agent_by_name(db, user_id, &req.name).await
+    let agent = get_agent_by_name(db, user_id, &req.name).await?;
+
+    let _ = publish_internal(
+        db,
+        "system",
+        "soma",
+        "agent.registered",
+        serde_json::json!({
+            "agent_id": agent.id,
+            "name": &agent.name,
+            "type": &agent.type_,
+        }),
+    )
+    .await;
+
+    Ok(agent)
 }
 
 /// Record a heartbeat for the agent identified by `agent_id`. Updates
-/// `heartbeat_at` and `updated_at` to the current time. If the agent's
-/// current status is `offline`, transitions it back to `online`.
-#[tracing::instrument(skip(db), fields(agent_id))]
-pub async fn heartbeat(db: &Database, agent_id: i64) -> Result<()> {
+/// `heartbeat_at` and `updated_at` to the current time.
+///
+/// When `status_override` is `Some`, the agent's status is set to that value
+/// (validated against [`VALID_STATUSES`]). When `None`, the agent transitions
+/// from `offline` back to `online` if applicable and keeps its current status
+/// otherwise. This mirrors the legacy engram-ts/standalone behavior where the
+/// heartbeat body may carry a fresh status (e.g. `"error"`, `"online"`).
+#[tracing::instrument(skip(db), fields(agent_id, status = ?status_override))]
+pub async fn heartbeat(db: &Database, agent_id: i64, status_override: Option<&str>) -> Result<()> {
+    if let Some(s) = status_override {
+        if !VALID_STATUSES.contains(&s) {
+            return Err(EngError::InvalidInput(format!(
+                "invalid soma status '{}', must be one of pending, online, offline, error",
+                s
+            )));
+        }
+    }
+
+    let status_owned = status_override.map(|s| s.to_string());
     db.write(move |conn| {
-        conn.execute(
-            "UPDATE soma_agents
-             SET heartbeat_at = datetime('now'),
-                 status = CASE WHEN status = 'offline' THEN 'online' ELSE status END,
-                 updated_at = datetime('now')
-             WHERE id = ?1",
-            rusqlite::params![agent_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        match status_owned {
+            Some(status) => {
+                conn.execute(
+                    "UPDATE soma_agents
+                     SET heartbeat_at = datetime('now'),
+                         status = ?1,
+                         updated_at = datetime('now')
+                     WHERE id = ?2",
+                    rusqlite::params![status, agent_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            }
+            None => {
+                conn.execute(
+                    "UPDATE soma_agents
+                     SET heartbeat_at = datetime('now'),
+                         status = CASE WHEN status = 'offline' THEN 'online' ELSE status END,
+                         updated_at = datetime('now')
+                     WHERE id = ?1",
+                    rusqlite::params![agent_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            }
+        }
         Ok(())
     })
     .await
@@ -296,7 +353,20 @@ pub async fn delete_agent(db: &Database, id: i64) -> Result<()> {
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
-    .await
+    .await?;
+
+    let _ = publish_internal(
+        db,
+        "system",
+        "soma",
+        "agent.deregistered",
+        serde_json::json!({
+            "agent_id": id,
+        }),
+    )
+    .await;
+
+    Ok(())
 }
 
 // --- Group types and functions (P0-0 Phase 27c) ---
@@ -402,6 +472,56 @@ pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
     .await
 }
 
+/// Fetch the group row for the given numeric `id` owned by `user_id`. Returns
+/// [`EngError::NotFound`] when no such group exists for that tenant.
+#[tracing::instrument(skip(db), fields(group_id = id, user_id))]
+pub async fn get_group(db: &Database, id: i64, user_id: i64) -> Result<Group> {
+    let sql = "SELECT id, name, description, user_id, created_at
+               FROM soma_groups WHERE id = ?1 AND user_id = ?2";
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![id, user_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let row = rows
+            .next()
+            .map_err(rusqlite_to_eng_error)?
+            .ok_or_else(|| EngError::NotFound(format!("group {}", id)))?;
+        Ok(Group {
+            id: row.get(0).map_err(rusqlite_to_eng_error)?,
+            name: row.get(1).map_err(rusqlite_to_eng_error)?,
+            description: row.get(2).map_err(rusqlite_to_eng_error)?,
+            user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
+            created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+        })
+    })
+    .await
+}
+
+/// Return all agents that are members of `group_id`, ordered alphabetically
+/// by agent name.
+#[tracing::instrument(skip(db), fields(group_id))]
+pub async fn get_group_members(db: &Database, group_id: i64) -> Result<Vec<Agent>> {
+    let sql = format!(
+        "SELECT a.{AGENT_COLUMNS} FROM soma_agents a
+         INNER JOIN soma_agent_groups g ON g.agent_id = a.id
+         WHERE g.group_id = ?1
+         ORDER BY a.name ASC"
+    );
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt
+            .query(rusqlite::params![group_id])
+            .map_err(rusqlite_to_eng_error)?;
+        let mut agents = Vec::new();
+        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            agents.push(row_to_agent(row)?);
+        }
+        Ok(agents)
+    })
+    .await
+}
+
 /// Add `agent_id` to `group_id` for the given `user_id`. The operation is
 /// idempotent via `INSERT OR IGNORE`.
 #[tracing::instrument(skip(db), fields(agent_id, group_id, user_id))]
@@ -472,30 +592,60 @@ pub async fn log_event(
 }
 
 /// Return the most recent `limit` log entries for `agent_id`, ordered newest
-/// first. Callers should clamp `limit` to a reasonable maximum before calling.
+/// first. When `level` is `Some`, only entries with that exact level are
+/// returned. Callers should clamp `limit` to a reasonable maximum before
+/// calling.
 #[tracing::instrument(skip(db), fields(agent_id, limit))]
-pub async fn list_agent_logs(db: &Database, agent_id: i64, limit: i64) -> Result<Vec<AgentLog>> {
-    let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
-               FROM soma_agent_logs l
-               WHERE l.agent_id = ?1
-               ORDER BY l.created_at DESC LIMIT ?2";
+pub async fn list_agent_logs(
+    db: &Database,
+    agent_id: i64,
+    limit: i64,
+    level: Option<&str>,
+) -> Result<Vec<AgentLog>> {
+    let level_owned = level.map(|s| s.to_string());
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![agent_id, limit])
-            .map_err(rusqlite_to_eng_error)?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let data_str: Option<String> = row.get(4).map_err(rusqlite_to_eng_error)?;
-            out.push(AgentLog {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                agent_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                level: row.get(2).map_err(rusqlite_to_eng_error)?,
-                message: row.get(3).map_err(rusqlite_to_eng_error)?,
-                data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
-                created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
-            });
+        if let Some(ref lvl) = level_owned {
+            let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
+                       FROM soma_agent_logs l
+                       WHERE l.agent_id = ?1 AND l.level = ?2
+                       ORDER BY l.created_at DESC LIMIT ?3";
+            let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![agent_id, lvl, limit])
+                .map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                let data_str: Option<String> = row.get(4).map_err(rusqlite_to_eng_error)?;
+                out.push(AgentLog {
+                    id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                    agent_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+                    level: row.get(2).map_err(rusqlite_to_eng_error)?,
+                    message: row.get(3).map_err(rusqlite_to_eng_error)?,
+                    data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
+                    created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                });
+            }
+        } else {
+            let sql = "SELECT l.id, l.agent_id, l.level, l.message, l.data, l.created_at
+                       FROM soma_agent_logs l
+                       WHERE l.agent_id = ?1
+                       ORDER BY l.created_at DESC LIMIT ?2";
+            let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt
+                .query(rusqlite::params![agent_id, limit])
+                .map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                let data_str: Option<String> = row.get(4).map_err(rusqlite_to_eng_error)?;
+                out.push(AgentLog {
+                    id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                    agent_id: row.get(1).map_err(rusqlite_to_eng_error)?,
+                    level: row.get(2).map_err(rusqlite_to_eng_error)?,
+                    message: row.get(3).map_err(rusqlite_to_eng_error)?,
+                    data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
+                    created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                });
+            }
         }
         Ok(out)
     })
@@ -585,13 +735,151 @@ pub async fn get_stats(db: &Database) -> Result<SomaStats> {
                 },
             )
             .map_err(rusqlite_to_eng_error)?;
+
+        // by_type
+        let mut by_type = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT type, COUNT(*) as cnt FROM soma_agents \
+                 GROUP BY type ORDER BY cnt DESC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_type.push(StatBreakdown {
+                name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                count: r.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
+        // by_status
+        let mut by_status = Vec::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT status, COUNT(*) as cnt FROM soma_agents \
+                 GROUP BY status ORDER BY cnt DESC",
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            by_status.push(StatBreakdown {
+                name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                count: r.get(1).map_err(rusqlite_to_eng_error)?,
+            });
+        }
+
         Ok(SomaStats {
             total_agents: row.0,
             online_agents: row.1,
             types: row.2,
+            by_type,
+            by_status,
         })
     })
     .await
+}
+
+/// Update the `quality_score` and/or `drift_flags` columns on an agent. Either
+/// argument may be `None` to leave that column unchanged. `drift_flags` must be
+/// a JSON array of strings; the service serializes it to text for storage.
+///
+/// Returns [`EngError::NotFound`] when no agent with `agent_id` exists in the
+/// caller's shard, and [`EngError::InvalidInput`] when both fields are absent
+/// (no-op write) or when `drift_flags` is not a JSON array.
+#[tracing::instrument(skip(db, drift_flags), fields(agent_id))]
+pub async fn update_agent_quality(
+    db: &Database,
+    agent_id: i64,
+    quality_score: Option<f64>,
+    drift_flags: Option<serde_json::Value>,
+) -> Result<Agent> {
+    if quality_score.is_none() && drift_flags.is_none() {
+        return Err(EngError::InvalidInput(
+            "at least one of quality_score or drift_flags must be provided".into(),
+        ));
+    }
+    if let Some(ref v) = drift_flags {
+        if !v.is_array() {
+            return Err(EngError::InvalidInput(
+                "drift_flags must be a JSON array".into(),
+            ));
+        }
+    }
+
+    let drift_str = drift_flags
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+
+    let changes = db
+        .write(move |conn| {
+            // Build an UPDATE that touches only the supplied columns.
+            let mut sets: Vec<&'static str> = Vec::new();
+            let mut params: Vec<rusqlite::types::Value> = Vec::new();
+            let mut idx = 1usize;
+
+            if let Some(q) = quality_score {
+                sets.push("quality_score = ?");
+                params.push(rusqlite::types::Value::Real(q));
+                idx += 1;
+            }
+            if let Some(ref ds) = drift_str {
+                sets.push("drift_flags = ?");
+                params.push(rusqlite::types::Value::Text(ds.clone()));
+                idx += 1;
+            }
+            sets.push("updated_at = datetime('now')");
+
+            // Number each `?` placeholder positionally so SQLite can bind in order.
+            let mut numbered = String::new();
+            for (i, clause) in sets.iter().enumerate() {
+                if i > 0 {
+                    numbered.push_str(", ");
+                }
+                if clause.contains('?') {
+                    numbered.push_str(&clause.replace('?', &format!("?{}", i + 1)));
+                } else {
+                    numbered.push_str(clause);
+                }
+            }
+            params.push(rusqlite::types::Value::Integer(agent_id));
+            let sql = format!("UPDATE soma_agents SET {} WHERE id = ?{}", numbered, idx);
+
+            let converted = rusqlite::params_from_iter(params.iter().cloned());
+            conn.execute(&sql, converted).map_err(rusqlite_to_eng_error)
+        })
+        .await?;
+
+    if changes == 0 {
+        return Err(EngError::NotFound(format!("agent id {}", agent_id)));
+    }
+    get_agent(db, agent_id, 1).await
+}
+
+/// Delete the group with `group_id` and cascade-remove all of its membership
+/// rows. Returns `true` when the group existed and was deleted, `false` when
+/// no such group existed for `user_id`.
+#[tracing::instrument(skip(db), fields(group_id, user_id))]
+pub async fn delete_group(db: &Database, group_id: i64, user_id: i64) -> Result<bool> {
+    let deleted = db
+        .write(move |conn| {
+            let tx = conn.transaction().map_err(rusqlite_to_eng_error)?;
+            tx.execute(
+                "DELETE FROM soma_agent_groups WHERE group_id = ?1 AND user_id = ?2",
+                rusqlite::params![group_id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            let n = tx
+                .execute(
+                    "DELETE FROM soma_groups WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![group_id, user_id],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            tx.commit().map_err(rusqlite_to_eng_error)?;
+            Ok(n)
+        })
+        .await?;
+    Ok(deleted > 0)
 }
 
 /// Unit tests for the soma service layer. Each test spins up an in-memory
@@ -684,7 +972,7 @@ mod tests {
         .await
         .unwrap();
         assert!(a.heartbeat_at.is_none());
-        heartbeat(&db, a.id).await.unwrap();
+        heartbeat(&db, a.id, None).await.unwrap();
         let after = get_agent(&db, a.id, 1).await.unwrap();
         assert!(after.heartbeat_at.is_some());
     }

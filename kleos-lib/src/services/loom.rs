@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -45,6 +46,7 @@ pub struct Workflow {
     pub updated_at: String,
 }
 
+/// Request payload for creating a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateWorkflowRequest {
     pub name: String,
@@ -53,6 +55,7 @@ pub struct CreateWorkflowRequest {
     pub user_id: Option<i64>,
 }
 
+/// Request payload for updating a workflow definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateWorkflowRequest {
     pub name: Option<String>,
@@ -79,9 +82,11 @@ pub struct Run {
     pub updated_at: String,
 }
 
+/// Request payload for starting a new workflow run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRunRequest {
     pub workflow_id: i64,
+    pub workflow_name: Option<String>,
     pub input: Option<serde_json::Value>,
     pub user_id: Option<i64>,
 }
@@ -130,12 +135,22 @@ pub struct LogEntry {
 // Stats
 // ---------------------------------------------------------------------------
 
+/// Per-category count breakdown used inside stats responses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatBreakdown {
+    pub name: String,
+    pub count: i64,
+}
+
+/// Aggregate statistics for the Loom subsystem.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoomStats {
     pub workflows: i64,
     pub runs: i64,
     pub active_runs: i64,
     pub steps: i64,
+    #[serde(default)]
+    pub runs_by_status: Vec<StatBreakdown>,
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +179,7 @@ fn row_to_workflow(row: &rusqlite::Row<'_>) -> Result<Workflow> {
     })
 }
 
+/// Map a SQLite row to a Run struct.
 fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run> {
     let input_str: String = row.get(3).map_err(rusqlite_to_eng_error)?;
     let output_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
@@ -184,6 +200,7 @@ fn row_to_run(row: &rusqlite::Row<'_>) -> Result<Run> {
     })
 }
 
+/// Map a SQLite row to a Step struct.
 fn row_to_step(row: &rusqlite::Row<'_>) -> Result<Step> {
     let config_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
     let input_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
@@ -213,6 +230,7 @@ fn row_to_step(row: &rusqlite::Row<'_>) -> Result<Step> {
     })
 }
 
+/// Map a SQLite row to a LogEntry struct.
 fn row_to_log_entry(row: &rusqlite::Row<'_>) -> Result<LogEntry> {
     let data_str: String = row.get(5).map_err(rusqlite_to_eng_error)?;
     let data: serde_json::Value = serde_json::from_str(&data_str)?;
@@ -323,6 +341,7 @@ pub async fn add_log(
     .await
 }
 
+/// Retrieve log entries for a workflow run, with optional step and level filters.
 #[tracing::instrument(skip(db))]
 pub async fn get_logs(
     db: &Database,
@@ -453,6 +472,7 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
     .await
 }
 
+/// Fetch a single workflow by ID.
 #[tracing::instrument(skip(db))]
 pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
     db.read(move |conn| {
@@ -476,6 +496,7 @@ pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
     .await
 }
 
+/// Fetch a workflow by its unique name.
 #[tracing::instrument(skip(db), fields(name = %name))]
 pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow> {
     let name = name.to_string();
@@ -500,6 +521,7 @@ pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow>
     .await
 }
 
+/// List all workflow definitions.
 #[tracing::instrument(skip(db))]
 pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
     db.read(move |conn| {
@@ -521,6 +543,7 @@ pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
     .await
 }
 
+/// Update mutable fields on an existing workflow.
 #[tracing::instrument(skip(db, req))]
 pub async fn update_workflow(
     db: &Database,
@@ -601,6 +624,7 @@ pub async fn update_workflow(
     get_workflow(db, id).await
 }
 
+/// Delete a workflow and its associated runs and steps.
 #[tracing::instrument(skip(db))]
 pub async fn delete_workflow(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
@@ -628,7 +652,16 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     let input_str = serde_json::to_string(&input)?;
 
     // Fetch workflow and validate it has steps (tenant-scoped).
-    let workflow_id = req.workflow_id;
+    let workflow_id = if req.workflow_id > 0 {
+        req.workflow_id
+    } else if let Some(ref name) = req.workflow_name {
+        let wf = get_workflow_by_name(db, name).await?;
+        wf.id
+    } else {
+        return Err(EngError::InvalidInput(
+            "workflow_id or workflow_name required".into(),
+        ));
+    };
     let workflow = db
         .read(move |conn| {
             let mut stmt = conn
@@ -727,10 +760,24 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     )
     .await?;
 
+    let _ = publish_internal(
+        db,
+        "tasks",
+        "loom",
+        "workflow.run.created",
+        serde_json::json!({
+            "run_id": run.id,
+            "workflow_id": run.workflow_id,
+            "status": run.status,
+        }),
+    )
+    .await;
+
     info!("created run {} for workflow {}", run.id, req.workflow_id);
     Ok(run)
 }
 
+/// Fetch a single run by ID.
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn get_run(db: &Database, id: i64) -> Result<Run> {
     db.read(move |conn| {
@@ -755,6 +802,7 @@ pub async fn get_run(db: &Database, id: i64) -> Result<Run> {
     .await
 }
 
+/// List runs with optional status and workflow filters.
 #[tracing::instrument(skip(db), fields(workflow_id = ?workflow_id, status = ?status, limit))]
 pub async fn list_runs(
     db: &Database,
@@ -835,6 +883,7 @@ pub async fn list_runs(
     .await
 }
 
+/// Mark a running workflow run as cancelled.
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
     let run = get_run(db, id).await?;
@@ -867,6 +916,18 @@ pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
     .await?;
 
     add_log(db, id, None, "info", "run cancelled", None).await?;
+
+    let _ = publish_internal(
+        db,
+        "tasks",
+        "loom",
+        "workflow.run.cancelled",
+        serde_json::json!({
+            "run_id": id,
+        }),
+    )
+    .await;
+
     info!("cancelled run {}", id);
     Ok(true)
 }
@@ -903,6 +964,7 @@ pub async fn get_steps(db: &Database, run_id: i64, _user_id: i64) -> Result<Vec<
     .await
 }
 
+/// Fetch a single step by ID.
 #[tracing::instrument(skip(db), fields(step_id = id))]
 pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     db.read(move |conn| {
@@ -928,13 +990,14 @@ pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     .await
 }
 
+/// Mark a step as completed and advance the run.
 #[tracing::instrument(skip(db, output), fields(step_id, user_id))]
 pub async fn complete_step(
     db: &Database,
     step_id: i64,
     output: serde_json::Value,
     _user_id: i64,
-) -> Result<()> {
+) -> Result<Step> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
     get_run(db, step.run_id).await?;
@@ -973,11 +1036,12 @@ pub async fn complete_step(
 
     // Advance the run after completing this step
     advance_run(db, step.run_id).await?;
-    Ok(())
+    get_step(db, step_id).await
 }
 
+/// Mark a step as failed and handle retry or run failure.
 #[tracing::instrument(skip(db, error), fields(step_id, user_id))]
-pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) -> Result<()> {
+pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) -> Result<Step> {
     let step = get_step(db, step_id).await?;
     // Verify run ownership
     get_run(db, step.run_id).await?;
@@ -1056,13 +1120,25 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
         )
         .await?;
 
+        let _ = publish_internal(
+            db,
+            "alerts",
+            "loom",
+            "workflow.run.failed",
+            serde_json::json!({
+                "run_id": run_id,
+                "error": "retries exhausted",
+            }),
+        )
+        .await;
+
         warn!(
             "run {} failed: step '{}' exhausted retries",
             step.run_id, step.name
         );
     }
 
-    Ok(())
+    get_step(db, step_id).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,14 +1203,17 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         .all(|s| !matches!(s.status.as_str(), "pending" | "running"));
 
     if all_done {
-        // Find last completed step output to use as run output
-        let last_output = steps
-            .iter()
-            .rfind(|s| s.status == "completed")
-            .map(|s| s.output.clone())
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-
-        let output_str = serde_json::to_string(&last_output)?;
+        // Merge outputs from all completed steps into a single object.
+        // Later steps overwrite earlier ones for the same key (matches TS Object.assign behavior).
+        let mut merged = serde_json::Map::new();
+        for step in steps.iter().filter(|s| s.status == "completed") {
+            if let serde_json::Value::Object(ref map) = step.output {
+                for (k, v) in map {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let output_str = serde_json::to_string(&serde_json::Value::Object(merged))?;
 
         db.write(move |conn| {
             conn.execute(
@@ -1151,6 +1230,18 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         .await?;
 
         add_log(db, run_id, None, "info", "run completed", None).await?;
+
+        let _ = publish_internal(
+            db,
+            "tasks",
+            "loom",
+            "workflow.run.completed",
+            serde_json::json!({
+                "run_id": run_id,
+            }),
+        )
+        .await;
+
         info!("run {} completed", run_id);
         return Ok(());
     }
@@ -1162,6 +1253,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
         step_type: String,
         config: serde_json::Value,
         merged_input: serde_json::Value,
+        timeout_ms: i32,
     }
 
     let mut ready_steps: Vec<ReadyStep> = Vec::new();
@@ -1212,6 +1304,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
             step_type: step.step_type.clone(),
             config: step.config.clone(),
             merged_input: serde_json::Value::Object(merged),
+            timeout_ms: step.timeout_ms,
         });
     }
 
@@ -1245,7 +1338,6 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
 
         match ready.step_type.as_str() {
             "transform" => {
-                // Execute inline
                 execute_transform_step(
                     db,
                     ready.id,
@@ -1255,12 +1347,27 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
                 )
                 .await?;
             }
-            // webhook and llm: leave as running -- Phase 2 will add HTTP executors
-            "webhook" | "llm" => {
-                info!(
-                    "step '{}' type '{}' requires external executor (Phase 2)",
-                    ready.name, ready.step_type
-                );
+            "webhook" => {
+                execute_webhook_step(
+                    db,
+                    ready.id,
+                    &ready.config,
+                    &ready.merged_input,
+                    ready.timeout_ms,
+                    run.user_id,
+                )
+                .await?;
+            }
+            "llm" => {
+                execute_llm_step(
+                    db,
+                    ready.id,
+                    &ready.config,
+                    &ready.merged_input,
+                    ready.timeout_ms,
+                    run.user_id,
+                )
+                .await?;
             }
             // action, decision, parallel, wait: need external completion
             _ => {
@@ -1350,7 +1457,7 @@ pub async fn execute_transform_step(
 
 #[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats> {
-    let (workflows, runs, active_runs, steps) = if let Some(_uid) = user_id {
+    let (workflows, runs, active_runs, steps, runs_by_status) = if let Some(_uid) = user_id {
         db.read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -1363,15 +1470,32 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let (w, ru, ar, s) = if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
                 let ru: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
                 let ar: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
                 let s: i64 = row.get(3).map_err(rusqlite_to_eng_error)?;
-                Ok((w, ru, ar, s))
+                (w, ru, ar, s)
             } else {
-                Ok((0i64, 0i64, 0i64, 0i64))
+                (0i64, 0i64, 0i64, 0i64)
+            };
+
+            let mut runs_by_status = Vec::new();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT status, COUNT(*) as cnt FROM loom_runs \
+                     GROUP BY status ORDER BY cnt DESC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
+            while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+                runs_by_status.push(StatBreakdown {
+                    name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                    count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                });
             }
+
+            Ok((w, ru, ar, s, runs_by_status))
         })
         .await?
     } else {
@@ -1387,15 +1511,32 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
                 .map_err(rusqlite_to_eng_error)?;
             let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
 
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            let (w, ru, ar, s) = if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let w: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
                 let ru: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
                 let ar: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
                 let s: i64 = row.get(3).map_err(rusqlite_to_eng_error)?;
-                Ok((w, ru, ar, s))
+                (w, ru, ar, s)
             } else {
-                Ok((0i64, 0i64, 0i64, 0i64))
+                (0i64, 0i64, 0i64, 0i64)
+            };
+
+            let mut runs_by_status = Vec::new();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT status, COUNT(*) as cnt FROM loom_runs \
+                     GROUP BY status ORDER BY cnt DESC",
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            let mut rows = stmt.query(()).map_err(rusqlite_to_eng_error)?;
+            while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+                runs_by_status.push(StatBreakdown {
+                    name: r.get(0).map_err(rusqlite_to_eng_error)?,
+                    count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                });
             }
+
+            Ok((w, ru, ar, s, runs_by_status))
         })
         .await?
     };
@@ -1405,5 +1546,371 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
         runs,
         active_runs,
         steps,
+        runs_by_status,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Webhook + LLM executors (ports of the standalone loom advance_run executors)
+// ---------------------------------------------------------------------------
+
+/// Shared HTTP client for webhook + LLM step execution. Allocated once per
+/// process; each call layers its own per-step timeout via `RequestBuilder::timeout`.
+static LOOM_HTTP_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::new(|| {
+    crate::net::safe_client_builder()
+        .pool_max_idle_per_host(4)
+        .build()
+        .expect("LOOM_HTTP_CLIENT build failed")
+});
+
+/// Maximum body slice retained in error messages from non-2xx responses, in
+/// bytes. Mirrors the standalone's `text.slice(0, 500)`.
+const LOOM_ERR_BODY_CAP: usize = 500;
+
+/// Execute a `webhook`-type step by POSTing `{ step_id, run_id, input, config }`
+/// to the configured URL, then completing the step with the parsed JSON
+/// response. Non-2xx responses and transport errors route through `fail_step`
+/// so the existing retry machinery applies.
+#[tracing::instrument(skip(db, config, input), fields(step_id, user_id, timeout_ms))]
+pub async fn execute_webhook_step(
+    db: &Database,
+    step_id: i64,
+    config: &serde_json::Value,
+    input: &serde_json::Value,
+    timeout_ms: i32,
+    user_id: i64,
+) -> Result<()> {
+    let url = match config.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => {
+            Box::pin(fail_step(
+                db,
+                step_id,
+                "webhook step requires config.url",
+                user_id,
+            ))
+            .await?;
+            return Ok(());
+        }
+    };
+
+    // SECURITY: validate before issuing the request to prevent SSRF.
+    if let Err(e) = crate::webhooks::validate_webhook_url(&url) {
+        let msg = format!("webhook url rejected: {}", e);
+        Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+        return Ok(());
+    }
+
+    let method = config
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("POST")
+        .to_uppercase();
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(1) as u64);
+
+    let body = serde_json::json!({
+        "step_id": step_id,
+        "input": input,
+        "config": config,
+    });
+
+    let mut req = match method.as_str() {
+        "GET" => LOOM_HTTP_CLIENT.get(&url),
+        "PUT" => LOOM_HTTP_CLIENT.put(&url).json(&body),
+        "DELETE" => LOOM_HTTP_CLIENT.delete(&url),
+        "PATCH" => LOOM_HTTP_CLIENT.patch(&url).json(&body),
+        _ => LOOM_HTTP_CLIENT.post(&url).json(&body),
+    };
+
+    // Layer per-step timeout and optional caller-supplied headers.
+    req = req.timeout(timeout);
+    if let Some(serde_json::Value::Object(headers)) = config.get("headers") {
+        for (k, v) in headers {
+            if let Some(val) = v.as_str() {
+                req = req.header(k.as_str(), val);
+            }
+        }
+    }
+
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = format!("webhook request failed: {}", e);
+            Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+            return Ok(());
+        }
+    };
+
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        let snippet: String = text.chars().take(LOOM_ERR_BODY_CAP).collect();
+        let msg = format!("HTTP {}: {}", status.as_u16(), snippet);
+        Box::pin(fail_step(db, step_id, &msg, user_id)).await?;
+        return Ok(());
+    }
+
+    let output: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({ "body": text }));
+    Box::pin(complete_step(db, step_id, output, user_id)).await?;
+    Ok(())
+}
+
+/// Execute an `llm`-type step by calling the configured endpoint. Detects
+/// OpenAI-compatible chat completions (`/v1/chat`, `/chat/completions`) versus
+/// the engram-style `{system, prompt}` shape. When `config.schema` is set, the
+/// system prompt is augmented with JSON-only instructions and the response is
+/// validated as JSON with up to 3 retries before failing the step.
+///
+/// Supported config keys:
+/// - `url` (required)
+/// - `api_key`, `model`, `temperature`
+/// - `system`, `prompt` -- both support `{{var}}` interpolation against the
+///   merged step input
+/// - `input_map` -- map of `{ alias: source_key }` to rename input variables
+/// - `schema` -- JSON object embedded into the system prompt for structured output
+#[tracing::instrument(skip(db, config, input), fields(step_id, user_id, timeout_ms))]
+pub async fn execute_llm_step(
+    db: &Database,
+    step_id: i64,
+    config: &serde_json::Value,
+    input: &serde_json::Value,
+    timeout_ms: i32,
+    user_id: i64,
+) -> Result<()> {
+    let url = match config.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.is_empty() => u.to_string(),
+        _ => {
+            Box::pin(fail_step(
+                db,
+                step_id,
+                "llm step requires config.url",
+                user_id,
+            ))
+            .await?;
+            return Ok(());
+        }
+    };
+
+    let vars = serde_json::Value::Object(build_llm_vars(input, config.get("input_map")));
+
+    let prompt_template = config.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
+    let user_prompt = interpolate(prompt_template, &vars);
+
+    let system_template = config.get("system").and_then(|v| v.as_str());
+    let mut system_prompt = match system_template {
+        Some(s) => interpolate(s, &vars),
+        None => "You are a helpful assistant.".to_string(),
+    };
+
+    let schema = config.get("schema").cloned();
+    if let Some(ref s) = schema {
+        let schema_pretty = serde_json::to_string_pretty(s).unwrap_or_else(|_| s.to_string());
+        system_prompt.push_str(&format!(
+            "\n\nYou MUST respond with a valid JSON object matching this schema:\n{}\n\nRespond with ONLY the JSON object, no other text.",
+            schema_pretty
+        ));
+    }
+
+    let model = config
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+    let api_key = config
+        .get("api_key")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let temperature = config
+        .get("temperature")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.7);
+    let timeout = std::time::Duration::from_millis(timeout_ms.max(1) as u64);
+
+    let is_openai_compat = url.contains("/v1/chat") || url.contains("/chat/completions");
+
+    let body = if is_openai_compat {
+        serde_json::json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": system_prompt },
+                { "role": "user", "content": user_prompt },
+            ],
+            "temperature": temperature,
+        })
+    } else {
+        serde_json::json!({
+            "system": system_prompt,
+            "prompt": user_prompt,
+            "model": model,
+        })
+    };
+
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut last_err: String = String::new();
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let mut req = LOOM_HTTP_CLIENT.post(&url).timeout(timeout).json(&body);
+        if let Some(ref key) = api_key {
+            req = req.bearer_auth(key);
+        }
+
+        let response = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = format!("llm request failed: {}", e);
+                if attempt == MAX_ATTEMPTS {
+                    Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
+                    return Ok(());
+                }
+                continue;
+            }
+        };
+
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+
+        if !status.is_success() {
+            let snippet: String = text.chars().take(LOOM_ERR_BODY_CAP).collect();
+            last_err = format!("LLM HTTP {}: {}", status.as_u16(), snippet);
+            if attempt == MAX_ATTEMPTS {
+                Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
+                return Ok(());
+            }
+            continue;
+        }
+
+        let data: serde_json::Value = match serde_json::from_str(&text) {
+            Ok(v) => v,
+            Err(_) => serde_json::Value::Null,
+        };
+
+        // Extract the model's text content from whichever response shape arrived.
+        let extracted = if is_openai_compat {
+            data.pointer("/choices/0/message/content")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_default()
+        } else {
+            data.get("result")
+                .or_else(|| data.get("text"))
+                .or_else(|| data.get("content"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| text.clone())
+        };
+
+        if schema.is_some() {
+            // Pull the first {...} block out of the model text and parse it.
+            let candidate = extract_json_object(&extracted).unwrap_or(extracted.clone());
+            match serde_json::from_str::<serde_json::Value>(&candidate) {
+                Ok(parsed) => {
+                    let output = serde_json::json!({
+                        "result": parsed,
+                        "raw": extracted,
+                        "attempt": attempt,
+                    });
+                    Box::pin(complete_step(db, step_id, output, user_id)).await?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_err = format!(
+                        "LLM returned invalid JSON (attempt {}): {} -- response: {}",
+                        attempt,
+                        e,
+                        extracted
+                            .chars()
+                            .take(LOOM_ERR_BODY_CAP)
+                            .collect::<String>()
+                    );
+                    if attempt == MAX_ATTEMPTS {
+                        Box::pin(fail_step(db, step_id, &last_err, user_id)).await?;
+                        return Ok(());
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let output = serde_json::json!({
+            "result": extracted,
+            "attempt": attempt,
+        });
+        Box::pin(complete_step(db, step_id, output, user_id)).await?;
+        return Ok(());
+    }
+
+    // Defensive: only reached if MAX_ATTEMPTS is 0.
+    Box::pin(fail_step(
+        db,
+        step_id,
+        if last_err.is_empty() {
+            "llm step exhausted retries"
+        } else {
+            last_err.as_str()
+        },
+        user_id,
+    ))
+    .await?;
+    Ok(())
+}
+
+/// Build the template-variable context for an LLM step. Starts with every
+/// key in the step's merged input (object only -- non-object inputs are
+/// ignored), then applies the optional `input_map` aliases.
+fn build_llm_vars(
+    input: &serde_json::Value,
+    input_map: Option<&serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut vars = serde_json::Map::new();
+    if let serde_json::Value::Object(map) = input {
+        for (k, v) in map {
+            vars.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(serde_json::Value::Object(aliases)) = input_map {
+        for (alias, source) in aliases {
+            if let Some(src) = source.as_str() {
+                if let Some(val) = vars.get(src).cloned() {
+                    vars.insert(alias.clone(), val);
+                }
+            }
+        }
+    }
+    vars
+}
+
+/// Locate the first balanced `{...}` JSON object embedded in `text`. Returns
+/// `None` when no opening brace is present or braces are unbalanced.
+fn extract_json_object(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let bytes = text.as_bytes();
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escape = false;
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_str {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }

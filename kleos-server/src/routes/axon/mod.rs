@@ -1,7 +1,7 @@
 mod sse;
 mod types;
 
-use axum::extract::{Path, Query};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -10,20 +10,38 @@ use serde_json::{json, Value};
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
+use kleos_lib::services::axon::fanout::{deliver_webhooks, get_webhook_targets};
 use kleos_lib::services::axon::{
     consume, delete_subscription, ensure_channel, get_cursor, get_event,
     get_stats as get_axon_stats, list_channels, list_subscriptions_for_agent, publish_event,
     query_events, upsert_subscription, PublishEventRequest, SubscribeRequest,
 };
+use kleos_lib::EngError;
 use types::{
     CreateChannelBody, GetCursorParams, ListSubscriptionsParams, PollBody, PublishBody,
     QueryEventsParams, SubscribeBody, UnsubscribeBody,
 };
 
+/// Default body-size cap on `POST /axon/publish`. Mirrors the standalone
+/// `BODY_MAX_BYTES` (64 KB). Override with `AXON_BODY_MAX_BYTES` at startup.
+const DEFAULT_PUBLISH_BODY_BYTES: usize = 64 * 1024;
+
+/// Read the publish body size cap from `AXON_BODY_MAX_BYTES` or fall back to the compiled default.
+fn publish_body_limit() -> usize {
+    std::env::var("AXON_BODY_MAX_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_PUBLISH_BODY_BYTES)
+}
+
 /// Builds the Axon event bus router.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/axon/publish", post(publish_event_handler))
+        .route(
+            "/axon/publish",
+            post(publish_event_handler).layer(DefaultBodyLimit::max(publish_body_limit())),
+        )
         .route("/axon/events", get(list_events_handler))
         .route("/axon/events/{id}", get(get_event_handler))
         .route(
@@ -38,11 +56,13 @@ pub fn router() -> Router<AppState> {
         .route("/axon/poll", post(poll_handler))
         .route("/axon/cursor", get(get_cursor_handler))
         .route("/axon/stats", get(get_stats))
+        .route("/axon/health", get(health_handler))
         .route("/axon/stream", get(sse::stream_handler))
 }
 
-/// Publishes a new event.
+/// Publishes a new event, broadcasts to SSE subscribers, and fans out to webhooks.
 async fn publish_event_handler(
+    State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<PublishBody>,
@@ -63,7 +83,29 @@ async fn publish_event_handler(
     };
 
     let event = publish_event(&db, req).await?;
-    Ok((StatusCode::CREATED, Json(json!(event))))
+    let event_json = serde_json::to_value(&event).map_err(EngError::Serialization)?;
+
+    // Broadcast to SSE subscribers (ignore error = no receivers)
+    let _ = state.axon_broadcast.send(event_json.clone());
+
+    // Fan out to webhook subscribers via tracked background task
+    let db_clone = db.clone();
+    let channel = event.channel.clone();
+    let action = event.action.clone();
+    let shutdown = state.shutdown_token.clone();
+    let fanout_json = event_json.clone();
+    state.background_tasks.lock().await.spawn(async move {
+        tokio::select! {
+            _ = shutdown.cancelled() => {}
+            _ = async {
+                if let Ok(targets) = get_webhook_targets(&db_clone, &channel, &action).await {
+                    deliver_webhooks(&targets, &fanout_json);
+                }
+            } => {}
+        }
+    });
+
+    Ok((StatusCode::CREATED, Json(event_json)))
 }
 
 /// Lists events with optional filters.
@@ -123,6 +165,17 @@ async fn list_channels_handler(
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(_auth): Auth) -> Result<Json<Value>, AppError> {
     let stats = get_axon_stats(&db).await?;
     Ok(Json(json!(stats)))
+}
+
+/// Public unauthenticated health probe. Mirrors the standalone `/health`
+/// surface: returns `{ status: "ok", version }` without auth or a tenant
+/// context. Detailed per-tenant stats remain on the authenticated `/stats`.
+async fn health_handler() -> Json<Value> {
+    Json(json!({
+        "status": "ok",
+        "service": "axon",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 // --- New handlers for P0-0 Phase 27c ---
