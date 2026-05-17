@@ -31,6 +31,9 @@ pub async fn stream_handler(
     Auth(auth): Auth,
     Query(params): Query<SseStreamParams>,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, AppError> {
+    // Parse the channels CSV. A literal "*" entry (or an entirely empty channel
+    // list) means "subscribe to every channel"; in that mode the inner loop
+    // queries with channel=None so SQL returns events across all channels.
     let raw_channels: Vec<String> = params
         .channels
         .map(|c| {

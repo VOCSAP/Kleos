@@ -2,6 +2,7 @@ mod hook;
 mod import_plugins;
 use hook::{run_hook, HookCommands};
 use kleos_client::{truncate, Client};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -173,6 +174,32 @@ enum Commands {
     /// Artifact storage management
     #[command(subcommand)]
     Artifact(ArtifactCommands),
+    /// Admin operations (require admin role, signed request, long timeouts)
+    #[command(subcommand)]
+    Admin(AdminCommands),
+}
+
+/// Subcommands for `kleos-cli admin` -- long-running admin operations.
+#[derive(Subcommand)]
+enum AdminCommands {
+    /// Backfill missing primary + chunk embeddings across all tenants. Long-running.
+    BackfillChunks,
+    /// Rebuild the FTS5 index on every tenant DB. Cheap.
+    RebuildFts,
+    /// Rebuild the Lance ANN index (IVF_HNSW_PQ) over current vectors.
+    VectorRebuildIndex {
+        /// Drop and recreate the existing index instead of skipping when present.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Report Lance / FTS / per-tenant vector health.
+    VectorHealth,
+    /// Drain the vector_sync_pending ledger.
+    VectorSyncReplay {
+        /// Max pending rows to drain in this call.
+        #[arg(short, long, default_value = "5000")]
+        limit: usize,
+    },
 }
 
 /// Subcommands for `kleos-cli identity` -- PIV YubiKey and software Ed25519 key management.
@@ -741,6 +768,55 @@ enum HandoffCommands {
         #[arg(long)]
         keep: Option<i64>,
     },
+    /// Atom operations (list, packed context, supersede, decay)
+    Atoms {
+        #[command(subcommand)]
+        cmd: AtomCommands,
+    },
+}
+
+/// Subcommands for `kleos-cli handoff atoms` -- list, pack, supersede, and
+/// decay handoff atoms extracted from session dumps.
+#[derive(Subcommand)]
+enum AtomCommands {
+    /// List active atoms for a project
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        atom_type: Option<String>,
+        #[arg(long, default_value = "active")]
+        status: String,
+        #[arg(long, default_value = "50")]
+        limit: i64,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Get budget-packed context atoms for a project
+    Packed {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "4000")]
+        max_tokens: usize,
+        #[arg(long)]
+        dir: Option<String>,
+    },
+    /// Mark an atom as superseded by another
+    Supersede {
+        #[arg(long)]
+        old: String,
+        #[arg(long)]
+        new: String,
+    },
+    /// Apply decay to atoms (call on session start)
+    Decay {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long, default_value = "1")]
+        sessions: u32,
+        #[arg(long)]
+        dir: Option<String>,
+    },
 }
 
 /// Extracts a JSON value as a string, coercing integers.
@@ -1273,6 +1349,73 @@ async fn main() {
 
         Commands::Artifact(artifact_cmd) => {
             handle_artifact_command(&client, artifact_cmd).await;
+        }
+
+        Commands::Admin(admin_cmd) => {
+            handle_admin_command(&client, admin_cmd).await;
+        }
+    }
+}
+
+/// Dispatch an `kleos-cli admin <op>` invocation. Cheap operations
+/// (rebuild_fts, vector_rebuild_index, vector_health, vector_sync_replay)
+/// use a 120s timeout; `backfill_chunks` uses a 7200s (2 hour) timeout to
+/// survive end-to-end re-embedding of ~10k memories with bge-m3.
+async fn handle_admin_command(client: &Client, cmd: &AdminCommands) {
+    // Generous timeout for long-running admin work (backfill can run 30+ min on
+    // ~10k memories with bge-m3). Falls back to default for the cheap calls.
+    let long_timeout = Duration::from_secs(7200);
+    let short_timeout = Duration::from_secs(120);
+    let pretty = |v: Value| println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+    let err = |label: &str, e: String| eprintln!("{label} failed: {e}");
+    match cmd {
+        AdminCommands::BackfillChunks => {
+            match client
+                .post_with_timeout("/admin/backfill_chunks", json!({}), long_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("backfill_chunks", e),
+            }
+        }
+        AdminCommands::RebuildFts => {
+            match client
+                .post_with_timeout("/admin/rebuild-fts", json!({}), short_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("rebuild-fts", e),
+            }
+        }
+        AdminCommands::VectorRebuildIndex { replace } => {
+            match client
+                .post_with_timeout(
+                    "/admin/vector/rebuild-index",
+                    json!({ "replace": *replace }),
+                    short_timeout,
+                )
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("vector/rebuild-index", e),
+            }
+        }
+        AdminCommands::VectorHealth => match client.get("/admin/vector_health").await {
+            Ok(v) => pretty(v),
+            Err(e) => err("vector_health", e),
+        },
+        AdminCommands::VectorSyncReplay { limit } => {
+            match client
+                .post_with_timeout(
+                    "/admin/vector/sync-replay",
+                    json!({ "limit": *limit }),
+                    short_timeout,
+                )
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("vector/sync-replay", e),
+            }
         }
     }
 }
@@ -3159,6 +3302,133 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                     let deleted = v.get("deleted").and_then(|d| d.as_i64()).unwrap_or(0);
                     let remaining = v.get("remaining").and_then(|r| r.as_i64()).unwrap_or(0);
                     println!("Deleted {} handoffs. Remaining: {}", deleted, remaining);
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Atoms { cmd } => {
+            handle_atom_command(client, cmd).await;
+        }
+    }
+}
+
+/// Dispatch an `kleos-cli handoff atoms <op>` invocation against the server's
+/// `/handoff/atoms/*` endpoints.
+async fn handle_atom_command(client: &Client, cmd: &AtomCommands) {
+    match cmd {
+        AtomCommands::List {
+            project,
+            atom_type,
+            status,
+            limit,
+            dir,
+        } => {
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let mut query = format!("project={}&status={}&limit={}", project, status, limit);
+            if let Some(ref at) = atom_type {
+                query.push_str(&format!("&atom_type={}", at));
+            }
+
+            match client.get(&format!("/handoffs/atoms?{}", query)).await {
+                Ok(v) => {
+                    if let Some(atoms) = v.get("atoms").and_then(|a| a.as_array()) {
+                        if atoms.is_empty() {
+                            println!("No atoms found for project '{}'", project);
+                            return;
+                        }
+                        for atom in atoms {
+                            let atype = atom
+                                .get("atom_type")
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("?");
+                            let content =
+                                atom.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                            let salience =
+                                atom.get("salience").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                            let seen = atom.get("seen_count").and_then(|s| s.as_i64()).unwrap_or(1);
+                            let aid = atom.get("atom_id").and_then(|a| a.as_str()).unwrap_or("");
+                            println!(
+                                "[{:.2}] ({}) {} [seen:{}] id:{}",
+                                salience, atype, content, seen, aid
+                            );
+                        }
+                        println!("\n{} atoms total", atoms.len());
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        AtomCommands::Packed {
+            project,
+            max_tokens,
+            dir,
+        } => {
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let query = format!("project={}&max_tokens={}", project, max_tokens);
+            match client
+                .get(&format!("/handoffs/atoms/packed?{}", query))
+                .await
+            {
+                Ok(v) => {
+                    if let Some(context) = v.get("context").and_then(|c| c.as_str()) {
+                        println!("{}", context);
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        AtomCommands::Supersede { old, new } => {
+            let body = serde_json::json!({
+                "old_atom_id": old,
+                "new_atom_id": new,
+            });
+            match client.post("/handoffs/atoms/supersede", body).await {
+                Ok(_) => println!("Atom {} superseded by {}", old, new),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        AtomCommands::Decay {
+            project,
+            sessions,
+            dir,
+        } => {
+            let dir_str = dir.as_deref();
+            let project = project.clone().or_else(|| detect_project(dir_str));
+
+            let Some(ref project) = project else {
+                eprintln!("Error: could not detect project. Use --project");
+                std::process::exit(1);
+            };
+
+            let body = serde_json::json!({
+                "project": project,
+                "sessions_elapsed": sessions,
+            });
+            match client.post("/handoffs/atoms/decay", body).await {
+                Ok(v) => {
+                    let affected = v.get("affected").and_then(|a| a.as_i64()).unwrap_or(0);
+                    println!(
+                        "Applied decay ({} sessions): {} atoms affected",
+                        sessions, affected
+                    );
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }
