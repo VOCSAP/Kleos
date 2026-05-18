@@ -52,3 +52,12 @@ graphify-out/
 
 # Backup snapshots of deployed binaries (kept locally for rollback)
 backup/
+KLEOS.md
+
+# Plan/TODO/progress artefacts (skills + dev-notes locales)
+docs/dev-notes/*-todo.md
+docs/dev-notes/*-plan.md
+task_plan.md
+progress.md
+findings.md
+session-checkpoint.md
