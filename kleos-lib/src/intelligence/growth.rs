@@ -88,7 +88,9 @@ fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> Strin
     }
 
     match service {
-        "engram" => "You are Kleos's internal self-reflection process. Kleos is a persistent memory system.\n\
+        // Accept both "kleos" (post-rebrand canonical) and "engram" (legacy
+        // alias still emitted by some internal callers and stored growth rows).
+        "engram" | "kleos" => "You are Kleos's internal self-reflection process. Kleos is a persistent memory system.\n\
             Examine the recent activity and ask yourself:\n\
             - Which memories get searched most vs never?\n\
             - What contradictions persist unresolved?\n\
@@ -399,10 +401,20 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
     // Get existing growth for anti-repeat
     let existing_lines: Vec<String> = db
         .read(move |conn| {
+            // Anti-repeat lookup: match every `<service>-growth` source, since
+            // the source is built dynamically from `req.service` at write time
+            // (see line ~288: `format!("{}-growth", req.service)`). This covers
+            // the legacy `engram-growth` rows, the post-rebrand `kleos-growth`
+            // rows, and any future per-service growth stream (e.g. `claude-code-growth`)
+            // without needing the SELECT to be updated each time a new caller
+            // is added. The `category = 'growth'` filter already constrains the
+            // result set to growth memories.
             let mut stmt = conn
                 .prepare(
                     "SELECT content FROM memories \
-                     WHERE category = 'growth' AND source = 'engram-growth' AND is_forgotten = 0 \
+                     WHERE category = 'growth' \
+                       AND source LIKE '%-growth' \
+                       AND is_forgotten = 0 \
                      ORDER BY created_at DESC LIMIT 10",
                 )
                 .map_err(rusqlite_to_eng_error)?;
@@ -421,7 +433,7 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
         .await?;
 
     let req = GrowthReflectRequest {
-        service: "engram".to_string(),
+        service: "kleos".to_string(),
         context,
         existing_growth: if existing_lines.is_empty() {
             None
