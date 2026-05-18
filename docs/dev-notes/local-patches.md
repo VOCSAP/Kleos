@@ -1,7 +1,7 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-05-15 (rebase v1.1.2)
+**Dernière mise à jour :** 2026-05-18 (rebase v1.1.5)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
@@ -9,7 +9,80 @@ re-appliquer si perdus.
 
 ---
 
-## Statut après rebase v1.1.2 (2026-05-15)
+## Statut après rebase v1.1.5 (2026-05-18)
+
+`local/patches` HEAD = `473f214`, 17 commits semantiques au-dessus de main = `80982dc`
+(upstream/main qui inclut tags v1.1.3 / v1.1.4 / v1.1.5 sans bump Cargo.toml version,
+qui reste 1.1.2).
+
+| Patch | Statut v1.1.5 | Commit |
+|---|---|---|
+| 1 -- agent-forge/Cargo.toml cfg(windows) bundled rusqlite | ABSORBE depuis v1.1.2 (26e930b) | drop |
+| 2, 10 -- Cargo.toml cfg(windows) sqlcipher (sidecar, approval-tui) | RE-APPLIQUE | `fe53eef` |
+| 4 -- kleos-cred derive-db-key cfg(unix) | **ABSORBE upstream v1.1.5** (commit `133e783 fix(ci): cfg-gate Unix-only APIs for Windows cross-compilation`) | drop |
+| 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `b4fef72` |
+| 5/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `53d1d72` |
+| 3, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE (conflit textuel resolu : retrait du `#[cfg(unix)]` que upstream a ajoute sur `resolve_key_via_credd` -- notre wrapper dispatch deja entre `_socket` et `_tcp`) | `2cc1977` -> `d3c4716` apres rebase |
+| 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE (conflit textuel resolu, upstream a adopte la convention `KLEOS_SIDECAR_*` pour son nouveau `GATE_MODEL`) | `fe023d4` -> `4c5d377` |
+| 12 -- hooks bundle preservation | RE-APPLIQUE, preserve byte-a-byte | `e86bb03` -> `10c829e` |
+| kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
+
+**Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
+upstream depuis. Lors du rebase v1.1.5 il a ete drop via `git rebase --skip` (le diff
+devenait vide vs HEAD post-application upstream).
+
+**Branche topic utilisee** : `local/patches-fixupstream` cree depuis `local/patches`,
+rebase sur le nouveau `main` (80982dc), puis `git reset --hard` de `local/patches` vers
+`local/patches-fixupstream` apres validation. Push remote via `--force-with-lease`.
+Branche topic supprimee post-merge.
+
+**Issues upstream identifiees pendant v1.1.5** :
+
+1. **`kleos-lib/src/services/chiasm/tasks.rs:646-659`** (et logique identique dans
+   `services/broca.rs`) : heuristic `is_openai_compat = url.contains("11434")` est
+   trop agressif. Si `LLM_URL=http://host:11434/api/generate` (Ollama native), le code
+   append `/v1/chat/completions` -> URL bidon `http://host:11434/api/generate/v1/chat/completions`
+   -> 404. **Workaround** : configurer `LLM_URL=http://host:11434/v1/chat/completions`
+   verbatim (le path `/chat/completions` desactive l'append). A reporter upstream :
+   le heuristic devrait verifier le path complet, ou laisser le verbatim si l'URL
+   semble explicite (`/v1/chat/completions` OR `/api/generate`).
+
+2. **`kleos-lib/src/activity.rs:261`** : `service: Some("engram".to_string())` hardcode
+   dans `fanout_broca`. Residu legacy pre-rebrand. Consequence : tout event poste via
+   `POST /activity` (ou `kleos-cli activity`) atterrit dans `broca_actions` avec
+   `service="engram"`, mais `kleos-lib/src/services/broca.rs:1209` filtre par
+   `known_services = ["kleos","chiasm","axon","loom","soma","thymus","broca"]`.
+   `engram` absent -> Broca `ask` retourne toujours vide alors que `feed` montre les
+   events. **Workaround** : Patch local potentiel changer la ligne en `"kleos"` ou
+   patcher `known_services` pour ajouter `"engram"`. Pas encore appliqué -- candidat
+   Patch 13.
+
+**Nouvelles env vars v1.1.5 (TOUTES optionnelles avec defaults)** :
+
+| Var | Defaut | Usage |
+|---|---|---|
+| `KLEOS_SIDECAR_GATE_MODEL` | = compress_model | Modele LLM pour memory gate (file watcher quality filter, nouveau module sidecar) |
+| `KLEOS_SIDECAR_GATE_PACE_MS` | `1500` | Pacing entre gate LLM calls (0 = disable) |
+| `KLEOS_SIDECAR_MAX_TURNS_PER_EXTRACT` | `10` | Limite tours par extraction (hardware tuning) |
+| `CHIASM_LLM_URL` | -> `LLM_URL` | LLM pour AI plan generation (POST /tasks/{id}/plan) |
+| `CHIASM_LLM_API_KEY` | -> `LLM_API_KEY` | API key Chiasm LLM |
+| `CHIASM_LLM_MODEL` | -> `LLM_MODEL` | Modele Chiasm |
+
+**Migrations DB ajoutees v1.1.5** : monolith 60 (chiasm_extended_fields), 61 (chiasm_path_claims),
+62 (chiasm_agent_keys), 63 (handoff_atoms) + tenant 52/53/54. Auto-applied au boot.
+
+**Deploy v1.1.5 effectue 2026-05-18** :
+- LXC 121 : 5 binaires `/usr/local/bin/` (kleos-server, kleos-cli, kleos-credd, kleos-mcp, cred),
+  migrations OK, /health 200.
+- Windows : 10 binaires `~/.cargo/bin/` (kleos-cli, kr/ke/kw, agent-forge, kleos-sh,
+  kleos-sidecar, eidolon-supervisor, engram-approval-tui, cred).
+- Backups locaux : `backup/v1.1.2-2026-05-18/{server,windows}/` (508 MB total).
+- Tags git backup pousses sur origin : `backup/local-patches-before-rebase-v1.1.3-2026-05-18`,
+  `backup/main-before-rebase-v1.1.3-2026-05-18`.
+
+---
+
+## Statut après rebase v1.1.2 (2026-05-15, historique)
 
 `local/patches-1.1.2` a été reconstruite sur la base `upstream/main = v1.1.2 + fix CI (4669ed5)`.
 Branche resultante : 14 commits semantiques au-dessus de main (sera renommee en
@@ -151,19 +224,19 @@ if let Ok(h) = std::env::var("COMPUTERNAME") { ... }
 
 ---
 
-## Patch 4 -- Windows port : OpenOptionsExt gated dans derive-db-key
+## Patch 4 -- Windows port : OpenOptionsExt gated dans derive-db-key (ABSORBE en v1.1.5)
+
+**Statut :** ABSORBE upstream a partir de v1.1.5 (commit `133e783 fix(ci): cfg-gate
+Unix-only APIs for Windows cross-compilation`). Upstream a applique le meme fix avec
+une variante de syntaxe : `#[cfg(unix)]` sur l'import au lieu d'un bloc inline.
+Semantiquement equivalent. Notre commit `b83f495` a ete drop pendant le rebase v1.1.5
+(diff vide vs HEAD post-application upstream). Conserve ici pour historique.
 
 **Fichier :** `kleos-cred/src/bin/derive-db-key.rs`
-**Statut upstream :** Absent. Seul fichier kleos-cred avec import Unix non-gatté.
-**Symptôme si absent :** `error[E0433]: use of undeclared type 'OpenOptionsExt'`
+**Symptôme historique si absent :** `error[E0433]: use of undeclared type 'OpenOptionsExt'`
 
 ```rust
-// AVANT (compile error sur Windows)
-use std::os::unix::fs::OpenOptionsExt;
-// ...
-.mode(0o600)
-
-// APRES
+// Pour les rebases anterieurs a v1.1.5 uniquement :
 let mut opts = std::fs::OpenOptions::new();
 opts.write(true).create(true).truncate(true);
 #[cfg(unix)]
@@ -768,7 +841,7 @@ D'ici la, ne pas modifier `hooks/README.md` (qui reste la version upstream
 fast-forward), `local/patches` = branche topic VOCSAP avec ~8 commits semantiques
 au-dessus de main. Plus de merge `--allow-unrelated-histories` historique.
 
-### Procedure de rebase recommandee
+### Procedure de rebase recommandee (variante topic branch -- adoptee v1.1.5)
 
 ```bash
 # 1. Sync upstream sur main
@@ -779,22 +852,36 @@ git push origin main
 
 # 2. Tags de backup avant rebase
 DATE=$(date +%Y-%m-%d)
-git tag "backup/local-patches-before-rebase-$DATE" local/patches
-git tag "backup/main-before-rebase-$DATE" main
+git tag "backup/local-patches-before-rebase-vX.Y.Z-$DATE" local/patches
+git tag "backup/main-before-rebase-vX.Y.Z-$DATE" main
 git push origin --tags
 
-# 3. Rebase de la topic branch sur le nouveau main
-git checkout local/patches
+# 3. Branche topic + rebase (preserve local/patches intacte pendant le travail)
+git checkout -b local/patches-fixupstream local/patches
 git rebase main
-# Resoudre les conflits patch par patch -- chaque commit local doit etre
-# semantique et auto-contenu (cf. structure adoptee 2026-05-13).
+# Resoudre les conflits patch par patch -- skip ceux absorbes (diff vide).
 
 # 4. Validation
 cargo check --workspace --all-features
+# Note: cargo check workspace echoue sur Windows pour les crates serveur
+# (openssl-sys cross-compile). Faire check par crate plateforme :
+#   Windows: -p kleos-sh -p agent-forge -p kleos-sidecar -p kleos-cred -p kleos-approval-tui
+#   WSL musl: -p kleos-server -p kleos-cli -p kleos-mcp -p kleos-credd
 
-# 5. Push --force-with-lease (rebase a modifie l'histoire)
+# 5. Apres validation, aligner local/patches sur la branche topic
+git checkout local/patches
+git reset --hard local/patches-fixupstream
 git push --force-with-lease origin local/patches
+git branch -d local/patches-fixupstream
+
+# 6. Cleanup tag eventuel (apres deploy reussi)
+# git tag -d backup/main-before-rebase-vX.Y.Z-$DATE  # optionnel
 ```
+
+**Pourquoi pas un `git merge --ff-only`** : le rebase a reecrit l'histoire, donc
+`local/patches-fixupstream` n'est PAS un descendant lineaire de `local/patches`.
+Le ff-only echoue avec "Not possible to fast-forward". `reset --hard` est l'operation
+adequate puisqu'on veut que `local/patches` adopte la nouvelle histoire.
 
 ### Verification rapide : patches deja absorbes par upstream
 
