@@ -258,7 +258,7 @@ async fn fanout_broca(
         db,
         LogActionRequest {
             agent: report.agent.clone(),
-            service: Some("engram".to_string()),
+            service: Some("kleos".to_string()),
             action: report.action.clone(),
             narrative: None,
             payload: Some(serde_json::json!({"summary": report.summary})),
