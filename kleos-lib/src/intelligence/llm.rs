@@ -34,6 +34,9 @@ struct OllamaRequest {
     system: String,
     prompt: String,
     stream: bool,
+    /// Patch 14: explicit Ollama thinking-mode flag. See
+    /// `kleos_lib::llm::think_enabled` for the env-var contract.
+    think: bool,
     options: OllamaOptions,
 }
 
@@ -61,11 +64,14 @@ pub async fn call_llm(
     let url = llm_url();
     let model = std::env::var("ENGRAM_LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string());
 
+    // Patch 14: opt-out of Ollama thinking mode by default; flip via
+    // `LLM_THINK=true` when serving a thinking-aware model.
     let body = OllamaRequest {
         model,
         system: system.to_string(),
         prompt: user.to_string(),
         stream: false,
+        think: crate::llm::think_enabled(),
         options: OllamaOptions {
             temperature: opts.temperature,
             num_predict: opts.max_tokens,

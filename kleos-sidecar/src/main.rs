@@ -337,6 +337,16 @@ async fn main() {
             if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_MODEL") {
                 cfg.model = v;
             }
+            // Patch 14 (sidecar scope): KLEOS_SIDECAR_LLM_THINK overrides the
+            // global LLM_THINK env var for the sidecar's LocalModelClient. Keeps
+            // the sidecar's thinking-mode choice independent from any other
+            // kleos-lib consumer running in the same host shell.
+            if let Ok(v) = std::env::var("KLEOS_SIDECAR_LLM_THINK") {
+                cfg.think = Some(matches!(
+                    v.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                ));
+            }
             cfg
         };
         let client = LocalModelClient::new(llm_config);

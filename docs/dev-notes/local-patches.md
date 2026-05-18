@@ -25,6 +25,8 @@ qui reste 1.1.2).
 | 3, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE (conflit textuel resolu : retrait du `#[cfg(unix)]` que upstream a ajoute sur `resolve_key_via_credd` -- notre wrapper dispatch deja entre `_socket` et `_tcp`) | `2cc1977` -> `d3c4716` apres rebase |
 | 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE (conflit textuel resolu, upstream a adopte la convention `KLEOS_SIDECAR_*` pour son nouveau `GATE_MODEL`) | `fe023d4` -> `4c5d377` |
 | 12 -- hooks bundle preservation | RE-APPLIQUE, preserve byte-a-byte | `e86bb03` -> `10c829e` |
+| **13 -- fix(broca,activity,growth) post-rebrand engram->kleos** (NOUVEAU 2026-05-18) | 2 commits separes pour faciliter PR upstream eventuelle | `61b9c3c` + `a72008d` |
+| **14 -- LLM thinking-mode toggle (`LLM_THINK` / `KLEOS_SIDECAR_LLM_THINK`)** (NOUVEAU 2026-05-18) | Permet d'utiliser Qwen3 et autres reasoning models sans casser Kleos qui lit le champ `response` Ollama | a commiter |
 | kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
 
 **Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
@@ -832,6 +834,212 @@ Ce patch est **temporaire**. Lorsque upstream publiera le nouveau hook bundle
 
 D'ici la, ne pas modifier `hooks/README.md` (qui reste la version upstream
 "under maintenance") pour eviter un conflit inutile au prochain rebase.
+
+---
+
+## Patch 13 -- fix engram residue (broca, activity, growth)
+
+**Statut :** commite 2026-05-18, 2 commits (`61b9c3c` + `a72008d`), pas encore push.
+**Contexte :** decouvert pendant les tests post-deploy v1.1.5 lorsque Broca `ask`
+retournait systematiquement vide alors que `/broca/feed` montrait bien les events.
+Audit complet : `docs/dev-notes/engram-residue-audit.md` (145 occurrences "engram"
+classees dans 7 categories).
+
+5 changements minimaux dans la couche kleos-lib pour passer le tag canonique a
+`"kleos"` cote write, tout en preservant `"engram"` en lecture pour les rows
+deja stockees :
+
+- `kleos-lib/src/activity.rs:261` : fanout broca, `service: "engram"` -> `"kleos"`
+- `kleos-lib/src/services/broca.rs:1209` : `known_services` ajoute `"engram"` comme alias
+- `kleos-lib/src/intelligence/growth.rs:424` : `GrowthReflectRequest.service` `"engram"` -> `"kleos"`
+- `kleos-lib/src/intelligence/growth.rs:91` : match arm `"engram" | "kleos"`
+- `kleos-lib/src/intelligence/growth.rs:407` : SELECT `source LIKE '%-growth'` (au lieu de strict `'engram-growth'`)
+
+Le commit 1 (`61b9c3c` broca+activity) est upstream-friendly (fix actif d'un bug
+visible). Le commit 2 (`a72008d` growth + docs) est local-only par prudence
+(touche un tag stocke en DB, upstream pourrait resister meme si techniquement
+safe via le LIKE retro-compat).
+
+---
+
+## Patch 14 -- LLM thinking-mode toggle
+
+**Fichiers :**
+- `kleos-lib/src/llm/mod.rs` (fonction helper `think_enabled()`)
+- `kleos-lib/src/llm/types.rs` (champ `OllamaConfig.think: Option<bool>`)
+- `kleos-lib/src/llm/local.rs` (body injection, priorite override)
+- `kleos-lib/src/intelligence/llm.rs` (struct `OllamaRequest.think`)
+- `kleos-lib/src/services/broca.rs` (`call_llm_endpoint` merge `think` dans body)
+- `kleos-sidecar/src/main.rs` (lit `KLEOS_SIDECAR_LLM_THINK` -> `cfg.think`)
+
+**Statut upstream :** Absent. Modeles thinking (Qwen3, deepseek-r1, gpt-oss:20b)
+renvoient un champ `thinking` separe et un `response` souvent vide quand on hit
+`/api/generate` (Ollama natif) -- comportement documente dans
+`docs/dev-notes/dreamer-llm-contract.md`. Sans flag explicite cote client, le
+dreamer/Broca/Chiasm/sidecar deviennent muets quand l'operateur swap pour un
+modele thinking.
+**Date :** 2026-05-18 (post deploy v1.1.5, decouverte via consultation peer
+claude-peers `desktop-7b2civn-crawl4ai-rag` sur le choix de modele).
+
+### Intention
+
+Permettre a l'operateur de basculer le mode thinking on/off **sans recompiler**
+quand il swap pour un modele reasoning-capable (typiquement Qwen3:8b). Default
+safe = thinking off (= behavior actuel pour les non-thinking models comme
+`llama3.2:3b`).
+
+### Pourquoi pas upstream
+
+Le code upstream construit ses bodies Ollama sans le champ `think`, ce qui fait
+qu'Ollama applique le default du modele (true pour les modeles reasoning,
+ignore pour les autres). Tant qu'upstream cible les modeles non-thinking, c'est
+invisible. Patch candidat PR upstream legitime mais pas critique pour leur
+distribution -- garde local pour l'instant.
+
+### Comment
+
+Hierarchie de priorite (la plus specifique gagne) :
+
+| Niveau | Source | Periode de validite |
+|---|---|---|
+| 1 | `OllamaConfig.think = Some(true \| false)` | Override programmatique (test, init explicite) |
+| 2 | `KLEOS_SIDECAR_LLM_THINK` env var | Sidecar process only (lu dans `kleos-sidecar/src/main.rs`) |
+| 3 | `LLM_THINK` env var | Tous les autres consommateurs kleos-lib (dreamer, Broca, Chiasm) |
+| 4 | `false` | Default safe (aucune var set) |
+
+Toutes les vars sont booleennes parsees via `matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")`. Anything else, including unset, = `false`.
+
+Pattern aligne sur Patch 11 (`KLEOS_SIDECAR_OLLAMA_*` overrident les
+`OLLAMA_*` generiques) -- le sidecar a son propre namespace pour decoupler son
+choix de modele/endpoint/thinking du serveur Kleos qui peut etre tres different
+(Windows host vs LXC Linux, GPU local vs remote).
+
+### Ce qui a ete fait
+
+```rust
+// kleos-lib/src/llm/mod.rs (helper expose au workspace)
+pub fn think_enabled() -> bool {
+    std::env::var("LLM_THINK")
+        .ok()
+        .map(|s| matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+// kleos-lib/src/llm/types.rs (OllamaConfig accepte un override)
+pub struct OllamaConfig {
+    // ... champs existants ...
+    /// Per-config thinking-mode override. None = fallback sur LLM_THINK env var.
+    pub think: Option<bool>,
+}
+
+// kleos-lib/src/llm/local.rs (resolution de la priorite)
+let think = self.config.think.unwrap_or_else(super::think_enabled);
+let body = serde_json::json!({
+    // ...
+    "think": think,
+});
+
+// kleos-lib/src/intelligence/llm.rs (struct OllamaRequest field explicite)
+struct OllamaRequest {
+    // ...
+    think: bool,
+    // ...
+}
+let body = OllamaRequest {
+    // ...
+    think: crate::llm::think_enabled(),
+    // ...
+};
+
+// kleos-lib/src/services/broca.rs (merge dans body generique)
+let body_value = {
+    let mut v = serde_json::to_value(&body)
+        .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+    if let serde_json::Value::Object(ref mut map) = v {
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(crate::llm::think_enabled()));
+    }
+    v
+};
+let mut req = BROCA_LLM_CLIENT.post(url).json(&body_value);
+
+// kleos-sidecar/src/main.rs (override env sidecar-scope)
+if let Ok(v) = std::env::var("KLEOS_SIDECAR_LLM_THINK") {
+    cfg.think = Some(matches!(
+        v.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    ));
+}
+```
+
+Comportement attendu :
+
+| Env positionnees | Sidecar | Serveur (Broca/Chiasm/Dreamer) |
+|---|---|---|
+| Aucune | `think: false` | `think: false` |
+| `LLM_THINK=true` | `think: true` (fallback) | `think: true` |
+| `KLEOS_SIDECAR_LLM_THINK=false`, `LLM_THINK=true` | `think: false` (override sidecar) | `think: true` |
+| `KLEOS_SIDECAR_LLM_THINK=true`, `LLM_THINK=false` | `think: true` (override sidecar) | `think: false` |
+
+### Comment reproduire le fix
+
+```bash
+# Sur une base fraiche (rebase sans ce patch)
+
+# 1. helper public
+grep -n "pub fn think_enabled" kleos-lib/src/llm/mod.rs
+# Doit retourner une seule ligne. Sinon, ajouter la fonction (cf. snippet ci-dessus).
+
+# 2. struct OllamaConfig
+grep -n "pub think: Option<bool>" kleos-lib/src/llm/types.rs
+# Doit etre present + ajoute dans Default::default() : `think: None`.
+
+# 3. body injection LocalModelClient
+grep -n '"think": think' kleos-lib/src/llm/local.rs
+# Doit etre present, precede de `let think = self.config.think.unwrap_or_else(super::think_enabled);`.
+
+# 4. struct OllamaRequest dreamer
+grep -n "think: bool" kleos-lib/src/intelligence/llm.rs
+# Doit etre present + le caller call_llm doit populer `think: crate::llm::think_enabled()`.
+
+# 5. call_llm_endpoint merge broca
+grep -n 'entry("think".to_string())' kleos-lib/src/services/broca.rs
+# Doit etre present (or_insert pour ne pas ecraser un caller qui set deja think).
+
+# 6. override sidecar
+grep -n "KLEOS_SIDECAR_LLM_THINK" kleos-sidecar/src/main.rs
+# Doit etre present, juste apres les overrides KLEOS_SIDECAR_OLLAMA_URL/MODEL.
+
+# Validation
+cargo check -p kleos-lib -p kleos-sidecar
+# Doit passer 0 erreur.
+```
+
+### Configuration recommandee post-deploy
+
+**LXC 121 (`/etc/kleos/kleos.env`)** -- ne PAS positionner `LLM_THINK` si on
+tourne sur un modele non-thinking (default `llama3.2:3b`). Si swap vers
+`qwen3:8b` ou autre reasoning model, laisser quand meme `LLM_THINK` UNSET ou
+`=false` puisque Kleos lit le champ `response` Ollama et le thinking serait
+perdu -- on veut bypass.
+
+**Poste Windows** -- meme regle : ne PAS positionner `KLEOS_SIDECAR_LLM_THINK`
+si on swap le sidecar vers `qwen3:8b` ou autre reasoning. Default false bypass
+le thinking et garde `response` non-vide.
+
+Mettre `LLM_THINK=true` uniquement si :
+- Un nouveau caller dans Kleos sait lire le champ `thinking` separe (pas le cas
+  actuellement nulle part)
+- L'operateur veut explicitement les chains-of-thought dans les logs serveur
+  pour debug (rare et tres bruyant)
+
+### Note design : pourquoi pas inverser le default ?
+
+Default false a ete choisi pour ne pas casser le behavior actuel quand un
+operateur upgrade Kleos sans toucher a son env file. Si un jour un modele
+reasoning devient le default upstream (peu probable a court terme), inverser
+le default necessitera une migration d'env vars cote operateurs existants. Cf.
+discussion peer claude-peers 2026-05-18.
 
 ---
 

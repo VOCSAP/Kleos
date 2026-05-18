@@ -8,6 +8,26 @@ pub mod types;
 
 pub use types::*;
 
+/// Whether the LLM should run in thinking / reasoning mode for this process.
+/// Controlled by the `LLM_THINK` env var. Default: `false` (thinking disabled).
+///
+/// Accepts `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive) as truthy.
+/// Anything else (including unset) returns `false`.
+///
+/// The returned bool is meant to be injected as the `"think"` field of an
+/// Ollama request body for callers that hit `/api/generate` or `/api/chat`
+/// (Ollama >= 0.5). Ollama bypasses the reasoning phase when `false`, which
+/// matters because Kleos reads only the `response` field and thinking-mode
+/// models would otherwise emit empty responses with the reasoning consumed
+/// in an unused `thinking` field. Lets operators flip the flag at deploy
+/// time without recompiling when a future model needs reasoning re-enabled.
+pub fn think_enabled() -> bool {
+    std::env::var("LLM_THINK")
+        .ok()
+        .map(|s| matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 /// Repair and parse JSON from LLM output that may have common formatting issues.
 ///
 /// Handles: markdown code fences, trailing commas, unterminated strings,
