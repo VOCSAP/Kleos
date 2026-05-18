@@ -1205,8 +1205,13 @@ async fn ask_plan_call(question: &str) -> AskPlan {
 fn ask_keyword_heuristic(question: &str) -> AskPlan {
     let lower = question.to_lowercase();
 
-    // Known service names to look for in the question.
-    let known_services = ["kleos", "chiasm", "axon", "loom", "soma", "thymus", "broca"];
+    // Known service names to look for in the question. `engram` is the legacy
+    // tag still emitted by some older fanouts and any leftover data already
+    // stored before the post-rebrand fix to activity::fanout_broca; keep it as
+    // a backward-compatible alias so the ask plan can still resolve those rows.
+    let known_services = [
+        "kleos", "chiasm", "axon", "loom", "soma", "thymus", "broca", "engram",
+    ];
 
     let service = known_services
         .iter()
