@@ -456,14 +456,35 @@ enum SigningBackend {
     Piv(Mutex<yubikey::YubiKey>),
 }
 
-/// Verify PIV PIN then sign a SHA-256 digest with slot 9A. Nano 5.7.4+ firmware requires PIN before signing.
+/// Read the PIV PIN required for runtime signing. Refuses to fall back to
+/// the YubiKey factory-default PIN ("123456"); a missing or factory-default
+/// PIV_PIN is treated as a hard configuration error so callers never burn
+/// PIN retries against a hardened YubiKey. Always available, irrespective
+/// of the `piv` cargo feature, because callers include Python-subprocess
+/// signing paths that do not link the `yubikey` Rust crate.
+pub fn runtime_piv_pin() -> std::result::Result<String, &'static str> {
+    match std::env::var("PIV_PIN") {
+        Ok(p) if p.is_empty() => Err("PIV_PIN is set but empty"),
+        Ok(p) if p == "123456" => {
+            Err("PIV_PIN equals the YubiKey factory-default; refusing to use it")
+        }
+        Ok(p) => Ok(p),
+        Err(_) => Err("PIV_PIN environment variable is not set"),
+    }
+}
+
+/// Verify PIV PIN then sign a SHA-256 digest with slot 9A. Nano 5.7.4+
+/// firmware requires PIN before signing. If `PIV_PIN` is unset or equal to
+/// the factory default this returns `AuthenticationError` BEFORE touching
+/// the YubiKey, so no PIN retries are consumed against a misconfigured env.
 #[cfg(feature = "piv")]
 fn piv_verify_and_sign(
     yk: &mut yubikey::YubiKey,
     digest: &[u8],
 ) -> std::result::Result<Vec<u8>, yubikey::Error> {
-    let pin = std::env::var("PIV_PIN").unwrap_or_else(|_| "123456".to_string());
-    let _ = yk.verify_pin(pin.as_bytes());
+    let pin = runtime_piv_pin().map_err(|_| yubikey::Error::AuthenticationError)?;
+    yk.verify_pin(pin.as_bytes())
+        .map_err(|_| yubikey::Error::AuthenticationError)?;
     yubikey::piv::sign_data(
         yk,
         digest,

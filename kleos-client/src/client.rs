@@ -9,32 +9,42 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 /// HTTP client wrapper that handles auth, session capture, and base-URL composition.
+///
+/// Supports comma-separated URLs in `KLEOS_URL` for failover: the first URL is
+/// the primary, subsequent URLs are tried on connection-level failures (timeout,
+/// refused, unreachable). HTTP-level errors (4xx, 5xx) are NOT retried.
 pub struct Client {
     http: reqwest::Client,
-    base_url: String,
+    urls: Vec<String>,
     api_key: Option<String>,
     pub signer: Option<kleos_lib::auth_piv::RequestSigner>,
 }
 
 /// Constructor and HTTP request helpers for `Client`.
 impl Client {
-    /// Constructs a new `Client` with the given base URL, optional API key, and optional PIV signer.
+    /// Constructs a new `Client`. `base_url` may be comma-separated for failover
+    /// (e.g. `"http://10.50.0.1:4200,http://172.30.0.201:4200"`).
     pub fn new(
         base_url: String,
         api_key: Option<String>,
         signer: Option<kleos_lib::auth_piv::RequestSigner>,
     ) -> Self {
+        let urls: Vec<String> = base_url
+            .split(',')
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
         Self {
             http: reqwest::Client::new(),
-            base_url: base_url.trim_end_matches('/').to_string(),
+            urls,
             api_key,
             signer,
         }
     }
 
-    /// Returns the configured base URL.
+    /// Returns the primary (first) base URL.
     pub fn base_url(&self) -> &str {
-        &self.base_url
+        self.urls.first().map(|s| s.as_str()).unwrap_or("")
     }
 
     /// Applies PIV-signed headers or bearer-token auth to a pending request.
@@ -66,6 +76,50 @@ impl Client {
         req
     }
 
+    /// Core request dispatcher with URL failover. Tries each configured URL in
+    /// order; on connection-level failures (timeout, refused, unreachable) falls
+    /// through to the next URL. HTTP errors (4xx, 5xx) are returned immediately.
+    async fn execute(
+        &self,
+        http: &reqwest::Client,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        content_type: Option<&str>,
+    ) -> Result<reqwest::Response, String> {
+        let mut last_err = String::new();
+        for (i, base) in self.urls.iter().enumerate() {
+            let url = format!("{base}{path}");
+            let mut req = match method {
+                "GET" => http.get(&url),
+                "POST" => http.post(&url),
+                "PUT" => http.put(&url),
+                "PATCH" => http.patch(&url),
+                "DELETE" => http.delete(&url),
+                _ => return Err(format!("unsupported HTTP method: {method}")),
+            };
+            if let Some(ct) = content_type {
+                req = req.header("content-type", ct);
+            }
+            if let Some(b) = body {
+                req = req.body(b.to_vec());
+            }
+            req = self.apply_auth(req, method, path, body.unwrap_or(b""));
+            match req.send().await {
+                Ok(resp) => return Ok(resp),
+                Err(e) if is_connection_error(&e) && i + 1 < self.urls.len() => {
+                    eprintln!(
+                        "warning: {method} {url} failed ({}), trying next URL",
+                        format_error_chain(&e)
+                    );
+                    last_err = format_reqwest_error(method, &url, &e);
+                }
+                Err(e) => return Err(format_reqwest_error(method, &url, &e)),
+            }
+        }
+        Err(last_err)
+    }
+
     /// Reads any session token issued by the server and caches it in the signer.
     pub fn capture_session(&self, resp: &reqwest::Response) {
         if let Some(signer) = &self.signer {
@@ -79,91 +133,56 @@ impl Client {
 
     /// Sends an authenticated GET request and returns the parsed JSON body.
     pub async fn get(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
-        let req = self.http.get(&url);
-        let req = self.apply_auth(req, "GET", path, b"");
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format_reqwest_error("GET", &url, &e))?;
+        let resp = self.execute(&self.http, "GET", path, None, None).await?;
         self.capture_session(&resp);
-        self.handle_response("GET", &url, resp).await
+        self.handle_response("GET", path, resp).await
     }
 
     /// Sends an authenticated POST request with a JSON body and returns the parsed JSON response.
     pub async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-        let req = self
-            .http
-            .post(&url)
-            .header("content-type", "application/json")
-            .body(body_bytes.clone());
-        let req = self.apply_auth(req, "POST", path, &body_bytes);
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format_reqwest_error("POST", &url, &e))?;
+        let resp = self
+            .execute(&self.http, "POST", path, Some(&body_bytes), Some("application/json"))
+            .await?;
         self.capture_session(&resp);
-        self.handle_response("POST", &url, resp).await
+        self.handle_response("POST", path, resp).await
     }
 
     /// Sends an authenticated PUT request with a JSON body and returns the parsed JSON response.
     pub async fn put(&self, path: &str, body: Value) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-        let req = self
-            .http
-            .put(&url)
-            .header("content-type", "application/json")
-            .body(body_bytes.clone());
-        let req = self.apply_auth(req, "PUT", path, &body_bytes);
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format_reqwest_error("PUT", &url, &e))?;
+        let resp = self
+            .execute(&self.http, "PUT", path, Some(&body_bytes), Some("application/json"))
+            .await?;
         self.capture_session(&resp);
-        self.handle_response("PUT", &url, resp).await
+        self.handle_response("PUT", path, resp).await
     }
 
     /// Sends an authenticated PATCH request with a JSON body and returns the parsed JSON response.
     pub async fn patch(&self, path: &str, body: Value) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
-        let req = self
-            .http
-            .patch(&url)
-            .header("content-type", "application/json")
-            .body(body_bytes.clone());
-        let req = self.apply_auth(req, "PATCH", path, &body_bytes);
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format_reqwest_error("PATCH", &url, &e))?;
+        let resp = self
+            .execute(&self.http, "PATCH", path, Some(&body_bytes), Some("application/json"))
+            .await?;
         self.capture_session(&resp);
-        self.handle_response("PATCH", &url, resp).await
+        self.handle_response("PATCH", path, resp).await
     }
 
     /// Sends an authenticated DELETE request and returns the parsed JSON response.
     pub async fn delete(&self, path: &str) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
-        let req = self.http.delete(&url);
-        let req = self.apply_auth(req, "DELETE", path, b"");
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format_reqwest_error("DELETE", &url, &e))?;
+        let resp = self.execute(&self.http, "DELETE", path, None, None).await?;
         self.capture_session(&resp);
-        self.handle_response("DELETE", &url, resp).await
+        self.handle_response("DELETE", path, resp).await
     }
 
     /// Sends an authenticated multipart POST request and returns the parsed JSON response.
+    /// No failover -- multipart forms cannot be resent.
     pub async fn post_multipart(
         &self,
         path: &str,
         form: reqwest::multipart::Form,
     ) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
+        let url = format!("{}{}", self.base_url(), path);
         let req = self.http.post(&url).multipart(form);
         let req = self.apply_auth(req, "POST", path, b"");
         let resp = req
@@ -171,18 +190,12 @@ impl Client {
             .await
             .map_err(|e| format_reqwest_error("POST", &url, &e))?;
         self.capture_session(&resp);
-        self.handle_response("POST", &url, resp).await
+        self.handle_response("POST", path, resp).await
     }
 
     /// Sends an authenticated GET and returns the raw bytes, filename, and content-type.
     pub async fn get_bytes(&self, path: &str) -> Result<(Vec<u8>, String, String), String> {
-        let url = format!("{}{}", self.base_url, path);
-        let req = self.http.get(&url);
-        let req = self.apply_auth(req, "GET", path, b"");
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format_reqwest_error("GET", &url, &e))?;
+        let resp = self.execute(&self.http, "GET", path, None, None).await?;
         self.capture_session(&resp);
         let status = resp.status();
         if !status.is_success() {
@@ -213,10 +226,11 @@ impl Client {
     pub async fn handle_response(
         &self,
         method: &str,
-        url: &str,
+        path: &str,
         resp: reqwest::Response,
     ) -> Result<Value, String> {
         let status = resp.status();
+        let url = resp.url().to_string();
 
         if status == reqwest::StatusCode::UNAUTHORIZED {
             if let Some(signer) = &self.signer {
@@ -228,7 +242,7 @@ impl Client {
             format!(
                 "{} {} succeeded but reading response body failed: {}",
                 method,
-                url,
+                path,
                 format_error_chain(&e)
             )
         })?;
@@ -249,20 +263,17 @@ impl Client {
                         .map(ToOwned::to_owned)
                 })
                 .unwrap_or_else(|| body_excerpt(&bytes));
-            Err(format!("HTTP {}: {}", status, msg))
+            Err(format!("HTTP {} {}: {}", status, url, msg))
         }
     }
 
     /// Sends a GET request with a per-call timeout; returns an empty object on 404.
     pub async fn get_with_timeout(&self, path: &str, timeout: Duration) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .build()
             .map_err(|e| format!("http client build failed: {e}"))?;
-        let req = http.get(&url);
-        let req = self.apply_auth(req, "GET", path, b"");
-        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let resp = self.execute(&http, "GET", path, None, None).await?;
         self.capture_session(&resp);
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -280,18 +291,14 @@ impl Client {
         body: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
-        let url = format!("{}{}", self.base_url, path);
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .build()
             .map_err(|e| format!("http client build failed: {e}"))?;
-        let req = http
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .body(body_bytes.clone());
-        let req = self.apply_auth(req, "POST", path, &body_bytes);
-        let resp = req.send().await.map_err(|e| e.to_string())?;
+        let resp = self
+            .execute(&http, "POST", path, Some(&body_bytes), Some("application/json"))
+            .await?;
         self.capture_session(&resp);
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
@@ -392,6 +399,11 @@ fn push_qparam(qs: &mut String, key: &str, val: &Value) {
     qs.push_str(&encoded_key.to_string());
     qs.push('=');
     qs.push_str(&encoded_val.to_string());
+}
+
+/// Returns true for connection-level failures that warrant URL failover.
+fn is_connection_error(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout()
 }
 
 /// Returns up to 512 bytes of the response body as a UTF-8 string for error messages.

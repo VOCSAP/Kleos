@@ -274,7 +274,14 @@ pub fn ecdh_agree(slot: PivSlot, peer_pubkey_pem: &str) -> Result<[u8; 32]> {
     }
 
     let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
-    let piv_pin = std::env::var("PIV_PIN").unwrap_or_else(|_| "123456".to_string());
+    // Runtime path: refuse to fall back to the YubiKey factory-default PIN.
+    // A misconfigured PIV_PIN would otherwise burn PIN retries on the YubiKey
+    // every time ECDH ran. Fail fast and loud instead.
+    let piv_pin = kleos_lib::auth_piv::runtime_piv_pin().map_err(|e| {
+        CredError::InvalidInput(format!(
+            "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
+        ))
+    })?;
 
     let script = format!(
         r#"

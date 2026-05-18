@@ -617,7 +617,11 @@ mod ecdh {
     fn piv_sign_9a(payload: &[u8]) -> Result<Vec<u8>, EcdhClientError> {
         let payload_hex = hex::encode(payload);
         let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
-        let piv_pin = std::env::var("PIV_PIN").unwrap_or_else(|_| "123456".to_string());
+        let piv_pin = crate::auth_piv::runtime_piv_pin().map_err(|e| {
+            EcdhClientError::Sign(format!(
+                "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
+            ))
+        })?;
         // NOTE: yubikit's PivSession.sign(message, hash_algorithm=SHA256())
         // hashes the message INTERNALLY when hash_algorithm is set. Pre-hashing
         // and passing the digest causes a double-hash and verification failure
