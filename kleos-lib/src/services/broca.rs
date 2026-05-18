@@ -729,7 +729,21 @@ pub(crate) async fn call_llm_endpoint<B: serde::Serialize>(
     body: B,
     api_key: Option<String>,
 ) -> std::result::Result<String, String> {
-    let mut req = BROCA_LLM_CLIENT.post(url).json(&body);
+    // Patch 14: inject the LLM_THINK env-var flag into the request body when
+    // the caller has not already set a `think` field. Keeps every Broca /
+    // Chiasm caller honouring the operator-controlled thinking-mode toggle
+    // without each call site having to remember to add it.
+    let body_value = {
+        let mut v = serde_json::to_value(&body)
+            .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+        if let serde_json::Value::Object(ref mut map) = v {
+            map.entry("think".to_string())
+                .or_insert_with(|| serde_json::Value::Bool(crate::llm::think_enabled()));
+        }
+        v
+    };
+
+    let mut req = BROCA_LLM_CLIENT.post(url).json(&body_value);
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }

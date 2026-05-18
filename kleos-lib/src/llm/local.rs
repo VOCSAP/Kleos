@@ -200,6 +200,10 @@ impl LocalModelClient {
             permit
         };
 
+        // Patch 14: opt-out of Ollama thinking mode by default; the per-config
+        // `think` override (sidecar populates from `KLEOS_SIDECAR_LLM_THINK`)
+        // takes precedence over the global `LLM_THINK` env var.
+        let think = self.config.think.unwrap_or_else(super::think_enabled);
         let body = serde_json::json!({
             "model": model,
             "messages": [
@@ -209,6 +213,7 @@ impl LocalModelClient {
             "temperature": opts.temperature.unwrap_or(0.1),
             "max_tokens": opts.max_tokens.unwrap_or(2000),
             "stream": false,
+            "think": think,
         });
 
         let body_str = body.to_string();

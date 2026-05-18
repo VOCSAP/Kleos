@@ -207,7 +207,7 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 `kleos-sidecar` sits between your agent and the server:
 
 - Buffers observations in memory instead of blocking on every write
-- Optional compression via local Ollama
+- Optional compression via local Ollama (thinking mode opt-in via `LLM_THINK=true` globally or `KLEOS_SIDECAR_LLM_THINK=true` sidecar-only; default is off so non-thinking models stay supported out of the box)
 - Batched flushing to the server
 - File-watching and persistent session support
 

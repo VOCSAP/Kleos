@@ -26,6 +26,11 @@ pub struct OllamaConfig {
     pub cb_cooldown_ms: u64,
     /// Bearer token for cloud OpenAI-compatible providers. `None` for local Ollama.
     pub api_key: Option<String>,
+    /// Per-config thinking-mode override. `None` means the client falls back
+    /// to the global `LLM_THINK` env var (see `kleos_lib::llm::think_enabled`).
+    /// Sidecar populates this from `KLEOS_SIDECAR_LLM_THINK` so its choice can
+    /// diverge from any other caller of `LocalModelClient` in the same process.
+    pub think: Option<bool>,
 }
 
 impl Default for OllamaConfig {
@@ -40,6 +45,7 @@ impl Default for OllamaConfig {
             cb_threshold: 3,
             cb_cooldown_ms: 30_000,
             api_key: None,
+            think: None,
         }
     }
 }
