@@ -1125,6 +1125,88 @@ Cout estime : ~300 lignes, 1h30 d'effort. La decouverte de
 - Issue Ollama : https://github.com/ollama/ollama/issues/14820
 - Test empirique : Kleos #2136 (decouverte), #2148 (validation)
 
+---
+
+## Patch 14c -- Extend `reasoning_effort` injection to LocalModelClient / Loom / Atoms
+
+**Date** : 2026-05-19
+**Statut** : code applique, deploye sur LXC 121, validation end-to-end OK via `/skills/capture`
+**Fichiers touches** :
+- `kleos-lib/src/llm/mod.rs` (helper `inject_openai_compat_reasoning` ajoute, +18 lignes)
+- `kleos-lib/src/llm/local.rs` (LocalModelClient.call, body devient `mut`, appel helper)
+- `kleos-lib/src/services/loom.rs` (execute_llm_step, idem)
+- `kleos-lib/src/handoffs/atoms.rs` (extract_llm, idem)
+- Spec agent-forge : `spec_882f64c7`
+**Niveau delta upstream** : chirurgical (helper additif + 3 call sites 2 lignes chacun)
+
+### Probleme
+
+Patch 14b avait corrige l'injection `reasoning_effort` dans `broca::call_llm_endpoint`
+uniquement. Trois autres call sites construisent des payloads OpenAI-compat directement
+sans passer par ce helper :
+
+1. `kleos-lib/src/llm/local.rs::LocalModelClient.call` (utilise par `/skills/*` et le
+   Phase 5 `/context include_inference=true` du Patch 16).
+2. `kleos-lib/src/services/loom.rs::execute_llm_step` (workflow Loom de type `llm`).
+3. `kleos-lib/src/handoffs/atoms.rs::extract_llm` (extraction des atoms session
+   handoff).
+
+Sur LXC 121 (Qwen3 via `/v1/chat/completions`) ces 3 chemins envoyaient `think: false`
+mais pas `reasoning_effort`. Resultat : Qwen3 ecrit son output dans le reasoning block
+ignore par kleos-server, et `LocalModelClient.call` retourne erreur `ollama returned
+empty response` apres ~5-6s.
+
+Symptome observable post-deploy Patch 16 : `/skills/capture` echoue avec 500
+`Internal error: ollama returned empty response`.
+
+### Solution
+
+Factoriser le snippet Patch 14b dans un helper `pub(crate)`
+`inject_openai_compat_reasoning(body: &mut serde_json::Value)` cote `kleos-lib::llm`,
+puis l'appeler depuis les 3 sites. broca.rs:758 reste inline (Patch 14b deploye, on
+evite de le toucher pour minimiser le delta supplementaire).
+
+```rust
+// kleos-lib/src/llm/mod.rs
+pub(crate) fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
+    if let serde_json::Value::Object(ref mut map) = body {
+        let think = think_enabled();
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(think));
+        let effort = if think { "high" } else { "none" };
+        map.entry("reasoning_effort".to_string())
+            .or_insert_with(|| serde_json::Value::String(effort.to_string()));
+    }
+}
+```
+
+Helper idempotent : `or_insert_with` preserve toute valeur deja posee par le caller.
+No-op sur `serde_json::Value` non-Object. Le param est ignore silencieusement par
+Ollama si l'endpoint cible est `/api/generate` natif au lieu de `/v1/chat/completions`,
+donc l'appel est sans effet de bord sur les autres deployments.
+
+### Validation post-deploy
+
+```
+POST /skills/capture (description: "Deploy a Rust binary to a remote LXC...")
+-> HTTP 200 en 32s, slug="deploy-rust-binary-to-lxc", evolution_type="captured", skill_id=1
+```
+
+Avant 14c : 500 "ollama returned empty response" en 6s.
+
+### Cas non corriges (intentionnel)
+
+| Call site | Statut | Raison |
+|---|---|---|
+| `broca.rs:758` | Inline 14b deploye | Eviter d'editer du delta deja en prod |
+| `broca.rs:1147+`, `broca.rs:1330+` | Passent par `call_llm_endpoint` | 14b heritee transitivement |
+| `chiasm/tasks.rs:682,691` | Passent par `broca::call_llm_endpoint` | 14b heritee transitivement |
+
+### Reference
+
+- Memoire Kleos #2323 (implementation), #2332 (validation empirique)
+- Spec agent-forge : `spec_882f64c7`
+
 **Architecture actuelle :** `main` = upstream/main exact (synchronise via fetch +
 fast-forward), `local/patches` = branche topic VOCSAP avec ~8 commits semantiques
 au-dessus de main. Plus de merge `--allow-unrelated-histories` historique.
@@ -1322,6 +1404,130 @@ Discute avec l'operateur 2026-05-19 :
 - Sub overrides : `https://github.com/VOCSAP/Kleos.prompts` (CLAUDE.md + README.md)
 - Plan d'execution : `~/.claude/plans/swirling-yawning-twilight.md`
 - Memoires Kleos : #2185 (pilote validation), #2197 (architecture finale), #2200 (hot-reload validation), #2208 (lots 1-6 complete)
+
+---
+
+## Patch 16 -- Extension overlay aux suffixes et a `context/inference`
+
+**Date** : 2026-05-19
+**Statut** : code complet, deploye sur LXC 121, validation empirique partielle (growth 4/4 services + skills/capture OK; context/inference indirect via skills/capture)
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/growth.rs` (helper `service_prompt_paths` ajoute, `reflect` re-route via suffix+user)
+- `kleos-lib/src/skills/evolver.rs` (3 const remplaces par 9 accessor functions, 9 call sites adaptes)
+- `kleos-lib/src/context/mod.rs` (Phase 5 Inference utilise `load_pair` + `interpolate`)
+- 19 nouveaux fichiers prompts sous `kleos-lib/prompts/` :
+  - `growth/{kleos,claude_code,eidolon,default}_reflection/{system_suffix,user}.txt` (8)
+  - `skills/{fix,derive,capture}_prompt/{name,desc,code}_user_suffix.txt` (9)
+  - `context/inference/{system,user}.txt` (2)
+- `docs/dev-notes/llm-prompts-catalog.md` (35 ids overlayables total : 17 Patch 15 + 18 Patch 16)
+- Specs agent-forge : `spec_7c400216` (Lot 1 growth), `spec_56c24f77` (Lot 2 skills), `spec_8153fc3c` (Lot 3 context)
+**Niveau delta upstream** : refactor (3 fichiers Rust touches dans des fonctions upstream) + additif (19 nouveaux files)
+
+### Probleme
+
+Patch 15 avait externalise les **persona** prompts (system) et les **user templates principaux** (5 cas), mais 3 categories restaient hardcodees :
+
+1. **Rules systeme** : `growth.rs:209-233` ajoutait 6 bullet rules au persona via `format!("{}{}", system, rules)`. Identiques sur les 4 services growth.
+2. **Shot suffixes** : `evolver.rs:34-36` 3 const `NAME/DESC/CODE_SHOT_SUFFIX` reutilises 9 fois (3 fonctions x 3 phases).
+3. **Paire `context/inference`** : `context/mod.rs:1019-1029` Phase 5 LLM inference hardcodait `system_prompt` et le format `user_prompt`.
+
+### Solution (convention Option C)
+
+Tous les nouveaux fichiers colocalises par `<service>/<purpose>/` -- pas de dossier `rules/` separe. Deux nouveaux suffixes de fichier :
+
+- `system_suffix.txt` : appende au system par le caller via `format!("{}\n{}", system.trim_end(), suffix.trim_end())`.
+- `<phase>_user_suffix.txt` : appende au user par le caller via `format!("...\n\n{}", suffix.trim())`.
+
+Suffix vide neutralise la regle correspondante (escape hatch intentionnel). Reutilisation des helpers Patch 15 `load_prompt`, `load_pair`, `load_and_render`, `template::interpolate`.
+
+Refactor `growth.rs::reflect` : factorisation du routage service via `service_prompt_paths()` qui retourne `{system,suffix,user}_{id,default}`. Compatibilite preservee : `get_prompt_for_service` reste appelle pour le system (alignement Patch 15) et delegue desormais a `service_prompt_paths`.
+
+Refactor `evolver.rs` : 3 const remplaces par 9 const `*_USER_SUFFIX_DEFAULT` + 9 accesseurs `fix_name_user_suffix()`, etc. Chaque fonction (`fix_skill`, `derive_skill`, `capture_skill`) charge ses 3 suffixes en debut puis les injecte dans les 3 `format!`.
+
+Refactor `context/mod.rs:1019` : `load_pair("context/inference", ...)` + `template::interpolate(user_tmpl, vars)` avec `{"query": ..., "top_facts": ...}`.
+
+### Validation
+
+- Build : `cargo build` 0 erreurs (10 warnings pre-existants ECDH cred/bootstrap)
+- Tests unitaires : `cargo test -p kleos-lib` 827/827 pass, 4 ignored, zero regression
+- Empirique post-deploy :
+  - `growth/reflect` 4/4 services (kleos, claude-code, eidolon, default) -> observations 1-3 phrases 1ere personne
+  - `skills/capture` -> slug kebab-case, evolution_type="captured" en ~32s (3 LLM calls)
+  - `context/inference` -- LocalModelClient valide indirectement via skills/capture (meme code path). Endpoint `/context` bloque par cap upstream 30s lorsque cold cache + LLM call > 30s (cf. Patch 16b).
+
+### Convention
+
+| Suffixe fichier | Concat cote caller | Exemples ids |
+|---|---|---|
+| `system.txt` | tel quel | `broca/ask_plan/system`, `growth/kleos_reflection/system` |
+| `user.txt` | `interpolate(template, vars)` | `broca/ask_plan/user`, `growth/kleos_reflection/user` |
+| `system_suffix.txt` | `format!("{}\n{}", system.trim_end(), suffix.trim_end())` | `growth/*/system_suffix` |
+| `<phase>_user_suffix.txt` | `format!("...\n\n{}", suffix.trim())` | `skills/fix_prompt/name_user_suffix` etc. |
+
+### Reference
+
+- Plan d'execution : `~/.claude/plans/mossy-launching-origami.md`
+- Cartographie initiale : `docs/dev-notes/llm-prompts-rules-todo.md` (gitignored)
+- Catalog detaille : `docs/dev-notes/llm-prompts-catalog.md`
+- Sub overrides : `https://github.com/VOCSAP/Kleos.prompts` (CLAUDE.md + README.md mis a jour)
+- Memoires Kleos : #2287 (passation pre-Patch-16), #2295 (Lot 1 growth), #2296 (Lot 2 skills), #2297 (Lot 3 context), #2299 (recap code), #2302 (doc 3 fichiers), #2305 (politique upstream), #2332 (validation empirique)
+
+---
+
+## Patch 16b -- `KLEOS_CONTEXT_TIMEOUT_SECS` env var pour /context
+
+**Date** : 2026-05-19
+**Statut** : code complet, deploiement attendu (operateur ajoute la variable dans `/etc/kleos/kleos.env` avant restart)
+**Fichier touche** : `kleos-server/src/routes/context/mod.rs` (one const + one fn + 1 ligne)
+**Spec agent-forge** : `spec_b896f973`
+**Niveau delta upstream** : additif (constante hardcodee devient configurable, default identique)
+
+### Probleme
+
+Le router `/context` (upstream S7-26) applique un `TimeoutLayer::with_status_code(REQUEST_TIMEOUT, Duration::from_secs(30))` hardcode. Sur LXC 121 avec Qwen3 :
+- cold semantic cache : ~14s
+- LLM call inference Patch 16 : ~15s
+- total > 30s -> HTTP 408
+
+Le default global `KLEOS_REQUEST_TIMEOUT_SECS=1800` (server.rs:19) est ignore par cette route specifique.
+
+### Solution
+
+Ajouter `DEFAULT_CONTEXT_TIMEOUT_SECS = 30` (preserve upstream behaviour) + `context_timeout()` qui lit `KLEOS_CONTEXT_TIMEOUT_SECS` env var et fallback sur la constante :
+
+```rust
+const DEFAULT_CONTEXT_TIMEOUT_SECS: u64 = 30;
+
+fn context_timeout() -> Duration {
+    let secs = std::env::var("KLEOS_CONTEXT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CONTEXT_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+```
+
+Router conserve `S7-26` comment + ajoute "Patch 16b: configurable via KLEOS_CONTEXT_TIMEOUT_SECS, default 30". Default identique au comportement upstream quand l'env var est unset.
+
+### Deploiement operateur
+
+Sur LXC 121, dans `/etc/kleos/kleos.env` :
+```
+KLEOS_CONTEXT_TIMEOUT_SECS=60
+```
+
+Restart kleos-server. Le cap passe a 60s, l'inference Patch 16 entre dans le budget.
+
+### Validation
+
+- Build : `cargo check -p kleos-server` 0 erreurs.
+- Default behaviour preserve (env var unset -> 30s, identique upstream).
+- Operateur peut ajuster sans rebuild.
+
+### Reference
+
+- Spec agent-forge : `spec_b896f973`
+- Memoire Kleos #2332 (decouverte du blocker post-Patch 16)
 
 ---
 
