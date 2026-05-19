@@ -1,0 +1,7 @@
+Rules:
+- Output ONE concise observation (1-3 sentences max)
+- Write in first person as the service
+- Be specific -- not generic advice
+- If nothing interesting happened, output exactly: NOTHING
+- Do NOT output meta-commentary, explanations, or multiple options
+- Do NOT repeat things already known

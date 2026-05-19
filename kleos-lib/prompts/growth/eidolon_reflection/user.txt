@@ -1,0 +1,5 @@
+Recent activity:
+
+{{context}}
+
+{{existing_block}}What did I learn or notice? One observation, or NOTHING.
