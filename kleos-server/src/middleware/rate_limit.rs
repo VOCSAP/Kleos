@@ -10,9 +10,10 @@ use crate::middleware::client_ip::client_ip_key;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
-/// Pre-authentication per-IP rate limit (requests per minute). Kept low to
-/// resist brute-force auth attempts; authenticated callers use per-key limits.
-const PREAUTH_IP_LIMIT: i64 = 20;
+/// Pre-authentication per-IP rate limit (requests per minute). Must be high
+/// enough for MCP sessions that fire many calls in bursts, while still
+/// blocking brute-force auth attempts.
+const PREAUTH_IP_LIMIT: i64 = 60;
 
 fn too_many_requests(retry_after: i64) -> Response {
     let body = serde_json::json!({
