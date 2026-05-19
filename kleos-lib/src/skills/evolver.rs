@@ -31,9 +31,83 @@ pub fn capture_system_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt("skills/capture_prompt/system", CAPTURE_SYSTEM_PROMPT_DEFAULT)
 }
 
-const NAME_SHOT_SUFFIX: &str = "\n\nRespond with ONLY a short kebab-case slug (2 to 5 words, lowercase letters, digits, and hyphens). No punctuation, no quotes, no explanation, no code fences.";
-const DESC_SHOT_SUFFIX: &str = "\n\nRespond with ONLY a single-sentence description of this skill (under 200 characters). No quotes, no explanation, no prefix.";
-const CODE_SHOT_SUFFIX: &str = "\n\nRespond with ONLY the skill body as markdown. Start with a short heading. Include concrete steps, examples, and guardrails. Keep it under 4000 characters. Do not wrap the output in code fences.";
+// Patch 16 -- per-call-site user suffix shots, externalized so an operator
+// can tune the slug / description / body shot rules for one entry point
+// (fix vs derive vs capture) without affecting the others. Duplication is
+// intentional (Option C of plan mossy-launching-origami).
+const FIX_NAME_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/fix_prompt/name_user_suffix.txt");
+const FIX_DESC_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/fix_prompt/desc_user_suffix.txt");
+const FIX_CODE_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/fix_prompt/code_user_suffix.txt");
+const DERIVE_NAME_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/derive_prompt/name_user_suffix.txt");
+const DERIVE_DESC_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/derive_prompt/desc_user_suffix.txt");
+const DERIVE_CODE_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/derive_prompt/code_user_suffix.txt");
+const CAPTURE_NAME_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/capture_prompt/name_user_suffix.txt");
+const CAPTURE_DESC_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/capture_prompt/desc_user_suffix.txt");
+const CAPTURE_CODE_USER_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/skills/capture_prompt/code_user_suffix.txt");
+
+fn fix_name_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/fix_prompt/name_user_suffix",
+        FIX_NAME_USER_SUFFIX_DEFAULT,
+    )
+}
+fn fix_desc_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/fix_prompt/desc_user_suffix",
+        FIX_DESC_USER_SUFFIX_DEFAULT,
+    )
+}
+fn fix_code_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/fix_prompt/code_user_suffix",
+        FIX_CODE_USER_SUFFIX_DEFAULT,
+    )
+}
+fn derive_name_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/derive_prompt/name_user_suffix",
+        DERIVE_NAME_USER_SUFFIX_DEFAULT,
+    )
+}
+fn derive_desc_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/derive_prompt/desc_user_suffix",
+        DERIVE_DESC_USER_SUFFIX_DEFAULT,
+    )
+}
+fn derive_code_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/derive_prompt/code_user_suffix",
+        DERIVE_CODE_USER_SUFFIX_DEFAULT,
+    )
+}
+fn capture_name_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/capture_prompt/name_user_suffix",
+        CAPTURE_NAME_USER_SUFFIX_DEFAULT,
+    )
+}
+fn capture_desc_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/capture_prompt/desc_user_suffix",
+        CAPTURE_DESC_USER_SUFFIX_DEFAULT,
+    )
+}
+fn capture_code_user_suffix() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/capture_prompt/code_user_suffix",
+        CAPTURE_CODE_USER_SUFFIX_DEFAULT,
+    )
+}
 
 /// Strip code fences from LLM output.
 pub fn strip_code_fences(s: &str) -> String {
@@ -254,17 +328,23 @@ pub async fn fix_skill(
         failure_notes,
     );
 
+    let name_suffix = fix_name_user_suffix();
+    let desc_suffix = fix_desc_user_suffix();
+    let code_suffix = fix_code_user_suffix();
     let name_user = format!(
-        "Propose a new kebab-case slug for a fixed version of this skill.\n\n{}{}",
-        context, NAME_SHOT_SUFFIX
+        "Propose a new kebab-case slug for a fixed version of this skill.\n\n{}\n\n{}",
+        context,
+        name_suffix.trim()
     );
     let desc_user = format!(
-        "Write a new one-sentence description for the fixed version.\n\n{}{}",
-        context, DESC_SHOT_SUFFIX
+        "Write a new one-sentence description for the fixed version.\n\n{}\n\n{}",
+        context,
+        desc_suffix.trim()
     );
     let code_user = format!(
-        "Rewrite the skill body so that the listed failures no longer occur. Preserve the intent, tighten the steps, and add guardrails for the observed errors.\n\n{}{}",
-        context, CODE_SHOT_SUFFIX
+        "Rewrite the skill body so that the listed failures no longer occur. Preserve the intent, tighten the steps, and add guardrails for the observed errors.\n\n{}\n\n{}",
+        context,
+        code_suffix.trim()
     );
 
     let fix_sys = fix_system_prompt();
@@ -355,17 +435,23 @@ pub async fn derive_skill(
         direction_capped, parent_ctx
     );
 
+    let name_suffix = derive_name_user_suffix();
+    let desc_suffix = derive_desc_user_suffix();
+    let code_suffix = derive_code_user_suffix();
     let name_user = format!(
-        "Propose a kebab-case slug for a skill derived from the parents, in the requested direction.\n\n{}{}",
-        context, NAME_SHOT_SUFFIX
+        "Propose a kebab-case slug for a skill derived from the parents, in the requested direction.\n\n{}\n\n{}",
+        context,
+        name_suffix.trim()
     );
     let desc_user = format!(
-        "Write a one-sentence description for this derived skill.\n\n{}{}",
-        context, DESC_SHOT_SUFFIX
+        "Write a one-sentence description for this derived skill.\n\n{}\n\n{}",
+        context,
+        desc_suffix.trim()
     );
     let code_user = format!(
-        "Write the body of the derived skill. Combine the best of the parent skills, apply the direction, and remove redundancy.\n\n{}{}",
-        context, CODE_SHOT_SUFFIX
+        "Write the body of the derived skill. Combine the best of the parent skills, apply the direction, and remove redundancy.\n\n{}\n\n{}",
+        context,
+        code_suffix.trim()
     );
 
     let derive_sys = derive_system_prompt();
@@ -424,17 +510,23 @@ pub async fn capture_skill(
     let trimmed = capped.as_str();
     let llm = require_llm(llm)?;
 
+    let name_suffix = capture_name_user_suffix();
+    let desc_suffix = capture_desc_user_suffix();
+    let code_suffix = capture_code_user_suffix();
     let name_user = format!(
-        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nPropose a kebab-case slug.{}",
-        trimmed, NAME_SHOT_SUFFIX
+        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nPropose a kebab-case slug.\n\n{}",
+        trimmed,
+        name_suffix.trim()
     );
     let desc_user = format!(
-        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nWrite a one-sentence description of the skill.{}",
-        trimmed, DESC_SHOT_SUFFIX
+        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nWrite a one-sentence description of the skill.\n\n{}",
+        trimmed,
+        desc_suffix.trim()
     );
     let code_user = format!(
-        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nWrite the body of the skill: concrete steps, examples, and guardrails.{}",
-        trimmed, CODE_SHOT_SUFFIX
+        "A user wants a reusable skill captured from this workflow description:\n---\n{}\n---\nWrite the body of the skill: concrete steps, examples, and guardrails.\n\n{}",
+        trimmed,
+        code_suffix.trim()
     );
 
     let capture_sys = capture_system_prompt();
