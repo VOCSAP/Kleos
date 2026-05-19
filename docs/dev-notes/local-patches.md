@@ -27,6 +27,7 @@ qui reste 1.1.2).
 | 12 -- hooks bundle preservation | RE-APPLIQUE, preserve byte-a-byte | `e86bb03` -> `10c829e` |
 | **13 -- fix(broca,activity,growth) post-rebrand engram->kleos** (NOUVEAU 2026-05-18) | 2 commits separes pour faciliter PR upstream eventuelle | `61b9c3c` + `a72008d` |
 | **14 -- LLM thinking-mode toggle (`LLM_THINK` / `KLEOS_SIDECAR_LLM_THINK`)** (NOUVEAU 2026-05-18) | Permet d'utiliser Qwen3 et autres reasoning models sans casser Kleos qui lit le champ `response` Ollama | a commiter |
+| **14b -- Mirror `think` -> `reasoning_effort` sur OpenAI-compat** (NOUVEAU 2026-05-19) | Contourne le bug Ollama #14820 : le param `think` est ignore sur `/v1/chat/completions`. Mesure: Broca ask 47s -> 6s sur qwen3:8b-ctx16k. | a commiter |
 | kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
 
 **Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
@@ -1043,7 +1044,85 @@ discussion peer claude-peers 2026-05-18.
 
 ---
 
-## Procédure d'intégration des releases upstream (depuis v1.1.0)
+## Patch 14b -- Mirror `think` -> `reasoning_effort` (Ollama OpenAI-compat workaround)
+
+**Date** : 2026-05-19
+**Statut** : DEPLOYE sur LXC 121, validation end-to-end OK
+**Fichier touche** : `kleos-lib/src/services/broca.rs` (function `call_llm_endpoint`,
+~13 lignes ajoutees autour des lignes 732-756)
+
+### Probleme
+
+Le Patch 14 injecte `think: false` (param natif Ollama) dans le body de chaque
+appel LLM via `call_llm_endpoint`. Test empirique 2026-05-19 sur qwen3:8b-ctx16k :
+
+| Endpoint | Param | Latence Broca ask | Reasoning genere |
+|---|---|---|---|
+| `/v1/chat/completions` | `think:false` | 47s | ~750 chars (gaspilles) |
+| `/api/chat` natif | `think:false` | 5s | 0 chars |
+
+Le param `think` est **silencieusement ignore** par Ollama sur l'endpoint
+OpenAI-compat (`/v1/chat/completions`), confirme par l'issue upstream
+[ollama/ollama#14820](https://github.com/ollama/ollama/issues/14820)
+(closed mars 2026).
+
+### Solution officielle (Ollama upstream)
+
+L'endpoint OpenAI-compat honore le param OpenAI-standard `reasoning_effort`
+(string) :
+
+- `"high"`, `"medium"`, `"low"` -> thinking ON (avec effort variable)
+- `"none"` -> thinking OFF
+
+Mapping interne Ollama (cf. `openai/openai.go` upstream) : `reasoning_effort`
+est traduit vers le champ `Think` interne.
+
+### Patch applique
+
+```rust
+// kleos-lib/src/services/broca.rs:732-756 (call_llm_endpoint)
+let body_value = {
+    let mut v = serde_json::to_value(&body)
+        .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+    if let serde_json::Value::Object(ref mut map) = v {
+        let think = crate::llm::think_enabled();
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(think));
+        let effort = if think { "high" } else { "none" };
+        map.entry("reasoning_effort".to_string())
+            .or_insert_with(|| serde_json::Value::String(effort.to_string()));
+    }
+    v
+};
+```
+
+Les deux params sont injectes systematiquement. Chaque endpoint Ollama
+ignore silencieusement celui qu'il ne reconnait pas :
+
+- `/v1/chat/completions` -> lit `reasoning_effort`, ignore `think`
+- `/api/chat` natif -> lit `think`, ignore `reasoning_effort`
+
+Pas de regression possible.
+
+### Mesure post-deploiement (LXC 121, qwen3:8b-ctx16k via OpenAI-compat)
+
+```
+Broca ask end-to-end : 47s (avant 14b) -> 6s (apres 14b)
+Reasoning tokens     : ~750 -> 0
+```
+
+### Pourquoi pas refactorer vers /api/chat natif ?
+
+Initialement le plan etait un Patch 15 refactorisant 6 call sites
+(`llm_narrate`, `ask_plan_call`, `ask_summarize_call`, `chiasm::generate_plan`,
+`loom::execute_llm_step`) pour supporter le format natif Ollama.
+Cout estime : ~300 lignes, 1h30 d'effort. La decouverte de
+`reasoning_effort` reduit le patch a 3 lignes pour le meme gain de latence.
+
+### Reference
+
+- Issue Ollama : https://github.com/ollama/ollama/issues/14820
+- Test empirique : Kleos #2136 (decouverte), #2148 (validation)
 
 **Architecture actuelle :** `main` = upstream/main exact (synchronise via fetch +
 fast-forward), `local/patches` = branche topic VOCSAP avec ~8 commits semantiques
