@@ -98,7 +98,7 @@ async fn agent_card() -> impl IntoResponse {
             "type": "bearer",
             "header": "Authorization",
             "prefix": "Bearer",
-            "key_prefix": "eg_",
+            "key_prefix": "kleos_",
             "alternative": "x402"
         },
         "links": {

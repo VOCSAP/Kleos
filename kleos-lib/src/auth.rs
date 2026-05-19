@@ -179,14 +179,22 @@ fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
     }
 }
 
-/// Normalise a raw API key to its canonical `engram_<hex>` form.
+/// Normalise a raw API key to its canonical `kleos_<hex>` form.
 ///
-/// SECURITY (SEC-LOW-2): the `eg_` prefix is a legacy shorthand alias kept
-/// for backwards compatibility with older clients. Both prefixes map to the
-/// same canonical form so hash lookups succeed regardless of which prefix the
-/// caller used.
+/// Accepts four prefixes for backwards compatibility:
+///   - `kleos_` (canonical, new keys mint with this)
+///   - `kl_`    (shorthand alias)
+///   - `engram_` (legacy, pre-rename)
+///   - `eg_`     (legacy shorthand)
+///
+/// All prefixes map to the same canonical `kleos_` form so hash lookups
+/// succeed regardless of which prefix the caller used.
 fn normalize_key(raw_key: &str) -> Option<String> {
-    let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
+    let hex_portion = if let Some(rest) = raw_key.strip_prefix("kleos_") {
+        rest
+    } else if let Some(rest) = raw_key.strip_prefix("kl_") {
+        rest
+    } else if let Some(rest) = raw_key.strip_prefix("engram_") {
         rest
     } else {
         raw_key.strip_prefix("eg_")?
@@ -198,7 +206,7 @@ fn normalize_key(raw_key: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("engram_{}", hex_portion.to_ascii_lowercase()))
+    Some(format!("kleos_{}", hex_portion.to_ascii_lowercase()))
 }
 
 /// Generate a new random API key.
@@ -227,7 +235,7 @@ fn generate_key() -> Result<(String, String, String, i32)> {
         let _ = write!(&mut raw_hex, "{:02x}", byte);
     }
 
-    let full_key = format!("engram_{}", raw_hex);
+    let full_key = format!("kleos_{}", raw_hex);
     // key_prefix = first 8 chars of the hex portion (chars 7..15 of full_key)
     let key_prefix = raw_hex[..8].to_string();
 
@@ -392,12 +400,19 @@ pub async fn create_key_with_expiry(
 pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     let normalized_key =
         normalize_key(raw_key).ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
-    let hex_portion = normalized_key[7..].to_string();
+    // Extract hex portion after the `kleos_` prefix (6 chars)
+    let hex_portion = normalized_key[6..].to_string();
     let key_prefix = hex_portion[..8].to_string();
 
-    // Compute hashes for both versions upfront
+    // Compute hashes for the current canonical form (`kleos_<hex>`)
     let hash_v1 = hash_key_v1(&normalized_key);
     let hash_v2 = hash_key_v2(&normalized_key);
+
+    // Legacy keys were hashed as `engram_<hex>` -- compute those too so
+    // existing DB rows still validate without a migration step.
+    let legacy_form = format!("engram_{}", hex_portion);
+    let legacy_hash_v1 = hash_key_v1(&legacy_form);
+    let legacy_hash_v2 = hash_key_v2(&legacy_form);
 
     let api_key = db
         .read(move |conn| {
@@ -415,18 +430,21 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                 .query(rusqlite::params![key_prefix])
                 .map_err(rusqlite_to_eng_error)?;
 
-            // Check each candidate against the appropriate hash version
+            // Check each candidate against the appropriate hash version.
+            // Try both kleos_ and legacy engram_ canonical forms since
+            // existing DB rows were hashed with the engram_ prefix.
             while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
                 let hash_version: i32 = row.get(11).unwrap_or(HASH_VERSION_LEGACY);
                 let stored_hash: String = row.get(12).map_err(rusqlite_to_eng_error)?;
 
-                let expected_hash = match hash_version {
-                    HASH_VERSION_PEPPERED => hash_v2.as_ref(),
+                // Build candidate hashes: current prefix first, legacy fallback second
+                let candidates: Vec<Option<&String>> = match hash_version {
+                    HASH_VERSION_PEPPERED => {
+                        vec![hash_v2.as_ref(), legacy_hash_v2.as_ref()]
+                    }
                     _ => {
                         // SECURITY (SEC-C5): reject v1 (unpeppered) keys when
-                        // pepper is configured. This prevents a downgrade attack
-                        // where an attacker who can modify the api_keys table
-                        // flips hash_version to bypass the pepper.
+                        // pepper is configured.
                         if hash_v2.is_some() {
                             tracing::warn!(
                                 key_prefix = %key_prefix,
@@ -434,36 +452,34 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                             );
                             continue;
                         }
-                        Some(&hash_v1)
+                        vec![Some(&hash_v1), Some(&legacy_hash_v1)]
                     }
                 };
 
                 // SECURITY (SEC-C2): constant-time comparison to prevent
                 // timing oracle attacks on hash values.
-                let matches = match expected_hash {
-                    Some(expected) => {
-                        expected.len() == stored_hash.len()
-                            && expected
-                                .as_bytes()
-                                .ct_eq(stored_hash.as_bytes())
-                                .unwrap_u8()
-                                == 1
+                let matches = candidates.iter().any(|expected_hash| {
+                    match expected_hash {
+                        Some(expected) => {
+                            expected.len() == stored_hash.len()
+                                && expected
+                                    .as_bytes()
+                                    .ct_eq(stored_hash.as_bytes())
+                                    .unwrap_u8()
+                                    == 1
+                        }
+                        None => false,
                     }
-                    None => false,
-                };
+                });
 
                 if matches {
-                    // R8 S-005: surface v1 (legacy, unpeppered) key acceptance
-                    // so operators can track migration progress. The reject
-                    // path for peppered deployments already logs at line 408.
                     if hash_version != HASH_VERSION_PEPPERED {
-                        metrics::counter!("engram_auth_v1_key_accept_total").increment(1);
+                        metrics::counter!("kleos_auth_v1_key_accept_total").increment(1);
                         tracing::warn!(
                             key_prefix = %key_prefix,
                             "v1 (unpeppered) api key accepted; configure ENGRAM_API_KEY_PEPPER and re-migrate keys"
                         );
                     }
-                    // Found matching key -- reconstruct without key_hash column
                     return row_to_api_key_rusqlite_with_offset(row);
                 }
             }

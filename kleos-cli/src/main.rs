@@ -235,6 +235,18 @@ enum IdentityCommands {
 enum ApiKeyCommands {
     /// List Bearer API keys for the current caller (admin sees all keys).
     List,
+    /// Create a new Bearer API key. Admin scope required for admin-scoped keys.
+    Create {
+        /// Human-readable name for the key
+        #[arg(short, long)]
+        name: String,
+        /// Comma-separated scopes: read, write, admin
+        #[arg(short, long, default_value = "read,write")]
+        scopes: String,
+        /// Requests-per-minute rate limit (default: inherit from caller)
+        #[arg(short, long)]
+        rate_limit: Option<i64>,
+    },
     /// Revoke a Bearer API key by ID. PIV-signed; admin scope required to revoke others.
     Revoke {
         /// API key ID to revoke
@@ -1314,7 +1326,16 @@ async fn main() {
                         for k in keys {
                             let id = k.get("id").and_then(|x| x.as_i64()).unwrap_or(-1);
                             let name = k.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                            let scopes = k.get("scopes").and_then(|x| x.as_str()).unwrap_or("");
+                            let scopes = k
+                                .get("scopes")
+                                .and_then(|x| x.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(",")
+                                })
+                                .unwrap_or_default();
                             let created =
                                 k.get("created_at").and_then(|x| x.as_str()).unwrap_or("");
                             println!("{:<6} {:<24} {:<20} {}", id, name, scopes, created);
@@ -1324,6 +1345,47 @@ async fn main() {
                 },
                 Err(e) => eprintln!("Error: {}", e),
             },
+            ApiKeyCommands::Create {
+                name,
+                scopes,
+                rate_limit,
+            } => {
+                let mut body = serde_json::json!({ "name": name, "scopes": scopes });
+                if let Some(rl) = rate_limit {
+                    body["rate_limit"] = serde_json::json!(rl);
+                }
+                match client.post("/api-keys", body).await {
+                    Ok(v) => {
+                        let full_key = v.get("full_key").and_then(|x| x.as_str()).unwrap_or("");
+                        let key = v.get("key").unwrap_or(&serde_json::Value::Null);
+                        let id = key.get("id").and_then(|x| x.as_i64()).unwrap_or(-1);
+                        let name = key.get("name").and_then(|x| x.as_str()).unwrap_or("");
+                        let scopes = key
+                            .get("scopes")
+                            .and_then(|x| x.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            })
+                            .unwrap_or_default();
+                        if !full_key.is_empty() {
+                            println!("Created API key: id={} name=\"{}\" scopes={}", id, name, scopes);
+                            println!();
+                            println!("  {}", full_key);
+                            println!();
+                            println!("Save this key -- it cannot be retrieved again.");
+                        } else {
+                            eprintln!(
+                                "Unexpected response: {}",
+                                serde_json::to_string_pretty(&v).unwrap()
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("Error: {}", e),
+                }
+            }
             ApiKeyCommands::Revoke { id } => {
                 match client.delete(&format!("/api-keys/{}", id)).await {
                     Ok(v) => {
