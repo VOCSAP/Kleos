@@ -332,6 +332,47 @@ impl Client {
         }
     }
 
+    /// Forwards a raw JSON-RPC envelope to the server-side POST /mcp
+    /// endpoint, signing the request with PIV credentials.
+    /// Returns the parsed JSON-RPC response, or None for notifications
+    /// (server returns 202 Accepted or 204 No Content).
+    pub async fn post_mcp(&self, body: &Value) -> Result<Option<Value>, String> {
+        let body_bytes = serde_json::to_vec(body).unwrap_or_default();
+        let resp = self
+            .execute(
+                &self.http,
+                "POST",
+                "/mcp",
+                Some(&body_bytes),
+                Some("application/json"),
+            )
+            .await?;
+        self.capture_session(&resp);
+        let status = resp.status();
+        if status.as_u16() == 202 || status.as_u16() == 204 {
+            return Ok(None);
+        }
+        let bytes = resp.bytes().await.map_err(|e| {
+            format!("POST /mcp: reading response body failed: {e}")
+        })?;
+        if status.is_success() {
+            let parsed: Value = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("POST /mcp: invalid JSON: {e}"))?;
+            Ok(Some(parsed))
+        } else {
+            let msg = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|b| {
+                    b.get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .unwrap_or_else(|| body_excerpt(&bytes));
+            Err(format!("POST /mcp (HTTP {}): {msg}", status))
+        }
+    }
+
     /// Returns the agent label from the PIV signer, or "claude-code" when no signer is configured.
     pub fn agent_label(&self) -> String {
         self.signer

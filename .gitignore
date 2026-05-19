@@ -53,3 +53,10 @@ GROWTH.md
 frameshift.toml
 frameshift.lock
 .wrangler/
+
+# Repomix
+kleos-pack.*
+repomix.config.json
+
+# Debug artifacts
+dbgmd-*
