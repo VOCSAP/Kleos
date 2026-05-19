@@ -8,7 +8,7 @@
 //! [`TaskReport`] and causes dependents to be marked [`TaskStatus::Skipped`]
 //! so independent branches of the DAG still get a chance to execute.
 //!
-//! `default_pipeline()` wires up the canonical nightly pipeline: deduplicate
+//! `default_pipeline(consolidation_enabled)` wires up the canonical nightly pipeline: deduplicate
 //! -> consolidate_sweep -> {contradictions, temporal, reconsolidation} ->
 //! reflections. The HTTP handler at `POST /intelligence/run` invokes this.
 
@@ -286,11 +286,36 @@ impl IntelligenceTask for ReflectionsGenerateTask {
     }
 }
 
+/// Placeholder for the consolidate_sweep slot when consolidation is disabled.
+/// Returns immediately so downstream tasks still receive a resolved dependency.
+struct NoopConsolidateSweepTask;
+#[async_trait]
+impl IntelligenceTask for NoopConsolidateSweepTask {
+    fn name(&self) -> &'static str {
+        "consolidate_sweep"
+    }
+    fn dependencies(&self) -> &'static [&'static str] {
+        &["deduplicate"]
+    }
+    async fn run(&self, _db: &Database, _user_id: i64) -> Result<Value> {
+        Ok(json!({ "skipped": true, "reason": "consolidation_disabled" }))
+    }
+}
+
 /// Build the canonical intelligence pipeline used by `POST /intelligence/run`.
-pub fn default_pipeline() -> Scheduler {
+///
+/// When `consolidation_enabled` is false the consolidate_sweep slot is filled
+/// by a no-op task so downstream tasks (contradiction scan, temporal detect,
+/// reconsolidation, reflections) still run normally.
+pub fn default_pipeline(consolidation_enabled: bool) -> Scheduler {
+    let consolidate: Arc<dyn IntelligenceTask> = if consolidation_enabled {
+        Arc::new(ConsolidateSweepTask)
+    } else {
+        Arc::new(NoopConsolidateSweepTask)
+    };
     Scheduler::new()
         .add_task(Arc::new(DeduplicateTask))
-        .add_task(Arc::new(ConsolidateSweepTask))
+        .add_task(consolidate)
         .add_task(Arc::new(ContradictionScanTask))
         .add_task(Arc::new(TemporalDetectTask))
         .add_task(Arc::new(ReconsolidationSweepTask))
@@ -454,11 +479,53 @@ mod tests {
     #[tokio::test]
     async fn default_pipeline_runs_on_empty_db() {
         let db = setup_db().await;
-        let report = default_pipeline().run(&db, 1).await.expect("run");
+        let report = default_pipeline(true).run(&db, 1).await.expect("run");
         assert_eq!(report.reports.len(), 6);
         let names: Vec<&str> = report.reports.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"deduplicate"));
         assert!(names.contains(&"consolidate_sweep"));
         assert!(names.contains(&"reflections_generate"));
+    }
+
+    /// Verify that disabling consolidation still runs all six pipeline slots.
+    #[tokio::test]
+    async fn default_pipeline_disabled_consolidation_still_runs_all_tasks() {
+        let db = setup_db().await;
+        let report = default_pipeline(false).run(&db, 1).await.expect("run");
+        assert_eq!(report.reports.len(), 6, "all six slots must be present");
+
+        let by_name: HashMap<_, _> = report
+            .reports
+            .iter()
+            .map(|r| (r.name.as_str(), r))
+            .collect();
+
+        // The noop must succeed and carry the skipped marker in its output.
+        let consolidate = by_name["consolidate_sweep"];
+        assert_eq!(consolidate.status, TaskStatus::Ok);
+        let output = consolidate
+            .output
+            .as_ref()
+            .expect("noop consolidate_sweep must return output");
+        assert_eq!(output["skipped"], true);
+        assert_eq!(output["reason"], "consolidation_disabled");
+
+        // Downstream tasks must not be skipped -- they depend on
+        // consolidate_sweep which succeeded (even though it was a noop).
+        for name in &[
+            "contradiction_scan",
+            "temporal_detect",
+            "reconsolidation_sweep",
+            "reflections_generate",
+        ] {
+            let task = by_name
+                .get(name)
+                .unwrap_or_else(|| panic!("missing task: {name}"));
+            assert_eq!(
+                task.status,
+                TaskStatus::Ok,
+                "{name} should run normally when consolidation is disabled"
+            );
+        }
     }
 }
