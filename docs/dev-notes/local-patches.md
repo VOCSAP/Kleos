@@ -28,6 +28,7 @@ qui reste 1.1.2).
 | **13 -- fix(broca,activity,growth) post-rebrand engram->kleos** (NOUVEAU 2026-05-18) | 2 commits separes pour faciliter PR upstream eventuelle | `61b9c3c` + `a72008d` |
 | **14 -- LLM thinking-mode toggle (`LLM_THINK` / `KLEOS_SIDECAR_LLM_THINK`)** (NOUVEAU 2026-05-18) | Permet d'utiliser Qwen3 et autres reasoning models sans casser Kleos qui lit le champ `response` Ollama | a commiter |
 | **14b -- Mirror `think` -> `reasoning_effort` sur OpenAI-compat** (NOUVEAU 2026-05-19) | Contourne le bug Ollama #14820 : le param `think` est ignore sur `/v1/chat/completions`. Mesure: Broca ask 47s -> 6s sur qwen3:8b-ctx16k. | a commiter |
+| **15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)** (NOUVEAU 2026-05-19) | 17 call sites LLM surchargeables a chaud via fichier (`broca`, `chiasm`, `skills`, `extraction`, `memory`, `growth`, `loom`). Mecanisme cascade env + cache mtime TTL 5s. Submodule `prompts-overrides` (VOCSAP/Kleos.prompts) pour les overrides VOCSAP. Catalog dans `docs/dev-notes/llm-prompts-catalog.md`. | a commiter |
 | kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
 
 **Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
@@ -1198,6 +1199,129 @@ API qui a change upstream (struct extrait dans une crate, champ devenu prive,
 signature modifiee), il faut **adapter** plutot que checkout brut. Inspecter
 la nouvelle API publique via `git show main:<crate>/src/<file>.rs | grep "pub "`,
 puis reecrire le commit local.
+
+---
+
+## Patch 15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)
+
+**Date** : 2026-05-19
+**Statut** : code commite sur `local/patches-dynamic-prompt` (HEAD `a84221a`). Lots 1 a 6 termines, Lot 7 (cette doc) en cours.
+**Submodules associes** :
+- `prompts-overrides/` -> `https://github.com/VOCSAP/Kleos.prompts` (overrides VOCSAP, prive)
+- `wiki/Configuration.md` -- doc operateur publique
+
+### Intention
+
+Permettre a un operateur Kleos de surcharger n'importe quel prompt LLM hardcode dans le binaire `kleos-server` (system + user template) **sans recompilation**, via un dossier de fichiers `.txt` sur disque. Ouvre la voie a un tuning de prompts par operateur, par modele, par langue ou par incident. Refactor candidat a PR upstream : aucune regression si l'env var n'est pas definie ni le dossier present.
+
+### Pourquoi
+
+Session 2026-05-19 : on a decouvert qu'un prompt embedded (Broca `ask_plan` system) documente `service="broca"` comme DEFAULT pour les questions d'activite. Mais `actions.service` en DB stocke `"kleos"` (post-fix Patch 13) ou `"engram"` (legacy), **jamais `"broca"`**. Resultat : POST `/broca/ask` retournait `raw=[]` silencieusement parce que le LLM emettait `service=broca` -> 0 ligne SQL match. Sans mecanisme d'override, chaque ajustement de prompt requiert un cycle code -> commit -> build WSL -> deploy LXC complet (typique 15-20 minutes par iteration), trop long pour iterer sur le wording d'un prompt face a un nouveau modele.
+
+Plus largement, les 19 prompts LLM identifies dans le codebase (broca x3, chiasm x1, skills x5, extraction x2, memory x2, growth x4, prompts builder x1, loom fallback x1) sont tous **calibres pour les modeles d'upstream** (en l'occurrence llama3.2:3b ou la famille gpt-4). Pour le deploiement VOCSAP qui tourne sur qwen3:8b-ctx16k (Modelfile derive contexte 16384), certains prompts produisent des reponses sous-optimales et il faut pouvoir les ajuster sans recompiler.
+
+### Solution
+
+#### Mecanisme overlay
+
+```rust
+// kleos-lib/src/llm/prompts.rs
+pub fn load_prompt(id: &str, embedded_default: &'static str) -> Cow<'static, str>;
+pub fn load_pair(prefix: &str, def_sys: &'static str, def_user: &'static str)
+    -> (Cow<'static, str>, Cow<'static, str>);
+pub fn load_and_render(id: &str, default: &'static str, vars: &Value) -> String;
+```
+
+Resolution cascade pour le repo override :
+1. `KLEOS_LLM_PROMPT_REPOSITORY` (env var, path explicite) si defini
+2. `${KLEOS_DATA_DIR}/prompts` (ou `${ENGRAM_DATA_DIR}/prompts`) si le dossier existe
+3. Aucun -- embedded defaults via `include_str!()` bundle dans le binaire au build
+
+Cache : `Arc<String>` partage entre callers, invalidation `mtime` apres TTL 5s. Edits propages sans restart de `kleos-server`.
+
+Interpolation : `kleos-lib/src/llm/template.rs::interpolate(template, &vars)` rend les placeholders `{{path.to.field}}` avec un `serde_json::Value`. Variable manquante -> chaine vide (degrade gracieusement).
+
+#### Layout source-tree
+
+```
+kleos-lib/prompts/<service>/<purpose>/{system,user}.txt
+```
+
+Chaque `.txt` est embedde dans le binaire via `include_str!()`. Le contenu est byte-equivalent au literal Rust qu'il remplace, donc le binaire produit est identique en taille et en comportement par defaut. Le fichier `.txt` n'est PAS distribue avec le binaire -- il sert uniquement au build.
+
+#### Layout filesystem override
+
+```
+${root}/<service>/<purpose>/{system,user}.txt
+```
+
+Meme structure cote LXC ou cote dev. La fonction `load_pair(prefix, ...)` construit automatiquement les sous-paths `<prefix>/system` et `<prefix>/user`. Pas de fichier present = fallback embedded.
+
+#### Submodule prompts-overrides
+
+Pour VOCSAP, les overrides actifs vivent dans `https://github.com/VOCSAP/Kleos.prompts` (prive). Le main repo reference ce submodule via `prompts-overrides/` (racine). Cote LXC, l'operateur fait simplement :
+
+```bash
+cd /var/lib/kleos
+git clone https://github.com/VOCSAP/Kleos.prompts prompts
+# Updates :
+git -C /var/lib/kleos/prompts pull
+```
+
+Le sub embarque son propre `README.md` et `CLAUDE.md` avec catalog detaille et intentions par prompt.
+
+### Migration progress
+
+| Lot | Commit | Prompts |
+|---|---|---|
+| 1 -- foundations + pilot broca/ask_plan | `04eabaa` | 1 |
+| 2 -- broca + chiasm | `e994c69` | 3 |
+| 3 -- skills | `14b921b` | 5 |
+| 4 -- extraction + memory | `3d6ab46` | 4 |
+| 5 -- growth | `41ad013` | 4 |
+| 6 -- loom fallback | `a84221a` | 1 |
+| 7 -- catalog + doc | (en cours) | 0 |
+
+**17 call sites surchargeables au total**. 2 explicitement hors scope :
+- `prompts/agent_header` (build_living_prompt) : builder dynamique multi-sections, externalisation requerrait un templating engine.
+- `brain/oracle` : dead code (`#[allow(dead_code)]`).
+
+### Mesure end-to-end (LXC 121, qwen3:8b-ctx16k via /v1/chat/completions)
+
+Test pilote broca/ask_plan, sequence :
+
+1. Baseline (binaire avec embedded fix, aucun fichier override) :
+   ```
+   plan: {agent: 'Kleos', limit: 50, service: 'kleos', since: None}
+   ```
+2. Override force `service=loom, limit=3` via `/var/lib/kleos/prompts/broca/ask_plan/system.txt`, sleep 6s :
+   ```
+   plan: {agent: None, limit: 3, service: 'loom', since: None}
+   ```
+3. Hot-reload force `service=thymus, limit=11`, sleep 6s :
+   ```
+   plan: {agent: None, limit: 11, service: 'thymus', since: None}
+   ```
+4. Cleanup, retour baseline.
+
+**Trois inferences distinctes, AUCUN restart de kleos-server, TTL 5s respecte.** Le cache mtime invalidation + cascade env est operationnel.
+
+### Pourquoi pas DB / pas de cronjob FS->DB
+
+Discute avec l'operateur 2026-05-19 :
+- DB ajoute un couplage inutile pour un workflow ou les overrides changent rarement (semaines/mois).
+- Le filesystem permet `vim` + `git diff` + `git log` natifs, plus naturel pour iterer.
+- Le cache mtime fait quasiment aussi vite qu'une lecture DB (50 us au cold miss vs ~5-8s par appel LLM = 0.001% d'overhead).
+- Cronjob FS -> DB serait du double-bookkeeping pour zero gain.
+
+### Reference
+
+- Module : `kleos-lib/src/llm/prompts.rs` + `kleos-lib/src/llm/template.rs`
+- Catalog detaille : `docs/dev-notes/llm-prompts-catalog.md`
+- Doc operateur : `wiki/Configuration.md` section "LLM Prompts Overlay (VOCSAP Patch 15)"
+- Sub overrides : `https://github.com/VOCSAP/Kleos.prompts` (CLAUDE.md + README.md)
+- Plan d'execution : `~/.claude/plans/swirling-yawning-twilight.md`
+- Memoires Kleos : #2185 (pilote validation), #2197 (architecture finale), #2200 (hot-reload validation), #2208 (lots 1-6 complete)
 
 ---
 
