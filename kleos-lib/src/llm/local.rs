@@ -204,7 +204,7 @@ impl LocalModelClient {
         // `think` override (sidecar populates from `KLEOS_SIDECAR_LLM_THINK`)
         // takes precedence over the global `LLM_THINK` env var.
         let think = self.config.think.unwrap_or_else(super::think_enabled);
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": model,
             "messages": [
                 { "role": "system", "content": system_prompt },
@@ -215,6 +215,11 @@ impl LocalModelClient {
             "stream": false,
             "think": think,
         });
+        // Patch 14c -- mirror Patch 14b reasoning_effort injection so Qwen3
+        // emits content on /v1/chat/completions when think=false (Ollama
+        // issue #14820). Idempotent via or_insert_with semantics; the
+        // explicit `think` above is preserved.
+        super::inject_openai_compat_reasoning(&mut body);
 
         let body_str = body.to_string();
         tracing::debug!(

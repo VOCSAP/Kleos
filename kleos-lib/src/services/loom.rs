@@ -1738,7 +1738,7 @@ pub async fn execute_llm_step(
 
     let is_openai_compat = url.contains("/v1/chat") || url.contains("/chat/completions");
 
-    let body = if is_openai_compat {
+    let mut body = if is_openai_compat {
         serde_json::json!({
             "model": model,
             "messages": [
@@ -1754,6 +1754,10 @@ pub async fn execute_llm_step(
             "model": model,
         })
     };
+    // Patch 14c -- inject think + reasoning_effort so Qwen3 emits content on
+    // /v1/chat/completions when think=false. Safe no-op on the non-openai
+    // branch (Ollama silently drops unknown params).
+    crate::llm::inject_openai_compat_reasoning(&mut body);
 
     const MAX_ATTEMPTS: u32 = 3;
     let mut last_err: String = String::new();
