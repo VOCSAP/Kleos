@@ -18,6 +18,7 @@ CLAUDE.md
 WORKTREE-SPEC.md
 PLAN.md
 _parts/
+.test-llm/
 
 # Internal docs
 docs/plans/

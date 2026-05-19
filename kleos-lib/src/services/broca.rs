@@ -733,12 +733,23 @@ pub(crate) async fn call_llm_endpoint<B: serde::Serialize>(
     // the caller has not already set a `think` field. Keeps every Broca /
     // Chiasm caller honouring the operator-controlled thinking-mode toggle
     // without each call site having to remember to add it.
+    //
+    // Patch 14b: Ollama issue #14820 documents that the native `think` field
+    // is silently ignored on the OpenAI-compat `/v1/chat/completions`
+    // endpoint. The OpenAI-standard `reasoning_effort` is honoured instead
+    // (mapping: "high"/"medium"/"low" => think ON, "none" => think OFF).
+    // Inject both so the toggle works on both Ollama endpoint styles; the
+    // unrecognised param is silently dropped by each server.
     let body_value = {
         let mut v = serde_json::to_value(&body)
             .map_err(|e| format!("LLM body serialization failed: {e}"))?;
         if let serde_json::Value::Object(ref mut map) = v {
+            let think = crate::llm::think_enabled();
             map.entry("think".to_string())
-                .or_insert_with(|| serde_json::Value::Bool(crate::llm::think_enabled()));
+                .or_insert_with(|| serde_json::Value::Bool(think));
+            let effort = if think { "high" } else { "none" };
+            map.entry("reasoning_effort".to_string())
+                .or_insert_with(|| serde_json::Value::String(effort.to_string()));
         }
         v
     };
