@@ -439,13 +439,16 @@ fn is_loopback_origin(lower: &str) -> bool {
         "https://[::1]",
     ];
     for prefix in LOOPBACK_PREFIXES {
-        if lower == *prefix {
-            return true;
-        }
-        // Only allow a port suffix (":NNNN"), not arbitrary path/subdomain.
         if let Some(rest) = lower.strip_prefix(prefix) {
-            if rest.starts_with(':') {
+            if rest.is_empty() {
                 return true;
+            }
+            // Only allow a numeric port suffix (":NNNN"), reject subdomains
+            // like "localhost:3000.evil.com".
+            if let Some(port_str) = rest.strip_prefix(':') {
+                if !port_str.is_empty() && port_str.chars().all(|c| c.is_ascii_digit()) {
+                    return true;
+                }
             }
         }
     }
@@ -523,6 +526,18 @@ mod tests {
     fn origin_rejects_localhost_subdomain() {
         assert!(!is_allowed_origin("http://localhost.evil.com"));
         assert!(!is_allowed_origin("https://localhost.evil.com"));
+    }
+
+    #[test]
+    fn origin_rejects_port_suffixed_subdomain() {
+        assert!(!is_allowed_origin("http://localhost:3000.evil.com"));
+        assert!(!is_allowed_origin("https://127.0.0.1:8080.attacker.net"));
+    }
+
+    #[test]
+    fn origin_rejects_non_numeric_port() {
+        assert!(!is_allowed_origin("http://localhost:abc"));
+        assert!(!is_allowed_origin("http://localhost:"));
     }
 
     #[test]

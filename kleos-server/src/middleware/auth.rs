@@ -784,7 +784,7 @@ async fn resolve_identity_by_id(
         .read(move |conn| {
             conn.query_row(
                 "SELECT i.identity_key_id, i.identity_hash, i.host_label, i.agent_label,
-                        i.model_label, ik.user_id, ik.tier
+                        i.model_label, ik.user_id, ik.tier, ik.scopes
                  FROM identities i
                  JOIN identity_keys ik ON ik.id = i.identity_key_id
                  WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1",
@@ -798,6 +798,7 @@ async fn resolve_identity_by_id(
                         row.get::<_, String>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
             )
@@ -806,14 +807,14 @@ async fn resolve_identity_by_id(
         .await
         .map_err(|e| e.to_string())?;
 
-    let (ik_id, hash, host, agent, model, user_id, tier_str) = row;
+    let (ik_id, hash, host, agent, model, user_id, tier_str, scopes_json) = row;
     let tier = match tier_str.as_str() {
         "piv" => AuthTier::Piv,
         _ => AuthTier::Soft,
     };
 
     Ok(AuthContext {
-        key: synthetic_key_for_identity(user_id),
+        key: synthetic_key_for_identity_with_scopes(user_id, scopes_json.as_deref()),
         user_id,
         identity: Some(IdentityCtx {
             identity_id: Some(identity_id),
