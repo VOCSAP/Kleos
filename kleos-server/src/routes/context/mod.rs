@@ -23,14 +23,32 @@ use kleos_lib::context::{
 #[allow(dead_code)]
 mod types;
 
+/// Default cap for the `/context` and `/context/stream` routes.
+///
+/// S7-26 upstream wired a 30s ceiling because context assembly may run
+/// LLM inference + embedding back to back. On slower deployments the
+/// cold-cache semantic search alone can approach this, so Patch 16b
+/// makes the cap configurable via `KLEOS_CONTEXT_TIMEOUT_SECS`. The
+/// default preserves upstream behaviour when the env var is unset.
+const DEFAULT_CONTEXT_TIMEOUT_SECS: u64 = 30;
+
+fn context_timeout() -> Duration {
+    let secs = std::env::var("KLEOS_CONTEXT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CONTEXT_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/context", post(build_context))
         .route("/context/stream", post(build_context_stream))
         // S7-26: context assembly may run LLM inference + embedding; 30s cap.
+        // Patch 16b: configurable via KLEOS_CONTEXT_TIMEOUT_SECS, default 30.
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(30),
+            context_timeout(),
         ))
         // S7-27: context query payloads are small; 64 KB is ample.
         .layer(DefaultBodyLimit::max(64 * 1024))
