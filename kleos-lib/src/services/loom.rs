@@ -1701,7 +1701,15 @@ pub async fn execute_llm_step(
     let system_template = config.get("system").and_then(|v| v.as_str());
     let mut system_prompt = match system_template {
         Some(s) => interpolate(s, &vars),
-        None => "You are a helpful assistant.".to_string(),
+        None => {
+            // Patch 15 -- overlay-capable fallback when the workflow step
+            // does not supply its own system prompt.
+            crate::llm::prompts::load_prompt(
+                "loom/llm_step_fallback/system",
+                include_str!("../../prompts/loom/llm_step_fallback/system.txt"),
+            )
+            .into_owned()
+        }
     };
 
     let schema = config.get("schema").cloned();
