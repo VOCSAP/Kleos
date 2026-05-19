@@ -1,6 +1,6 @@
 [package]
 name = "kleos-server"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 rust-version.workspace = true
 description = "HTTP server for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
@@ -21,10 +21,10 @@ default = ["piv"]
 piv = ["kleos-mcp/piv"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.0", features = ["sqlcipher"] }
-kleos-cred = { path = "../kleos-cred", version = "1.2.0" }
-kleos-client = { path = "../kleos-client", version = "1.2.0", default-features = false }
-kleos-mcp = { path = "../kleos-mcp", version = "1.2.0", default-features = false }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
+kleos-client = { path = "../kleos-client", version = "1.2.1", default-features = false }
+kleos-mcp = { path = "../kleos-mcp", version = "1.2.1", default-features = false }
 percent-encoding = "2.3"
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
@@ -57,7 +57,7 @@ rust_decimal = { workspace = true }
 dirs = { workspace = true }
 
 [dev-dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.0", features = ["test-utils"] }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true }
 tempfile = { workspace = true }
