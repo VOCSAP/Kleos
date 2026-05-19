@@ -625,16 +625,23 @@ pub async fn llm_narrate(
 
     let model = broca_llm_model();
 
-    let system = "You translate technical agent actions into plain English. One sentence only.";
-    let user_prompt = format!(
-        "Convert this agent action into a single plain English sentence a non-technical person \
-         would understand. Be concise and natural. No technical jargon, no IDs, no JSON terms.\n\n\
-         Agent: {agent}\n\
-         Service: {service}\n\
-         Action: {action}\n\
-         Details: {payload}\n\n\
-         Respond with only the sentence, nothing else.",
-        payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string()),
+    // Patch 15 -- prompt overlay for broca/narrate (system + user template).
+    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
+        "broca/narrate",
+        include_str!("../../prompts/broca/narrate/system.txt"),
+        include_str!("../../prompts/broca/narrate/user.txt"),
+    );
+    let system: &str = system_cow.as_ref();
+    let payload_str =
+        serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let user_prompt = crate::llm::template::interpolate(
+        user_template_cow.as_ref(),
+        &serde_json::json!({
+            "agent": agent,
+            "service": service,
+            "action": action,
+            "payload": payload_str,
+        }),
     );
 
     // Detect endpoint style -- mirrors narrator.ts detection logic.
@@ -1281,8 +1288,14 @@ async fn ask_summarize_call(question: &str, rows: &[AskRow]) -> String {
     };
 
     let model = broca_llm_model();
-    let system = "You answer questions about an AI agent activity log. Be concise and direct. \
-        Cite relevant action ids in parentheses, e.g. (id:42). Answer in 1-3 sentences only.";
+
+    // Patch 15 -- prompt overlay for broca/ask_summary (system + user template).
+    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
+        "broca/ask_summary",
+        include_str!("../../prompts/broca/ask_summary/system.txt"),
+        include_str!("../../prompts/broca/ask_summary/user.txt"),
+    );
+    let system: &str = system_cow.as_ref();
 
     // Truncate rows list at 4 096 bytes to keep prompt size bounded.
     // `floor_char_boundary` would be ideal but is nightly-only; instead find
@@ -1304,8 +1317,12 @@ async fn ask_summarize_call(question: &str, rows: &[AskRow]) -> String {
         &rows_json
     };
 
-    let user_prompt = format!(
-        "Question: {question}\n\nMatched action log rows (JSON):\n{rows_excerpt}\n\nAnswer:"
+    let user_prompt = crate::llm::template::interpolate(
+        user_template_cow.as_ref(),
+        &serde_json::json!({
+            "question": question,
+            "rows_excerpt": rows_excerpt,
+        }),
     );
 
     let is_openai_compat = url_base.contains("11434")
