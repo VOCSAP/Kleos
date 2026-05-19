@@ -1024,8 +1024,24 @@ async fn assemble_context_inner(
                     .map(|b| format!("[{}] {}", b.id, b.content))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let system_prompt = "You find implicit connections between memories that aren't directly stated. Given these memories, identify 0-3 implicit connections. For each, write a single sentence stating the connection. If none exist, return \"none\". Be concise. Only state connections that are genuinely useful and non-obvious.";
-                let user_prompt = format!("Query: {}\n\nMemories:\n{}", opts.query, top_facts);
+                // Patch 16 -- context/inference prompt pair externalized.
+                const INFERENCE_SYS_DEFAULT: &str =
+                    include_str!("../../prompts/context/inference/system.txt");
+                const INFERENCE_USER_DEFAULT: &str =
+                    include_str!("../../prompts/context/inference/user.txt");
+                let (sys, user_tmpl) = crate::llm::prompts::load_pair(
+                    "context/inference",
+                    INFERENCE_SYS_DEFAULT,
+                    INFERENCE_USER_DEFAULT,
+                );
+                let vars = serde_json::json!({
+                    "query": opts.query,
+                    "top_facts": top_facts,
+                });
+                let user_prompt =
+                    crate::llm::template::interpolate(user_tmpl.as_ref(), &vars);
+                let user_prompt = user_prompt.trim_end().to_string();
+                let system_prompt = sys.trim_end();
                 if let Ok(result) = llm.call(system_prompt, &user_prompt, None).await {
                     if !result.to_lowercase().starts_with("none") {
                         let tokens = estimate_tokens(&result);
