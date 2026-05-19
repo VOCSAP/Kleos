@@ -343,7 +343,7 @@ pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
     );
     let system_prompt: &str = system_prompt_cow.as_ref();
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": "llama3",
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -352,6 +352,9 @@ pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
         "response_format": {"type": "json_object"},
         "temperature": 0.1
     });
+    // Patch 14c -- mirror Patch 14b reasoning_effort injection so Qwen3 emits
+    // content on /v1/chat/completions when think=false.
+    crate::llm::inject_openai_compat_reasoning(&mut body);
 
     let client = reqwest::Client::new();
     let url = format!("{}/v1/chat/completions", sidecar_url.trim_end_matches('/'));

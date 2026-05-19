@@ -30,6 +30,29 @@ pub fn think_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Patch 14c -- inject the `think` and `reasoning_effort` fields into an
+/// OpenAI-compat request body so Qwen3 (and other Ollama thinking-capable
+/// models) emit content even when the operator wants reasoning OFF.
+///
+/// Mirrors the inline logic added at `services::broca::call_llm_endpoint`
+/// (Patch 14b) and factored here so the 3 call sites that bypass
+/// `call_llm_endpoint` (LocalModelClient, Loom, handoffs::atoms) can share it
+/// without duplicating the snippet.
+///
+/// Idempotent: only inserts the keys when absent (mirror `or_insert_with`).
+/// No-op on non-object values. Safe to call on `/api/generate` payloads too
+/// -- the unknown param is silently dropped by Ollama.
+pub(crate) fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
+    if let serde_json::Value::Object(ref mut map) = body {
+        let think = think_enabled();
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(think));
+        let effort = if think { "high" } else { "none" };
+        map.entry("reasoning_effort".to_string())
+            .or_insert_with(|| serde_json::Value::String(effort.to_string()));
+    }
+}
+
 /// Repair and parse JSON from LLM output that may have common formatting issues.
 ///
 /// Handles: markdown code fences, trailing commas, unterminated strings,
