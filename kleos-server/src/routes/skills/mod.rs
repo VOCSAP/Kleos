@@ -756,15 +756,23 @@ async fn execute_skills_handler(
         }
     }
 
-    // Build system prompt
-    let system = if skill_context.is_empty() {
-        "You are a skilled assistant.".to_string()
+    // Build system prompt (Patch 15 -- prompt overlay).
+    // The skill_context_block is pre-formatted by the caller so the embedded
+    // template stays unchanged when no skills are loaded (preserves the
+    // upstream behavior of emitting just "You are a skilled assistant.").
+    let skill_context_block = if skill_context.is_empty() {
+        String::new()
     } else {
-        format!(
-            "You are a skilled assistant. Use the following skills as guidance:\n\n{}",
-            skill_context
-        )
+        format!(" Use the following skills as guidance:\n\n{}", skill_context)
     };
+    let system_template = kleos_lib::llm::prompts::load_prompt(
+        "skills/interactive_execute/system",
+        include_str!("../../../../kleos-lib/prompts/skills/interactive_execute/system.txt"),
+    );
+    let system = kleos_lib::llm::template::interpolate(
+        system_template.as_ref(),
+        &serde_json::json!({ "skill_context_block": skill_context_block }),
+    );
 
     // Call LLM
     let response = llm
