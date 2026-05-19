@@ -1,0 +1,1 @@
+Respond with ONLY the skill body as markdown. Start with a short heading. Include concrete steps, examples, and guardrails. Keep it under 4000 characters. Do not wrap the output in code fences.

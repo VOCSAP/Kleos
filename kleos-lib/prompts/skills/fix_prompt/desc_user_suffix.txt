@@ -1,0 +1,1 @@
+Respond with ONLY a single-sentence description of this skill (under 200 characters). No quotes, no explanation, no prefix.

@@ -1,0 +1,1 @@
+Respond with ONLY a short kebab-case slug (2 to 5 words, lowercase letters, digits, and hyphens). No punctuation, no quotes, no explanation, no code fences.
