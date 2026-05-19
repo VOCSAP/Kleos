@@ -1,3 +1,6 @@
 [submodule "wiki"]
 	path = wiki
 	url = https://github.com/VOCSAP/Kleos.wiki.git
+[submodule "prompts-overrides"]
+	path = prompts-overrides
+	url = https://github.com/VOCSAP/Kleos.prompts

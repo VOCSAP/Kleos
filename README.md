@@ -211,6 +211,16 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 - Batched flushing to the server
 - File-watching and persistent session support
 
+### LLM prompts overlay (VOCSAP Patch 15)
+
+System and user prompts driving Broca, Chiasm, growth/dreamer, skills, extraction and other LLM call sites can be overridden at runtime without recompilation. Cascade:
+
+1. `KLEOS_LLM_PROMPT_REPOSITORY` (explicit path) takes precedence.
+2. Otherwise `${KLEOS_DATA_DIR}/prompts/` is used if the directory exists.
+3. Otherwise the embedded defaults bundled in the binary apply (upstream behavior, zero regression).
+
+Layout: `<root>/<service>/<purpose>/{system,user}.txt`. Example: drop a `broca/ask_plan/system.txt` under `/var/lib/kleos/prompts/` and the next call within 5 seconds will pick it up via mtime-invalidated cache. See `docs/dev-notes/llm-prompts-catalog.md` for the full catalog.
+
 ### Security model
 
 - SQLCipher encryption at rest -- key from file, env var, or YubiKey HMAC-SHA1
