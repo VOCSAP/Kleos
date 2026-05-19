@@ -92,34 +92,82 @@ const GROWTH_EIDOLON_REFLECTION_DEFAULT: &str =
 const GROWTH_DEFAULT_REFLECTION_DEFAULT: &str =
     include_str!("../../prompts/growth/default_reflection/system.txt");
 
+// Patch 16 -- embedded defaults for the per-service rules suffix and user
+// templates. Colocated with the existing system prompts (Option C of plan
+// mossy-launching-origami): the same Rules text is duplicated across the
+// four services so an operator can tune one without touching the others.
+const GROWTH_KLEOS_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/kleos_reflection/system_suffix.txt");
+const GROWTH_CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code_reflection/system_suffix.txt");
+const GROWTH_EIDOLON_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon_reflection/system_suffix.txt");
+const GROWTH_DEFAULT_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/default_reflection/system_suffix.txt");
+const GROWTH_KLEOS_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/kleos_reflection/user.txt");
+const GROWTH_CLAUDE_CODE_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code_reflection/user.txt");
+const GROWTH_EIDOLON_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon_reflection/user.txt");
+const GROWTH_DEFAULT_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/default_reflection/user.txt");
+
+struct ServicePromptPaths {
+    system_id: &'static str,
+    system_default: &'static str,
+    suffix_id: &'static str,
+    suffix_default: &'static str,
+    user_id: &'static str,
+    user_default: &'static str,
+}
+
+// Map the dispatch key to a canonical prompt slug. The kleos / engram
+// aliasing collapses to the same canonical files so legacy growth rows
+// tagged "engram" still pick up the same reflection prompt as "kleos" rows.
+fn service_prompt_paths(service: &str) -> ServicePromptPaths {
+    match service {
+        "engram" | "kleos" => ServicePromptPaths {
+            system_id: "growth/kleos_reflection/system",
+            system_default: GROWTH_KLEOS_REFLECTION_DEFAULT,
+            suffix_id: "growth/kleos_reflection/system_suffix",
+            suffix_default: GROWTH_KLEOS_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/kleos_reflection/user",
+            user_default: GROWTH_KLEOS_REFLECTION_USER_DEFAULT,
+        },
+        "claude-code" => ServicePromptPaths {
+            system_id: "growth/claude_code_reflection/system",
+            system_default: GROWTH_CLAUDE_CODE_REFLECTION_DEFAULT,
+            suffix_id: "growth/claude_code_reflection/system_suffix",
+            suffix_default: GROWTH_CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/claude_code_reflection/user",
+            user_default: GROWTH_CLAUDE_CODE_REFLECTION_USER_DEFAULT,
+        },
+        "eidolon" => ServicePromptPaths {
+            system_id: "growth/eidolon_reflection/system",
+            system_default: GROWTH_EIDOLON_REFLECTION_DEFAULT,
+            suffix_id: "growth/eidolon_reflection/system_suffix",
+            suffix_default: GROWTH_EIDOLON_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/eidolon_reflection/user",
+            user_default: GROWTH_EIDOLON_REFLECTION_USER_DEFAULT,
+        },
+        _ => ServicePromptPaths {
+            system_id: "growth/default_reflection/system",
+            system_default: GROWTH_DEFAULT_REFLECTION_DEFAULT,
+            suffix_id: "growth/default_reflection/system_suffix",
+            suffix_default: GROWTH_DEFAULT_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/default_reflection/user",
+            user_default: GROWTH_DEFAULT_REFLECTION_USER_DEFAULT,
+        },
+    }
+}
+
 fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> String {
     if let Some(override_prompt) = prompt_override {
         return override_prompt.to_string();
     }
-
-    // Map the dispatch key to a prompt id; the kleos / engram aliasing
-    // collapses to the same canonical file so legacy growth rows tagged
-    // "engram" still pick up the same reflection prompt as "kleos" rows.
-    let (id, default) = match service {
-        "engram" | "kleos" => (
-            "growth/kleos_reflection/system",
-            GROWTH_KLEOS_REFLECTION_DEFAULT,
-        ),
-        "claude-code" => (
-            "growth/claude_code_reflection/system",
-            GROWTH_CLAUDE_CODE_REFLECTION_DEFAULT,
-        ),
-        "eidolon" => (
-            "growth/eidolon_reflection/system",
-            GROWTH_EIDOLON_REFLECTION_DEFAULT,
-        ),
-        _ => (
-            "growth/default_reflection/system",
-            GROWTH_DEFAULT_REFLECTION_DEFAULT,
-        ),
-    };
-
-    crate::llm::prompts::load_prompt(id, default).into_owned()
+    let paths = service_prompt_paths(service);
+    crate::llm::prompts::load_prompt(paths.system_id, paths.system_default).into_owned()
 }
 
 /// Validate that an observation is meaningful (not empty, not meta-commentary).
@@ -207,30 +255,39 @@ pub async fn reflect(
     }
 
     let system_prompt = get_prompt_for_service(&req.service, req.prompt_override.as_deref());
+    let paths = service_prompt_paths(&req.service);
+    let suffix = crate::llm::prompts::load_prompt(paths.suffix_id, paths.suffix_default);
+    let full_system = format!(
+        "{}\n{}",
+        system_prompt.trim_end(),
+        suffix.trim_end()
+    );
 
-    let rules = "\nRules:\n\
-        - Output ONE concise observation (1-3 sentences max)\n\
-        - Write in first person as the service\n\
-        - Be specific -- not generic advice\n\
-        - If nothing interesting happened, output exactly: NOTHING\n\
-        - Do NOT output meta-commentary, explanations, or multiple options\n\
-        - Do NOT repeat things already known";
-
-    let full_system = format!("{}{}", system_prompt, rules);
-
-    let mut user_prompt = format!("Recent activity:\n\n{}\n\n", req.context.join("\n"));
-    if let Some(ref existing) = req.existing_growth {
-        let truncated = if existing.len() > 4000 {
-            &existing[..4000]
-        } else {
-            existing
-        };
-        user_prompt.push_str(&format!(
-            "Things I already know (do NOT repeat these):\n{}\n\n",
-            truncated
-        ));
-    }
-    user_prompt.push_str("What did I learn or notice? One observation, or NOTHING.");
+    let existing_block = match req.existing_growth.as_deref() {
+        Some(existing) => {
+            let truncated = if existing.len() > 4000 {
+                &existing[..4000]
+            } else {
+                existing
+            };
+            format!(
+                "Things I already know (do NOT repeat these):\n{}\n\n",
+                truncated
+            )
+        }
+        None => String::new(),
+    };
+    let context_joined = req.context.join("\n");
+    let vars = serde_json::json!({
+        "context": context_joined,
+        "existing_block": existing_block,
+    });
+    let user_prompt = crate::llm::prompts::load_and_render(
+        paths.user_id,
+        paths.user_default,
+        &vars,
+    );
+    let user_prompt = user_prompt.trim_end().to_string();
 
     let opts = LlmOptions {
         temperature: 0.7,
