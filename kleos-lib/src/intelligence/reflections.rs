@@ -192,12 +192,12 @@ impl LlmReflector for LocalModelClient {
     }
 }
 
-const LLM_REFLECTION_SYSTEM: &str =
-    "You are a Kleos reflection assistant. For each memory you are shown, \
-     decide whether the user should 'enrich' (add missing context so retrieval \
-     finds it), 'reconsolidate' (restate and strengthen), or 'archive' (no \
-     longer relevant). Respond with ONE compact JSON object and nothing else: \
-     {\"action\": \"enrich|reconsolidate|archive\", \"rationale\": \"<1 sentence>\"}.";
+/// Embedded default for `memory/reflect_action` (Patch 15 overlay-capable).
+const LLM_REFLECTION_SYSTEM_DEFAULT: &str =
+    include_str!("../../prompts/memory/reflect_action/system.txt");
+/// Embedded default for the `memory/reflect_action` user template.
+const LLM_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/memory/reflect_action/user.txt");
 
 const ALLOWED_LLM_ACTIONS: &[&str] = &["enrich", "reconsolidate", "archive"];
 
@@ -211,12 +211,22 @@ pub async fn llm_reflect_on_memory(
     content: &str,
 ) -> Option<(String, String)> {
     let snippet: String = content.chars().take(400).collect();
-    let user_prompt = format!(
-        "Memory (category={}, importance={}, recall_hits=0, age>=7d):\n\"{}\"",
-        category, importance, snippet
+    // Patch 15 -- prompt overlay for memory/reflect_action.
+    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
+        "memory/reflect_action",
+        LLM_REFLECTION_SYSTEM_DEFAULT,
+        LLM_REFLECTION_USER_DEFAULT,
+    );
+    let user_prompt = crate::llm::template::interpolate(
+        user_template_cow.as_ref(),
+        &serde_json::json!({
+            "category": category,
+            "importance": importance,
+            "snippet": snippet,
+        }),
     );
 
-    let raw = match llm.reflect(LLM_REFLECTION_SYSTEM, &user_prompt).await {
+    let raw = match llm.reflect(system_cow.as_ref(), &user_prompt).await {
         Ok(s) => s,
         Err(e) => {
             tracing::debug!(

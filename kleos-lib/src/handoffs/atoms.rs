@@ -336,12 +336,12 @@ struct LlmAtomItem {
 /// On any failure (network, parse, timeout) this function logs a warning and
 /// returns an empty vector -- callers should fall back to [`extract_heuristic`].
 pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
-    let system_prompt = "You are a semantic extraction engine. \
-        Given text, extract key atoms as JSON. \
-        Return ONLY a JSON object with an \"atoms\" array. \
-        Each atom has: atom_type (decision|constraint|task|entity|question|belief|relation), \
-        content (string), confidence (0.0-1.0). \
-        Extract only atoms clearly present in the text. Be concise.";
+    // Patch 15 -- prompt overlay for extraction/atoms (system only).
+    let system_prompt_cow = crate::llm::prompts::load_prompt(
+        "extraction/atoms/system",
+        include_str!("../../prompts/extraction/atoms/system.txt"),
+    );
+    let system_prompt: &str = system_prompt_cow.as_ref();
 
     let body = serde_json::json!({
         "model": "llama3",

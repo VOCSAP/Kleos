@@ -17,7 +17,15 @@ use crate::llm::{local::LocalModelClient, repair_and_parse_json};
 use crate::memory::{self, types::StoreRequest};
 use std::sync::Arc;
 
-const EXTRACT_SYSTEM_PROMPT: &str = "You are a precise fact extraction engine. Read the provided text and return a JSON array of concise, atomic statements that capture the durable facts, decisions, preferences, and entities mentioned. Each array entry must be a single plain-English sentence. Do not include commentary, markdown, or any field other than the JSON array. Return `[]` if there is nothing to extract.";
+/// Embedded default for `extraction/facts` (Patch 15 overlay-capable).
+const EXTRACT_SYSTEM_PROMPT_DEFAULT: &str =
+    include_str!("../../../prompts/extraction/facts/system.txt");
+
+/// Load the live `extraction/facts` system prompt (honors any overlay
+/// in `KLEOS_LLM_PROMPT_REPOSITORY` / `${KLEOS_DATA_DIR}/prompts`).
+fn extract_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("extraction/facts/system", EXTRACT_SYSTEM_PROMPT_DEFAULT)
+}
 
 const MIN_FACT_LEN: usize = 5;
 const MAX_FACT_LEN: usize = 512;
@@ -150,8 +158,9 @@ pub async fn process(
 }
 
 async fn extract_facts(llm: &LocalModelClient, chunk_text: &str) -> crate::Result<Vec<String>> {
+    let system = extract_system_prompt();
     let response = llm
-        .call(EXTRACT_SYSTEM_PROMPT, chunk_text, None)
+        .call(system.as_ref(), chunk_text, None)
         .await
         .map_err(|e| crate::EngError::Internal(format!("extract LLM call failed: {}", e)))?;
 
