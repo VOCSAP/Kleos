@@ -1118,26 +1118,19 @@ async fn ask_plan_call(question: &str) -> AskPlan {
         return ask_keyword_heuristic(question);
     };
 
-    let system = "You translate a user question about an agent system into a JSON query plan. \
-        Return ONLY a JSON object with these optional fields and nothing else -- no explanation, \
-        no markdown, no code fences:\n\
-        {\"agent\":\"<agent-name>\",\"service\":\"<service-name>\",\
-        \"since\":\"<ISO-8601-datetime>\",\"limit\":<integer 1-50>}\n\n\
-        SERVICE CATALOG (set `service` to route to the right data source):\n\
-        - broca: action logs, what agents did, activity history (DEFAULT)\n\
-        - soma: agent registry, who is online, agent status, capabilities\n\
-        - chiasm: task coordination, assignments, task status, blockers\n\
-        - thymus: evaluations, quality scores, rubrics, drift detection\n\
-        - axon: events, channels, pub/sub activity\n\
-        - loom: workflows, runs, step execution, orchestration\n\n\
-        Rules:\n\
-        - Omit fields that are not implied by the question.\n\
-        - Set `service` to the most relevant data source for the question.\n\
-        - If the question is about agent activity or \"what did X do\", use broca (default).\n\
-        - For time-based questions (\"today\", \"last hour\", \"recent\") omit `since` and use a \
-          reasonable limit instead.\n\
-        - Default limit is 20. Maximum is 50.\n\
-        - If unsure which service, omit `service` (defaults to broca).";
+    // Patch 15 -- prompts overlay: load system/user from the embedded
+    // defaults, with optional runtime override via
+    // KLEOS_LLM_PROMPT_REPOSITORY/broca/ask_plan/{system,user}.txt.
+    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
+        "broca/ask_plan",
+        include_str!("../../prompts/broca/ask_plan/system.txt"),
+        include_str!("../../prompts/broca/ask_plan/user.txt"),
+    );
+    let system: &str = system_cow.as_ref();
+    let user_prompt = crate::llm::template::interpolate(
+        user_template_cow.as_ref(),
+        &serde_json::json!({ "question": question }),
+    );
 
     let model = broca_llm_model();
 
@@ -1164,7 +1157,7 @@ async fn ask_plan_call(question: &str) -> AskPlan {
                 },
                 OpenAiMessage {
                     role: "user".to_string(),
-                    content: question.to_string(),
+                    content: user_prompt.clone(),
                 },
             ],
             temperature: 0.2,
@@ -1173,7 +1166,7 @@ async fn ask_plan_call(question: &str) -> AskPlan {
         call_llm_endpoint(&url, body, broca_llm_api_key()).await
     } else {
         let body = GenericLlmRequest {
-            prompt: question.to_string(),
+            prompt: user_prompt.clone(),
             system: system.to_string(),
         };
         call_llm_endpoint(&url_base, body, broca_llm_api_key()).await
