@@ -208,14 +208,21 @@ If Chiasm task ID exists at /tmp/chiasm-claude-task-id, update task status on ch
 EIDOLON: Before ANY destructive/irreversible action, the pre-bash-guardrail hook handles gate checks automatically. If gate returns deny, STOP and ask the operator. No exceptions."
 
 # ── Growth materialization ─────────────────────────────────────────────
+# DISABLED 2026-05-20 (spec_fe726101): the original GET /growth/materialize call
+# does not match the real kleos-server route, which is POST with body
+# {observation_id: i64} (kleos-server/src/routes/growth/mod.rs:24,50-60). The
+# server materializes ONE observation per call; there is no aggregated markdown
+# export route. Re-enabling requires either (a) creating a new server route
+# (e.g. GET /growth/digest) or (b) replacing this with GET /growth/observations
+# + client-side markdown formatting. Tracked in docs/dev-notes/agent-forge-guide.md
+# section 10. Until then GROWTH.md is not refreshed by SessionStart.
 GROWTH_MD=""
-GROWTH_RESULT=$(eidolon_call GET "/growth/materialize?service=claude-code&limit=30&max_bytes=16000" 2>/dev/null || true)
-if [ -n "$GROWTH_RESULT" ] && [ "$GROWTH_RESULT" != "null" ]; then
-  # /growth/materialize returns plain text, not JSON
-  echo "$GROWTH_RESULT" > "$HOME_DIR/.claude/GROWTH.md"
-  GROWTH_MD="$GROWTH_RESULT"
-  log "Materialized GROWTH.md ($(echo "$GROWTH_RESULT" | wc -c) bytes)"
-fi
+# GROWTH_RESULT=$(eidolon_call GET "/growth/materialize?service=claude-code&limit=30&max_bytes=16000" 2>/dev/null || true)
+# if [ -n "$GROWTH_RESULT" ] && [ "$GROWTH_RESULT" != "null" ]; then
+#   echo "$GROWTH_RESULT" > "$HOME_DIR/.claude/GROWTH.md"
+#   GROWTH_MD="$GROWTH_RESULT"
+#   log "Materialized GROWTH.md ($(echo "$GROWTH_RESULT" | wc -c) bytes)"
+# fi
 
 # Write stamp
 printf 'ready\t%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "eidolon" > "$STAMP_FILE"

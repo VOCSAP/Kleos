@@ -57,10 +57,13 @@ except:
     print('Claude Code session ended')
 " 2>/dev/null || echo "Claude Code session ended")
 
-# 1. Call Eidolon /gate/complete (checks Engram store requirement)
+# 1. Call Eidolon /gate/complete-latest (checks Engram store requirement).
+# /gate/complete expects gate_id which we don't have here; the right route for
+# session_id-keyed completion is /gate/complete-latest (kleos-server/src/routes/
+# gate/types.rs::CompleteLatestBody { session_id, output, known_secrets }).
 ESCAPED_SUMMARY=$(json_escape "$SUMMARY")
-GATE_RESPONSE=$(eidolon_call POST "/gate/complete" \
-  "{\"session_id\":\"$SESSION_ID\",\"summary\":$ESCAPED_SUMMARY}" \
+GATE_RESPONSE=$(eidolon_call POST "/gate/complete-latest" \
+  "{\"session_id\":\"$SESSION_ID\",\"output\":$ESCAPED_SUMMARY,\"known_secrets\":[]}" \
   5 || echo "")
 
 if [ -n "$GATE_RESPONSE" ]; then
