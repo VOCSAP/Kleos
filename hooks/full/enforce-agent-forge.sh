@@ -83,10 +83,14 @@ if [ -f "$FORGE_STATE" ]; then
 fi
 
 # --- Eidolon gate check (defense in depth + session tracking) ---
+# Body schema matches kleos-lib/src/gate/mod.rs::GateCheckRequest:
+#   command (required), agent (required), tool_name?, context?, session_id?, skip_approval?.
+# We pass file_path as `command` and skip_approval=true since this hook already
+# enforces its own state-file gate above (no need for Eidolon human approval).
 . "$HOME_DIR/.claude/hooks/lib-eidolon.sh"
 ESCAPED_PATH=$(json_escape "$FILE_PATH")
 GATE_RESPONSE=$(eidolon_call POST "/gate/check" \
-  "{\"tool_name\":\"$TOOL_NAME\",\"tool_input\":{\"file_path\":$ESCAPED_PATH}}" \
+  "{\"command\":$ESCAPED_PATH,\"agent\":\"claude-code\",\"tool_name\":\"$TOOL_NAME\",\"context\":\"file edit gate\",\"skip_approval\":true}" \
   3 || echo "")
 
 if [ -n "$GATE_RESPONSE" ]; then

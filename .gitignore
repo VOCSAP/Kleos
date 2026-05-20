@@ -36,6 +36,7 @@ migration-data/
 data/
 kleos-lib/data/lance/
 migration-test/
+.agent-forge-tmp/
 
 # Local cargo config (per-machine target-dir overrides, etc.)
 .cargo/config.toml
@@ -67,3 +68,7 @@ task_plan.md
 progress.md
 findings.md
 session-checkpoint.md
+docs/dev-notes/vector-index-investigation-2026-05-19.md
+docs/dev-notes/dreamer-brouillons-review-*.md
+docs/dev-notes/kleos-mcp-usage.md
+docs/dev-notes/agent-forge-guide.md
