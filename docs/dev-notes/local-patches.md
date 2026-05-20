@@ -1531,6 +1531,119 @@ Restart kleos-server. Le cap passe a 60s, l'inference Patch 16 entre dans le bud
 
 ---
 
+## Patch 17a -- activation `KLEOS_USE_CHUNK_VECTOR_SEARCH` + backfill vector
+
+**Date** : 2026-05-20
+**Statut** : deploye sur LXC 121
+**Fichiers touches** : aucun (purement operationnel)
+**Niveau delta upstream** : **zero delta** (env var deja prevue par upstream commit `4b02bfe`, simplement non activee jusqu'ici)
+
+### Probleme
+
+`POST /context` retournait HTTP 408 a 60 s sur LXC 121 avec 2620 memories actives. Diagnostic via `GET /admin/vector_health` :
+- `lance_row_count = 434` sur 2620 memories actives (84% non indexees)
+- `chunk_lance_row_count = 0`
+- `vector_sync_pending_count = 0` (worker drain mais ne backfill pas l'historique)
+
+Cause : `use_chunk_vector_search = false` par defaut (`kleos-lib/src/config.rs:581`), et la feature opt-in n'avait jamais ete activee depuis son introduction upstream le 2026-04-28 (commit `4b02bfe`). Les 2186 memories sans vecteur Lance tombaient sur le fallback `vector_search` SQLite (sqlcipher decrypt par page, I/O-bound).
+
+### Solution
+
+1. Ajouter `KLEOS_USE_CHUNK_VECTOR_SEARCH=1` dans `/etc/kleos/kleos.env` (backup `/etc/kleos/kleos.env.bak-20260520-103231` cree avant edit).
+2. `systemctl restart kleos-server` -- le loader ouvre `chunk_vector_index` au boot tenant.
+3. `POST /admin/backfill_chunks` -- backfill complet en deux passes (30 min + 10 min, le TimeoutLayer serveur coupe a 30 min, repassage gere le reliquat ; 354 primary + 355 chunks finalises en 2eme passe, 0 failures).
+
+### Validation post-deploy
+
+- `lance_row_count` : 434 -> 2652 (~100% des memories actives)
+- `chunk_lance_row_count` : 0 -> 2216
+- `POST /search query="Patch 16"` : 319 ms (canal vector actif)
+- `POST /context include_static=false` : 8.78 s HTTP 200 (le bottleneck residuel Phase Static est traite par Patch 17b)
+
+### Reference
+
+- Memoires Kleos #2726 (deploy backfill), #2728 (decouverte Phase Static bottleneck residuel)
+
+---
+
+## Patch 17b -- durcir `get_static_memories` (filtre archived + importance + cap configurable)
+
+**Date** : 2026-05-20
+**Statut** : code complet, build WSL + deploy LXC 121 attendus
+**Fichier touche** : `kleos-lib/src/context/deps.rs` (1 const + 1 fn + clause WHERE modifiee)
+**Niveau delta upstream** : chirurgical (1 fichier source, ~20 lignes ajoutees + 8 modifiees)
+
+### Probleme
+
+Apres Patch 17a (vector index alimente), `POST /context` default (include_static=true) continue de timeout HTTP 408 a 60 s. La Phase 1 de `assemble_context_inner` (`kleos-lib/src/context/mod.rs:509-573`) re-embedde chaque memory statique via Ollama bge-m3 (~50 ms par appel sur LXC 116). Sur LXC 121, `get_static_memories` retourne **2176 statics** au lieu de la dizaine attendue : 2176 x 50 ms = ~110 s, depasse le TimeoutLayer 60 s avant meme le premier event SSE.
+
+Cause racine : `get_static_memories` (`kleos-lib/src/context/deps.rs:70`) ne filtre PAS `is_archived` dans sa clause WHERE. Le dreamer (`kleos-lib/src/intelligence/growth.rs:357`) insere chaque growth observation avec `is_static = 1` ET `is_archived = 1`. Intent upstream : le brouillon archive devient actif uniquement apres promotion explicite en insight (`POST /growth/materialize`, importance bump 7 -> 8, archived remis a 0). Mais le filtre `is_archived` manque cote query, donc les brouillons remontent comme statics actifs.
+
+Comparaison avec les autres call sites du flag `is_static = 1` dans la codebase :
+
+| Fichier | filtre `is_archived` | filtre `importance` |
+|---|---|---|
+| `context/deps.rs:72` (Phase Static, **bug**) | non | non |
+| `pack.rs:57` | =0 | non |
+| `gate/mod.rs:386, 571` | non | >=8 |
+| `personality.rs:1061` | non | LIMIT 20 |
+
+`pack` et `gate` sont disciplines. `context/deps.rs` ne l'est pas : c'est un oubli upstream.
+
+### Solution
+
+Trois changements dans `get_static_memories` :
+
+1. **Filtre `AND is_archived = 0`** : exclut les brouillons growth, aligne avec `pack.rs:57`.
+2. **Filtre `AND importance >= 8`** : ne retient que les insights promus, aligne avec `gate/mod.rs:386, 571`.
+3. **`LIMIT ?1` avec valeur configurable** via env var `KLEOS_CONTEXT_STATIC_LIMIT` (default 50), suivant le pattern Patch 16b :
+
+```rust
+const DEFAULT_CONTEXT_STATIC_LIMIT: usize = 50;
+
+fn context_static_limit() -> usize {
+    std::env::var("KLEOS_CONTEXT_STATIC_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_CONTEXT_STATIC_LIMIT)
+}
+```
+
+ORDER BY est etendu a `importance DESC, source_count DESC, created_at DESC` pour retenir les insights les plus importants, recurrents, recents si tie.
+
+### Effet attendu
+
+- Statics retournees : 2176 -> ~0 actuellement (aucun insight promu en DB sur LXC 121), <= 50 dans le futur
+- Phase Static : ~110 s -> <2.5 s meme pire cas
+- `POST /context` (default) : timeout 60 s -> sous 10 s
+
+### Deploiement operateur
+
+Build WSL : `cargo build --release --target x86_64-unknown-linux-gnu -p kleos-server`. Puis scp + restart sur LXC 121.
+
+Optionnel : override le default via `/etc/kleos/kleos.env` :
+```
+KLEOS_CONTEXT_STATIC_LIMIT=30
+```
+
+### Validation
+
+- Build : `cargo check -p kleos-lib` doit passer 0 erreurs.
+- Default behaviour preserve dans le sens "small per-user" (env var unset -> LIMIT 50).
+- Tests existants `deps.rs` non touches.
+- Operateur peut ajuster sans rebuild.
+
+### Conditions de retrait
+
+Si upstream merge une PR qui filtre `is_archived` dans `get_static_memories` (et/ou ajoute un parametre `only_promoted`), le Patch 17b devient redondant et peut etre retire au prochain rebase. Surveiller les commits sur `kleos-lib/src/context/deps.rs` upstream.
+
+### Reference
+
+- Memoires Kleos #2728 (decouverte cause racine), #2729 (mecanisme promotion), #2763 (distinction backfill vs Phase Static), #2767 (comportement dreamer by-design)
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
