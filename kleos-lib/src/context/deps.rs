@@ -11,6 +11,24 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+// Patch 17b: hard cap on the static-memory set returned to /context Phase 1.
+// Upstream `get_static_memories` returned every `is_static = 1` row, including
+// dreamer growth drafts that are inserted with `is_archived = 1`. On deployments
+// where the dreamer runs continuously the set explodes (~2k rows on LXC 121),
+// each re-embedded via Ollama in the Phase Static scoring loop -- enough to
+// blow past the 60s `/context` TimeoutLayer. The default `50` matches the
+// upstream intent ("small per-user", cf. personality.rs `LIMIT 20`) and is
+// tunable without rebuild via `KLEOS_CONTEXT_STATIC_LIMIT`.
+const DEFAULT_CONTEXT_STATIC_LIMIT: usize = 50;
+
+fn context_static_limit() -> usize {
+    std::env::var("KLEOS_CONTEXT_STATIC_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_CONTEXT_STATIC_LIMIT)
+}
+
 #[derive(Debug, Clone)]
 pub struct VersionChainEntry {
     pub id: i64,
@@ -68,17 +86,24 @@ pub struct EpisodeSummary {
 
 #[tracing::instrument(skip(db))]
 pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memory>> {
+    // Patch 17b: exclude dreamer growth drafts (is_archived = 1) and require
+    // importance >= 8 so only promoted insights remain (matching gate/mod.rs
+    // and pack.rs disciplines). Hard cap via env-overridable limit.
+    let limit = context_static_limit();
     let sql = format!(
-        "SELECT {} FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 ORDER BY importance DESC",
+        "SELECT {} FROM memories \
+         WHERE is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+           AND is_archived = 0 AND importance >= 8 \
+         ORDER BY importance DESC, source_count DESC, created_at DESC \
+         LIMIT ?1",
         MEMORY_COLUMNS,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![])
+            .query(rusqlite::params![limit as i64])
             .map_err(rusqlite_to_eng_error)?;
-        // 6.9 capacity hint: static-memory sets are typically small per-user.
-        let mut memories = Vec::with_capacity(16);
+        let mut memories = Vec::with_capacity(limit.min(64));
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
             memories.push(row_to_memory(row, user_id)?);
         }
