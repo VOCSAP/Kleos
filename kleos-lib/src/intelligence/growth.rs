@@ -19,6 +19,44 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
+// Patch 17c -- optional external reject patterns for growth observations.
+// Loads `<prompt_repo>/growth/reject_patterns.txt` at every validation call
+// (no caching: dreamer fires every 30 min, hot-tunable matters more than
+// micro-perf). Format: one substring per line, case-insensitive, blank lines
+// and lines starting with `#` ignored. Any match rejects the observation
+// (treated as NOTHING). Resolution mirrors `kleos-lib::llm::prompts`:
+// `KLEOS_LLM_PROMPT_REPOSITORY` first, then `$KLEOS_DATA_DIR/prompts`.
+fn growth_reject_patterns() -> Vec<String> {
+    use std::path::PathBuf;
+    let repo: Option<PathBuf> = std::env::var_os("KLEOS_LLM_PROMPT_REPOSITORY")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+                if let Some(raw) = std::env::var_os(env) {
+                    let candidate = PathBuf::from(raw).join("prompts");
+                    if candidate.is_dir() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            None
+        });
+    let Some(repo) = repo else {
+        return Vec::new();
+    };
+    let path = repo.join("growth").join("reject_patterns.txt");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_lowercase())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 #[tracing::instrument(skip(db), fields(limit))]
 pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
     db.read(move |conn| {
@@ -181,6 +219,14 @@ fn validate_observation(text: &str) -> bool {
     }
     if trimmed.starts_with("I don't") || trimmed.starts_with("There is nothing") {
         return false;
+    }
+    // Patch 17c -- optional external reject patterns (hot-tunable via file).
+    let patterns = growth_reject_patterns();
+    if !patterns.is_empty() {
+        let lower = trimmed.to_lowercase();
+        if patterns.iter().any(|p| lower.contains(p)) {
+            return false;
+        }
     }
     true
 }

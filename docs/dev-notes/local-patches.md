@@ -1644,6 +1644,76 @@ Si upstream merge une PR qui filtre `is_archived` dans `get_static_memories` (et
 
 ---
 
+## Patch 17c -- durcissement prompt growth + filter file dynamique
+
+**Date** : 2026-05-20
+**Statut** : code complet (build WSL + deploy LXC 121 attendus), prompt override prets dans submodule prompts-overrides
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/growth.rs` (1 fn ajoutee + validate_observation etendu, ~45 lignes)
+- `prompts-overrides/growth/<service>/system_suffix.txt` x 4 (durcissement)
+- `prompts-overrides/growth/<service>/user.txt` x 4 (format guidance)
+- `prompts-overrides/growth/reject_patterns.txt` (nouveau, opt-in)
+
+**Niveau delta upstream** :
+- `growth.rs` : additif pur (nouvelle fn `growth_reject_patterns`) + chirurgical minimal (~5 lignes ajoutees dans `validate_observation`)
+- Submodule prompts-overrides : zero delta upstream
+
+### Probleme
+
+Apres Patch 17b (filtre `get_static_memories`), le dreamer continue de generer des brouillons de mauvaise qualite :
+- ~58 doublons stylistiques en 100 brouillons (memes faits, formulations differentes)
+- Verbosity moyenne 200 chars, 80% de pattern "Je remarque/I noticed que..."
+- Validateur upstream (`validate_observation`) trop laxe : seul `NOTHING` exact, `I don't`, `There is nothing` sont rejetes.
+
+Les overlays Patch 15 / 16 existaient mais aucune surcharge sur le `system_suffix` ou `user` des 4 services growth -- on tournait sur les defaults embedded qui n'imposent aucune structure stricte.
+
+### Solution -- deux couches complementaires
+
+**Couche A -- prompt override (zero delta upstream)** : 4 services `{kleos, claude_code, eidolon, default}_reflection` recoivent un `system_suffix.txt` durci qui :
+- biaise par defaut vers `NOTHING`
+- impose la structure `<fact>. <localisation>. <implication>.` (max 250 chars)
+- exige une localisation litterale presente dans l'input (anti-hallucination)
+- liste les openings interdits multilingues (`I noticed`, `Je remarque`, etc.)
+- formate des examples de bonne et mauvaise forme
+
+Et un `user.txt` qui rappelle le format attendu directement apres le `{{context}}`.
+
+Tests via Ollama direct (qwen3:8b-ctx16k @ temp=0.7, `reasoning_effort: none`) sur 7 scenarios montrent :
+- Verbosity divisee par 2 (100 vs 200 chars)
+- 2/2 `NOTHING` propres sur contextes vides
+- 5/7 sur format `fact.loc.impl.` respecte
+- 1/7 hallucination de localisation residuelle, 1/7 quote residuelle (limites du modele)
+
+**Couche B -- filter file externe** : nouveau fichier `prompts-overrides/growth/reject_patterns.txt` lu a chaque appel de `validate_observation` (resolution identique aux prompts : `KLEOS_LLM_PROMPT_REPOSITORY` puis `$KLEOS_DATA_DIR/prompts/growth/reject_patterns.txt`). Format : un substring par ligne, case-insensitive, `#` commentaire. Si match dans l'observation -> reject (traite comme NOTHING).
+
+Initial set de patterns inclut placeholders ` unknown.`, ` general.`, ` system.`, ` terminal.`, label prefixes `implication:`, `fact:`, et quotes inline. **Hot-tunable** : pas de cache, modification effective au prochain cycle dreamer (~30 min). Permet d'ajouter de nouveaux modes d'hallucination sans rebuild.
+
+### Garde-fous
+
+- Si le filter file est absent : aucun pattern applique, comportement identique a upstream. Filter purement opt-in.
+- Si pattern trop large : risque de drop d'observations legitimes -> garder la liste conservatrice. Le doc dans le fichier le rappelle.
+- Les forbidden openings (`I noticed que...`) sont **doublement** filtrees : prompt-side (LLM essaie de ne pas les emettre) + filter-side (rejet si le LLM bypass la regle).
+
+### Deploiement operateur
+
+1. Build WSL : `cargo build --release --target x86_64-unknown-linux-gnu -p kleos-server`
+2. Deploy LXC 121 (scp + systemctl restart)
+3. Push submodule : `git -C prompts-overrides add growth && git -C prompts-overrides commit && git push`
+4. Pull cote LXC 121 : `git -C /var/lib/kleos/prompts pull`
+5. TTL cache 5s prend effet, prochain cycle dreamer (~30 min) utilise les overrides
+
+### Conditions de retrait
+
+- Si upstream merge un `validate_observation` strict equivalent : le filter-side de Patch 17c devient redondant.
+- Si upstream introduit ses propres reject patterns par config : aligner les noms d'env vars et retirer le helper local.
+
+### Reference
+
+- Memoires Kleos #2822 (workflow prompt override Patch 17c), #2790 (review brouillons par sub-agent)
+- Submodule `prompts-overrides` (`VOCSAP/Kleos.prompts`) : section `growth/` et `reject_patterns.txt`
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
