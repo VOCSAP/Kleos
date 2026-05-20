@@ -1714,6 +1714,56 @@ Initial set de patterns inclut placeholders ` unknown.`, ` general.`, ` system.`
 
 ---
 
+## Patch 17d -- anti-recursion consolidation (Couche A)
+
+**Date** : 2026-05-20
+**Statut** : code complet, build WSL + deploy LXC 121 attendus
+**Fichier touche** : `kleos-lib/src/intelligence/consolidation.rs` (clause WHERE de `find_consolidation_candidates`, +1 ligne SQL, +9 lignes de commentaire explicatif)
+**Niveau delta upstream** : chirurgical minimal
+
+### Probleme
+
+Le mecanisme de consolidation de Kleos (`kleos-lib/src/intelligence/consolidation.rs::sweep` -> `find_consolidation_candidates` -> `consolidate`) cree un memory `source='consolidation', is_static=1, is_archived=0, is_latest=1` par cluster de memories similaires. Sur LXC 121, observe le 2026-05-20 :
+
+- 1924 memories `source='consolidation'` actives en DB
+- ~500 nouvelles par jour depuis le 2026-05-17
+- Tous les outputs ont `is_consolidated = 0` (jamais consumes par un sweep superieur)
+
+Cause racine : la query `find_consolidation_candidates` (lignes 204-215) filtre `is_forgotten = 0 AND is_latest = 1 AND is_archived = 0` mais **ne filtre PAS `is_consolidated = 0`**. Pourtant `consolidate()` ligne 131 fait bien `UPDATE memories SET is_consolidated = 1 WHERE id = source_id` sur les sources d'une consolidation. Le flag est pose mais jamais consulte cote candidat.
+
+Verification independante par sub-agent Explore (memoire #2851) : confiance 92% que c'est un bug structurel (aucun signal d'intention multi-niveaux contraire). Verification upstream Ghost-Frame/Kleos : aucun fix existant, recents commits sur ce fichier sont du nettoyage Phase 5 (drop user_id).
+
+### Solution
+
+Ajouter dans la clause WHERE de `find_consolidation_candidates` :
+
+```sql
+AND ms.is_consolidated = 0 AND mt.is_consolidated = 0
+```
+
+Effet : un memory deja consume par une consolidation precedente est exclu des candidates futures. Les outputs neufs de consolidation (qui ont `is_consolidated = 0` par defaut SQL) **restent eligibles** -> preserve la possibilite multi-niveaux future (inspire mnemo dreamer 3-phase, cf. `docs/dev-notes/consolidation-multi-level-dream-todo.md`).
+
+NB : un fix alternatif aurait ete `AND ms.source != 'consolidation' AND mt.source != 'consolidation'`. Abandonne car il aurait bloque le multi-niveaux.
+
+### Conditions de retrait
+
+Si upstream merge un fix equivalent (ajout du filtre `is_consolidated` dans la query), le Patch 17d devient redondant et peut etre retire au prochain rebase. Surveiller commits sur `kleos-lib/src/intelligence/consolidation.rs` upstream.
+
+### Limites connues / non traite par ce patch
+
+Le Patch 17d Couche A **ne resout pas** :
+
+- **L'idempotence intra-niveau** : si le meme cluster revient au sweep suivant (parce que d'autres liens similarity ont change autour mais le cluster cible reste stable), on cree un nouveau consolidated identique au precedent. Solution B (versioning) traitera ce sujet. Cf. `docs/dev-notes/consolidation-versioning-solution-b-todo.md`.
+- **Le nettoyage des 1924 outputs deja accumules** : separate, Couche C (SQL UPDATE direct) traite ca en one-shot.
+- **Le multi-niveaux propre** : pre-requis sur Solution B + Solution D dediee. Cf. `consolidation-multi-level-dream-todo.md`.
+
+### Reference
+
+- Memoires Kleos #2848 (analyse mecanisme), #2851 (verification sub-agent + upstream clean), #2861 (revision plan post-feedback)
+- TODO files : `docs/dev-notes/consolidation-versioning-solution-b-todo.md`, `docs/dev-notes/consolidation-multi-level-dream-todo.md`
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

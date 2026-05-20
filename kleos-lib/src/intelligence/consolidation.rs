@@ -202,6 +202,15 @@ pub async fn find_consolidation_candidates(
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
+                    // Patch 17d -- exclude memories already consumed by a prior
+                    // consolidation. The `is_consolidated` flag is set on sources
+                    // by `consolidate()` line 131; this query is the missing
+                    // counterpart -- without it the same memories cycle back into
+                    // candidates and the dreamer accumulates consolidation outputs
+                    // indefinitely. The filter preserves the upstream-intended
+                    // multi-level capability: a fresh consolidation output starts
+                    // with `is_consolidated = 0` and remains eligible until a
+                    // higher-level sweep consumes it (sets the flag to 1).
                     "SELECT ml.source_id, ml.target_id \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
@@ -211,6 +220,7 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_latest = 1 AND mt.is_latest = 1 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
+                       AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
                 )
