@@ -1,6 +1,9 @@
 pub(crate) mod approval;
 pub use approval::*;
 
+// Patch 19b -- Cascade operator-first pour blocked + require_approval patterns.
+pub mod approval_patterns;
+
 pub(crate) mod parser;
 pub use parser::*;
 
@@ -73,6 +76,7 @@ pub async fn check_command(
         user_id,
         None,
         &[],
+        &[],
         &Config::default(),
         req.session_id.as_deref(),
     )
@@ -81,13 +85,21 @@ pub async fn check_command(
 
 /// Check a command against blocked patterns using a resolved copy while storing
 /// the original command text in the DB.
-#[tracing::instrument(skip(db, req, resolved_command, blocked_patterns, config), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id, blocked_patterns_count = blocked_patterns.len()))]
+///
+/// Patch 19b: `require_approval_patterns` adds a new cascade stage between the
+/// hard `blocked_patterns` deny rules and the SSH/systemctl checks. When a
+/// command matches one of these patterns, the gate stores it with status
+/// `pending_approval` and returns `requires_approval=true` so the caller
+/// (Claude Code hook, sidecar, engram-approval-tui) can interrupt for human
+/// review instead of denying outright.
+#[tracing::instrument(skip(db, req, resolved_command, blocked_patterns, require_approval_patterns, config), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id, blocked_patterns_count = blocked_patterns.len(), require_approval_patterns_count = require_approval_patterns.len()))]
 pub async fn check_command_with_context(
     db: &Database,
     req: &GateCheckRequest,
     user_id: i64,
     resolved_command: Option<&str>,
     blocked_patterns: &[String],
+    require_approval_patterns: &[String],
     config: &Config,
     session_id: Option<&str>,
 ) -> Result<GateCheckResult> {
@@ -144,6 +156,37 @@ pub async fn check_command_with_context(
             resolved_command: Some(req.command.clone()),
             gate_id,
             requires_approval: false,
+            enrichment: None,
+        });
+    }
+
+    // 1bis. (Patch 19b) require_approval_patterns -- soft gate that hands off
+    // to a human approver via engram-approval-tui instead of blocking outright.
+    if let Some(reason) = check_blocked_patterns(command_for_checks, require_approval_patterns) {
+        let reason = reason.replacen(
+            "Command matched blocked pattern:",
+            "Command matched require-approval pattern:",
+            1,
+        );
+        let gate_id = store_gate_request(
+            db,
+            GateRequestInsert {
+                user_id,
+                agent: &req.agent,
+                command: &req.command,
+                context: req.context.as_deref(),
+                status: "pending_approval",
+                reason: Some(&reason),
+                session_id,
+            },
+        )
+        .await?;
+        return Ok(GateCheckResult {
+            allowed: false,
+            reason: Some(reason),
+            resolved_command: Some(req.command.clone()),
+            gate_id,
+            requires_approval: true,
             enrichment: None,
         });
     }
@@ -841,5 +884,126 @@ mod tests {
         };
         let result = check_command(&db, &req, 1).await.unwrap();
         assert!(result.allowed);
+    }
+
+    // -- Patch 19b -- pipeline integration tests for require_approval cascade --
+
+    #[tokio::test]
+    async fn patch19b_require_approval_pattern_returns_pending_approval() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "apt install something".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let require_approval = vec!["apt install".to_string()];
+        let res = check_command_with_context(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &require_approval,
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed, "matching require_approval must not be silently allowed");
+        assert!(res.requires_approval, "must hand off to human approval");
+        assert!(res.reason.as_deref().unwrap_or("").contains("require-approval"));
+    }
+
+    #[tokio::test]
+    async fn patch19b_blocked_pattern_still_wins_over_require_approval() {
+        // Hard deny must short-circuit before the require_approval stage so an
+        // operator cannot accidentally weaken a dangerous default by listing
+        // it in both buckets.
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "rm -rf /etc/passwd".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let res = check_command_with_context(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &["rm -rf".to_string()], // listed in require_approval too -- must lose
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed);
+        assert!(!res.requires_approval, "hardcoded deny must not be downgraded to approval");
+    }
+
+    #[tokio::test]
+    async fn patch19b_no_match_passes_through_unchanged() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "echo hello".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let res = check_command_with_context(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &["apt install".to_string(), "docker rm".to_string()],
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(res.allowed);
+        assert!(!res.requires_approval);
+    }
+
+    #[tokio::test]
+    async fn patch19b_pending_secrets_still_set_after_no_approval_match() {
+        // Regression: the new bloc 2bis must not swallow has_secret_placeholders
+        // signaling when the command has no require_approval match.
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "curl -H 'Authorization: {{secret:svc/key}}'".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let res = check_command_with_context(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &[], // no require_approval patterns
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed);
+        assert!(res.requires_approval, "secret placeholder still triggers requires_approval");
     }
 }
