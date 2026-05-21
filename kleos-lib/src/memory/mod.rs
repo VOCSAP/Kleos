@@ -573,11 +573,23 @@ fn store_transactional_rusqlite(
     };
 
     if let Some(parent_id) = req.parent_memory_id {
-        tx.execute(
-            "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1",
-            rusqlite::params![parent_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        // Only supersede a parent that is itself the current latest version.
+        // Without the `is_latest = 1` guard, storing against an already
+        // superseded parent would leave the real head untouched and the new
+        // INSERT (is_latest = 1) would create a second live head, forking the
+        // version chain. A zero-row update means the parent is stale -- refuse.
+        let affected = tx
+            .execute(
+                "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND is_latest = 1",
+                rusqlite::params![parent_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+        if affected == 0 {
+            return Err(EngError::Conflict(format!(
+                "parent memory {} is not the latest version; refusing to fork the chain",
+                parent_id
+            )));
+        }
     }
 
     let is_static = req.is_static.unwrap_or(false) as i32;
@@ -1075,6 +1087,10 @@ fn update_transactional_rusqlite(
         )));
     }
 
+    // The new version row must carry forward the previous version's lifecycle
+    // and linkage state. Omitting these columns let SQLite apply table
+    // defaults, silently wiping is_archived/is_fact/episode_id/forget_*/
+    // valence/etc. on every content update. Carry them all forward from `old`.
     tx.execute(
         "INSERT INTO memories (
             content, category, source, session_id, importance,
@@ -1082,14 +1098,20 @@ fn update_transactional_rusqlite(
             is_static, tags, status, space_id,
             fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength,
             fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at,
-            confidence, model
+            confidence, model,
+            is_archived, is_fact, is_decomposed, source_count,
+            episode_id, forget_after, forget_reason, decay_score,
+            sync_id, valence, arousal, dominant_emotion
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
             ?9, ?10, ?11, ?12,
             ?13, ?14, ?15, ?16,
             ?17, ?18, ?19, ?20,
-            ?21, ?22
+            ?21, ?22,
+            ?23, ?24, ?25, ?26,
+            ?27, ?28, ?29, ?30,
+            ?31, ?32, ?33, ?34
         )",
         rusqlite::params![
             new_content,
@@ -1113,7 +1135,19 @@ fn update_transactional_rusqlite(
             old.fsrs_lapses,
             old.fsrs_last_review_at.clone(),
             old.confidence,
-            old.model.clone()
+            old.model.clone(),
+            old.is_archived,
+            old.is_fact,
+            old.is_decomposed,
+            old.source_count,
+            old.episode_id,
+            old.forget_after.clone(),
+            old.forget_reason.clone(),
+            old.decay_score,
+            old.sync_id.clone(),
+            old.valence,
+            old.arousal,
+            old.dominant_emotion.clone()
         ],
     )
     .map_err(rusqlite_to_eng_error)?;

@@ -257,35 +257,17 @@ pub fn slot_has_key(slot: PivSlot) -> bool {
     ok
 }
 
-/// Perform ECDH key agreement using the YubiKey PIV applet.
-/// `peer_pubkey_pem` is the peer's P-256 public key in PEM form.
-/// Returns the raw 32-byte shared secret. Only `KeyManagement` (9D)
-/// is supported.
+/// Builds the PIV ECDH (`calculate_secret`) Python script for `slot`.
 ///
-/// Implemented via Python `yubikit` because `ykman` CLI does not expose
-/// `calculate_secret`. Pattern mirrors `try_python_ykman_calculate` in
-/// `yubikey.rs`.
-pub fn ecdh_agree(slot: PivSlot, peer_pubkey_pem: &str) -> Result<[u8; 32]> {
-    if slot != PivSlot::KeyManagement {
-        return Err(CredError::InvalidInput(format!(
-            "ECDH only supported on KEY_MANAGEMENT (9D), not {}",
-            slot.as_hex()
-        )));
-    }
-
-    let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
-    // Runtime path: refuse to fall back to the YubiKey factory-default PIN.
-    // A misconfigured PIV_PIN would otherwise burn PIN retries on the YubiKey
-    // every time ECDH ran. Fail fast and loud instead.
-    let piv_pin = kleos_lib::auth_piv::runtime_piv_pin().map_err(|e| {
-        CredError::InvalidInput(format!(
-            "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
-        ))
-    })?;
-
-    let script = format!(
+/// Reads the PIN and serial from the process environment (`PIV_PIN`,
+/// `YKSERIAL`) so neither secret is interpolated into the program text on
+/// `python3 -c` argv (world-visible in `/proc/<pid>/cmdline`). The peer
+/// public key is supplied on stdin. Only the (validated enum) slot name is
+/// interpolated.
+fn build_ecdh_script(slot: PivSlot) -> String {
+    format!(
         r#"
-import sys, base64
+import sys, os, base64
 from ykman.device import list_all_devices
 from yubikit.piv import PivSession, SLOT
 from yubikit.core.smartcard import SmartCardConnection
@@ -294,8 +276,8 @@ from cryptography.hazmat.primitives.serialization import load_pem_public_key
 peer_pem = sys.stdin.buffer.read()
 peer = load_pem_public_key(peer_pem)
 
-target_serial = "{yk_serial}" if "{yk_serial}" else None
-piv_pin = "{piv_pin}"
+target_serial = os.environ.get("YKSERIAL") or None
+piv_pin = os.environ["PIV_PIN"]
 
 devices = list_all_devices()
 if not devices:
@@ -322,12 +304,43 @@ with dev.open_connection(SmartCardConnection) as conn:
     sys.stdout.write(base64.b16encode(shared).decode().lower())
 "#,
         slot = slot.yubikit_name(),
-        yk_serial = yk_serial,
-        piv_pin = piv_pin,
-    );
+    )
+}
 
+/// Perform ECDH key agreement using the YubiKey PIV applet.
+/// `peer_pubkey_pem` is the peer's P-256 public key in PEM form.
+/// Returns the raw 32-byte shared secret. Only `KeyManagement` (9D)
+/// is supported.
+///
+/// Implemented via Python `yubikit` because `ykman` CLI does not expose
+/// `calculate_secret`. Pattern mirrors `try_python_ykman_calculate` in
+/// `yubikey.rs`.
+pub fn ecdh_agree(slot: PivSlot, peer_pubkey_pem: &str) -> Result<[u8; 32]> {
+    if slot != PivSlot::KeyManagement {
+        return Err(CredError::InvalidInput(format!(
+            "ECDH only supported on KEY_MANAGEMENT (9D), not {}",
+            slot.as_hex()
+        )));
+    }
+
+    let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
+    // Runtime path: refuse to fall back to the YubiKey factory-default PIN.
+    // A misconfigured PIV_PIN would otherwise burn PIN retries on the YubiKey
+    // every time ECDH ran. Fail fast and loud instead.
+    let piv_pin = kleos_lib::auth_piv::runtime_piv_pin().map_err(|e| {
+        CredError::InvalidInput(format!(
+            "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
+        ))
+    })?;
+
+    let script = build_ecdh_script(slot);
+
+    // Secrets travel through the child environment, never on argv. The peer
+    // public key is piped on stdin below.
     let mut child = Command::new("python3")
         .args(["-c", &script])
+        .env("PIV_PIN", piv_pin.as_str())
+        .env("YKSERIAL", &yk_serial)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -457,6 +470,19 @@ mod tests {
         assert_eq!(PivSlot::Authentication.as_hex(), "9a");
         assert_eq!(PivSlot::Signature.as_hex(), "9c");
         assert_eq!(PivSlot::KeyManagement.as_hex(), "9d");
+    }
+
+    /// The ECDH script must read secrets from env, never interpolate them.
+    #[test]
+    fn ecdh_script_never_embeds_pin_or_serial() {
+        let script = build_ecdh_script(PivSlot::KeyManagement);
+        assert!(script.contains(r#"piv_pin = os.environ["PIV_PIN"]"#));
+        assert!(script.contains(r#"target_serial = os.environ.get("YKSERIAL")"#));
+        // No leftover interpolation tokens for the secrets.
+        assert!(!script.contains("{piv_pin}"));
+        assert!(!script.contains("{yk_serial}"));
+        // The validated slot name is still interpolated.
+        assert!(script.contains("SLOT.KEY_MANAGEMENT"));
     }
 
     #[test]

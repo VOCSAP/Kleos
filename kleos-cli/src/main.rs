@@ -2557,6 +2557,23 @@ fn shellexpand_home(s: &str) -> String {
     s.to_string()
 }
 
+/// Reduces a server-supplied artifact filename to a safe, CWD-relative name.
+///
+/// A malicious or compromised server controls the `filename` returned for an
+/// artifact. Writing it verbatim allows path traversal (`../../etc/cron.d/x`)
+/// or absolute-path overwrite (`/home/user/.bashrc`). This strips every
+/// directory component and returns only the final path element, so the write
+/// always lands in the current directory. Returns `None` for names that have
+/// no usable final component (empty, `.`, `..`, `/`).
+fn sanitize_download_name(server_name: &str) -> Option<std::path::PathBuf> {
+    let final_component = std::path::Path::new(server_name).file_name()?;
+    let name = final_component.to_str()?;
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    Some(std::path::PathBuf::from(name))
+}
+
 /// Encodes a byte slice as lowercase hexadecimal.
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -3703,7 +3720,16 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
                             return;
                         }
                         Some(p) => p.to_string(),
-                        None => filename,
+                        None => match sanitize_download_name(&filename) {
+                            Some(safe) => safe.to_string_lossy().into_owned(),
+                            None => {
+                                eprintln!(
+                                    "Error: refusing to write server-supplied filename {:?} (unsafe path); pass --output to choose a destination",
+                                    filename
+                                );
+                                return;
+                            }
+                        },
                     };
                     match std::fs::write(&out_path, &data) {
                         Ok(_) => println!(
@@ -3723,5 +3749,43 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
             Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap()),
             Err(e) => eprintln!("Error: {}", e),
         },
+    }
+}
+
+/// Tests for CLI-side input sanitization helpers.
+#[cfg(test)]
+mod tests {
+    use super::sanitize_download_name;
+
+    /// A server-supplied filename is reduced to its final, CWD-relative component.
+    #[test]
+    fn sanitize_download_name_strips_paths() {
+        assert_eq!(
+            sanitize_download_name("../../etc/passwd")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "passwd"
+        );
+        let shadow = sanitize_download_name("/etc/shadow").unwrap();
+        assert!(shadow.is_relative());
+        assert_eq!(shadow.to_str().unwrap(), "shadow");
+        assert_eq!(
+            sanitize_download_name("~/.ssh/authorized_keys")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "authorized_keys"
+        );
+        // A plain name is unchanged.
+        assert_eq!(
+            sanitize_download_name("report.pdf").unwrap().to_str().unwrap(),
+            "report.pdf"
+        );
+        // Names with no usable final component are refused.
+        assert!(sanitize_download_name("").is_none());
+        assert!(sanitize_download_name(".").is_none());
+        assert!(sanitize_download_name("..").is_none());
+        assert!(sanitize_download_name("/").is_none());
     }
 }

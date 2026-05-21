@@ -611,22 +611,14 @@ mod ecdh {
         Ok(sig.to_bytes().to_vec())
     }
 
-    /// PIV slot 9A ECDSA-SHA256 sign, via Python yubikit subprocess.
-    /// Same pattern as kleos_cred::piv::piv_sign but local to avoid a
-    /// dependency cycle (kleos-cred already depends on kleos-lib).
-    fn piv_sign_9a(payload: &[u8]) -> Result<Vec<u8>, EcdhClientError> {
-        let payload_hex = hex::encode(payload);
-        let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
-        let piv_pin = crate::auth_piv::runtime_piv_pin().map_err(|e| {
-            EcdhClientError::Sign(format!(
-                "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
-            ))
-        })?;
-        // NOTE: yubikit's PivSession.sign(message, hash_algorithm=SHA256())
-        // hashes the message INTERNALLY when hash_algorithm is set. Pre-hashing
-        // and passing the digest causes a double-hash and verification failure
-        // on the server. Pass the raw payload bytes.
-        let script = format!(
+    /// Builds the PIV 9A signing Python script.
+    ///
+    /// The script reads the PIN and serial from the process environment
+    /// (`PIV_PIN`, `YKSERIAL`) so neither secret is interpolated into the
+    /// program text passed on `python3 -c` argv (which is world-visible in
+    /// `/proc/<pid>/cmdline`). Only the hex `payload` is interpolated.
+    fn build_piv_sign_9a_script(payload_hex: &str) -> String {
+        format!(
             r#"
 import sys, os, base64
 from ykman.device import list_all_devices
@@ -635,8 +627,8 @@ from yubikit.core.smartcard import SmartCardConnection
 from cryptography.hazmat.primitives import hashes
 
 payload = bytes.fromhex("{payload}")
-target_serial = "{yk_serial}" if "{yk_serial}" else None
-piv_pin = "{piv_pin}"
+target_serial = os.environ.get("YKSERIAL") or None
+piv_pin = os.environ["PIV_PIN"]
 
 devices = list_all_devices()
 if not devices:
@@ -663,12 +655,31 @@ with dev.open_connection(SmartCardConnection) as conn:
     sys.stdout.write(base64.b16encode(sig).decode().lower())
 "#,
             payload = payload_hex,
-            yk_serial = yk_serial,
-            piv_pin = piv_pin,
-        );
+        )
+    }
 
+    /// PIV slot 9A ECDSA-SHA256 sign, via Python yubikit subprocess.
+    /// Same pattern as kleos_cred::piv::piv_sign but local to avoid a
+    /// dependency cycle (kleos-cred already depends on kleos-lib).
+    fn piv_sign_9a(payload: &[u8]) -> Result<Vec<u8>, EcdhClientError> {
+        let payload_hex = hex::encode(payload);
+        let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
+        let piv_pin = crate::auth_piv::runtime_piv_pin().map_err(|e| {
+            EcdhClientError::Sign(format!(
+                "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
+            ))
+        })?;
+        // NOTE: yubikit's PivSession.sign(message, hash_algorithm=SHA256())
+        // hashes the message INTERNALLY when hash_algorithm is set. Pre-hashing
+        // and passing the digest causes a double-hash and verification failure
+        // on the server. Pass the raw payload bytes.
+        let script = build_piv_sign_9a_script(&payload_hex);
+
+        // Secrets travel through the child environment, never on argv.
         let out = Command::new("python3")
             .args(["-c", &script])
+            .env("PIV_PIN", piv_pin.as_str())
+            .env("YKSERIAL", &yk_serial)
             .output()
             .map_err(|e| EcdhClientError::Sign(format!("python3 spawn: {}", e)))?;
 
@@ -797,5 +808,24 @@ with dev.open_connection(SmartCardConnection) as conn:
 
         serde_json::from_slice(body)
             .map_err(|e| EcdhClientError::BadResponse(format!("JSON parse: {}", e)))
+    }
+
+    /// Verifies the PIV signing script never embeds secrets in its argv text.
+    #[cfg(test)]
+    mod tests {
+        use super::build_piv_sign_9a_script;
+
+        /// The 9A signing script must read secrets from env, never interpolate them.
+        #[test]
+        fn sign_9a_script_never_embeds_pin_or_serial() {
+            let script = build_piv_sign_9a_script("deadbeef");
+            assert!(script.contains(r#"piv_pin = os.environ["PIV_PIN"]"#));
+            assert!(script.contains(r#"target_serial = os.environ.get("YKSERIAL")"#));
+            // No leftover interpolation tokens for the secrets.
+            assert!(!script.contains("{piv_pin}"));
+            assert!(!script.contains("{yk_serial}"));
+            // The payload is still interpolated (it is non-secret hex).
+            assert!(script.contains(r#"bytes.fromhex("deadbeef")"#));
+        }
     }
 }

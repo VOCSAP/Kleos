@@ -75,25 +75,52 @@ fn emit_claude_decision(decision: &str, reason: Option<&str>, additional_context
     }
 }
 
-/// Parse Claude Code's PreToolUse hook input from stdin. Expected shape:
+/// A parsed Claude Code PreToolUse hook payload, broken into the fields the
+/// gate needs to make a decision.
+struct ParsedHook {
+    /// The command string, present only for command-bearing tools (Bash).
+    command: Option<String>,
+    /// The tool name (e.g. "Bash", "Write"), if present.
+    tool_name: Option<String>,
+    /// The serialized `tool_input` object, forwarded to the gate as context.
+    tool_input: Option<String>,
+}
+
+/// Parse a Claude Code PreToolUse hook payload string. Expected shape:
 /// {"tool_name": "Bash", "tool_input": {"command": "..."}, ...}.
-/// Returns (command, tool_name) or None if the payload does not parse.
-fn parse_claude_hook_stdin() -> Option<(String, Option<String>)> {
-    let mut buf = String::new();
-    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).is_err() {
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_str(buf.trim()).ok()?;
+///
+/// Returns `None` ONLY when the payload is not valid JSON (a genuine parse
+/// error, which the caller may treat as fail-open). A well-formed payload
+/// that carries no `command` (any non-Bash tool such as Write/Edit/WebFetch)
+/// returns `Some` with `command == None`, so the caller forwards it to the
+/// gate for a real decision instead of silently allowing it.
+fn parse_claude_hook(payload: &str) -> Option<ParsedHook> {
+    let v: serde_json::Value = serde_json::from_str(payload.trim()).ok()?;
     let tool_name = v
         .get("tool_name")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
-    let command = v
-        .get("tool_input")
+    let tool_input_val = v.get("tool_input");
+    let command = tool_input_val
         .and_then(|ti| ti.get("command"))
         .and_then(|c| c.as_str())
-        .map(|s| s.to_string())?;
-    Some((command, tool_name))
+        .map(|s| s.to_string());
+    let tool_input = tool_input_val.map(|ti| ti.to_string());
+    Some(ParsedHook {
+        command,
+        tool_name,
+        tool_input,
+    })
+}
+
+/// Read Claude Code's PreToolUse hook input from stdin and parse it.
+/// Returns `None` only on a read error or unparseable JSON.
+fn parse_claude_hook_stdin() -> Option<ParsedHook> {
+    let mut buf = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).is_err() {
+        return None;
+    }
+    parse_claude_hook(&buf)
 }
 
 fn resolve_api_key() -> Option<String> {
@@ -292,12 +319,18 @@ async fn main() {
     // claude_hook implies gate_only: a hook decides, it does not execute.
     let gate_only = cli.gate_only || cli.claude_hook;
 
-    let (command, effective_tool_name) = if cli.claude_hook {
+    let (command, effective_tool_name, tool_context) = if cli.claude_hook {
         match parse_claude_hook_stdin() {
-            Some((cmd, tn)) => (cmd, tn.or_else(|| cli.tool_name.clone())),
+            Some(parsed) => {
+                let tool_name = parsed.tool_name.or_else(|| cli.tool_name.clone());
+                let command = parsed.command.unwrap_or_default();
+                (command, tool_name, parsed.tool_input)
+            }
             None => {
-                // Bad payload: emit a silent allow so we do not block the
-                // tool over a parse hiccup. Stderr would mix with stdout JSON.
+                // Unparseable payload (not valid JSON or unreadable stdin):
+                // allow rather than block over a parse hiccup. A well-formed
+                // payload with no command is NOT this case -- it returns Some
+                // with command == None and is forwarded to the gate below.
                 process::exit(0);
             }
         }
@@ -314,10 +347,14 @@ async fn main() {
                 input
             }
         };
-        (cmd, cli.tool_name.clone())
+        (cmd, cli.tool_name.clone(), None)
     };
 
-    if command.trim().is_empty() {
+    // A non-Bash tool in hook mode carries no command but must still be gated.
+    // Only short-circuit (silent allow) when there is genuinely nothing to
+    // evaluate -- no command AND no tool payload to forward.
+    let has_tool_payload = effective_tool_name.is_some() || tool_context.is_some();
+    if command.trim().is_empty() && !(cli.claude_hook && has_tool_payload) {
         process::exit(0);
     }
 
@@ -329,7 +366,7 @@ async fn main() {
     let req = gate::GateCheckRequest {
         command: command.clone(),
         agent: cli.agent.clone(),
-        context: None,
+        context: tool_context.clone(),
         tool_name: effective_tool_name
             .clone()
             .or_else(|| Some("Bash".to_string())),
@@ -486,6 +523,31 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A non-Bash tool payload must parse to Some (reach the gate), not None.
+    #[test]
+    fn non_bash_tool_is_not_silently_allowed() {
+        let json = r#"{"tool_name":"Write","tool_input":{"file_path":"/etc/x","content":"y"}}"#;
+        let parsed = parse_claude_hook(json).expect("non-Bash tool must reach the gate, not exit(0)");
+        assert_eq!(parsed.tool_name.as_deref(), Some("Write"));
+        assert!(parsed.command.is_none(), "Write carries no command");
+        assert!(parsed.tool_input.is_some(), "tool_input forwarded as gate context");
+    }
+
+    /// A Bash tool payload still yields its command.
+    #[test]
+    fn bash_tool_parses_command() {
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":"ls -la"}}"#;
+        let parsed = parse_claude_hook(json).expect("valid payload");
+        assert_eq!(parsed.command.as_deref(), Some("ls -la"));
+        assert_eq!(parsed.tool_name.as_deref(), Some("Bash"));
+    }
+
+    /// Only genuinely unparseable JSON returns None (the fail-open case).
+    #[test]
+    fn malformed_payload_returns_none() {
+        assert!(parse_claude_hook("not valid json {{{").is_none());
+    }
 
     #[test]
     fn build_decision_deny_with_reason() {
