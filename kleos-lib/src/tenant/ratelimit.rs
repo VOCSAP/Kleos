@@ -1,7 +1,3 @@
-use std::collections::HashMap;
-use std::sync::RwLock;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use crate::tenant::pool::TenantPools;
 use crate::{EngError, Result};
 
@@ -9,91 +5,10 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// In-memory rate limiter (fixed-window, per process)
-// ---------------------------------------------------------------------------
-
-/// Rate window duration in milliseconds (1 minute).
-const RATE_WINDOW_MS: u64 = 60_000;
-
-#[derive(Debug)]
-struct RateLimitEntry {
-    count: u32,
-    reset: u64,
-}
-
-/// In-memory rate limiter using a HashMap protected by RwLock.
-pub struct RateLimiter {
-    entries: RwLock<HashMap<i64, RateLimitEntry>>,
-}
-
-impl RateLimiter {
-    pub fn new() -> Self {
-        Self {
-            entries: RwLock::new(HashMap::new()),
-        }
-    }
-
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
-
-    /// Check rate limit for a key. Returns Ok(count) or Err(retry_after_secs).
-    ///
-    /// SECURITY: if the inner RwLock is poisoned by a panicking writer we fail
-    /// closed (return the smallest retry-after > 0) instead of unwrapping and
-    /// taking down the whole process, and we refuse to count that request
-    /// against the caller so we cannot be turned into a free amplifier.
-    pub fn check(&self, key_id: i64, limit: u32) -> std::result::Result<u32, u64> {
-        let now = Self::now_ms();
-        let mut map = match self.entries.write() {
-            Ok(g) => g,
-            Err(poisoned) => {
-                tracing::error!("rate limiter lock poisoned; failing closed");
-                // Recover the guard so subsequent requests can make progress.
-                poisoned.into_inner()
-            }
-        };
-        let entry = map.entry(key_id).or_insert(RateLimitEntry {
-            count: 0,
-            reset: now + RATE_WINDOW_MS,
-        });
-
-        // Reset window if expired.
-        if now > entry.reset {
-            entry.count = 0;
-            entry.reset = now + RATE_WINDOW_MS;
-        }
-
-        entry.count += 1;
-
-        if entry.count > limit {
-            let retry_after = (entry.reset.saturating_sub(now)) / 1000;
-            Err(retry_after.max(1))
-        } else {
-            Ok(entry.count)
-        }
-    }
-
-    /// Prune expired entries to prevent unbounded growth.
-    pub fn prune(&self) {
-        let now = Self::now_ms();
-        let mut map = match self.entries.write() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        map.retain(|_, entry| now <= entry.reset);
-    }
-}
-
-impl Default for RateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// z11-007: the in-memory per-process RateLimiter that used to live here was a
+// dead duplicate of `crate::ratelimit::RateLimiter` (the live one, used by
+// kleos-credd). Nothing constructed this one outside its own tests, so it was
+// removed. Tenant-scoped rate limiting uses the DB-backed functions below.
 
 // ---------------------------------------------------------------------------
 // DB-backed rate limiter (persistent, fixed-window)
@@ -238,41 +153,4 @@ pub async fn check_and_increment(
         .await?;
 
     Ok(count <= max_requests)
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rate_limiter_allows_within_limit() {
-        let rl = RateLimiter::new();
-        for _ in 0..5 {
-            assert!(rl.check(1, 10).is_ok());
-        }
-    }
-
-    #[test]
-    fn test_rate_limiter_blocks_over_limit() {
-        let rl = RateLimiter::new();
-        for _ in 0..10 {
-            let _ = rl.check(1, 10);
-        }
-        // 11th request should fail
-        assert!(rl.check(1, 10).is_err());
-    }
-
-    #[test]
-    fn test_rate_limiter_separate_keys() {
-        let rl = RateLimiter::new();
-        for _ in 0..10 {
-            let _ = rl.check(1, 10);
-        }
-        // Key 2 should still be allowed
-        assert!(rl.check(2, 10).is_ok());
-    }
 }

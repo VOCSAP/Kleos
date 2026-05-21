@@ -362,6 +362,8 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
 /// ECDH-derived key from one protocol version cannot be replayed on
 /// another. Bump the version suffix when the wire format changes.
 const ECDH_PROTOCOL: &str = "ecdh-v1";
+// z02-015: server half of the credd ECDH handshake; MUST stay byte-identical
+// to ECDH_HKDF_SALT in kleos-lib/src/cred/bootstrap.rs (ecdh module).
 const ECDH_HKDF_SALT: &[u8] = b"credd-ecdh-v1";
 
 #[derive(Deserialize)]
