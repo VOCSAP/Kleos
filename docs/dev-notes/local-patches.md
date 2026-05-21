@@ -29,6 +29,7 @@ qui reste 1.1.2).
 | **14 -- LLM thinking-mode toggle (`LLM_THINK` / `KLEOS_SIDECAR_LLM_THINK`)** (NOUVEAU 2026-05-18) | Permet d'utiliser Qwen3 et autres reasoning models sans casser Kleos qui lit le champ `response` Ollama | a commiter |
 | **14b -- Mirror `think` -> `reasoning_effort` sur OpenAI-compat** (NOUVEAU 2026-05-19) | Contourne le bug Ollama #14820 : le param `think` est ignore sur `/v1/chat/completions`. Mesure: Broca ask 47s -> 6s sur qwen3:8b-ctx16k. | a commiter |
 | **15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)** (NOUVEAU 2026-05-19) | 17 call sites LLM surchargeables a chaud via fichier (`broca`, `chiasm`, `skills`, `extraction`, `memory`, `growth`, `loom`). Mecanisme cascade env + cache mtime TTL 5s. Submodule `prompts-overrides` (VOCSAP/Kleos.prompts) pour les overrides VOCSAP. Catalog dans `docs/dev-notes/llm-prompts-catalog.md`. | a commiter |
+| **18 -- kleos-mcp allowlist (`KLEOS_MCP_TOOL_ALLOWLIST`)** (NOUVEAU 2026-05-21) | Filtre additif sur `kleos-mcp/src/tools.rs::registry()` pour restreindre la registry MCP (474 routes -> 15 a 140 selon profil Minimal/Standard/Advanced). Matcher manuel exact + suffix `.*`. Var unset/vide = comportement upstream. Tests: 7 unitaires inline. Cf. section dediee "Patch 18" plus bas. | a commiter |
 | kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
 
 **Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
@@ -1761,6 +1762,72 @@ Le Patch 17d Couche A **ne resout pas** :
 
 - Memoires Kleos #2848 (analyse mecanisme), #2851 (verification sub-agent + upstream clean), #2861 (revision plan post-feedback)
 - TODO files : `docs/dev-notes/consolidation-versioning-solution-b-todo.md`, `docs/dev-notes/consolidation-multi-level-dream-todo.md`
+
+---
+
+## Patch 18 -- allowlist d'outils kleos-mcp (`KLEOS_MCP_TOOL_ALLOWLIST`)
+
+### Symptome
+
+`kleos-mcp` expose une registry MCP de 474 routes canoniques + aliases (~600 entrees `tools/list`) cote client. La majorite (`admin.*`, `identity*`, `auth_keys*`, `security.*`, services Syntheos internes ...) n'est pas appelable utilement par un agent LLM. Pollution forte de la registry cote Claude Code, ralentissement de la selection d'outils, augmentation de la surface d'erreur.
+
+Audit /audit LXC 121 sur 14 jours : 45 paths distincts utilises = 9.5 % du catalogue ; top 8 = 92 % du trafic.
+
+### Approche
+
+Niveau **additif pur** sur `kleos-mcp/src/tools.rs::registry()` : lecture de l'env var `KLEOS_MCP_TOOL_ALLOWLIST` (CSV de patterns glob-lite), filtre des routes au moment d'emettre la `tools/list`. Defaut (var unset/vide) = comportement upstream strictement identique.
+
+Pourquoi cette approche plutot que toucher `kleos-client/src/routes.rs::ROUTES` :
+- `ROUTES` est la constante canonique partagee avec le runtime client HTTP. La toucher modifierait aussi le dispatcher kleos-client, hors scope.
+- Filtre `registry()` cote MCP, pas `dispatch()` (permissif). Le but est de cacher les tools cote LLM, pas de durcir un boundary de securite (cote `kleos-server` scope check).
+- Matcher manuel (`*`, suffix `.*`, exact) -- 15 lignes -- pour eviter d'ajouter une dep crate `glob`/`globset` qui elargit le delta.
+
+### Fichiers touches
+
+- `kleos-mcp/src/tools.rs` : ajout `parse_allowlist`, `matches_pattern`, `allowed` ; filtre dans `registry()` ; 7 tests unitaires inline (matcher + parsing + registry integration).
+- `docs/dev-notes/kleos-mcp-routes-inventory.csv` (etape 1 du plan)
+- `docs/dev-notes/kleos-mcp-routes-classified.csv` (etape 2)
+- `docs/dev-notes/kleos-mcp-routes-usage-30d.txt` (etape 3)
+- `docs/dev-notes/kleos-mcp-profiles.md` (etape 4)
+- `docs/dev-notes/extract-routes-inventory.py`, `docs/dev-notes/classify-routes.py` (outillage etapes 1-2)
+
+### Niveau delta
+
+**Additif pur** : aucune ligne upstream supprimee ni renommee. La fn `registry()` recoit 3 lignes d'appel a `allowed(...)` en plus. Le reste est de nouvelles fonctions et un bloc `#[cfg(test)] mod tests`. Aucune nouvelle dependance Cargo.toml.
+
+### Convention de syntaxe `KLEOS_MCP_TOOL_ALLOWLIST`
+
+- Var unset ou vide -> comportement upstream (toutes les routes).
+- CSV de patterns separes par virgules. Whitespace trimme. Entries vides ignorees.
+- Match exact : `memory.store`.
+- Suffix wildcard : `memory.*` (matche `memory.store`, `memory.recall`, ... ; matche aussi `memory` bare).
+- `*` seul matche tout.
+- Pas d'autre forme (`?`, `[abc]`, `**`, prefix wildcard).
+- Filtre porte sur les **noms canoniques**. Aliases suivent leur canonical.
+
+### Tests
+
+Unitaires (`cargo test -p kleos-mcp --lib --features 'kleos-lib/bundled-sqlite' tools::`) :
+1. `matches_exact` -- match exact OK, non-match OK.
+2. `matches_suffix_wildcard` -- `memory.*` matche `memory.store`, `memory`, mais pas `memories.recall` ni `memorystore`.
+3. `matches_star_alone` -- `*` matche tout.
+4. `allowed_with_empty_allowlist_is_permissive` -- `None` = passe-tout.
+5. `allowed_with_patterns_filters` -- combinaison patterns.
+6. `parse_allowlist_handles_whitespace_and_empties` -- parsing CSV avec whitespace et entries vides.
+7. `registry_includes_aliases_only_for_allowed_canonicals` -- integration `registry()` : `memory.store` allowlist -> canonical + alias `memory_store` presents ; `memory.recall` absent.
+
+Tests serialisent via `static ENV_LOCK: Mutex<()>` pour eviter les races sur `std::env::set_var` en parallele (cargo test --test-threads par defaut).
+
+### Conditions de retrait
+
+Si upstream Ghost-Frame absorbe le patch (candidate PR upstream legitime, beneficie a tous les forks consommateurs MCP), retirer du fork. Sinon, ce patch est stable : aucune evolution attendue tant que `ROUTES` ne change pas drastiquement de structure.
+
+### Reference
+
+- Plan parent : `docs/dev-notes/kleos-mcp-allowlist-plan-todo.md` (6 etapes)
+- Reference exploration : `docs/dev-notes/kleos-mcp-usage.md`
+- Profils proposes : `docs/dev-notes/kleos-mcp-profiles.md`
+- Memoires Kleos #2866 (env vars), #2867 (architecture 474 routes), #2876 (plan)
 
 ---
 
