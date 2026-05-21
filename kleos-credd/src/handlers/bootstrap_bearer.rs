@@ -140,7 +140,11 @@ pub async fn get_bootstrap_kleos_bearer(
             CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
         })?;
 
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
@@ -268,7 +272,11 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
             CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
         })?;
 
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(

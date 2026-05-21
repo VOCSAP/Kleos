@@ -166,31 +166,36 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
 
     let key = db
         .read(move |conn| {
+            // Look up by hash (single-row scan) then verify with constant-time eq.
             let mut stmt = conn
                 .prepare(
                     "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
                      FROM cred_agent_keys
-                     WHERE revoked_at IS NULL",
+                     WHERE revoked_at IS NULL AND key_hash = ?1
+                     LIMIT 1",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                    ))
-                })
+            let mut rows = stmt
+                .query(rusqlite::params![key_hash])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-            for row in rows {
-                let (id, user_id, stored_hash, name, permissions_json, created_at, revoked_at) =
-                    row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            if let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                let id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let user_id: i64 =
+                    row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let stored_hash: String =
+                    row.get(2).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let name: String =
+                    row.get(3).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let permissions_json: String =
+                    row.get(4).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let created_at: String =
+                    row.get(5).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let revoked_at: Option<String> =
+                    row.get(6).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+                // Defense-in-depth: constant-time verify after index lookup.
                 if key_hash.as_bytes().ct_eq(stored_hash.as_bytes()).into() {
                     let permissions = AgentKeyPermissions::from_json(&permissions_json);
                     return Ok(Some(AgentKey {

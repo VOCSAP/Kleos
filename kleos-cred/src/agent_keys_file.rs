@@ -19,16 +19,22 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tracing::{debug, info, warn};
 
-/// One scoped bootstrap-agent token. Stored as 64-char hex (32 random bytes).
+/// One scoped bootstrap-agent token. On-disk form stores only a SHA-256
+/// hash of the bearer token -- the plaintext is returned exactly once at
+/// generation time and never persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileAgentKey {
     /// Stable agent identifier (e.g. `<agent-name>-<host>`).
     pub id: String,
-    /// 64-character hex string. Comparison is constant-time.
-    pub key: String,
+    /// SHA-256 hex digest of the bearer token. Legacy files may still carry
+    /// a plaintext value under the `"key"` JSON name; auto-migration on
+    /// load hashes those and flips `key_hashed` to true.
+    #[serde(alias = "key")]
+    pub key_hash: String,
     pub created_at: DateTime<Utc>,
     pub last_used: Option<DateTime<Utc>>,
     pub revoked: bool,
@@ -38,6 +44,11 @@ pub struct FileAgentKey {
     /// `bootstrap/<agent-id>`), `service/*`, or `*` for full access.
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// Whether `key_hash` is a SHA-256 digest (true) or a legacy plaintext
+    /// token (false). Defaults to false for backward compat; auto-migration
+    /// on load hashes any un-migrated keys.
+    #[serde(default)]
+    pub key_hashed: bool,
 }
 
 /// On-disk JSON shape: `{ "keys": { "<agent-id>": FileAgentKey, ... } }`.
@@ -75,6 +86,22 @@ impl FileAgentKeyStore {
         match serde_json::from_str::<FileAgentKeyStore>(&content) {
             Ok(mut store) => {
                 store.path = path;
+                // Auto-migrate legacy plaintext tokens to SHA-256 hashes.
+                let mut migrated = 0usize;
+                for entry in store.keys.values_mut() {
+                    if !entry.key_hashed {
+                        let hash = Sha256::digest(entry.key_hash.as_bytes());
+                        entry.key_hash = hex::encode(hash);
+                        entry.key_hashed = true;
+                        migrated += 1;
+                    }
+                }
+                if migrated > 0 {
+                    info!("migrated {} plaintext agent key(s) to hash-only", migrated);
+                    if let Err(e) = store.save() {
+                        warn!("failed to persist hash migration: {}", e);
+                    }
+                }
                 info!("loaded {} bootstrap-agent key(s)", store.keys.len());
                 Ok(store)
             }
@@ -157,14 +184,20 @@ impl FileAgentKeyStore {
         rand::rng().fill_bytes(&mut bytes);
         let key_hex = hex::encode(bytes);
 
+        // Store only the SHA-256 hash; the plaintext is returned to the
+        // caller exactly once and never persisted.
+        let hash = Sha256::digest(key_hex.as_bytes());
+        let key_hash = hex::encode(hash);
+
         let entry = FileAgentKey {
             id: agent_id.to_string(),
-            key: key_hex.clone(),
+            key_hash,
             created_at: Utc::now(),
             last_used: None,
             revoked: false,
             description: description.to_string(),
             scopes,
+            key_hashed: true,
         };
         self.keys.insert(agent_id.to_string(), entry);
         self.save()?;
@@ -172,18 +205,23 @@ impl FileAgentKeyStore {
         Ok(key_hex)
     }
 
-    /// Constant-time validation. Returns the agent id on match.
+    /// Constant-time validation. Hashes the incoming bearer with SHA-256
+    /// and compares against stored key_hash. Returns the agent id on match.
     pub fn validate(&self, bearer: &str) -> Option<String> {
         let token = bearer.trim();
         if token.is_empty() {
             return None;
         }
+        let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
         for (id, entry) in &self.keys {
             if entry.revoked {
                 continue;
             }
-            if token.len() == entry.key.len()
-                && token.as_bytes().ct_eq(entry.key.as_bytes()).unwrap_u8() == 1
+            if token_hash
+                .as_bytes()
+                .ct_eq(entry.key_hash.as_bytes())
+                .unwrap_u8()
+                == 1
             {
                 return Some(id.clone());
             }
@@ -465,6 +503,72 @@ mod tests {
         // Empty agent_id not allowed
         let r2 = store.generate("", "desc", vec!["bootstrap/x".into()]);
         assert!(r2.is_err());
+    }
+
+    #[test]
+    fn on_disk_file_contains_no_plaintext_token() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-keys.json");
+        let mut store = FileAgentKeyStore::load_from(path.clone()).unwrap();
+
+        let token = store
+            .generate("disk-check", "test", vec!["bootstrap/disk-check".into()])
+            .unwrap();
+
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains(&token),
+            "on-disk file must NOT contain the plaintext token"
+        );
+        assert!(
+            on_disk.contains("key_hashed"),
+            "on-disk file must contain key_hashed flag"
+        );
+    }
+
+    #[test]
+    fn legacy_plaintext_auto_migrated() {
+        let _g = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-keys.json");
+
+        // Write a legacy-format file with plaintext key and no key_hashed flag.
+        let legacy_token = "a".repeat(64);
+        let legacy_json = serde_json::json!({
+            "keys": {
+                "legacy-agent": {
+                    "id": "legacy-agent",
+                    "key": legacy_token,
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "last_used": null,
+                    "revoked": false,
+                    "description": "legacy",
+                    "scopes": ["bootstrap/legacy-agent"]
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy_json).unwrap()).unwrap();
+
+        // Load triggers auto-migration.
+        let store = FileAgentKeyStore::load_from(path.clone()).unwrap();
+        let entry = store.keys.get("legacy-agent").unwrap();
+        assert!(entry.key_hashed, "legacy key must be auto-migrated");
+        assert_ne!(entry.key_hash, legacy_token, "hash must differ from plaintext");
+
+        // The original plaintext token must still validate (hashed on both sides).
+        assert_eq!(
+            store.validate(&legacy_token),
+            Some("legacy-agent".to_string()),
+            "legacy token must validate after migration"
+        );
+
+        // On-disk file must not contain the plaintext.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains(&legacy_token),
+            "migrated file must not contain plaintext"
+        );
     }
 
     #[test]

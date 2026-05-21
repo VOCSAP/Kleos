@@ -57,10 +57,13 @@ struct CacheEntry {
 // triggers a fresh fetch from credd.
 static KEY_CACHE: Mutex<Option<HashMap<String, CacheEntry>>> = Mutex::new(None);
 
+/// Retrieve a cached bearer for `slot`, evicting it if expired.
 fn cache_get(slot: &str) -> Option<String> {
-    let guard = KEY_CACHE.lock().unwrap();
-    let entry = guard.as_ref()?.get(slot)?.clone();
+    let mut guard = KEY_CACHE.lock().unwrap();
+    let map = guard.as_mut()?;
+    let entry = map.get(slot)?.clone();
     if SystemTime::now() >= entry.expires_at {
+        map.remove(slot);
         return None;
     }
     Some(entry.key)

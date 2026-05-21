@@ -69,6 +69,7 @@ pub async fn resolve_text_handler(
     let mut result = body.text.clone();
     let mut offset: isize = 0;
     let mut substitutions = 0;
+    let mut denied_categories: Vec<String> = Vec::new();
 
     for (start, end, category, name, field) in placeholders {
         if !auth.can_access_category(&category) {
@@ -83,6 +84,7 @@ pub async fn resolve_text_handler(
                 false,
             )
             .await?;
+            denied_categories.push(category);
             continue;
         }
 
@@ -138,6 +140,18 @@ pub async fn resolve_text_handler(
                 .await?;
             }
         }
+    }
+
+    // Fail the entire request if any placeholder was denied -- never return
+    // partially substituted text with unresolved placeholders visible.
+    if !denied_categories.is_empty() {
+        denied_categories.sort();
+        denied_categories.dedup();
+        return Err(kleos_cred::CredError::PermissionDenied(format!(
+            "access denied for categories: {}",
+            denied_categories.join(", ")
+        ))
+        .into());
     }
 
     Ok(Json(ResolveTextResponse {
