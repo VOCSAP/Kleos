@@ -88,13 +88,24 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
     }
 
     let llm_configured = state.brain.is_some();
-    let embedding_model = state
-        .config
-        .embedding_model_dir
-        .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    // When KLEOS_EMBEDDING_URL is set, report the model name (or "openai-compat"
+    // as a fallback) so /health reflects the active HTTP provider.
+    let embedding_model = std::env::var("KLEOS_EMBEDDING_URL")
+        .ok()
+        .map(|_| {
+            std::env::var("KLEOS_EMBEDDING_MODEL")
+                .unwrap_or_else(|_| "openai-compat".to_string())
+        })
+        .or_else(|| {
+            state
+                .config
+                .embedding_model_dir
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
 
     Json(json!({
         "status": "ok",
