@@ -4,3 +4,6 @@
 [submodule "prompts-overrides"]
 	path = prompts-overrides
 	url = https://github.com/VOCSAP/Kleos.prompts
+[submodule "gate-rules"]
+	path = gate-rules
+	url = https://github.com/VOCSAP/Kleos.gates-rules.git
