@@ -1923,6 +1923,7 @@ Les hooks repo sont copies (pas symlinks) dans `~/.claude/hooks/`. Etat reel apr
 | `UserPromptSubmit` | `""` | `user-prompt-lean.sh` | VOCSAP | actif (audite + patche 2026-05-21) |
 | `PostToolUse` | `.*` | `track-agent-forge.sh` | VOCSAP | actif (audite OK 2026-05-21, aucun patch) |
 | `PreToolUse` | `.*` | `enforce-kleos-search.sh` | VOCSAP | actif (audite + patche 2026-05-21, gate BLOQUANT) |
+| `PreToolUse` | `Bash\|Write\|Edit\|MultiEdit` | `kleos-sh.exe --claude-hook` | upstream Ghost-Frame | actif (active 2026-05-21, gate BLOQUANT via /gate/check + /approvals) |
 
 **Fix connexe 2026-05-21 -- session-start-kleos.sh : bloc Mnemonic Node.js legacy remplace par lancement detache du binaire Rust `kleos-sidecar.exe`**. L'ancien bloc (lignes 155-167) cherchait `~/.local/lib/mnemonic/index.ts` (Node.js legacy upstream Ghost-Frame) qui n'a jamais existe sur les postes VOCSAP -> log "Mnemonic binary not found", sidecar jamais lance. Nouveau bloc `ensure_kleos_sidecar_running` calque sur `ensure_eidolon_running` (PowerShell `Start-Process` detache, cascade URL `KLEOS_URL -> KLEOS_SERVER_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL`, fallback `KLEOS_API_KEY` via fichier `~/.config/eidolon/kleos-api-key.txt`). Niveau delta : chirurgical sur fichier VOCSAP-only. Necessite que `KLEOS_SIDECAR_WATCH` soit `true|false` (pas `0|1`) cote env operateur -- clap `bool` strict, contrairement a `KLEOS_SIDECAR_LLM_THINK` qui accepte `1|true|yes|on`.
 
