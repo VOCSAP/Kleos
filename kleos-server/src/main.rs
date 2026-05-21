@@ -2,6 +2,7 @@ use kleos_lib::config::{Config, EncryptionMode};
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
 use kleos_lib::embeddings::onnx::OnnxProvider;
+use kleos_lib::embeddings::openai::OpenAiProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
 use kleos_lib::jobs::pagerank_refresh::start_pagerank_refresh_job;
 use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
@@ -84,35 +85,53 @@ async fn main() {
     let reranker: Arc<tokio::sync::RwLock<Option<Arc<dyn Reranker>>>> =
         Arc::new(tokio::sync::RwLock::new(None));
 
-    // Spawn background task to load embedding model
+    // Spawn background task to load embedding model.
+    // When KLEOS_EMBEDDING_URL is set, use the OpenAI-compatible HTTP provider
+    // instead of the in-process ONNX runtime (avoids libonnxruntime dependency).
     {
         let embedder = Arc::clone(&embedder);
         let config = config.clone();
         tokio::spawn(async move {
-            tracing::info!("loading ONNX embedding model in background...");
-            match OnnxProvider::new(&config).await {
-                Ok(provider) => {
-                    // 6.11 pre-warm: one dummy embed so the first real
-                    // request avoids ONNX session + allocator cold start.
-                    let prewarm_start = std::time::Instant::now();
-                    match provider.embed("warmup").await {
-                        Ok(_) => tracing::info!(
-                            elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
-                            "embedder pre-warm complete"
-                        ),
-                        Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
+            let provider: Option<Arc<dyn EmbeddingProvider>> =
+                if let Some(p) = OpenAiProvider::from_env(reqwest::Client::new(), config.embedding_dim) {
+                    tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
+                    match p.embed("warmup").await {
+                        Ok(_) => {
+                            tracing::info!("OpenAI-compatible embedding provider ready");
+                            Some(Arc::new(p))
+                        }
+                        Err(e) => {
+                            tracing::warn!("OpenAI-compatible embedding provider probe failed: {}. Vector search disabled.", e);
+                            None
+                        }
                     }
-                    let mut guard = embedder.write().await;
-                    *guard = Some(Arc::new(provider));
-                    tracing::info!("ONNX embedding provider ready");
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
-                        e
-                    );
-                }
-            }
+                } else {
+                    tracing::info!("loading ONNX embedding model in background...");
+                    match OnnxProvider::new(&config).await {
+                        Ok(provider) => {
+                            let prewarm_start = std::time::Instant::now();
+                            match provider.embed("warmup").await {
+                                Ok(_) => tracing::info!(
+                                    elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
+                                    "embedder pre-warm complete"
+                                ),
+                                Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
+                            }
+                            tracing::info!("ONNX embedding provider ready");
+                            Some(Arc::new(provider))
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                                e
+                            );
+                            None
+                        }
+                    }
+                };
+
+            let mut guard = embedder.write().await;
+            *guard = provider;
         });
     }
 

@@ -1,31 +1,82 @@
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
-/// OpenAI embeddings API provider.
+/// OpenAI-compatible embeddings provider.
 ///
-/// Sends requests to https://api.openai.com/v1/embeddings and returns
-/// Vec<f32> embeddings. Validates that the returned dimension matches
-/// the configured `dim`.
+/// Works with any `/v1/embeddings`-compatible endpoint: OpenAI, TEI,
+/// Ollama, Azure OpenAI, and others. Validates that the returned
+/// dimension matches the configured `dim`.
+///
+/// Configured via:
+///   `KLEOS_EMBEDDING_URL`     — full endpoint URL (required)
+///   `KLEOS_EMBEDDING_API_KEY` — Bearer token (optional; falls back to `LLM_API_KEY`)
+///   `KLEOS_EMBEDDING_MODEL`   — model name (optional; omitted from request when unset)
+///   `KLEOS_EMBEDDING_DIM`     — expected vector dimension (default: 1024)
 pub struct OpenAiProvider {
     http: reqwest::Client,
-    api_key: String,
-    model: String,
+    pub url: String,
+    api_key: Option<String>,
+    model: Option<String>,
     dim: usize,
 }
 
 impl OpenAiProvider {
-    /// Create a new OpenAI embedding provider.
+    /// Create a provider for any OpenAI-compatible `/v1/embeddings` endpoint.
     ///
-    /// - `api_key`: OpenAI API key (Bearer token)
-    /// - `model`: model name; defaults to "text-embedding-3-small" if None
+    /// - `url`: full endpoint URL (e.g. `http://tei:8080/v1/embeddings`)
+    /// - `api_key`: optional Bearer token
+    /// - `model`: optional model name; omitted from request when `None`
     /// - `dim`: expected embedding dimension for validation
-    pub fn new(http: reqwest::Client, api_key: String, model: Option<String>, dim: usize) -> Self {
-        OpenAiProvider {
-            http,
-            api_key,
-            model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
-            dim,
+    pub fn new(
+        http: reqwest::Client,
+        url: String,
+        api_key: Option<String>,
+        model: Option<String>,
+        dim: usize,
+    ) -> Self {
+        OpenAiProvider { http, url, api_key, model, dim }
+    }
+
+    /// Construct from environment variables.
+    ///
+    /// Returns `None` when `KLEOS_EMBEDDING_URL` is not set.
+    pub fn from_env(http: reqwest::Client, dim: usize) -> Option<Self> {
+        let url = std::env::var("KLEOS_EMBEDDING_URL").ok()?;
+        let api_key = std::env::var("KLEOS_EMBEDDING_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("LLM_API_KEY").ok());
+        let model = std::env::var("KLEOS_EMBEDDING_MODEL").ok();
+        Some(Self::new(http, url, api_key, model, dim))
+    }
+}
+
+impl OpenAiProvider {
+    fn build_request(&self, input: serde_json::Value) -> reqwest::RequestBuilder {
+        let mut body = serde_json::json!({ "input": input });
+        if let Some(ref model) = self.model {
+            body["model"] = serde_json::Value::String(model.clone());
         }
+        let mut req = self.http.post(&self.url).json(&body);
+        if let Some(ref key) = self.api_key {
+            req = req.header("Authorization", format!("Bearer {}", key));
+        }
+        req
+    }
+
+    fn parse_embedding(item: &serde_json::Value, dim: usize, ctx: &str) -> Result<Vec<f32>> {
+        let embedding: Vec<f32> = item["embedding"]
+            .as_array()
+            .ok_or_else(|| EngError::Internal(format!("{}: missing embedding field", ctx)))?
+            .iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect();
+        if embedding.len() != dim {
+            return Err(EngError::Internal(format!(
+                "{}: dimension mismatch: expected {}, got {}",
+                ctx, dim, embedding.len()
+            )));
+        }
+        Ok(embedding)
     }
 }
 
@@ -36,59 +87,31 @@ impl EmbeddingProvider for OpenAiProvider {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<f32>>> + Send + 'a>> {
         use tracing::Instrument;
         let span = tracing::info_span!(
-            "embed_openai",
-            backend = "openai",
-            model = %self.model,
+            "embed_openai_compat",
+            url = %self.url,
             text_len = text.len(),
             dim = self.dim
         );
         Box::pin(
             async move {
-                let url = "https://api.openai.com/v1/embeddings";
                 let resp = self
-                    .http
-                    .post(url)
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .json(&serde_json::json!({
-                        "input": text,
-                        "model": self.model,
-                    }))
+                    .build_request(serde_json::Value::String(text.to_string()))
                     .send()
                     .await
-                    .map_err(|e| EngError::Internal(format!("openai embed network: {}", e)))?;
+                    .map_err(|e| EngError::Internal(format!("embed network: {}", e)))?;
 
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    return Err(EngError::Internal(format!(
-                        "openai returned {}: {}",
-                        status, body
-                    )));
+                    return Err(EngError::Internal(format!("embed {}: {}", status, body)));
                 }
 
                 let body: serde_json::Value = resp
                     .json()
                     .await
-                    .map_err(|e| EngError::Internal(format!("openai parse: {}", e)))?;
+                    .map_err(|e| EngError::Internal(format!("embed parse: {}", e)))?;
 
-                let embedding: Vec<f32> = body["data"][0]["embedding"]
-                    .as_array()
-                    .ok_or_else(|| {
-                        EngError::Internal("openai: missing embedding array".to_string())
-                    })?
-                    .iter()
-                    .filter_map(|v| v.as_f64().map(|f| f as f32))
-                    .collect();
-
-                if embedding.len() != self.dim {
-                    return Err(EngError::Internal(format!(
-                        "openai dimension mismatch: expected {}, got {}",
-                        self.dim,
-                        embedding.len()
-                    )));
-                }
-
-                Ok(embedding)
+                Self::parse_embedding(&body["data"][0], self.dim, "embed")
             }
             .instrument(span),
         )
@@ -101,67 +124,43 @@ impl EmbeddingProvider for OpenAiProvider {
     {
         use tracing::Instrument;
         let span = tracing::info_span!(
-            "embed_openai_batch",
-            backend = "openai",
-            model = %self.model,
+            "embed_openai_compat_batch",
+            url = %self.url,
             batch_size = texts.len(),
             dim = self.dim
         );
         Box::pin(
             async move {
-                let url = "https://api.openai.com/v1/embeddings";
+                if texts.is_empty() {
+                    return Ok(vec![]);
+                }
+                let input = serde_json::Value::Array(
+                    texts.iter().map(|t| serde_json::Value::String(t.clone())).collect(),
+                );
                 let resp = self
-                    .http
-                    .post(url)
-                    .header("Authorization", format!("Bearer {}", self.api_key))
-                    .json(&serde_json::json!({
-                        "input": texts,
-                        "model": self.model,
-                    }))
+                    .build_request(input)
                     .send()
                     .await
-                    .map_err(|e| EngError::Internal(format!("openai batch network: {}", e)))?;
+                    .map_err(|e| EngError::Internal(format!("embed_batch network: {}", e)))?;
 
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    return Err(EngError::Internal(format!(
-                        "openai batch returned {}: {}",
-                        status, body
-                    )));
+                    return Err(EngError::Internal(format!("embed_batch {}: {}", status, body)));
                 }
 
                 let body: serde_json::Value = resp
                     .json()
                     .await
-                    .map_err(|e| EngError::Internal(format!("openai batch parse: {}", e)))?;
+                    .map_err(|e| EngError::Internal(format!("embed_batch parse: {}", e)))?;
 
                 let data = body["data"].as_array().ok_or_else(|| {
-                    EngError::Internal("openai batch: missing data array".to_string())
+                    EngError::Internal("embed_batch: missing data array".to_string())
                 })?;
 
-                let mut results = Vec::with_capacity(data.len());
-                for item in data {
-                    let embedding: Vec<f32> = item["embedding"]
-                        .as_array()
-                        .ok_or_else(|| {
-                            EngError::Internal("openai batch: missing embedding field".to_string())
-                        })?
-                        .iter()
-                        .filter_map(|v| v.as_f64().map(|f| f as f32))
-                        .collect();
-
-                    if embedding.len() != self.dim {
-                        return Err(EngError::Internal(format!(
-                            "openai batch dimension mismatch: expected {}, got {}",
-                            self.dim,
-                            embedding.len()
-                        )));
-                    }
-                    results.push(embedding);
-                }
-
-                Ok(results)
+                data.iter()
+                    .map(|item| Self::parse_embedding(item, self.dim, "embed_batch"))
+                    .collect()
             }
             .instrument(span),
         )
