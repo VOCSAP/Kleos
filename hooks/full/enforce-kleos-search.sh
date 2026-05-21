@@ -58,6 +58,18 @@ case "$TOOL_NAME" in
     ;;
 esac
 
+# --- Always-allow + auto-stamp for kleos MCP tools (mcp__kleos__*) ---
+# kleos-mcp.exe proxies all kleos-server routes, so any mcp__kleos__* call is
+# effectively a Kleos interaction. Treat it as satisfying the "searched Kleos"
+# discipline, same as a kleos-cli search/context invocation.
+case "$TOOL_NAME" in
+  mcp__kleos__*)
+    touch "$STAMP_FILE" 2>/dev/null || true
+    log "STAMP SET + allowed: kleos MCP tool $TOOL_NAME"
+    exit 0
+    ;;
+esac
+
 # --- If stamp exists, everything is allowed ---
 if [ -f "$STAMP_FILE" ]; then
   log "Allowed: kleos already searched this session"
@@ -80,10 +92,13 @@ except: print('')
 
   # Allow bootstrap commands (kleos-cli + legacy engram-cli alias)
   if echo "$CMD" | grep -qE '(^|[[:space:]])(kleos-cli|engram-cli|cred|echo|cat|ls|pwd|mkdir|touch|chmod|which|command|test|\[|date|python3|node)([[:space:]]|$)'; then
-    # If this is a kleos-cli/engram-cli search, set the stamp
-    if echo "$CMD" | grep -qE '(kleos-cli|engram-cli)\s+search'; then
+    # If this is a kleos-cli/engram-cli search-like call, set the stamp.
+    # Accept the four canonical recall verbs: search (fast text), context
+    # (enriched JSON, recommended), recall (by id), recall-due (FSRS sweep).
+    # Strategy table is documented in ~/.claude/claude-config/KLEOS.md.
+    if echo "$CMD" | grep -qE '(kleos-cli|engram-cli)\s+(search|context|recall|recall-due)(\s|$)'; then
       touch "$STAMP_FILE"
-      log "STAMP SET: kleos-cli search detected in command"
+      log "STAMP SET: kleos-cli recall-verb detected in command"
     fi
     log "Allowed: bootstrap command"
     exit 0
@@ -113,8 +128,10 @@ log "BLOCKED: kleos not searched yet. tool=$TOOL_NAME"
 echo "BLOCKED: You have NOT searched Kleos yet this session." >&2
 echo "" >&2
 echo "You MUST search Kleos before using any action tools." >&2
-echo "Run: kleos-cli search \"<relevant query>\" --limit 5" >&2
-echo "Or dispatch an Agent to search Kleos." >&2
+echo "Run one of:" >&2
+echo "  kleos-cli context \"<relevant topic>\" --limit 5    # enriched JSON, recommended" >&2
+echo "  kleos-cli search  \"<relevant keyword>\" --limit 5    # fast text" >&2
+echo "Or call any mcp__kleos__* MCP tool, or dispatch an Agent to search Kleos." >&2
 echo "" >&2
 echo "This is non-negotiable. Search Kleos FIRST, then proceed." >&2
 exit 2
