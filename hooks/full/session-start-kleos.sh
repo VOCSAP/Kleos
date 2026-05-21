@@ -64,6 +64,92 @@ fi
 rm -f "$STATE_DIR/engram-searched" 2>/dev/null || true
 log "Cleared engram-searched stamp"
 
+# --- Ensure eidolon-supervisor binary is running (Windows-only) ---
+# Checks the running process directly (not the Scheduled Task). If absent,
+# launches the binary detached via PowerShell Start-Process. User-scope env
+# vars (CLAUDE_SESSIONS_DIR, EIDOLON_SUPERVISOR_CONFIG) are inherited
+# automatically; KLEOS_API_KEY is loaded from ~/.config/eidolon/kleos-api-key.txt
+# and exported so PowerShell child inherits it. Non-blocking: any failure is
+# logged and ignored.
+ensure_eidolon_running() {
+  # Only attempt on Windows -- need tasklist.exe
+  if ! command -v tasklist.exe >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Check if the process is alive
+  if tasklist.exe //FI "IMAGENAME eq eidolon-supervisor.exe" 2>/dev/null \
+       | grep -qi "eidolon-supervisor.exe"; then
+    log "eidolon-supervisor: process already running"
+    return 0
+  fi
+
+  # Locate the binary -- check ~/.cargo/bin first, then PATH
+  local bin_path=""
+  if [ -x "$HOME_DIR/.cargo/bin/eidolon-supervisor.exe" ]; then
+    bin_path="$HOME_DIR/.cargo/bin/eidolon-supervisor.exe"
+  elif command -v eidolon-supervisor.exe >/dev/null 2>&1; then
+    bin_path="$(command -v eidolon-supervisor.exe)"
+  else
+    log "eidolon-supervisor: binary not found in ~/.cargo/bin or PATH (skip)"
+    return 0
+  fi
+
+  # Locate PowerShell
+  local ps_bin=""
+  if command -v pwsh.exe >/dev/null 2>&1; then
+    ps_bin="pwsh.exe"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    ps_bin="powershell.exe"
+  else
+    log "eidolon-supervisor: no powershell available to launch detached (skip)"
+    return 0
+  fi
+
+  # Load KLEOS_API_KEY from file if not already in env (with EIDOLON_API_KEY legacy)
+  if [ -z "${KLEOS_API_KEY:-}" ]; then
+    if [ -n "${EIDOLON_API_KEY:-}" ]; then
+      KLEOS_API_KEY="$EIDOLON_API_KEY"
+    else
+      local key_file="$HOME_DIR/.config/eidolon/kleos-api-key.txt"
+      if [ -f "$key_file" ]; then
+        KLEOS_API_KEY="$(tr -d '\r\n ' < "$key_file" 2>/dev/null)"
+      else
+        log "eidolon-supervisor: no KLEOS_API_KEY/EIDOLON_API_KEY in env and key file missing at $key_file (launch anyway, /supervisor/inject will fail)"
+      fi
+    fi
+    export KLEOS_API_KEY
+  fi
+
+  # URL cascade aligned on kleos-sh/main.rs:310-313. The supervisor binary
+  # reads KLEOS_SERVER_URL first per its source, so we resolve and export
+  # under that exact name.
+  export KLEOS_SERVER_URL="${KLEOS_SERVER_URL:-${KLEOS_URL:-${ENGRAM_EIDOLON_URL:-${EIDOLON_URL:-http://127.0.0.1:4200}}}}"
+  # HOME hint for the binary (it reads HOME, not USERPROFILE)
+  export HOME="${HOME:-$HOME_DIR}"
+
+  # Convert paths to Windows form for PowerShell
+  local win_bin win_stdout win_stderr
+  if command -v cygpath >/dev/null 2>&1; then
+    win_bin="$(cygpath -w "$bin_path")"
+    win_stdout="$(cygpath -w "$LOG_DIR/eidolon-supervisor.out.log")"
+    win_stderr="$(cygpath -w "$LOG_DIR/eidolon-supervisor.err.log")"
+  else
+    win_bin="$bin_path"
+    win_stdout="$LOG_DIR/eidolon-supervisor.out.log"
+    win_stderr="$LOG_DIR/eidolon-supervisor.err.log"
+  fi
+
+  # Launch detached. The child inherits the parent PowerShell env, which
+  # itself inherits the env we exported above.
+  "$ps_bin" -NoProfile -NonInteractive -Command \
+    "Start-Process -FilePath '$win_bin' -WindowStyle Hidden -RedirectStandardOutput '$win_stdout' -RedirectStandardError '$win_stderr'" \
+    >/dev/null 2>&1 || true
+
+  log "eidolon-supervisor: launched (bin=$bin_path, server=$KLEOS_SERVER_URL)"
+}
+ensure_eidolon_running || log "eidolon-supervisor: ensure-running block raised an error (ignored)"
+
 log "SessionStart fired. HOME_DIR=$HOME_DIR"
 
 # --- 0. Start Mnemonic sidecar if not running ---
@@ -136,23 +222,11 @@ resolve_kleos_cli() {
 
 KLEOS_CLI="$(resolve_kleos_cli)"
 RECENT_MEMORIES=""
-if [ -f "$KLEOS_CLI" ]; then
-  LIST_RAW=$("$KLEOS_CLI" list --limit 5 --json --quiet 2>/dev/null || echo "")
-  if [ -n "$LIST_RAW" ]; then
-    RECENT_MEMORIES=$(python3 -c "
-import sys, json
-try:
-    d = json.loads(sys.argv[1])
-    items = d if isinstance(d, list) else d.get('memories', d.get('results', []))
-    lines = []
-    for item in items:
-        cat = item.get('category', 'unknown')
-        content = str(item.get('content', ''))[:200]
-        lines.append(f'[{cat}] {content}')
-    print('\n'.join(lines))
-except: pass
-" "$LIST_RAW" 2>/dev/null || echo "")
-  fi
+# kleos-cli list returns plain text (one line per memory: "#ID [score] content...").
+# The --json/--quiet flags do not exist on current kleos-cli (verified via --help,
+# only --limit and --offset are accepted). We forward the raw text as-is.
+if [ -f "$KLEOS_CLI" ] || command -v "$KLEOS_CLI" >/dev/null 2>&1; then
+  RECENT_MEMORIES=$("$KLEOS_CLI" list --limit 5 2>/dev/null || echo "")
 fi
 
 # --- 4. Fallback: if Eidolon unreachable, query kleos-cli directly ---
@@ -169,8 +243,27 @@ if [ -z "$PROMPT_RESULT" ]; then
     printf '\n'
   }
   KLEOS_API_KEY="$(_resolve_kleos_key)"
-  if [ -f "$KLEOS_CLI" ] && [ -n "$KLEOS_API_KEY" ]; then
-    PROMPT_RESULT=$("$KLEOS_CLI" context "agent-rules critical infrastructure active-tasks recent-decisions personality" --budget 3000 --quiet 2>/dev/null || echo "")
+  # kleos-cli context accepts only --limit on current code (verified via --help).
+  # --budget and --quiet do not exist. The output is JSON (per KLEOS.md), so we
+  # parse it locally to extract memory contents and join them as plain text.
+  if { [ -f "$KLEOS_CLI" ] || command -v "$KLEOS_CLI" >/dev/null 2>&1; } && [ -n "$KLEOS_API_KEY" ]; then
+    LOCAL_CTX_RAW=$("$KLEOS_CLI" context "agent-rules critical infrastructure active-tasks recent-decisions personality" --limit 8 2>/dev/null || echo "")
+    if [ -n "$LOCAL_CTX_RAW" ]; then
+      PROMPT_RESULT=$(python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.argv[1])
+    items = d.get('memories', []) if isinstance(d, dict) else []
+    lines = []
+    for it in items:
+        cat = it.get('category', 'unknown')
+        content = str(it.get('content', ''))[:400]
+        lines.append(f'[{cat}] {content}')
+    print('\n'.join(lines))
+except Exception:
+    pass
+" "$LOCAL_CTX_RAW" 2>/dev/null || echo "")
+    fi
   fi
 fi
 
