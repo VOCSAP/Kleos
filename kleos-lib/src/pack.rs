@@ -55,7 +55,7 @@ pub async fn pack_memories(
                     "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 \
-                       AND is_consolidated = 0",
+                       AND is_consolidated = 0 AND is_latest = 1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt

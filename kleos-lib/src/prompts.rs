@@ -195,13 +195,13 @@ pub async fn generate_header(
             if m != &actor_model_owned {
                 prior_models.insert(m.clone());
                 if prior_work.len() < limit {
-                    let summary_end = content.len().min(200);
+                    let summary = crate::validation::truncate_on_char_boundary(&content, 200);
                     prior_work.push(serde_json::json!({
                         "id": id,
                         "model": m,
                         "source": source,
                         "category": category,
-                        "summary": &content[..summary_end],
+                        "summary": summary,
                         "created_at": created_at,
                     }));
                 }

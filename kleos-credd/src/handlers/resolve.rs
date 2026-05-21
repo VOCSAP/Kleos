@@ -96,8 +96,18 @@ pub async fn resolve_text_handler(
                     None => data.primary_value(),
                 };
 
-                let adj_start = (start as isize + offset) as usize;
-                let adj_end = (end as isize + offset) as usize;
+                let adj_start_signed = start as isize + offset;
+                let adj_end_signed = end as isize + offset;
+                if adj_start_signed < 0
+                    || adj_end_signed < 0
+                    || adj_end_signed as usize > result.len()
+                    || !result.is_char_boundary(adj_start_signed as usize)
+                    || !result.is_char_boundary(adj_end_signed as usize)
+                {
+                    continue;
+                }
+                let adj_start = adj_start_signed as usize;
+                let adj_end = adj_end_signed as usize;
                 result.replace_range(adj_start..adj_end, &value);
                 offset += value.len() as isize - (end - start) as isize;
                 substitutions += 1;

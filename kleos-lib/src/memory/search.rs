@@ -65,7 +65,7 @@ fn shard_idx(user_id: i64, param_hash: u64) -> usize {
     (h as usize) & (N_SHARDS - 1)
 }
 
-/// Hash the search parameters that affect results.
+/// Hash ALL search parameters that affect results.
 fn hash_search_params(req: &SearchRequest) -> u64 {
     let mut h = DefaultHasher::new();
     req.query.hash(&mut h);
@@ -77,6 +77,14 @@ fn hash_search_params(req: &SearchRequest) -> u64 {
     req.space_id.hash(&mut h);
     req.include_forgotten.hash(&mut h);
     req.exclude_consolidated.hash(&mut h);
+    req.threshold.map(|t| t.to_bits()).hash(&mut h);
+    req.source_filter.hash(&mut h);
+    req.include_links.hash(&mut h);
+    req.include_archived.hash(&mut h);
+    req.include_noise.hash(&mut h);
+    req.latest_only.hash(&mut h);
+    req.mode.hash(&mut h);
+    req.expand_relationships.hash(&mut h);
     h.finish()
 }
 

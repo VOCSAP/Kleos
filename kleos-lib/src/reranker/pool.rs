@@ -45,6 +45,22 @@ unsafe impl Send for PooledSession {}
 #[allow(unsafe_code)]
 unsafe impl Sync for PooledSession {}
 
+// Compile-time gate: if ort::Session ever becomes Send+Sync natively, these
+// unsafe impls become redundant. If it changes in a way that breaks the
+// exclusive-access invariant, the safety argument above needs re-review.
+// This assertion validates that the unsafe impls actually produce Send+Sync
+// types (if the upstream trait bounds change, this fails to compile).
+const _: () = {
+    fn _assert_send<T: Send>() {}
+    fn _assert_sync<T: Sync>() {}
+    fn _check() {
+        _assert_send::<SessionPool>();
+        _assert_sync::<SessionPool>();
+        _assert_send::<PooledSession>();
+        _assert_sync::<PooledSession>();
+    }
+};
+
 impl SessionPool {
     pub fn new(sessions: Vec<Session>) -> Self {
         let count = sessions.len();

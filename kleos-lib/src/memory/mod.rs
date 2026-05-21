@@ -860,7 +860,9 @@ pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
         )));
     }
     search::invalidate_search_cache(user_id);
-    // Return the restored memory
+    // Queue vector reinsert so restored memory appears in semantic search.
+    // The vector was deleted on forget; the replay sweeper will re-embed it.
+    record_vector_sync_failure(db, id, user_id, "insert", "restore-reinsert").await;
     get(db, id, user_id).await
 }
 

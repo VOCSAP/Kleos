@@ -296,7 +296,7 @@ async fn fetch_url(
     if body.cache.unwrap_or(false) && !content.is_empty() {
         let max_content = 50000;
         let store_content = if content.len() > max_content {
-            &content[..max_content]
+            kleos_lib::validation::truncate_on_char_boundary(&content, max_content)
         } else {
             &content
         };
@@ -309,7 +309,7 @@ async fn fetch_url(
             user_id: Some(auth.user_id),
             tags: Some(vec![format!(
                 "url:{}",
-                &body.url[..body.url.len().min(200)]
+                kleos_lib::validation::truncate_on_char_boundary(&body.url, 200)
             )]),
             embedding: None,
             session_id: None,
@@ -321,7 +321,7 @@ async fn fetch_url(
 
         if let Some(embedder) = state.current_embedder().await {
             if let Ok(emb) = embedder
-                .embed(&store_content[..store_content.len().min(8000)])
+                .embed(kleos_lib::validation::truncate_on_char_boundary(store_content, 8000))
                 .await
             {
                 req.embedding = Some(emb);

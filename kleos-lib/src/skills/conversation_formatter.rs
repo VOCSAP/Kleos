@@ -33,8 +33,16 @@ pub fn truncate_content(content: &str, max_len: usize) -> String {
         return content.to_string();
     }
     let half = max_len / 2;
-    let start = &content[..half];
-    let end = &content[content.len() - half..];
+    let start = crate::validation::truncate_on_char_boundary(content, half);
+    let tail_start = content.len().saturating_sub(half);
+    let tail_start = {
+        let mut i = tail_start;
+        while i < content.len() && !content.is_char_boundary(i) {
+            i += 1;
+        }
+        i
+    };
+    let end = &content[tail_start..];
     format!("{}\n[... truncated ...]\n{}", start, end)
 }
 

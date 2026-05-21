@@ -209,7 +209,8 @@ pub async fn get_episode_memories(
             .prepare(
                 "SELECT id, content, category, source, importance, created_at
                  FROM memories
-                 WHERE episode_id = ?1 AND is_forgotten = 0
+                 WHERE episode_id = ?1 AND is_forgotten = 0 \
+                   AND is_latest = 1 AND is_archived = 0
                  ORDER BY created_at DESC",
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -282,7 +283,8 @@ pub async fn assign_memories_to_episode(
         for memory_id in &memory_ids {
             let count = conn
                 .execute(
-                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
+                    "UPDATE memories SET episode_id = ?1 \
+                     WHERE id = ?2 AND is_latest = 1 AND is_archived = 0",
                     params![episode_id, *memory_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;

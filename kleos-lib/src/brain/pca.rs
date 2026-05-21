@@ -89,7 +89,7 @@ impl PcaTransform {
             for _ in 0..100 {
                 let v_new = residual.dot(&v);
                 let norm = v_new.dot(&v_new).sqrt();
-                if norm < 1e-10 {
+                if norm < 1e-10 || !norm.is_finite() {
                     break;
                 }
                 let v_new_normalized = &v_new / norm;

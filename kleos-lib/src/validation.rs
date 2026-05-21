@@ -210,6 +210,21 @@ pub const MAX_UPLOAD_CHUNK_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Truncate a string to at most `max_bytes` bytes on a valid UTF-8 char boundary.
+///
+/// Returns a sub-slice that never splits a multibyte character. If `max_bytes`
+/// falls inside a multibyte sequence, the slice ends before that character.
+pub fn truncate_on_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        return s;
+    }
+    let mut i = max_bytes;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
+}
+
 /// Validate content is non-empty and within size limit.
 pub fn validate_content(content: &str) -> Result<()> {
     if content.trim().is_empty() {
@@ -300,6 +315,24 @@ mod tests {
         assert_eq!(clamp_signed_limit(50, 20, 100), 50);
         assert_eq!(clamp_signed_limit(9_999_999, 20, 100), 100);
         assert_eq!(clamp_signed_limit(1, 20, 100), 1);
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_never_panics() {
+        // ASCII: straightforward
+        assert_eq!(truncate_on_char_boundary("hello world", 5), "hello");
+        assert_eq!(truncate_on_char_boundary("hello", 100), "hello");
+        assert_eq!(truncate_on_char_boundary("", 10), "");
+        // Multibyte: snowman is 3 bytes (E2 98 83), cut inside -> back up
+        let s = "aa\u{2603}bb"; // 2 + 3 + 2 = 7 bytes
+        assert_eq!(truncate_on_char_boundary(s, 5), "aa\u{2603}");
+        assert_eq!(truncate_on_char_boundary(s, 3), "aa"); // lands inside snowman
+        assert_eq!(truncate_on_char_boundary(s, 4), "aa"); // still inside snowman
+        assert_eq!(truncate_on_char_boundary(s, 2), "aa");
+        // 4-byte emoji
+        let e = "x\u{1F600}y"; // 1 + 4 + 1 = 6 bytes
+        assert_eq!(truncate_on_char_boundary(e, 2), "x"); // inside emoji
+        assert_eq!(truncate_on_char_boundary(e, 5), "x\u{1F600}");
     }
 
     #[test]

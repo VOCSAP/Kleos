@@ -353,7 +353,7 @@ fn build_working_memory_block(rows: &[scratchpad::ScratchEntry]) -> Option<Strin
         };
         let mut value = row.value.trim().to_string();
         if value.len() > VALUE_MAX {
-            value = format!("{}...", &value[..VALUE_MAX]);
+            value = format!("{}...", crate::validation::truncate_on_char_boundary(&value, VALUE_MAX));
         }
         let session_prefix: String = row.session.chars().take(8).collect();
         let time_part = format_scratch_age(&row.updated_at);
@@ -1395,6 +1395,11 @@ mod assembly_tests {
         }
     }
 
+    /// Wrap content the same way the production code does (encode + tag).
+    fn w(s: &str) -> String {
+        format!("<user_memory>{}</user_memory>", encode_untrusted_content(s))
+    }
+
     #[test]
     fn evolution_section_format_matches_legacy() {
         let blocks = vec![
@@ -1402,7 +1407,7 @@ mod assembly_tests {
             mk(ContextBlockSource::Evolution, "beta"),
         ];
         let got = assemble_context_string(&blocks, &[]);
-        let expected = "## Preference/Fact Evolution\n<user_memory>alpha</user_memory>\n\n<user_memory>beta</user_memory>";
+        let expected = format!("## Preference/Fact Evolution\n{}\n\n{}", w("alpha"), w("beta"));
         assert_eq!(got, expected);
     }
 
@@ -1410,7 +1415,7 @@ mod assembly_tests {
     fn episode_section_format_matches_legacy() {
         let blocks = vec![mk(ContextBlockSource::Episode, "ep")];
         let got = assemble_context_string(&blocks, &[]);
-        let expected = "## Episode Context\n- [2026-04-18T00:00:00Z] <user_memory>ep</user_memory>";
+        let expected = format!("## Episode Context\n- [2026-04-18T00:00:00Z] {}", w("ep"));
         assert_eq!(got, expected);
     }
 
@@ -1421,8 +1426,7 @@ mod assembly_tests {
             mk(ContextBlockSource::Linked, "y"),
         ];
         let got = assemble_context_string(&blocks, &[]);
-        let expected =
-            "## Related Context\n- <user_memory>x</user_memory>\n- <user_memory>y</user_memory>";
+        let expected = format!("## Related Context\n- {}\n- {}", w("x"), w("y"));
         assert_eq!(got, expected);
     }
 
@@ -1430,7 +1434,7 @@ mod assembly_tests {
     fn recent_section_format_matches_legacy() {
         let blocks = vec![mk(ContextBlockSource::Recent, "r")];
         let got = assemble_context_string(&blocks, &[]);
-        let expected = "## Recent Activity\n- [2026-04-18T00:00:00Z] <user_memory>r</user_memory>";
+        let expected = format!("## Recent Activity\n- [2026-04-18T00:00:00Z] {}", w("r"));
         assert_eq!(got, expected);
     }
 
@@ -1441,8 +1445,7 @@ mod assembly_tests {
             mk(ContextBlockSource::Inference, "i2"),
         ];
         let got = assemble_context_string(&blocks, &[]);
-        let expected =
-            "## Implicit Connections\n<user_memory>i1</user_memory>\n<user_memory>i2</user_memory>";
+        let expected = format!("## Implicit Connections\n{}\n{}", w("i1"), w("i2"));
         assert_eq!(got, expected);
     }
 

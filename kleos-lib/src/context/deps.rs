@@ -111,16 +111,18 @@ pub async fn get_memory_without_embedding(
 pub async fn get_version_chain(
     db: &Database,
     root_id: i64,
-    user_id: i64,
+    _user_id: i64,
 ) -> Result<Vec<VersionChainEntry>> {
+    // user_id removed: per-tenant shards enforce isolation at the DB level,
+    // and migration 25 dropped the column from shard schemas.
     let sql = "SELECT id, content, category, version, is_latest, created_at \
                FROM memories \
-               WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
+               WHERE (root_memory_id = ?1 OR id = ?1) \
                ORDER BY version ASC";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![root_id, user_id])
+            .query(rusqlite::params![root_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut chain = Vec::with_capacity(8);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
@@ -167,17 +169,18 @@ pub async fn get_episode_summary(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<LinkedMemory>> {
+pub async fn get_links(db: &Database, mem_id: i64, _user_id: i64) -> Result<Vec<LinkedMemory>> {
+    // user_id removed: per-tenant shards enforce isolation at the DB level.
     let sql = "SELECT m.id, m.content, m.category, ml.similarity, m.is_forgotten, m.model, m.source \
                FROM memory_links ml \
                JOIN memories m ON (m.id = CASE WHEN ml.source_id = ?1 THEN ml.target_id ELSE ml.source_id END) \
                WHERE (ml.source_id = ?1 OR ml.target_id = ?1) \
-                 AND m.user_id = ?2 AND m.is_latest = 1 AND m.is_consolidated = 0 \
+                 AND m.is_latest = 1 AND m.is_consolidated = 0 \
                ORDER BY ml.similarity DESC LIMIT 10";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![mem_id, user_id])
+            .query(rusqlite::params![mem_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut linked = Vec::with_capacity(10);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
