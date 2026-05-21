@@ -40,6 +40,10 @@ pub enum CredError {
     /// credd response did not include a `key` field.
     #[error("credd response is missing the 'key' field")]
     MissingKey,
+
+    /// ECDH bootstrap failed with PIV configured and no fallback allowed.
+    #[error("ECDH bootstrap failed (PIV configured, no fallback): {0}")]
+    EcdhFailed(String),
 }
 
 /// Cached entry: the resolved bearer plus when it goes stale.
@@ -145,10 +149,22 @@ pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
                 // through to token path.
             }
             Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "ECDH bootstrap failed, falling through to token path"
-                );
+                // PIV is configured but ECDH failed for a reason other than
+                // NotConfigured. Default to hard error to prevent silent
+                // downgrade to the weaker legacy token path.
+                if env::var("KLEOS_ALLOW_CRED_FALLBACK").as_deref() == Ok("1") {
+                    tracing::error!(
+                        error = %e,
+                        "ECDH bootstrap failed, KLEOS_ALLOW_CRED_FALLBACK=1 allows token fallback"
+                    );
+                } else {
+                    tracing::error!(
+                        error = %e,
+                        "ECDH bootstrap failed with PIV configured -- refusing legacy fallback \
+                         (set KLEOS_ALLOW_CRED_FALLBACK=1 to override)"
+                    );
+                    return Err(CredError::EcdhFailed(e.to_string()));
+                }
             }
         }
     }

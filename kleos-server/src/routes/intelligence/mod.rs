@@ -317,7 +317,7 @@ async fn list_temporal_handler(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20).min(500) as i64;
+    let limit = params.limit.unwrap_or(20).clamp(1, 500) as i64;
     let patterns = list_patterns(&db, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
@@ -634,7 +634,7 @@ async fn predictive_patterns_handler(
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Return temporal patterns that drive predictions
-    let limit = params.limit.unwrap_or(20).min(500) as i64;
+    let limit = params.limit.unwrap_or(20).clamp(1, 500) as i64;
     let patterns = list_patterns(&db, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
@@ -738,7 +738,11 @@ async fn time_travel_handler(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<TimeTravelBody>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = body.limit.unwrap_or(20).min(100);
+    let limit = kleos_lib::validation::clamp_signed_limit(
+        body.limit.unwrap_or(20),
+        20,
+        100,
+    ) as i64;
     let results = time_travel(
         &db,
         auth.user_id,

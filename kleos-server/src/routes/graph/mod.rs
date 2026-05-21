@@ -554,7 +554,11 @@ async fn graph_raw_handler(
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
-        limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
+        limit: Some(kleos_lib::validation::clamp_signed_limit(
+            params.limit.unwrap_or(500),
+            500,
+            5000,
+        )),
     };
     let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
     Ok(Json(json!({
@@ -576,7 +580,11 @@ async fn graph_view_handler(
 ) -> Result<Json<Value>, AppError> {
     let opts = GraphBuildOptions {
         user_id: auth.user_id,
-        limit: Some(params.limit.unwrap_or(500).min(5000) as usize),
+        limit: Some(kleos_lib::validation::clamp_signed_limit(
+            params.limit.unwrap_or(500),
+            500,
+            5000,
+        )),
     };
     let result = build_graph_data(&db, &opts).await.map_err(AppError)?;
     Ok(Json(json!({
@@ -818,7 +826,11 @@ async fn community_members_handler(
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(50).min(1000) as usize;
+    let limit = kleos_lib::validation::clamp_signed_limit(
+        params.limit.unwrap_or(50),
+        50,
+        1000,
+    );
     let members = get_community_members(&db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;
@@ -881,7 +893,11 @@ async fn entity_cooccurrences_handler(
     Path(id): Path<i64>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20).min(1000) as usize;
+    let limit = kleos_lib::validation::clamp_signed_limit(
+        params.limit.unwrap_or(20),
+        20,
+        1000,
+    );
     let entities = get_cooccurring_entities(&db, id, auth.user_id, limit)
         .await
         .map_err(AppError)?;

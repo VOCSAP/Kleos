@@ -233,6 +233,19 @@ pub fn clamp_limit(limit: Option<usize>) -> usize {
         .clamp(1, MAX_SEARCH_LIMIT)
 }
 
+/// Clamp a signed (i64) limit to [1, max], converting to usize.
+///
+/// Non-positive values map to 1; values above `max` clamp to `max`.
+/// Use at route boundaries where the query/body field is `i64` to prevent
+/// negative limits producing unbounded SQL queries or wrapping casts.
+pub fn clamp_signed_limit(raw: i64, default: usize, max: usize) -> usize {
+    if raw <= 0 {
+        default.clamp(1, max)
+    } else {
+        (raw as usize).clamp(1, max)
+    }
+}
+
 /// Validate a string field length.
 pub fn validate_string_len(field: &str, value: &str, max: usize) -> Result<()> {
     if value.len() > max {
@@ -277,6 +290,16 @@ mod tests {
         assert_eq!(clamp_limit(Some(0)), 1);
         assert_eq!(clamp_limit(Some(5)), 5);
         assert_eq!(clamp_limit(Some(999)), MAX_SEARCH_LIMIT);
+    }
+
+    #[test]
+    fn clamp_signed_limit_rejects_negative_and_caps() {
+        assert_eq!(clamp_signed_limit(-1, 20, 100), 20);
+        assert_eq!(clamp_signed_limit(0, 20, 100), 20);
+        assert_eq!(clamp_signed_limit(i64::MIN, 20, 100), 20);
+        assert_eq!(clamp_signed_limit(50, 20, 100), 50);
+        assert_eq!(clamp_signed_limit(9_999_999, 20, 100), 100);
+        assert_eq!(clamp_signed_limit(1, 20, 100), 1);
     }
 
     #[test]

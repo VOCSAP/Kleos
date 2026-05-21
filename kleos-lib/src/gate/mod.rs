@@ -42,9 +42,10 @@ pub struct GateCheckRequest {
     /// requests with complete-latest calls.
     #[serde(default)]
     pub session_id: Option<String>,
-    /// Skip the human-approval long-poll. Set to true when the caller
-    /// already handles its own permission layer (e.g. Claude Code hooks).
-    #[serde(default)]
+    /// Skip the human-approval long-poll. Server-only -- never honored
+    /// from client request bodies to prevent untrusted callers from
+    /// bypassing mandatory approval gates.
+    #[serde(skip_deserializing, default)]
     pub skip_approval: bool,
 }
 

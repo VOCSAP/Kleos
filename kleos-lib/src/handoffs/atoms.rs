@@ -530,7 +530,10 @@ impl BudgetPacker {
         for (type_name, group) in &by_type {
             out.push_str(&format!("## {}\n", capitalize(type_name)));
             for atom in group {
-                out.push_str(&format!("- {}\n", atom.content));
+                out.push_str(&format!(
+                    "- {}\n",
+                    crate::context::encode_untrusted_content(&atom.content)
+                ));
             }
             out.push('\n');
         }

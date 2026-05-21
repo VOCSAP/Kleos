@@ -156,6 +156,42 @@ pub async fn proxy_handler(
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy target URL rejected: {}", e)))?;
 
+    // SECURITY (H4): per-category domain binding. When an allowlist is
+    // configured, only forward credentials to explicitly permitted domains.
+    if let Some(allowlist) = &state.proxy_domain_allowlist {
+        let target_host = url::Url::parse(&req.url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+        let target_host = target_host.as_deref().unwrap_or("");
+        let allowed_domains = allowlist
+            .get(&req.secret_category)
+            .or_else(|| allowlist.get("*"));
+        let permitted = match allowed_domains {
+            Some(domains) => domains.iter().any(|pattern| {
+                if pattern == "*" {
+                    true
+                } else if let Some(suffix) = pattern.strip_prefix("*.") {
+                    target_host == suffix || target_host.ends_with(&format!(".{}", suffix))
+                } else {
+                    target_host == pattern
+                }
+            }),
+            None => false,
+        };
+        if !permitted {
+            return Err(CredError::PermissionDenied(format!(
+                "proxy target domain '{}' not in allowlist for category '{}'",
+                target_host, req.secret_category
+            ))
+            .into());
+        }
+    } else if std::env::var("CREDD_PROXY_STRICT").as_deref() == Ok("1") {
+        return Err(CredError::PermissionDenied(
+            "proxy denied: no domain allowlist configured and CREDD_PROXY_STRICT=1 is set".into(),
+        )
+        .into());
+    }
+
     if !auth.can_access_category(&req.secret_category) {
         log_audit(
             &state.db,

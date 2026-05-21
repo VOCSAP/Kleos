@@ -66,9 +66,11 @@ async fn check_handler(
         }
     }
 
+    // Shell-safe resolve: secret values are single-quoted to prevent
+    // metacharacter injection when the resolved command reaches /bin/sh -c.
     let resolved_command = state
         .credd
-        .resolve_text(&db, auth.user_id, &body.agent, &body.command)
+        .resolve_text_shell_safe(&db, auth.user_id, &body.agent, &body.command)
         .await?;
     let mut resolved_patterns = Vec::new();
     for pattern in &state.config.eidolon.gate.blocked_patterns {

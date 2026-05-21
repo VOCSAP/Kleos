@@ -289,7 +289,7 @@ pub async fn resolve_and_validate_url(raw: &str) -> Result<Option<IpAddr>> {
 ///
 /// When `pinned_ip` is `None` (the URL already contained a literal IP), the
 /// original URL is returned unchanged and no `Host` override is needed.
-fn pin_url_to_ip(original_url: &str, pinned_ip: Option<IpAddr>) -> (String, Option<String>) {
+pub fn pin_url_to_ip(original_url: &str, pinned_ip: Option<IpAddr>) -> (String, Option<String>) {
     let Some(ip) = pinned_ip else {
         return (original_url.to_string(), None);
     };

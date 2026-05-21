@@ -111,7 +111,11 @@ pub async fn generate_prompt(
         if tokens_used + t > token_budget {
             continue;
         }
-        packed.push(format!("[{}] {}", category, content));
+        packed.push(format!(
+            "[{}] {}",
+            category,
+            crate::context::encode_untrusted_content(content)
+        ));
         tokens_used += t;
     }
 

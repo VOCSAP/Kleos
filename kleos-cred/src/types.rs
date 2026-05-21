@@ -48,7 +48,9 @@ impl std::fmt::Display for SecretType {
 }
 
 /// Structured secret data with typed variants.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Debug is hand-implemented to redact sensitive fields -- never derive it.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SecretData {
     Login {
@@ -89,6 +91,13 @@ pub enum SecretData {
     Environment {
         variables: HashMap<String, String>,
     },
+}
+
+impl std::fmt::Debug for SecretData {
+    /// Redacted debug output -- never prints secret values.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SecretData::{}(<redacted>)", self.type_name())
+    }
 }
 
 impl SecretData {
@@ -476,5 +485,29 @@ mod tests {
             passphrase: None,
         };
         assert_eq!(ssh.bare_value(), None);
+    }
+
+    #[test]
+    fn debug_never_leaks_secrets() {
+        let login = SecretData::Login {
+            username: "admin".into(),
+            password: "hunter2".into(),
+            url: None,
+            totp_seed: None,
+            notes: None,
+        };
+        let dbg = format!("{:?}", login);
+        assert!(!dbg.contains("hunter2"), "password must not appear in Debug");
+        assert!(!dbg.contains("admin"), "username must not appear in Debug");
+        assert!(dbg.contains("<redacted>"), "must show redaction marker");
+
+        let api = SecretData::ApiKey {
+            key: "sk-secret-key-value".into(),
+            endpoint: None,
+            notes: None,
+        };
+        let dbg = format!("{:?}", api);
+        assert!(!dbg.contains("sk-secret"), "API key must not appear in Debug");
+        assert!(dbg.contains("ApiKey"));
     }
 }

@@ -236,7 +236,11 @@ async fn get_packed_context(
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
     let context = db
-        .get_packed_context(&params.project, params.max_tokens as usize, auth.user_id)
+        .get_packed_context(
+            &params.project,
+            kleos_lib::validation::clamp_signed_limit(params.max_tokens, 4000, 128_000),
+            auth.user_id,
+        )
         .await?;
     Ok(Json(
         json!({ "context": context, "max_tokens": params.max_tokens }),

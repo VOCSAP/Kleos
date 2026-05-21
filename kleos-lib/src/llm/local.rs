@@ -109,8 +109,11 @@ impl LocalModelClient {
     pub fn new(config: OllamaConfig) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.concurrency));
         let cb = CircuitBreaker::new(config.cb_threshold, config.cb_cooldown_ms);
+        let http = crate::net::safe_client_builder()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            http: reqwest::Client::new(),
+            http,
             circuit_breaker: cb,
             semaphore,
             queue_len: AtomicUsize::new(0),
@@ -120,13 +123,22 @@ impl LocalModelClient {
     }
 
     /// Probe Ollama availability by hitting /api/tags.
+    ///
+    /// Validates the probe URL with `validate_outbound_url` to prevent
+    /// SSRF via a malicious `OLLAMA_URL` config value.
     pub async fn probe(&self) -> bool {
-        let tags_url = self
+        let base = self
             .config
             .url
             .replace("/v1/chat/completions", "")
-            .replace("/v1", "")
-            + "/api/tags";
+            .replace("/v1", "");
+        let tags_url = format!("{}/api/tags", base.trim_end_matches('/'));
+
+        if let Err(e) = crate::net::validate_outbound_url(&tags_url) {
+            tracing::warn!(msg = "ollama_probe_rejected", error = %e, url = %tags_url);
+            self.probe_result.store(2, Ordering::Relaxed);
+            return false;
+        }
 
         let result = self
             .http

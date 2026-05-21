@@ -212,10 +212,9 @@ async fn fetch_url(
     }
 
     // SECURITY (SSRF-DNS): validate URL scheme, literal hostname, AND resolve
-    // DNS to reject domains that point at private/loopback/metadata IPs. This
-    // closes the DNS-rebinding SSRF gap where a public domain resolves to
-    // 127.0.0.1, 169.254.169.254, RFC1918 space, etc.
-    resolve_and_validate_url(&body.url).await.map_err(|e| {
+    // DNS to reject domains that point at private/loopback/metadata IPs.
+    // Pin the fetch to the validated IP to close the TOCTOU rebinding window.
+    let pinned_ip = resolve_and_validate_url(&body.url).await.map_err(|e| {
         AppError(kleos_lib::EngError::InvalidInput(format!(
             "URL rejected: {}",
             e
@@ -225,8 +224,14 @@ async fn fetch_url(
     let parsed = url::Url::parse(&body.url)
         .map_err(|_| AppError(kleos_lib::EngError::InvalidInput("Invalid URL".into())))?;
 
-    let resp = FETCH_CLIENT
-        .get(&body.url)
+    let (fetch_url, host_override) =
+        kleos_lib::webhooks::pin_url_to_ip(&body.url, pinned_ip);
+
+    let mut req = FETCH_CLIENT.get(&fetch_url);
+    if let Some(host) = &host_override {
+        req = req.header("Host", host);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| AppError(kleos_lib::EngError::Internal(format!("Fetch error: {}", e))))?;

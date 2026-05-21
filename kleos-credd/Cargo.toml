@@ -46,6 +46,7 @@ hex = "0.4"
 subtle = { workspace = true }
 zeroize = { workspace = true }
 rand = { workspace = true }
+url.workspace = true
 
 # ECDH bootstrap auth (Stage 2 of ECDH PIV port).
 # p256 for ECDSA verify of client 9A signatures.

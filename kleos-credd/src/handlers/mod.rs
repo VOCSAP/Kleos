@@ -122,9 +122,16 @@ pub(crate) async fn resolve_from_kleos(
             match signer.sign_request("GET", "/list", "category=credential&limit=500", &[]) {
                 Ok(signed) => req = signed.apply_headers(req),
                 Err(e) => {
-                    tracing::warn!(error = %e, "PIV signing failed, trying bootstrap bearer");
-                    if let Some(bm) = &state.bootstrap_master {
-                        req = req.header("Authorization", format!("Bearer {}", bm.as_str()));
+                    // PIV is configured but signing failed. Default to hard
+                    // error to prevent silent downgrade to weaker bearer.
+                    if std::env::var("KLEOS_ALLOW_CRED_FALLBACK").as_deref() == Ok("1") {
+                        tracing::error!(error = %e, "PIV signing failed, KLEOS_ALLOW_CRED_FALLBACK=1 allows bearer fallback");
+                        if let Some(bm) = &state.bootstrap_master {
+                            req = req.header("Authorization", format!("Bearer {}", bm.as_str()));
+                        }
+                    } else {
+                        tracing::error!(error = %e, "PIV signing failed -- refusing bearer fallback (set KLEOS_ALLOW_CRED_FALLBACK=1 to override)");
+                        return Err(CredError::AuthFailed(format!("PIV signing failed: {}", e)).into());
                     }
                 }
             }
