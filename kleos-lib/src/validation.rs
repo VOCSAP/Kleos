@@ -113,6 +113,9 @@ pub const MAX_PDF_INPUT_BYTES: usize = 100 * 1024 * 1024;
 /// Maximum extracted text bytes from PDF.
 pub const MAX_PDF_TEXT_BYTES: usize = 100 * 1024 * 1024;
 
+/// Maximum raw input bytes accepted by `ingest_binary`.
+pub const MAX_INGEST_INPUT_BYTES: usize = 100 * 1024 * 1024; // 100 MiB
+
 // ---------------------------------------------------------------------------
 // Intelligence
 // ---------------------------------------------------------------------------

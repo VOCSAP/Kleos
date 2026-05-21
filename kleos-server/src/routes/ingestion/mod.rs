@@ -33,7 +33,8 @@ use crate::{
     state::AppState,
 };
 use kleos_lib::validation::{
-    MAX_IMPORT_BATCH, MAX_INGEST_TEXT_BYTES, MAX_UPLOAD_CHUNK_BYTES, MAX_UPLOAD_TOTAL_BYTES,
+    MAX_CONTENT_SIZE, MAX_IMPORT_BATCH, MAX_INGEST_TEXT_BYTES, MAX_UPLOAD_CHUNK_BYTES,
+    MAX_UPLOAD_TOTAL_BYTES,
 };
 use types::{
     ImportBulkBody, ImportJsonBody, IngestBody, UploadAbortBody, UploadChunkBody,
@@ -714,6 +715,11 @@ async fn import_json(
                 continue;
             }
         };
+        // Enforce per-memory content size cap (raw INSERTs bypass memory::store validation)
+        if content.len() > MAX_CONTENT_SIZE {
+            skipped += 1;
+            continue;
+        }
         let tags_str = match &m.tags {
             Some(serde_json::Value::Array(arr)) => {
                 Some(serde_json::to_string(arr).unwrap_or_default())
@@ -784,6 +790,10 @@ async fn import_mem0(
             Some(c) if !c.trim().is_empty() => c.trim().to_string(),
             _ => continue,
         };
+        // Enforce per-memory content size cap (raw INSERTs bypass memory::store validation)
+        if content.len() > MAX_CONTENT_SIZE {
+            continue;
+        }
         let meta_obj = mem.get("metadata").and_then(|m| m.as_object());
         let category = meta_obj
             .and_then(|m| m.get("category"))
@@ -870,6 +880,11 @@ async fn import_supermemory(
                 continue;
             }
         };
+        // Enforce per-memory content size cap (raw INSERTs bypass memory::store validation)
+        if content.len() > MAX_CONTENT_SIZE {
+            skipped += 1;
+            continue;
+        }
         let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let category = item
             .get("category")

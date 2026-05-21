@@ -103,7 +103,7 @@ impl Extractor {
 
         Some(MemoryCandidate {
             content: if trimmed.len() > 2000 {
-                kleos_lib::validation::truncate_on_char_boundary(&trimmed, 2000).to_string()
+                kleos_lib::validation::truncate_on_char_boundary(trimmed, 2000).to_string()
             } else {
                 trimmed.to_string()
             },

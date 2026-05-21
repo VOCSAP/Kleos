@@ -295,6 +295,15 @@ pub async fn ingest_binary(
     meta: Option<&FormatMeta>,
 ) -> Result<IngestResult> {
     let start = Instant::now();
+
+    // Reject oversized binary input before any processing.
+    if input.len() > crate::validation::MAX_INGEST_INPUT_BYTES {
+        return Err(crate::EngError::InvalidInput(format!(
+            "binary input exceeds {} byte limit",
+            crate::validation::MAX_INGEST_INPUT_BYTES
+        )));
+    }
+
     let job_id = format!("ingest_{}", &Uuid::new_v4().to_string()[..8]);
 
     // Detect format

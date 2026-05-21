@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Multipart, Path},
+    extract::{DefaultBodyLimit, Multipart, Path},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -20,6 +20,7 @@ use kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES as MAX_UPLOAD_BYTES;
 mod types;
 
 /// Build the artifact route tree.
+/// Overrides the global 2 MiB body limit with the advertised 50 MiB for uploads.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/artifacts/stats", get(get_stats))
@@ -28,6 +29,7 @@ pub fn router() -> Router<AppState> {
             get(list_for_memory).post(upload_artifact),
         )
         .route("/artifact/{id}", get(download_artifact))
+        .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
 }
 
 /// Return aggregate artifact storage statistics (count and byte totals by storage tier).
