@@ -4969,6 +4969,7 @@ dependencies = [
 name = "kleos-fs"
 version = "1.2.1"
 dependencies = [
+ "libc",
  "reqwest",
  "serde_json",
  "tempfile",

@@ -211,6 +211,7 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_latest = 1 AND mt.is_latest = 1 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
+                       AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
                 )

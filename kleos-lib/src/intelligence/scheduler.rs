@@ -206,7 +206,7 @@ impl IntelligenceTask for DeduplicateTask {
         "deduplicate"
     }
     async fn run(&self, db: &Database, user_id: i64) -> Result<Value> {
-        let result = duplicates::deduplicate(db, user_id, 0.9, true).await?;
+        let result = duplicates::deduplicate(db, user_id, 0.9, false).await?;
         Ok(json!(result))
     }
 }

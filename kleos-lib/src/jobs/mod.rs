@@ -488,8 +488,19 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
         return Ok(true);
     };
 
-    let payload: Value = serde_json::from_str(&job.payload)
-        .map_err(|e| crate::EngError::InvalidInput(format!("invalid job payload JSON: {}", e)))?;
+    let payload: Value = match serde_json::from_str(&job.payload) {
+        Ok(v) => v,
+        Err(e) => {
+            let err_msg = format!("invalid job payload JSON: {}", e);
+            if job.attempts >= job.max_attempts {
+                fail_job(db, job.id, &err_msg).await?;
+            } else {
+                retry_job(db, job.id, &err_msg, 0).await?;
+            }
+            error!(job_id = job.id, job_type = %job.job_type, "poison payload");
+            return Ok(true);
+        }
+    };
     let timeout = tokio::time::Duration::from_millis(120_000);
 
     match tokio::time::timeout(timeout, handler(payload)).await {

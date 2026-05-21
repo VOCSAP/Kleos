@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::Query,
     routing::{get, post},
     Json, Router,
 };
@@ -7,7 +7,7 @@ use kleos_lib::fsrs::decay;
 use rusqlite::params;
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
 
 mod types;
 mod web;
@@ -23,13 +23,10 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn refresh_decay(
-    State(state): State<AppState>,
-    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    // Recalculate decay scores for all non-static memories
-    let _user_id = auth.user_id;
-    let updates: Vec<(i64, f64)> = state
-        .db
+    let updates: Vec<(i64, f64)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, importance, created_at, access_count, last_accessed_at, is_static, source_count, fsrs_stability \
@@ -65,9 +62,7 @@ async fn refresh_decay(
         .await?;
 
     let count = updates.len();
-    state
-        .db
-        .write(move |conn| {
+    db.write(move |conn| {
             for (id, score) in &updates {
                 conn.execute(
                     "UPDATE memories SET decay_score = ?1 WHERE id = ?2",
@@ -82,17 +77,15 @@ async fn refresh_decay(
 }
 
 async fn get_decay_scores(
-    State(state): State<AppState>,
-    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Auth(_auth): Auth,
     Query(query_params): Query<DecayScoresQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = query_params.limit.unwrap_or(20).min(100) as i64;
     let order_asc = query_params.order.as_deref() == Some("asc");
     let filter_id = query_params.memory_id;
-    let _user_id = auth.user_id;
 
-    let memories: Vec<Value> = state
-        .db
+    let memories: Vec<Value> = db
         .read(move |conn| {
             if let Some(mid) = filter_id {
                 let mut stmt = conn.prepare(

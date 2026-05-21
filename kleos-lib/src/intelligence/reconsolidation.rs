@@ -216,6 +216,18 @@ pub async fn reconsolidate_memory(
             new_imp = new_importance,
             "reconsolidated"
         );
+    } else {
+        // Bump updated_at so the ORDER BY updated_at ASC cursor advances past
+        // this row and doesn't re-pick it every sweep.
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET updated_at = datetime('now') WHERE id = ?1",
+                rusqlite::params![memory_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(())
+        })
+        .await?;
     }
 
     Ok(ReconsolidationResult {

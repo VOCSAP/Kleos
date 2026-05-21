@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::Query,
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -9,7 +9,7 @@ use kleos_lib::personality::{
 };
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{error::AppError, extractors::{Auth, ResolvedDb}, state::AppState};
 
 mod types;
 use types::{DetectBody, ListSignalsParams, StoreSignalBody};
@@ -48,12 +48,12 @@ async fn detect_handler(
 /// POST /personality/signals
 /// Store a single personality signal for the authenticated user.
 async fn store_signal_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Json(body): Json<StoreSignalBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let signal = store_signal(
-        &state.db,
+        &db,
         &body.signal_type,
         body.value,
         body.evidence.as_deref(),
@@ -67,31 +67,31 @@ async fn store_signal_handler(
 /// GET /personality/signals
 /// List recent personality signals for the authenticated user.
 async fn list_signals_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
     Query(params): Query<ListSignalsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(1000);
-    let signals = list_signals(&state.db, auth.user_id, limit).await?;
+    let signals = list_signals(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "signals": signals, "count": signals.len() })))
 }
 
 /// GET /personality/profile
 /// Get (or create) the personality profile for the authenticated user.
 async fn get_profile_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let profile = get_profile(&state.db, auth.user_id).await?;
+    let profile = get_profile(&db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }
 
 /// POST /personality/profile/update
 /// Aggregate stored signals into the profile and return the updated profile.
 async fn update_profile_handler(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let profile = update_profile(&state.db, auth.user_id).await?;
+    let profile = update_profile(&db, auth.user_id).await?;
     Ok(Json(json!(profile)))
 }
