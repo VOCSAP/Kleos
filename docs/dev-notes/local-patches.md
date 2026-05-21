@@ -29,7 +29,8 @@ qui reste 1.1.2).
 | **14 -- LLM thinking-mode toggle (`LLM_THINK` / `KLEOS_SIDECAR_LLM_THINK`)** (NOUVEAU 2026-05-18) | Permet d'utiliser Qwen3 et autres reasoning models sans casser Kleos qui lit le champ `response` Ollama | a commiter |
 | **14b -- Mirror `think` -> `reasoning_effort` sur OpenAI-compat** (NOUVEAU 2026-05-19) | Contourne le bug Ollama #14820 : le param `think` est ignore sur `/v1/chat/completions`. Mesure: Broca ask 47s -> 6s sur qwen3:8b-ctx16k. | a commiter |
 | **15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)** (NOUVEAU 2026-05-19) | 17 call sites LLM surchargeables a chaud via fichier (`broca`, `chiasm`, `skills`, `extraction`, `memory`, `growth`, `loom`). Mecanisme cascade env + cache mtime TTL 5s. Submodule `prompts-overrides` (VOCSAP/Kleos.prompts) pour les overrides VOCSAP. Catalog dans `docs/dev-notes/llm-prompts-catalog.md`. | a commiter |
-| **18 -- kleos-mcp allowlist (`KLEOS_MCP_TOOL_ALLOWLIST`)** (NOUVEAU 2026-05-21) | Filtre additif sur `kleos-mcp/src/tools.rs::registry()` pour restreindre la registry MCP (474 routes -> 15 a 140 selon profil Minimal/Standard/Advanced). Matcher manuel exact + suffix `.*`. Var unset/vide = comportement upstream. Tests: 7 unitaires inline. Cf. section dediee "Patch 18" plus bas. | a commiter |
+| **18 -- kleos-mcp allowlist (`KLEOS_MCP_TOOL_ALLOWLIST`)** (NOUVEAU 2026-05-21) | Filtre additif sur `kleos-mcp/src/tools.rs::registry()` pour restreindre la registry MCP (474 routes -> 15 a 140 selon profil Minimal/Standard/Advanced). Matcher manuel exact + suffix `.*`. Var unset/vide = comportement upstream. Tests: 7 unitaires inline. Cf. section dediee "Patch 18" plus bas. | `5c12c88` |
+| **19 -- kleos-mcp stdio newline framing** (NOUVEAU 2026-05-21) | Remplace le framing LSP `Content-Length: NN\r\n\r\n{body}` par newline-delimited JSON per spec MCP stdio. Resout timeout 30s cote tout client MCP conforme (Claude Code, Claude Desktop). Bug upstream Ghost-Frame pur (commits `2dcebf0`/`7dee90d`/`92a94bc`, aucun patch VOCSAP avant). 8 tests unitaires inline (gap upstream). **CANDIDAT PR UPSTREAM**. Cf. section dediee plus bas. | a commiter |
 | **Hooks VOCSAP -- fixes + extensions** (cumulatif 2026-05-20/2026-05-21) | Voir section dediee "Hooks VOCSAP" plus bas. Couvre les fixes du 2026-05-20 (alignement bodies `/gate/check`, `/gate/complete-latest`, commenting GROWTH.md) et les ajouts du 2026-05-21 (bloc `ensure_eidolon_running`, hook `eidolon-supervisor-drain-pending.sh`, cascade env vars URL/KEY, fixes flags `kleos-cli list/context`, README `eidolon-supervisor/`). Decalage permanent vs upstream (le bundle `hooks/full` a ete retire upstream, Patch 12 le conserve). | a commiter |
 | kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
 
@@ -1942,6 +1943,102 @@ Chacun fera l'objet d'une analyse dediee (audit ligne par ligne contre le code k
 ### Conditions de retrait
 
 Aucune. Tant qu'upstream ne re-introduit pas le bundle `hooks/*` avec une logique equivalente, ces fichiers vivent en permanence dans `local/patches`. Une partie peut etre proposee en PR upstream (notamment le drain hook qui complete la route `/supervisor/pending` deja presente upstream sans drainer).
+
+---
+
+## Patch 19 -- kleos-mcp stdio newline framing
+
+### Symptome
+
+Cote client Claude Code, branchement de `kleos-mcp` via `.mcp.json` produit :
+```
+debug: Starting connection with timeout of 30000ms
+debug: Connection timeout triggered after 30011ms (limit: 30000ms)
+error: Connection failed: MCP server "kleos" connection timed out after 30000ms
+```
+
+Tout client MCP conforme (Claude Code, Claude Desktop) timeout 30s sur `initialize`. Le binaire est inutilisable comme MCP server, alors qu'il est explicitement vendu comme tel.
+
+### Cause racine
+
+`kleos-mcp/src/transport/stdio.rs` implementait le framing **LSP / Language Server Protocol** (`Content-Length: NN\r\n\r\n{body}`) au lieu du framing **MCP stdio** (newline-delimited JSON) requis par la spec (`https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio`).
+
+Origine probable : copie-colle d'un template Language Server Rust (rust-analyzer, tower-lsp, etc.) sans verifier que MCP a un framing different. La confusion est facile : "JSON-RPC sur stdio" -> LSP dans la tete d'un dev qui en a fait avant.
+
+Diag empirique par peer `desktop-7b2civn-kleos-8` (test A/B sur kleos-mcp.exe 1.1.2) :
+- newline-delimited stdin -> stdout 0 byte, jamais EOF (le serveur attend Content-Length).
+- LSP stdin (`Content-Length: NN\r\n\r\n{body}`) -> reponse en 6ms.
+
+Git log confirme : commits `2dcebf0` (creation initiale par Ghost-Frame), `7dee90d` (complete route registry), `92a94bc` (consolidation pipeline + auth middleware integration tests). Aucun patch VOCSAP sur ce fichier avant Patch 19.
+
+### Approche
+
+Patch chirurgical sur `kleos-mcp/src/transport/stdio.rs` uniquement. Niveau **chirurgical**, candidat PR upstream legitime (bug fix conforme spec, aucune option configurable VOCSAP-specifique). Pas d'env var ajoutee.
+
+- `read_message<R: BufRead>` : `read_line` + cap sur `line.len()` AVANT parser (defense OOM reelle) + skip blank lines + `trim_end_matches(\n|\r)` (tolerance CRLF defensive sur Windows pipes) + `serde_json::from_str` + return `Some(Value)`. EOF -> `Ok(None)`.
+- `write_message<W: Write>` : `serde_json::to_vec` + write_all body + write_all `b"\n"` + flush. Pas de CR.
+- `const MAX_MCP_MSG_SIZE: usize = 10 * 1024 * 1024` preservee (SEC-C4 upstream), deplacee au top du fichier pour visibilite.
+- `serve(app: App)` : signature publique inchangee.
+
+Choix de l'approche (a) `BufRead::read_line` plutot que (b) `serde_json::Deserializer::from_reader().into_iter::<Value>()` :
+- (a) permet d'enforcer le cap sur la taille brute AVANT le parser. (b) complique le cap par-message.
+- (a) skip blank lines defensives en `continue` direct.
+- (a) garde "1 ligne = 1 message" lisible cote PR upstream (la spec MCP est ecrite en ces termes).
+
+### Fichiers touches
+
+- `kleos-mcp/src/transport/stdio.rs` : refactor `read_message`/`write_message` (additif net : +22 -27 sur les fns existantes), plus ajout d'un nouveau module `#[cfg(test)] mod tests` avec 8 tests (gap upstream comble).
+
+Inchanges :
+- `kleos-mcp/src/transport/http.rs` (utilise `axum::Json<Value>`, hors scope).
+- `kleos-mcp/src/transport/mod.rs`, `kleos-mcp/src/lib.rs`, `kleos-mcp/src/main.rs`, `kleos-mcp/tests/integration.rs`.
+
+### Tests
+
+8 nouveaux tests inline dans `kleos-mcp/src/transport/stdio.rs::tests` :
+
+1. `read_message_parses_one_line` -- ligne JSON valide -> Value.
+2. `read_message_tolerates_crlf` -- ligne CRLF -> Value.
+3. `read_message_skips_blank_lines` -- skip "\n\n" -> ligne suivante.
+4. `read_message_returns_none_on_eof` -- input vide -> Ok(None).
+5. `read_message_returns_none_after_trailing_blank` -- input "\n" puis EOF -> Ok(None).
+6. `read_message_rejects_oversized_line` -- ligne > MAX_MCP_MSG_SIZE -> Err contains "exceeds max".
+7. `write_message_emits_compact_json_plus_newline` -- 1 seul `\n`, pas de CR, body roundtrippable.
+8. `round_trip_write_then_read` -- write puis read -> meme Value, second read -> None.
+
+Resultat : `cargo test -p kleos-mcp --features 'kleos-lib/bundled-sqlite'` -> **18 passed** (8 stdio + 7 tools::tests Patch 18 + 3 integration).
+
+### Validation empirique
+
+Smoke tests CLI Windows (Git Bash) :
+
+| Test | Resultat |
+|---|---|
+| Run 1 : framing newline, no allowlist | 2 lignes JSON, 0 `Content-Length`, 513 tools (sans filtre) |
+| Run 2 : framing newline + allowlist Standard | 2 lignes JSON, **81 tools** (84% reduction), 6/6 MUST_PRESENT, 0/4 MUST_ABSENT |
+| Run 3 : negative LSP framing (anti-regression) | exit 101, stderr `"expected value at line 1 column 1"` (parser refuse `Content-Length:`) |
+
+Validation peer kleos-8 (test stdio direct sur binaire Patch 18) avait deja montre 513 -> 81 tools avec framing LSP. Patch 19 preserve ce comportement avec framing newline conforme spec.
+
+### Niveau delta
+
+**Chirurgical** sur fichier upstream pur. Aucune dependance Cargo.toml ajoutee. Aucune env var.
+
+### Conditions de retrait
+
+Drop du patch local lorsque l'une des conditions suivantes est vraie :
+
+1. PR upstream Ghost-Frame merge un commit equivalent qui remplace le framing LSP par newline-delimited.
+2. Absorption semantique non identique (refactor a `mcp-sdk-rs` ou equivalent) -> resolution naturelle au rebase via `git rebase --skip` (diff devient vide).
+
+PR upstream legitime : (i) bug qui rend le binaire inutilisable cote tout client MCP conforme, (ii) aucune option configurable VOCSAP-specifique, (iii) aligne le code avec la spec officielle. Probabilite d'acceptation tres elevee.
+
+Titre suggere pour la PR : `fix(kleos-mcp): use newline-delimited JSON framing per MCP spec`.
+
+### Reference
+
+- Spec MCP stdio : `https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio`
+- Memoires Kleos #2940 (decouverte + analyse), #2933 (validation binaire Patch 18 OK), #2931 (peer outcome)
 
 ---
 
