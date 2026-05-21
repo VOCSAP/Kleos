@@ -6,10 +6,11 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::gate::{
-    check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
-    complete_latest_gate, mark_gate_timed_out, parse_ssh_target, read_gate_decision,
-    respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult, GateRequestInsert,
-    PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
+    approval_patterns, check_command_with_context, check_ssh_dns_rebind,
+    cleanup_expired_approvals, complete_gate, complete_latest_gate, mark_gate_timed_out,
+    parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request, GateCheckRequest,
+    GateCheckResult, GateRequestInsert, PendingApproval, APPROVAL_TIMEOUT_SECS,
+    TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
@@ -70,8 +71,31 @@ async fn check_handler(
         .credd
         .resolve_text(&db, auth.user_id, &body.agent, &body.command)
         .await?;
-    let mut resolved_patterns = Vec::new();
-    for pattern in &state.config.eidolon.gate.blocked_patterns {
+
+    // Patch 19b: resolve blocked + require_approval patterns via the cascade
+    // fichier > env > defaults. Defaults come from the boot-time config
+    // (TOML + env loaders); the cascade only re-checks at the boundary of
+    // each /gate/check call so live edits to the file are picked up within
+    // the loader's 5s TTL window.
+    let gate_cfg = &state.config.eidolon.gate;
+    let blocked_env = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS").ok();
+    let blocked_raw = approval_patterns::load(
+        gate_cfg.blocked_patterns_file.as_deref(),
+        blocked_env.as_deref(),
+        &gate_cfg.blocked_patterns,
+    );
+    let require_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS").ok();
+    let require_approval_raw = approval_patterns::load(
+        gate_cfg.require_approval_patterns_file.as_deref(),
+        require_env.as_deref(),
+        &gate_cfg.require_approval_patterns,
+    );
+
+    // credd-resolve patterns so `{{secret:...}}` placeholders work uniformly
+    // across all three cascade levels.
+    let mut resolved_patterns = Vec::with_capacity(blocked_raw.len());
+    for pattern in &blocked_raw {
         resolved_patterns.push(
             state
                 .credd
@@ -79,12 +103,23 @@ async fn check_handler(
                 .await?,
         );
     }
+    let mut resolved_require_approval = Vec::with_capacity(require_approval_raw.len());
+    for pattern in &require_approval_raw {
+        resolved_require_approval.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+
     let mut result = check_command_with_context(
         &db,
         &body,
         auth.user_id,
         Some(&resolved_command),
         &resolved_patterns,
+        &resolved_require_approval,
         &state.config,
         body.session_id.as_deref(),
     )

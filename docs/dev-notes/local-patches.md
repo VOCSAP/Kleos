@@ -2042,6 +2042,151 @@ Titre suggere pour la PR : `fix(kleos-mcp): use newline-delimited JSON framing p
 
 ---
 
+## Patch 19b -- Cascade operator-first pour blocked + require_approval gate patterns
+
+### Symptome / motivation
+
+La GateConfig (`kleos-lib/src/config.rs::GateConfig`) charge les patterns de
+deny **une seule fois au boot** depuis deux sources : defaults Rust (10
+patterns destructifs hardcodes) + override CSV via env var
+`ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS`. Aucun hot-reload, aucun fichier
+dedie, aucun moyen d'**ecraser** entierement les defaults sans recompiler
+ou redemarrer.
+
+Manque aussi un cran intermediaire entre "allowed" et "blocked" : un pattern
+qui declenche `requires_approval=true` + creation d'une entree
+`/approvals/pending` consommable par `engram-approval-tui`, sans bloquer
+silencieusement. Le seul declencheur actuel etait `has_secret_placeholders`
+apres credd resolve.
+
+### Approche
+
+Nouveau module additif `kleos-lib/src/gate/approval_patterns.rs` (~110
+lignes hors tests) qui expose une primitive `load(file, env, defaults)`
+implementant une cascade **exclusive** :
+
+1. Fichier dedie (presence = priorite absolue, MEME vide). Defaut auto-
+   resolu sous `${KLEOS_DATA_DIR}/gate/<categorie>.txt` quand
+   `KLEOS_DATA_DIR` est defini ; override explicite via
+   `ENGRAM_EIDOLON_GATE_<categorie>_FILE`.
+2. Env var (set, MEME chaine vide = priorite). Existante pour
+   `blocked_patterns` (`ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS`) ;
+   nouvelle pour `require_approval_patterns`
+   (`ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS`).
+3. Defaults Rust (10 patterns pour `blocked_patterns`, `Vec::new()` pour
+   `require_approval_patterns`).
+
+Format fichier (commun aux deux familles) : 1 pattern par ligne, lignes
+`#` et blanches ignorees, `trim()` applique. Cache lecture **TTL 5s**
+par chemin (parite avec `kleos-lib/src/llm/prompts.rs::TTL_SECS` pose
+par Patch 17c).
+
+Insertion d'un bloc **2bis** dans `check_command_with_context` apres le
+deny et avant le bloc SSH : quand un pattern `require_approval` matche,
+le gate stocke avec status DB `pending_approval` (nouvelle valeur, statut
+DB est `TEXT` libre donc pas de migration) et retourne
+`requires_approval=true` pour que le caller hand-off vers
+`engram-approval-tui`.
+
+Le hardcoded `check_dangerous_patterns` (`validator.rs:23-294`) reste
+**intouchable** : garde-fou ultime, non configurable par design.
+
+### Niveau de delta
+
+- `kleos-lib/src/gate/approval_patterns.rs` (NEW) -- additif pur, 9 tests
+  inline + cache OnceLock.
+- `kleos-lib/src/gate/mod.rs` -- (1) declaration `pub mod`, (2) extension
+  signature `check_command_with_context` (nouveau param
+  `require_approval_patterns: &[String]`), (3) insertion bloc 2bis, (4) 4
+  tests Patch 19b inline. Chirurgical + additif.
+- `kleos-lib/src/config.rs` -- 3 nouveaux champs `GateConfig`
+  (`require_approval_patterns`, `blocked_patterns_file`,
+  `require_approval_patterns_file`) avec `#[serde(default)]`, helper
+  `gate_data_file()`, 4 nouveaux env loaders. Additif pur, defaults
+  preservent comportement upstream.
+- `kleos-server/src/routes/gate/mod.rs` -- caller `/gate/check`
+  re-route les 2 familles via `approval_patterns::load(...)`. Backward-
+  compat : sans fichier ni env, defaults bottent comme avant. Chirurgical.
+
+Niveau global : chirurgical + additif pur, candidat **PR upstream** si
+Ghost-Frame adopte la notion de patterns 3-niveaux.
+
+### Fichiers touches
+
+| Path | Action |
+|---|---|
+| `kleos-lib/src/gate/approval_patterns.rs` | NEW (loader + cache + 9 tests) |
+| `kleos-lib/src/gate/mod.rs` | extension signature + bloc 2bis + 4 tests |
+| `kleos-lib/src/config.rs` | 3 champs `GateConfig` + helper + 4 env loaders |
+| `kleos-server/src/routes/gate/mod.rs` | route les 2 familles via cascade |
+| `docs/dev-notes/local-patches.md` | cette section |
+| `CLAUDE.md` projet | mise a jour section Convention env vars |
+
+### Env vars + paths fichiers (resume)
+
+| Variable | Defaut | Effet |
+|---|---|---|
+| `KLEOS_EIDOLON_GATE_BLOCKED_PATTERNS` | unset | CSV legacy, niveau 2 de la cascade pour `blocked_patterns` |
+| `KLEOS_EIDOLON_GATE_BLOCKED_PATTERNS_FILE` | `${KLEOS_DATA_DIR}/gate/blocked_patterns.txt` | Path explicite, niveau 1 |
+| `KLEOS_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS` | unset | CSV nouveau, niveau 2 pour `require_approval_patterns` |
+| `KLEOS_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS_FILE` | `${KLEOS_DATA_DIR}/gate/require_approval_patterns.txt` | Path explicite, niveau 1 |
+
+Tous les prefixes `KLEOS_*` sont traduits en `ENGRAM_*` au boot par
+`config::migrate_env_prefix()`, convention VOCSAP.
+
+### Tests
+
+- Unit : `cargo test -p kleos-lib --features bundled-sqlite gate::approval_patterns::`
+  -- 9 cas (cascade tous niveaux, vide intentionnel x2, parser comments,
+  parser CSV, cache TTL).
+- Integration : `cargo test -p kleos-lib --features bundled-sqlite gate::tests::patch19b_`
+  -- 4 cas (`require_approval_pattern_returns_pending_approval`,
+  `blocked_pattern_still_wins_over_require_approval`,
+  `no_match_passes_through_unchanged`,
+  `pending_secrets_still_set_after_no_approval_match`).
+- Empirique post-deploy : POST `/gate/check` avec command matchant un
+  pattern require_approval, verifier creation entree
+  `/approvals/pending` et acceptation depuis `engram-approval-tui`.
+
+### Workflow operateur
+
+```bash
+# Initial deploy LXC 121
+ssh root@192.168.10.21
+mkdir -p /var/lib/kleos/gate
+cat > /var/lib/kleos/gate/require_approval_patterns.txt << 'EOF'
+# Patterns qui declenchent une approval interactive via engram-approval-tui
+# Hot-tunable, TTL 5s
+apt install
+apt-get install
+docker rm
+docker rmi
+systemctl restart
+git push
+npm publish
+EOF
+chmod 644 /var/lib/kleos/gate/require_approval_patterns.txt
+systemctl restart kleos-server
+
+# Live edit anytime, no restart
+echo "kubectl apply" >> /var/lib/kleos/gate/require_approval_patterns.txt
+# Le gate prend en compte sous 5s
+
+# Override total blocked_patterns (skip defaults Rust)
+touch /var/lib/kleos/gate/blocked_patterns.txt
+# -> 0 pattern bloque cote config (check_dangerous_patterns hardcoded reste actif)
+```
+
+### Conditions de retrait
+
+Ce patch pourrait etre absorbe upstream si Ghost-Frame introduit une notion
+de "patterns a 3 niveaux" (allow / approval / deny) avec format fichier
+hot-tunable. Le code etant isole (1 module + 3 champs config + 1 bloc
+inseree + 1 nouveau status DB TEXT-libre), un rebase contre une convention
+upstream proche serait simple.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

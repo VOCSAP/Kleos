@@ -177,6 +177,22 @@ fn default_web_search_limit() -> u32 {
     10
 }
 
+// Patch 19b -- helper to resolve `${KLEOS_DATA_DIR}/gate/<name>` when the data
+// dir is set. Returns `Some(path)` regardless of whether the file currently
+// exists; the loader handles missing files by falling through to env/defaults.
+// Mirrors `kleos-lib/src/llm/prompts.rs::repo_root()` (Patch 15) which auto-
+// resolves `${KLEOS_DATA_DIR}/prompts` under the same convention.
+fn gate_data_file(name: &str) -> Option<std::path::PathBuf> {
+    for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+        if let Some(raw) = std::env::var_os(env) {
+            if !raw.is_empty() {
+                return Some(std::path::PathBuf::from(raw).join("gate").join(name));
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
@@ -189,6 +205,23 @@ pub struct GateConfig {
     /// Known server inventory used for SSH validation and reboot protection.
     #[serde(default)]
     pub servers: Vec<ServerEntry>,
+    // -- Patch 19b -- require_approval cascade operator-first --
+    /// Commands matching any of these patterns are stored with status
+    /// `pending_approval` and returned with `requires_approval=true`, so the
+    /// caller (Claude Code hook, sidecar, TUI) can interrupt for human review.
+    /// Defaults to an empty list (opt-in feature).
+    #[serde(default)]
+    pub require_approval_patterns: Vec<String>,
+    /// Optional path to a file overriding `blocked_patterns` via the cascade
+    /// fichier > env > defaults. Set explicitly by the operator (typically
+    /// `${KLEOS_DATA_DIR}/gate/blocked_patterns.txt`).
+    #[serde(default)]
+    pub blocked_patterns_file: Option<std::path::PathBuf>,
+    /// Optional path to a file overriding `require_approval_patterns` via the
+    /// cascade fichier > env > defaults. Set explicitly by the operator
+    /// (typically `${KLEOS_DATA_DIR}/gate/require_approval_patterns.txt`).
+    #[serde(default)]
+    pub require_approval_patterns_file: Option<std::path::PathBuf>,
 }
 
 impl Default for GateConfig {
@@ -210,6 +243,10 @@ impl Default for GateConfig {
             approval_timeout_secs: 300,
             protected_services: Vec::new(),
             servers: Vec::new(),
+            // Patch 19b: defaults empty (opt-in) -- cascade fills at runtime.
+            require_approval_patterns: Vec::new(),
+            blocked_patterns_file: None,
+            require_approval_patterns_file: None,
         }
     }
 }
@@ -350,6 +387,27 @@ impl EidolonConfig {
         }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS") {
             c.gate.blocked_patterns = v.split(',').map(|s| s.trim().to_string()).collect();
+        }
+        // Patch 19b: file path override for blocked_patterns cascade.
+        // Explicit env var wins; otherwise auto-resolve under KLEOS_DATA_DIR.
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS_FILE") {
+            if !v.is_empty() {
+                c.gate.blocked_patterns_file = Some(std::path::PathBuf::from(v));
+            }
+        } else if let Some(p) = gate_data_file("blocked_patterns.txt") {
+            c.gate.blocked_patterns_file = Some(p);
+        }
+        // Patch 19b: new require_approval_patterns env var + file path.
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS") {
+            c.gate.require_approval_patterns =
+                v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS_FILE") {
+            if !v.is_empty() {
+                c.gate.require_approval_patterns_file = Some(std::path::PathBuf::from(v));
+            }
+        } else if let Some(p) = gate_data_file("require_approval_patterns.txt") {
+            c.gate.require_approval_patterns_file = Some(p);
         }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_RESERVED_TARGETS") {
             c.gate.reserved_targets = v.split(',').map(|s| s.trim().to_string()).collect();
