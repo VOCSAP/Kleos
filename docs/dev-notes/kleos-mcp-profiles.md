@@ -36,6 +36,16 @@ Le filtre s'applique uniquement aux **noms canoniques** ; les aliases suivent le
 
 Le filtre porte uniquement sur `registry()` (response a `tools/list`). `dispatch()` reste permissif : un client connaissant un name hors allowlist peut quand meme appeler `tools/call` (la securite reste cote `kleos-server` scope check).
 
+### Aliases historiques surprenants
+
+Quelques aliases upstream sont nommes avec un prefixe `memory_*` mais pointent vers des canonicals dans d'autres categories. Ils apparaissent donc dans la registry filtree lorsque leur canonical est allowlist, meme si on n'a pas explicitement liste `memory_*` :
+
+- `memory_context` -> canonical `context.build` (matche pattern `context.*`)
+- `memory_entities` -> canonical `graph.list_entities` (matche pattern `graph.list_entities`)
+- `memory_projects` -> canonical `projects.list` (matche pattern `projects.list`)
+
+Ce n'est **pas un leak** : l'alias est legitime, juste mal nomme historiquement. Validation peer 2026-05-21 (memoire Kleos #2933) a confirme ce comportement attendu.
+
 ---
 
 ## 3. Profil `Minimal` (~15 tools)
