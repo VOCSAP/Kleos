@@ -257,7 +257,16 @@ pub async fn get_capture_candidates(
     since_secs: u64,
     limit: usize,
 ) -> Result<Vec<String>> {
-    let tag_needle = format!("%\"{}\"%", capture_tag.replace('"', ""));
+    // SECURITY (L12): the tag is user-controlled and goes into a LIKE pattern,
+    // so '%' or '_' in it would act as wildcards and widen the match. Escape
+    // the backslash first, then both wildcards, and pair with an ESCAPE clause
+    // on the LIKE below.
+    let escaped_tag = capture_tag
+        .replace('"', "")
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let tag_needle = format!("%\"{}\"%", escaped_tag);
     let since_clause = format!("-{} seconds", since_secs as i64);
     db.read(move |conn| {
         let sql = "SELECT DISTINCT m.content FROM memories m \
@@ -265,7 +274,7 @@ pub async fn get_capture_candidates(
                      AND m.is_archived = 0 \
                      AND m.is_latest = 1 \
                      AND m.tags IS NOT NULL \
-                     AND m.tags LIKE ?1 \
+                     AND m.tags LIKE ?1 ESCAPE '\\' \
                      AND m.created_at > datetime('now', ?2) \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records sr \

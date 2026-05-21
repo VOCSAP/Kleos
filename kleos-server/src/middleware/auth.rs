@@ -694,6 +694,11 @@ pub async fn auth_middleware(
             return unauthorized("enrollment proof-of-possession verification failed");
         }
 
+        // L2 (benign TOCTOU): this count and the enrollment insert below are
+        // not one transaction, so two concurrent first-time bootstraps could
+        // both observe count==0. That is harmless: both are assigned the same
+        // owner user_id=1, so the worst case is two owner keys enrolled in the
+        // narrow first-touch window rather than any privilege escalation.
         let key_count: i64 = match state
             .db
             .read(|conn| {
@@ -721,15 +726,22 @@ pub async fn auth_middleware(
         // (dev-friendly default). When set, the comparison is constant-time
         // to prevent timing-based secret enumeration.
         if let Ok(expected_secret) = std::env::var("KLEOS_BOOTSTRAP_SECRET") {
+            use sha2::{Digest, Sha256};
             use subtle::ConstantTimeEq;
             let provided = parts
                 .headers
                 .get("x-bootstrap-secret")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            if expected_secret
-                .as_bytes()
-                .ct_eq(provided.as_bytes())
+            // Hash both sides to a fixed 32 bytes before the constant-time
+            // compare. ct_eq short-circuits on length mismatch, which would
+            // otherwise leak the expected secret's length via timing; hashing
+            // first makes both operands always 32 bytes long.
+            let expected_digest = Sha256::digest(expected_secret.as_bytes());
+            let provided_digest = Sha256::digest(provided.as_bytes());
+            if expected_digest
+                .as_slice()
+                .ct_eq(provided_digest.as_slice())
                 .unwrap_u8()
                 != 1
             {

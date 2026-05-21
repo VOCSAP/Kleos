@@ -133,7 +133,11 @@ pub fn encrypt_secret(
     key: &[u8; KEY_SIZE],
     data: &SecretData,
 ) -> Result<(Vec<u8>, [u8; NONCE_SIZE])> {
-    let plaintext = serde_json::to_vec(data).map_err(|e| CredError::Encryption(e.to_string()))?;
+    // Serialized secret plaintext; wrap in Zeroizing so it is scrubbed from
+    // the heap on drop rather than left recoverable via core dump or swap.
+    let plaintext = Zeroizing::new(
+        serde_json::to_vec(data).map_err(|e| CredError::Encryption(e.to_string()))?,
+    );
 
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| CredError::Encryption(format!("invalid key: {}", e)))?;
@@ -144,7 +148,7 @@ pub fn encrypt_secret(
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
-        .encrypt(nonce, plaintext.as_ref())
+        .encrypt(nonce, plaintext.as_slice())
         .map_err(|e| CredError::Encryption(format!("encryption failed: {}", e)))?;
 
     Ok((ciphertext, nonce_bytes))
@@ -201,11 +205,15 @@ pub fn decrypt_secret(
 
     let nonce = Nonce::from_slice(nonce);
 
-    let plaintext = cipher
-        .decrypt(nonce, encrypted_data)
-        .map_err(|e| CredError::Decryption(format!("decryption failed: {}", e)))?;
+    // Decrypted secret plaintext; wrap in Zeroizing so it is scrubbed from the
+    // heap on drop once parsed into the returned SecretData.
+    let plaintext = Zeroizing::new(
+        cipher
+            .decrypt(nonce, encrypted_data)
+            .map_err(|e| CredError::Decryption(format!("decryption failed: {}", e)))?,
+    );
 
-    serde_json::from_slice(&plaintext).map_err(|e| CredError::Decryption(e.to_string()))
+    serde_json::from_slice(&plaintext[..]).map_err(|e| CredError::Decryption(e.to_string()))
 }
 
 /// Generate a random 256-bit key.

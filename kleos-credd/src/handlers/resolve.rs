@@ -18,6 +18,26 @@ use crate::auth::Auth;
 use crate::handlers::AppError;
 use crate::state::AppState;
 
+/// Response headers that must not be relayed from the upstream service back
+/// to the proxy caller. They carry upstream auth/session state (cookies,
+/// challenge headers) scoped to the credd<->upstream leg only.
+const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
+    "set-cookie",
+    "set-cookie2",
+    "www-authenticate",
+    "proxy-authenticate",
+    "authorization",
+    "proxy-authorization",
+];
+
+/// True when an upstream response header should be dropped before forwarding.
+/// Comparison is case-insensitive; reqwest already lowercases header names.
+fn is_stripped_response_header(name: &str) -> bool {
+    STRIPPED_RESPONSE_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// Pattern for secret placeholders: {{secret:category/name}} or {{secret:category/name.field}}
 fn find_placeholders(text: &str) -> Vec<(usize, usize, String, String, Option<String>)> {
     let mut results = Vec::new();
@@ -293,6 +313,9 @@ pub async fn proxy_handler(
     let status = response.status().as_u16();
     let mut headers = std::collections::HashMap::new();
     for (name, value) in response.headers().iter() {
+        if is_stripped_response_header(name.as_str()) {
+            continue;
+        }
         if let Ok(text) = value.to_str() {
             headers.insert(name.to_string(), text.to_string());
         }

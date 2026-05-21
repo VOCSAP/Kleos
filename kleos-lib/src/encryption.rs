@@ -48,8 +48,14 @@ pub fn resolve_key(config: &Config) -> Result<Option<[u8; KEY_SIZE]>> {
 /// `PRAGMA key = "x'<hex>'"`. The double quotes tell SQLCipher to
 /// interpret the hex literal as a raw 256-bit key, bypassing the
 /// PBKDF2 derivation pass.
-pub fn format_pragma_key(key: &[u8; KEY_SIZE]) -> String {
-    format!("\"x'{}'\"", hex::encode(key))
+pub fn format_pragma_key(key: &[u8; KEY_SIZE]) -> zeroize::Zeroizing<String> {
+    // The returned string embeds the raw key as hex. Wrap it in Zeroizing so
+    // the caller's copy is scrubbed on drop, and scrub the hex intermediate
+    // here so no unzeroized copy of the key lingers on the heap.
+    let mut hex_key = hex::encode(key);
+    let pragma = zeroize::Zeroizing::new(format!("\"x'{hex_key}'\""));
+    hex_key.zeroize();
+    pragma
 }
 
 // ---------------------------------------------------------------------------
@@ -74,21 +80,25 @@ fn resolve_keyfile() -> Result<[u8; KEY_SIZE]> {
 
     check_keyfile_permissions(&path)?;
 
-    let data = std::fs::read(&path).map_err(|e| {
+    let mut data = std::fs::read(&path).map_err(|e| {
         EngError::Encryption(format!("failed to read keyfile {}: {}", path.display(), e))
     })?;
 
-    if data.len() != KEY_SIZE {
+    let data_len = data.len();
+    if data_len != KEY_SIZE {
+        data.zeroize();
         return Err(EngError::Encryption(format!(
             "keyfile {} is {} bytes, expected exactly {} bytes",
             path.display(),
-            data.len(),
+            data_len,
             KEY_SIZE,
         )));
     }
 
     let mut key = [0u8; KEY_SIZE];
     key.copy_from_slice(&data);
+    // Scrub the file buffer; the key now lives only in `key`.
+    data.zeroize();
     Ok(key)
 }
 

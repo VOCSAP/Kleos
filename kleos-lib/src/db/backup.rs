@@ -120,7 +120,10 @@ pub async fn wal_checkpoint(
     mode: CheckpointMode,
 ) -> Result<(i32, i32, i32)> {
     let mode_str = mode.as_str().to_string();
-    db.read(move |conn| {
+    // A WAL checkpoint takes the WAL write lock, so it must run on the writer
+    // pool, not a reader connection. Errors are propagated (not swallowed into
+    // a fake (0,0,0)) so callers can see and log a failed checkpoint.
+    db.write(move |conn| {
         let sql = format!("PRAGMA wal_checkpoint({})", mode_str);
         conn.query_row(&sql, [], |row| {
             Ok((
@@ -132,7 +135,6 @@ pub async fn wal_checkpoint(
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))
     })
     .await
-    .or(Ok((0, 0, 0)))
 }
 
 #[cfg(test)]

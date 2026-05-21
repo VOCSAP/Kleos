@@ -179,10 +179,22 @@ impl RegistryDb {
         )
         .map_err(|e| EngError::Internal(format!("failed to insert tenant: {}", e)))?;
 
-        // Fetch the row (either we inserted it or it already existed)
+        // Fetch the row that now occupies this tenant_id. With INSERT OR IGNORE
+        // a hash collision (a different user_id already owning this tenant_id)
+        // leaves the existing row in place; surface that as a typed Conflict
+        // rather than attaching this user to another user's shard. With a
+        // 128-bit tenant_id hash this is cryptographically improbable.
         drop(conn);
-        self.get_by_user_id(&row.user_id)?
-            .ok_or_else(|| EngError::Internal("tenant row disappeared after insert".to_string()))
+        match self.get_by_tenant_id(&row.tenant_id)? {
+            Some(existing) if existing.user_id == row.user_id => Ok(existing),
+            Some(existing) => Err(EngError::Conflict(format!(
+                "tenant id {} already maps to a different user (got {}, requested {})",
+                row.tenant_id, existing.user_id, row.user_id
+            ))),
+            None => {
+                Err(EngError::Internal("tenant row disappeared after insert".to_string()))
+            }
+        }
     }
 
     /// Update tenant status.

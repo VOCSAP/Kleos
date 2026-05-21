@@ -949,6 +949,9 @@ fn row_to_entity_json(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
         "entity_type": entity_type,
         "description": description,
         "aliases": aliases,
+        // L13: vestigial constant kept for wire-compat. Graph entities are
+        // space-scoped (see space_id), not user-scoped; this is never read for
+        // authorization, which uses the authenticated `auth.user_id`.
         "user_id": 1,
         "space_id": space_id,
         "confidence": confidence,

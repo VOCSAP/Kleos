@@ -606,9 +606,12 @@ impl RequestSigner {
     }
 
     pub fn from_file(path: &std::path::Path, host: &str, agent: &str, model: &str) -> Result<Self> {
-        let raw = std::fs::read(path).map_err(|e| {
+        // The file holds raw private-key material. Every heap buffer that
+        // touches the secret (file bytes, decoded DER, hex-decoded bytes) is
+        // wrapped in Zeroizing so it is scrubbed when this function returns.
+        let raw = zeroize::Zeroizing::new(std::fs::read(path).map_err(|e| {
             EngError::Internal(format!("cannot read identity key {}: {e}", path.display()))
-        })?;
+        })?);
 
         if raw.len() == 32 {
             let mut arr = [0u8; 32];
@@ -621,7 +624,7 @@ impl RequestSigner {
         })?;
 
         if text.contains("PRIVATE KEY") {
-            let der = decode_pem_der(text, "PRIVATE KEY")?;
+            let der = zeroize::Zeroizing::new(decode_pem_der(text, "PRIVATE KEY")?);
             // PKCS8 Ed25519 private key: 16-byte prefix + 34-byte wrapped key
             // The 34 bytes are: 04 20 <32 bytes of private key>
             if der.len() == 48 && der[14] == 0x04 && der[15] == 0x20 {
@@ -634,9 +637,9 @@ impl RequestSigner {
             ));
         }
 
-        let decoded = hex::decode(text.trim()).map_err(|_| {
+        let decoded = zeroize::Zeroizing::new(hex::decode(text.trim()).map_err(|_| {
             EngError::InvalidInput("identity key file is not 32-byte raw, PEM, or hex".into())
-        })?;
+        })?);
         if decoded.len() != 32 {
             return Err(EngError::InvalidInput(format!(
                 "hex-encoded key must be 32 bytes, got {}",

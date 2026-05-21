@@ -13,6 +13,14 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 // In-memory rate limiter (sliding window with burst support, per process)
 // ---------------------------------------------------------------------------
 
+/// Hard cap on the number of distinct keys tracked in memory at once.
+///
+/// SECURITY: without a cap, an attacker rotating keys (e.g. spoofed
+/// X-Forwarded-For values) grows `windows` unbounded between `prune()` calls.
+/// When the table is full of live (unexpired) keys, new keys are denied
+/// fail-closed so memory stays bounded.
+const MAX_TRACKED_KEYS: usize = 100_000;
+
 /// Sliding-window rate limiter with optional burst allowance.
 ///
 /// Tracks per-key request timestamps in a VecDeque<Instant>. The effective
@@ -25,6 +33,38 @@ pub struct RateLimiter {
     windows: Mutex<HashMap<String, VecDeque<Instant>>>,
     requests_per_minute: u32,
     burst: u32,
+    /// Maximum number of distinct keys held before new keys are rejected.
+    max_keys: usize,
+}
+
+/// Decide whether `key` can occupy a slot in the limiter's key table.
+///
+/// Returns true when `key` is already tracked or there is room for it,
+/// pruning expired windows inline first when the table is at capacity.
+/// Returns false only when the table is full of live keys, in which case the
+/// caller must reject the request to keep memory bounded.
+fn has_room_for_key(
+    map: &mut HashMap<String, VecDeque<Instant>>,
+    key: &str,
+    now: Instant,
+    window: Duration,
+    max_keys: usize,
+) -> bool {
+    if map.contains_key(key) || map.len() < max_keys {
+        return true;
+    }
+    // At capacity with an unseen key: prune expired windows, then re-check.
+    map.retain(|_, deque| {
+        while let Some(&front) = deque.front() {
+            if now.duration_since(front) > window {
+                deque.pop_front();
+            } else {
+                break;
+            }
+        }
+        !deque.is_empty()
+    });
+    map.contains_key(key) || map.len() < max_keys
 }
 
 /// Information returned on a successful (allowed) rate-limit check.
@@ -55,6 +95,7 @@ impl RateLimiter {
             windows: Mutex::new(HashMap::new()),
             requests_per_minute,
             burst,
+            max_keys: MAX_TRACKED_KEYS,
         }
     }
 
@@ -88,6 +129,16 @@ impl RateLimiter {
         };
 
         let key_str = key.to_string();
+        if !has_room_for_key(&mut map, &key_str, now, window, self.max_keys) {
+            tracing::warn!(
+                max_keys = self.max_keys,
+                "rate limiter key table full; denying new key fail-closed"
+            );
+            return Err(RateLimitExceeded {
+                retry_after_secs: window.as_secs().max(1),
+                limit: max_requests,
+            });
+        }
         let deque = map.entry(key_str.clone()).or_insert_with(VecDeque::new);
 
         // Prune timestamps older than the sliding window.
@@ -166,6 +217,13 @@ impl RateLimiter {
             }
         };
 
+        if !has_room_for_key(&mut map, &key, now, window, self.max_keys) {
+            tracing::warn!(
+                max_keys = self.max_keys,
+                "rate limiter key table full; denying new key fail-closed"
+            );
+            return Err(window.as_secs().max(1));
+        }
         let deque = map.entry(key.clone()).or_insert_with(VecDeque::new);
 
         while let Some(&front) = deque.front() {

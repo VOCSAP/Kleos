@@ -11,8 +11,12 @@
 use crate::validation::MAX_TENANT_ID_LENGTH as MAX_DIRECT_LENGTH;
 use sha2::{Digest, Sha256};
 
-/// Length of the SHA256 prefix used for hashed tenant IDs.
-const HASH_PREFIX_LENGTH: usize = 16;
+/// Length in hex characters of the SHA256 prefix used for hashed tenant IDs.
+///
+/// SECURITY: 32 hex chars = 16 bytes = 128 bits. A 64-bit prefix let a
+/// determined attacker grind a user_id whose hash second-preimages a victim's
+/// tenant_id (collision DoS); 128 bits makes that infeasible (~2^128 work).
+const HASH_PREFIX_LENGTH: usize = 32;
 
 /// Convert a user ID to a safe tenant ID.
 ///

@@ -69,6 +69,10 @@ pub(crate) fn row_to_skill(row: &rusqlite::Row<'_>) -> rusqlite::Result<Skill> {
         is_active: row.get::<_, i32>(14)? != 0,
         is_deprecated: row.get::<_, i32>(15)? != 0,
         metadata: row.get(16)?,
+        // L13: vestigial. Skills are a global library (not user-scoped) and the
+        // skills table has no user_id column, so this is a constant placeholder,
+        // never an ownership/authorization field -- access control uses the
+        // authenticated `auth.user_id`, not this.
         user_id: 1,
         created_at: row.get(17)?,
         updated_at: row.get(18)?,

@@ -44,6 +44,10 @@ pub enum CredError {
     /// ECDH bootstrap failed with PIV configured and no fallback allowed.
     #[error("ECDH bootstrap failed (PIV configured, no fallback): {0}")]
     EcdhFailed(String),
+
+    /// Caller supplied an invalid argument (e.g. an unsafe agent slot).
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Cached entry: the resolved bearer plus when it goes stale.
@@ -115,6 +119,20 @@ fn read_hostname() -> String {
 
 /// Resolve the Kleos API key for `agent_slot`. See module docs for order.
 pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
+    // SECURITY (L7): agent_slot is interpolated into the credd request path
+    // (/bootstrap/kleos-bearer?agent=...). Reject anything outside a safe
+    // identifier charset so it cannot inject extra query parameters, path
+    // segments, or CR/LF into the request line.
+    if agent_slot.is_empty()
+        || !agent_slot
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(CredError::InvalidInput(format!(
+            "invalid agent slot: {agent_slot:?} (allowed: alphanumeric, '-', '_', '.')"
+        )));
+    }
+
     // Env overrides (test/debug).
     if let Ok(k) = env::var("KLEOS_API_KEY") {
         if !k.is_empty() {
@@ -518,6 +536,11 @@ mod ecdh {
     use super::{parse_expires_at, piv_pubkey_path};
 
     const ECDH_PROTOCOL: &str = "ecdh-v1";
+    // z02-015: this salt is the client half of the credd ECDH handshake and
+    // MUST stay byte-identical to ECDH_HKDF_SALT in
+    // kleos-credd/src/handlers/bootstrap_bearer.rs. Changing one without the
+    // other silently breaks key derivation. Kept duplicated rather than shared
+    // to avoid a crypto-constant dependency edge between the crates.
     const ECDH_HKDF_SALT: &[u8] = b"credd-ecdh-v1";
 
     #[derive(Debug, Error)]

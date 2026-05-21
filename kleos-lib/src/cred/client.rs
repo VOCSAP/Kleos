@@ -460,6 +460,18 @@ impl CreddClient {
 // (ported from eidolon-daemon/src/secrets.rs)
 // ---------------------------------------------------------------------------
 
+/// True when `name` is a valid POSIX shell variable name: a leading letter or
+/// underscore followed by letters, digits, or underscores. Used to reject
+/// secret keys that could inject shell syntax into an export block.
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// For an Environment-type secret, build a shell export block from all
 /// key-value pairs in the secret value object.
 ///
@@ -486,17 +498,28 @@ pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
         })?;
 
     // Filter out the serde tag field "type" from the export block.
-    let exports: Vec<String> = val
-        .iter()
-        .filter(|(k, _)| k.as_str() != "type")
-        .filter_map(|(k, v)| {
-            v.as_str().map(|val_str| {
-                // Shell-escape the value using single-quote wrapping.
-                let escaped = val_str.replace('\'', "'\\''");
-                format!("export {}='{}'", k, escaped)
-            })
-        })
-        .collect();
+    let mut exports: Vec<String> = Vec::new();
+    for (k, v) in val.iter() {
+        if k.as_str() == "type" {
+            continue;
+        }
+        // SECURITY (L10): the variable name is interpolated unquoted into the
+        // shell export block, so a name containing whitespace, ';', a newline,
+        // or '=' could inject extra commands or variables. Refuse any name
+        // that is not a POSIX shell identifier. Values stay safe via the
+        // single-quote wrapping below (every metacharacter, including
+        // newlines, is literal inside single quotes; only embedded quotes
+        // need escaping).
+        if !is_valid_env_var_name(k) {
+            return Err(crate::EngError::InvalidInput(format!(
+                "invalid environment variable name in secret: {k:?}"
+            )));
+        }
+        if let Some(val_str) = v.as_str() {
+            let escaped = val_str.replace('\'', "'\\''");
+            exports.push(format!("export {}='{}'", k, escaped));
+        }
+    }
 
     if exports.is_empty() {
         return Err(crate::EngError::InvalidInput(
