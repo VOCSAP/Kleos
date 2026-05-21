@@ -7,11 +7,39 @@ pub fn check_blocked_patterns(command: &str, blocked_patterns: &[String]) -> Opt
         if trimmed.is_empty() {
             continue;
         }
-        if command_lower.contains(&trimmed.to_lowercase()) {
+        if pattern_matches(&command_lower, &trimmed.to_lowercase()) {
             return Some(format!("Command matched blocked pattern: {}", trimmed));
         }
     }
     None
+}
+
+/// Pattern matcher with optional `*` wildcard support (Patch 19b extension).
+///
+/// - If `pattern` contains no `*`, falls back to `command.contains(pattern)`
+///   so existing patterns remain bit-for-bit compatible.
+/// - If `pattern` contains one or more `*`, each `*` matches 0 or more chars
+///   (greedy from left). Concretely: split on `*`, then every non-empty
+///   segment must appear in `command` in order. Empty segments (consecutive
+///   `*` or `*` at either end) are skipped.
+/// - `*` alone matches any non-empty command (all segments empty after split).
+///
+/// Both inputs are expected lower-cased by the caller.
+pub fn pattern_matches(command_lower: &str, pattern_lower: &str) -> bool {
+    if !pattern_lower.contains('*') {
+        return command_lower.contains(pattern_lower);
+    }
+    let mut cursor = 0usize;
+    for segment in pattern_lower.split('*') {
+        if segment.is_empty() {
+            continue;
+        }
+        match command_lower[cursor..].find(segment) {
+            Some(pos) => cursor += pos + segment.len(),
+            None => return false,
+        }
+    }
+    true
 }
 
 /// Check a command against static dangerous patterns.

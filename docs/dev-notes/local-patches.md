@@ -2185,6 +2185,56 @@ hot-tunable. Le code etant isole (1 module + 3 champs config + 1 bloc
 inseree + 1 nouveau status DB TEXT-libre), un rebase contre une convention
 upstream proche serait simple.
 
+### Extension glob '*' (Patch 19b suite)
+
+Le matcher historique `check_blocked_patterns` etait `contains`
+case-insensitive seul. L'extension ajoute le support du wildcard `*` dans
+la meme fn (chirurgical ~25 lignes ajoutees au validator.rs) :
+
+- Pattern sans `*` -> backward-compat (contains case-insensitive), aucun
+  changement comportement observable sur configs existantes.
+- Pattern avec `*` -> split en segments, chaque segment non-vide doit
+  apparaitre dans `command` en ordre. `*` seul match toute commande non-vide.
+- Exemples : `systemctl *`, `apt *install*`, `* | bash`.
+
+Affecte les deux familles (`blocked_patterns` + `require_approval_patterns`)
+puisqu'elles partagent le meme matcher. 5 tests inline `patch19b_glob_*`
+couvrent backward-compat, glob simple, glob multiples ordonnes, glob seul,
+bords (consecutive et boundary stars).
+
+### Submodule gate-rules + workflow operateur
+
+Pour faciliter l'edition des fichiers cascade niveau 1 sans SSH directement
+dans le LXC, le repo `VOCSAP/Kleos.gates-rules` est monte en submodule
+`gate-rules/` dans le repo Kleos (pattern Patch 15 pour les prompts).
+
+Cote LXC 121, le contenu du repo est clone *directement* dans le path
+attendu par `gate_data_file()` :
+
+```bash
+# Initial deploy (une seule fois)
+ssh root@192.168.10.21 "git clone https://github.com/VOCSAP/Kleos.gates-rules.git /var/lib/kleos/gate"
+
+# Workflow d'edition
+cd gate-rules
+$EDITOR require_approval_patterns.txt
+git add require_approval_patterns.txt
+git commit -m "tune(gate): <pattern change>"
+git push origin main
+
+# Propagation LXC 121
+ssh root@192.168.10.21 "git -C /var/lib/kleos/gate pull"
+# Le gate prend en compte sous 5s sans restart kleos-server (cache TTL).
+
+# Bump pointer cote main repo (optionnel, pour tracer la version active)
+cd <kleos-root>
+git add gate-rules
+git commit -m "chore: bump gate-rules to <hash>"
+```
+
+Le clone et le submodule pointent vers le meme repo `main` -- aucune
+divergence possible tant qu'on commit toujours via le submodule local.
+
 ---
 
 ## Binaires compilés pour chaque plateforme

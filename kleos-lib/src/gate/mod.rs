@@ -162,6 +162,15 @@ pub async fn check_command_with_context(
 
     // 1bis. (Patch 19b) require_approval_patterns -- soft gate that hands off
     // to a human approver via engram-approval-tui instead of blocking outright.
+    //
+    // Contract: pose `allowed = true` (provisoire) + `requires_approval = true`.
+    // C'est le caller (kleos-server routes/gate/mod.rs:207-...) qui declenche le
+    // long-poll cote serveur: insertion dans state.pending_approvals, notify TUI,
+    // attente sur oneshot::channel jusqu'a approval/timeout. La response HTTP est
+    // mutee selon la decision finale (approved -> allowed=true, denied/timeout ->
+    // allowed=false). Tant que le binaire kleos-server n'inclut pas ce code-path,
+    // le pattern resterait inerte cote pipeline -- la condition large dans le
+    // caller voit `requires_approval = true` et fait le long-poll.
     if let Some(reason) = check_blocked_patterns(command_for_checks, require_approval_patterns) {
         let reason = reason.replacen(
             "Command matched blocked pattern:",
@@ -182,7 +191,7 @@ pub async fn check_command_with_context(
         )
         .await?;
         return Ok(GateCheckResult {
-            allowed: false,
+            allowed: true,
             reason: Some(reason),
             resolved_command: Some(req.command.clone()),
             gate_id,
@@ -890,6 +899,10 @@ mod tests {
 
     #[tokio::test]
     async fn patch19b_require_approval_pattern_returns_pending_approval() {
+        // Contract: `check_command_with_context` returns the *provisional*
+        // verdict (`allowed=true` plus `requires_approval=true`). The
+        // caller (kleos-server routes/gate/mod.rs:207-...) then runs the
+        // long-poll and mutates `allowed` according to the human decision.
         use crate::db::Database;
         let db = Database::connect_memory().await.expect("in-memory db");
         let req = GateCheckRequest {
@@ -913,8 +926,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!res.allowed, "matching require_approval must not be silently allowed");
-        assert!(res.requires_approval, "must hand off to human approval");
+        assert!(
+            res.allowed,
+            "lib-level result is provisional allowed=true; long-poll is the caller's responsibility"
+        );
+        assert!(res.requires_approval, "must signal the caller to long-poll");
         assert!(res.reason.as_deref().unwrap_or("").contains("require-approval"));
     }
 
@@ -975,6 +991,52 @@ mod tests {
         .unwrap();
         assert!(res.allowed);
         assert!(!res.requires_approval);
+    }
+
+    // -- Patch 19b glob extension -- pattern_matches() with '*' wildcard --
+
+    #[test]
+    fn patch19b_glob_backward_compat_no_wildcard_uses_contains() {
+        // Pattern without '*' must behave exactly like the old contains-based
+        // matcher so existing operator config is bit-for-bit unchanged.
+        assert!(pattern_matches("rm -rf /var/log", "rm -rf"));
+        assert!(!pattern_matches("ls -la", "rm -rf"));
+    }
+
+    #[test]
+    fn patch19b_glob_wildcard_matches_systemctl_actions() {
+        // The motivating use case: 'systemctl *' covers start/stop/restart/...
+        assert!(pattern_matches("systemctl restart nginx", "systemctl *"));
+        assert!(pattern_matches("systemctl daemon-reload", "systemctl *"));
+        assert!(pattern_matches("sudo systemctl stop foo", "systemctl *"));
+        // Genuinely unrelated command must not match.
+        assert!(!pattern_matches("ls -la", "systemctl *"));
+    }
+
+    #[test]
+    fn patch19b_glob_multiple_wildcards_require_order() {
+        // Segments must appear in declared order.
+        assert!(pattern_matches("apt install foo bar", "apt *install*"));
+        assert!(pattern_matches("apt-get install baz", "apt*install*"));
+        // Wrong order -> no match.
+        assert!(!pattern_matches("install apt foo", "apt *install*"));
+    }
+
+    #[test]
+    fn patch19b_glob_lone_wildcard_matches_anything() {
+        assert!(pattern_matches("any command at all", "*"));
+        assert!(pattern_matches("rm -rf /etc", "*"));
+        // Empty command still matches '*' (all segments empty after split).
+        assert!(pattern_matches("", "*"));
+    }
+
+    #[test]
+    fn patch19b_glob_edge_consecutive_and_boundary_stars() {
+        // Consecutive '*' or leading/trailing '*' should collapse to one.
+        assert!(pattern_matches("foo bar baz", "foo**bar"));
+        assert!(pattern_matches("hello world", "*world"));
+        assert!(pattern_matches("hello world", "hello*"));
+        assert!(!pattern_matches("baz qux foo", "foo*baz")); // foo must precede baz
     }
 
     #[tokio::test]

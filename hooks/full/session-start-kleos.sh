@@ -150,6 +150,73 @@ ensure_eidolon_running() {
 }
 ensure_eidolon_running || log "eidolon-supervisor: ensure-running block raised an error (ignored)"
 
+# --- Ensure engram-approval-tui binary is running (Windows-only) ---
+# Patch 19b: la cascade require_approval_patterns declenche un long-poll
+# cote serveur qui attend une decision humaine via la TUI. Si la TUI n'est
+# pas lancee, toutes les commandes matchant un pattern require_approval
+# timeoutent apres APPROVAL_TIMEOUT_SECS (=120s) et sont denied.
+#
+# La TUI est une fullscreen ratatui interactive, pas un daemon silencieux:
+# on la lance dans une fenetre console MINIMIZED (l'utilisateur la
+# maximise depuis la barre des taches quand un approval arrive). Pattern
+# calque sur ensure_eidolon_running mais sans WindowStyle Hidden (la TUI
+# a besoin d'un host console pour son terminal alternate-screen).
+ensure_approval_tui_running() {
+  if ! command -v tasklist.exe >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if tasklist.exe //FI "IMAGENAME eq engram-approval-tui.exe" 2>/dev/null \
+       | grep -qi "engram-approval-tui.exe"; then
+    log "engram-approval-tui: process already running"
+    return 0
+  fi
+
+  local tui_bin=""
+  if [ -x "$HOME_DIR/.cargo/bin/engram-approval-tui.exe" ]; then
+    tui_bin="$HOME_DIR/.cargo/bin/engram-approval-tui.exe"
+  elif command -v engram-approval-tui.exe >/dev/null 2>&1; then
+    tui_bin="$(command -v engram-approval-tui.exe)"
+  else
+    log "engram-approval-tui: binary not found in ~/.cargo/bin or PATH (skip)"
+    return 0
+  fi
+
+  local ps_bin=""
+  if command -v pwsh.exe >/dev/null 2>&1; then
+    ps_bin="pwsh.exe"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    ps_bin="powershell.exe"
+  else
+    log "engram-approval-tui: no powershell available to launch (skip)"
+    return 0
+  fi
+
+  # Reuse the KLEOS_API_KEY + KLEOS_SERVER_URL exported by
+  # ensure_eidolon_running just above -- same precondition.
+  if [ -z "${KLEOS_API_KEY:-}" ]; then
+    log "engram-approval-tui: KLEOS_API_KEY missing -- launch skipped (TUI would fail auth)"
+    return 0
+  fi
+
+  local win_tui
+  if command -v cygpath >/dev/null 2>&1; then
+    win_tui="$(cygpath -w "$tui_bin")"
+  else
+    win_tui="$tui_bin"
+  fi
+
+  # Note: pas de WindowStyle Hidden -- la TUI ratatui s'attend a un host
+  # console. Minimized evite de voler le focus, l'utilisateur ouvre la
+  # fenetre quand un approval arrive (notify systray pas encore implemente).
+  "$ps_bin" -NoProfile -NonInteractive -Command \
+    "Start-Process -FilePath '$win_tui' -WindowStyle Minimized -ArgumentList '--url','$KLEOS_SERVER_URL','--api-key','$KLEOS_API_KEY'" \
+    >/dev/null 2>&1 || true
+
+  log "engram-approval-tui: launched minimized (bin=$tui_bin, server=$KLEOS_SERVER_URL)"
+}
+ensure_approval_tui_running || log "engram-approval-tui: ensure-running block raised an error (ignored)"
+
 log "SessionStart fired. HOME_DIR=$HOME_DIR"
 
 # --- 0. Ensure kleos-sidecar Rust binary is running (Windows-only) ---
