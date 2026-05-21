@@ -30,6 +30,7 @@ qui reste 1.1.2).
 | **14b -- Mirror `think` -> `reasoning_effort` sur OpenAI-compat** (NOUVEAU 2026-05-19) | Contourne le bug Ollama #14820 : le param `think` est ignore sur `/v1/chat/completions`. Mesure: Broca ask 47s -> 6s sur qwen3:8b-ctx16k. | a commiter |
 | **15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)** (NOUVEAU 2026-05-19) | 17 call sites LLM surchargeables a chaud via fichier (`broca`, `chiasm`, `skills`, `extraction`, `memory`, `growth`, `loom`). Mecanisme cascade env + cache mtime TTL 5s. Submodule `prompts-overrides` (VOCSAP/Kleos.prompts) pour les overrides VOCSAP. Catalog dans `docs/dev-notes/llm-prompts-catalog.md`. | a commiter |
 | **18 -- kleos-mcp allowlist (`KLEOS_MCP_TOOL_ALLOWLIST`)** (NOUVEAU 2026-05-21) | Filtre additif sur `kleos-mcp/src/tools.rs::registry()` pour restreindre la registry MCP (474 routes -> 15 a 140 selon profil Minimal/Standard/Advanced). Matcher manuel exact + suffix `.*`. Var unset/vide = comportement upstream. Tests: 7 unitaires inline. Cf. section dediee "Patch 18" plus bas. | a commiter |
+| **Hooks VOCSAP -- fixes + extensions** (cumulatif 2026-05-20/2026-05-21) | Voir section dediee "Hooks VOCSAP" plus bas. Couvre les fixes du 2026-05-20 (alignement bodies `/gate/check`, `/gate/complete-latest`, commenting GROWTH.md) et les ajouts du 2026-05-21 (bloc `ensure_eidolon_running`, hook `eidolon-supervisor-drain-pending.sh`, cascade env vars URL/KEY, fixes flags `kleos-cli list/context`, README `eidolon-supervisor/`). Decalage permanent vs upstream (le bundle `hooks/full` a ete retire upstream, Patch 12 le conserve). | a commiter |
 | kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
 
 **Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
@@ -1828,6 +1829,111 @@ Si upstream Ghost-Frame absorbe le patch (candidate PR upstream legitime, benefi
 - Reference exploration : `docs/dev-notes/kleos-mcp-usage.md`
 - Profils proposes : `docs/dev-notes/kleos-mcp-profiles.md`
 - Memoires Kleos #2866 (env vars), #2867 (architecture 474 routes), #2876 (plan)
+
+---
+
+## Hooks VOCSAP -- decalage permanent vs upstream
+
+**Contexte general** : upstream Ghost-Frame a retire le bundle `hooks/*` du repo dans son cycle "repo hygiene" (cf. Patch 12). VOCSAP conserve `hooks/full/*.sh` + `hooks/simple/*.sh` et les fait evoluer pour rester compatibles avec le code serveur courant (routes Axum, signatures d'auth, conventions env vars). Cette section consolide toutes les modifications cumulatives. **Tant qu'upstream ne re-introduit pas de hooks, le decalage est permanent et n'a pas de cible de retrait.**
+
+### Inventaire des fichiers concernes (au 2026-05-21)
+
+```
+hooks/full/
+  lib-eidolon.sh                       # helper shared (URL/key resolution)
+  session-start-kleos.sh               # SessionStart bootstrap
+  session-end.sh                       # SessionEnd (renomme cote deploy: session-end-kleos.sh)
+  enforce-agent-forge.sh               # PreToolUse Write/Edit, gate spec_task
+  enforce-kleos-search.sh              # PreToolUse, gate kleos-cli search
+  track-agent-forge.sh                 # PostToolUse, marker file pour spec/verify
+  mnemonic-observe.sh                  # PostToolUse, fire-and-forget vers kleos-sidecar
+  user-prompt-lean.sh                  # UserPromptSubmit, context injection lean
+  eidolon-supervisor-drain-pending.sh  # PreToolUse, drain /supervisor/pending (NOUVEAU 2026-05-21)
+hooks/simple/
+  session-start.sh, session-end.sh, user-prompt.sh, mnemonic-observe.sh
+```
+
+### Historique cumulatif des modifications
+
+#### 2026-05-20 -- Coherence avec kleos-server routes
+
+Source : memoire Kleos #2871 (analyse) + #2875 (3 fixes deployes).
+
+| Fichier:ligne | Avant | Apres | Pourquoi |
+|---|---|---|---|
+| `enforce-agent-forge.sh:85-94` | `POST /gate/check {tool_name, tool_input.file_path}` | `POST /gate/check GateCheckRequest{command, agent, tool_name, context, skip_approval=true}` | Body avant ne matchait pas le type serde cote serveur (`kleos-lib/src/gate/mod.rs:33-49`), desserialization 422. `skip_approval=true` car le hook gere son propre state-file gate. |
+| `session-end.sh:60-66` | `POST /gate/complete {session_id, summary}` | `POST /gate/complete-latest {session_id, output, known_secrets:[]}` | La route `/gate/complete` attend `gate_id`, pas `session_id`. La route correcte pour terminer par session est `/gate/complete-latest` (`CompleteLatestBody`). Renomme `summary` -> `output`. Restaure l'enforcement Engram-store post-session. |
+| `session-start-kleos.sh:210-220` | `GET /growth/materialize?service&limit&max_bytes` | bloc commente avec TODO | La route serveur attend `POST {observation_id i64}` et materialise UNE observation. Semantique completement differente d'un export markdown agrege. GROWTH.md ne sera plus rafraichi par SessionStart tant qu'une vraie route d'export n'existe pas (candidat PR upstream `GET /growth/digest`). |
+
+Sources verifiees au 2026-05-20 : `kleos-lib/src/gate/mod.rs:33-49`, `kleos-server/src/routes/gate/types.rs:11-24`, `kleos-server/src/routes/growth/mod.rs:20-25`.
+
+#### 2026-05-21 -- Bloc ensure_eidolon_running + drain hook + cascade env vars
+
+Source : memoires Kleos #2918, #2919, #2920, #2924, #2925.
+
+**A. `session-start-kleos.sh` -- ajout du bloc `ensure_eidolon_running`**
+
+Insertion apres `rm -f $STATE_DIR/engram-searched`. Detecte si le process `eidolon-supervisor.exe` tourne via `tasklist.exe`. Sinon, charge `KLEOS_API_KEY` (cascade env -> `~/.config/eidolon/kleos-api-key.txt`), pose `KLEOS_SERVER_URL` + `HOME` puis lance le binaire detache via `powershell.exe Start-Process -WindowStyle Hidden`. Logs binaire dans `~/.claude/logs/eidolon-supervisor.{out,err}.log`. Non bloquant -- toute erreur est logguee et ignoree.
+
+**B. `session-start-kleos.sh` -- patches A+B `kleos-cli`**
+
+Lignes 218-225 et 241-262. Les flags `--json`, `--quiet`, `--budget` n'existent pas sur `kleos-cli list` ni `kleos-cli context` (verifie via `--help` : seuls `--limit` et `--offset`). Reecriture :
+- `list --limit 5` (sans flags fantome), output texte brut affecte directement a `RECENT_MEMORIES` (le format `#ID [score] content` est deja lisible, on retire le parsing python obsolete).
+- `context "..." --limit 8`, output JSON parse en python pour extraire `memories[].category+content`.
+
+**C. Nouveau hook `eidolon-supervisor-drain-pending.sh`**
+
+PreToolUse standalone, matcher `.*`, timeout 5s. Lit `session_id` depuis stdin JSON, source `lib-eidolon.sh`, GET `/supervisor/pending?session_id=...`. Parse la reponse : exit 2 si au moins une violation Critical en attente (block tool call avec message stderr), exit 0 + stderr sinon, exit 0 silent si aucune violation. Erreurs reseau / parse -> exit 0 (jamais bloquer sur panne d'infra).
+
+**D. Cascade env vars URL+KEY sur 3 hooks**
+
+Alignee sur le pattern upstream `kleos-sh/src/main.rs:310-313`.
+
+- URL : `KLEOS_SERVER_URL -> KLEOS_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL -> default http://127.0.0.1:4200`.
+- KEY : `KLEOS_API_KEY -> EIDOLON_API_KEY -> cred get eidolon -> ~/.config/eidolon/kleos-api-key.txt`.
+
+Fichiers touches :
+- `lib-eidolon.sh` -- nouveau header, `_EIDOLON_URL` resolu via cascade, `eidolon_key()` reecrit avec 4 niveaux.
+- `session-end.sh:127-138` -- `EIDOLON_URL_END` + `EIDOLON_KEY_END` alignes sur le meme pattern.
+- `session-start-kleos.sh:109-126` -- bloc `ensure_eidolon_running` adopte la meme cascade pour `export KLEOS_API_KEY` et `export KLEOS_SERVER_URL`. Default `http://127.0.0.1:4200` (au lieu du hardcode `192.168.10.21:4200`).
+
+Default URL legacy `localhost:7700` supprime partout : le service standalone "Eidolon" n'existe plus, les routes (`/gate/*`, `/activity`, `/prompt/generate`, `/growth/*`, `/supervisor/*`) sont toutes sur `kleos-server`.
+
+**E. README.md dans `eidolon-supervisor/`**
+
+Ajout d'un README operateur (10K) : env vars table, default rules + VOCSAP custom set 9 rules JSON copy-pastable, severity guide, architecture 3-canaux (`/supervisor/inject`, `/inbox`, `/axon/publish`), procedure de deploiement Linux/Windows/interactif, checks operationnels (SQL + curl), stubs `#[allow(dead_code)]` non implementes (`drift`, `scope`). Niveau delta upstream : additif pur sur dossier upstream, candidat PR upstream legitime.
+
+### Registration cote `~/.claude/claude-config/settings.json` (etat 2026-05-21)
+
+Les hooks repo sont copies (pas symlinks) dans `~/.claude/hooks/`. Etat reel apres retrait par l'operateur des 5 hooks non encore audites :
+
+| Event | Matcher | Hook | Type | Statut |
+|---|---|---|---|---|
+| `SessionStart` | `""` | `graphify-check.ps1` | externe | actif |
+| `SessionStart` | `""` | `session-start-kleos.sh` | VOCSAP | actif |
+| `SessionEnd` | `""` | `session-end-kleos.sh` | VOCSAP | actif |
+| `UserPromptSubmit` | `^/octo:` | `multi-llm-dispatch.sh` | externe | actif |
+| `PreToolUse` | `Bash` | `rtk-rewrite.sh` | externe | actif |
+| `PreToolUse` | `Bash` | `git-commit-guard.py` | externe | actif |
+| `PreToolUse` | `Write\|Edit\|MultiEdit` | `file-write-scanner.py` | externe | actif |
+| `PreToolUse` | `Write\|Edit\|MultiEdit` | `enforce-agent-forge.sh` | VOCSAP | actif (audite 2026-05-20) |
+| `PreToolUse` | `.*` | `eidolon-supervisor-drain-pending.sh` | VOCSAP | actif |
+
+**Hooks deployes mais retires en attente d'audit (2026-05-21)** :
+
+| Hook | Event prevu | Raison du retrait |
+|---|---|---|
+| `enforce-kleos-search.sh` | PreToolUse Bash | A auditer : gate bloquant sur kleos-cli search, coherence avec code serveur courant a verifier |
+| `user-prompt-lean.sh` | UserPromptSubmit `""` | A auditer : context injection lean, alignement avec routes kleos-server v1.1.5 a verifier |
+| `post-tool-kleos-prompt.sh` | PostToolUse Bash | A auditer : prompt injection post-bash, alignement avec routes a verifier |
+| `track-agent-forge.sh` | PostToolUse `.*` | A auditer : state machine pour enforce-agent-forge, marker files a verifier |
+| `mnemonic-observe.sh` | PostToolUse `.*` | A auditer : fire-and-forget vers kleos-sidecar `/observe`, route et payload a verifier (kleos-sidecar est le Rust binary VOCSAP, pas le Node legacy) |
+
+Chacun fera l'objet d'une analyse dediee (audit ligne par ligne contre le code kleos-server + kleos-sidecar Rust courant, comme fait pour `session-start-kleos.sh` en cette session) avant remise en service.
+
+### Conditions de retrait
+
+Aucune. Tant qu'upstream ne re-introduit pas le bundle `hooks/*` avec une logique equivalente, ces fichiers vivent en permanence dans `local/patches`. Une partie peut etre proposee en PR upstream (notamment le drain hook qui complete la route `/supervisor/pending` deja presente upstream sans drainer).
 
 ---
 

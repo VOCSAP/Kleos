@@ -1,9 +1,17 @@
 #!/bin/bash
 # Shared Eidolon helper for all hooks.
 # Source this file: . "$HOME/.claude/hooks/lib-eidolon.sh"
+#
+# URL resolution cascade aligned on upstream kleos-sh/main.rs:310-313:
+#   KLEOS_SERVER_URL -> KLEOS_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL -> default
+#
+# Key resolution cascade (no upstream reference, VOCSAP-defined):
+#   KLEOS_API_KEY -> EIDOLON_API_KEY -> cred get eidolon -> ~/.config/eidolon/kleos-api-key.txt
+#
+# The legacy default localhost:7700 is dropped (the standalone "Eidolon" service
+# no longer exists; routes are on kleos-server). The new default points at the
+# upstream-canonical local kleos-server (127.0.0.1:4200).
 
-_EIDOLON_URL="${EIDOLON_URL:-http://localhost:7700}"
-_EIDOLON_KEY=""
 _HOOK_HOME="${HOME:-${USERPROFILE:-.}}"
 _CRED_SESSION_ENV="$_HOOK_HOME/.claude/session-env/cred-get-session.env"
 
@@ -13,10 +21,23 @@ if [ -f "$_CRED_SESSION_ENV" ]; then
   . "$_CRED_SESSION_ENV" 2>/dev/null || true
 fi
 
-# Lazy-resolve Eidolon key (only calls cred once per hook invocation)
+# URL cascade resolved once at source time.
+_EIDOLON_URL="${KLEOS_SERVER_URL:-${KLEOS_URL:-${ENGRAM_EIDOLON_URL:-${EIDOLON_URL:-http://127.0.0.1:4200}}}}"
+_EIDOLON_KEY=""
+
+# Lazy-resolve Eidolon key (only calls cred once per hook invocation).
 eidolon_key() {
   if [ -z "$_EIDOLON_KEY" ]; then
-    _EIDOLON_KEY="${EIDOLON_API_KEY:-$(cred get eidolon "${EIDOLON_CRED_KEY:-default}" --raw 2>/dev/null || echo '')}"
+    if [ -n "${KLEOS_API_KEY:-}" ]; then
+      _EIDOLON_KEY="$KLEOS_API_KEY"
+    elif [ -n "${EIDOLON_API_KEY:-}" ]; then
+      _EIDOLON_KEY="$EIDOLON_API_KEY"
+    else
+      _EIDOLON_KEY="$(cred get eidolon "${EIDOLON_CRED_KEY:-default}" --raw 2>/dev/null || echo '')"
+      if [ -z "$_EIDOLON_KEY" ] && [ -f "$_HOOK_HOME/.config/eidolon/kleos-api-key.txt" ]; then
+        _EIDOLON_KEY="$(tr -d '\r\n ' < "$_HOOK_HOME/.config/eidolon/kleos-api-key.txt" 2>/dev/null || echo '')"
+      fi
+    fi
   fi
   printf '%s' "$_EIDOLON_KEY"
 }

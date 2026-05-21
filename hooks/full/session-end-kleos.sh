@@ -124,9 +124,20 @@ score = (forge * 0.4 + (stores / 3.0) * 0.3 + (eidolon / 3.0) * 0.3) * max(0.5, 
 print(round(max(0.0, min(1.0, score)), 3))
 " 2>/dev/null || echo "0.5")
 
-# Route through Eidolon (fans out to Thymus)
-EIDOLON_KEY_END="${EIDOLON_API_KEY:-$(cred get eidolon "${EIDOLON_CRED_KEY:-default}" --raw 2>/dev/null || echo '')}"
-EIDOLON_URL_END="${EIDOLON_URL:-http://localhost:7700}"
+# Route through Eidolon (fans out to Thymus). URL/key cascade matches
+# lib-eidolon.sh: KLEOS_SERVER_URL -> KLEOS_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL
+# and KLEOS_API_KEY -> EIDOLON_API_KEY -> cred -> key-file.
+EIDOLON_URL_END="${KLEOS_SERVER_URL:-${KLEOS_URL:-${ENGRAM_EIDOLON_URL:-${EIDOLON_URL:-http://127.0.0.1:4200}}}}"
+if [ -n "${KLEOS_API_KEY:-}" ]; then
+  EIDOLON_KEY_END="$KLEOS_API_KEY"
+elif [ -n "${EIDOLON_API_KEY:-}" ]; then
+  EIDOLON_KEY_END="$EIDOLON_API_KEY"
+else
+  EIDOLON_KEY_END="$(cred get eidolon "${EIDOLON_CRED_KEY:-default}" --raw 2>/dev/null || echo '')"
+  if [ -z "$EIDOLON_KEY_END" ] && [ -f "$HOME_DIR/.config/eidolon/kleos-api-key.txt" ]; then
+    EIDOLON_KEY_END="$(tr -d '\r\n ' < "$HOME_DIR/.config/eidolon/kleos-api-key.txt" 2>/dev/null || echo '')"
+  fi
+fi
 if [ -n "$EIDOLON_KEY_END" ]; then
   curl -sf --max-time 3 "$EIDOLON_URL_END/activity" \
     -X POST \
