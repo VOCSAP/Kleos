@@ -202,12 +202,22 @@ async fn check_handler(
         }
     }
 
-    // If the command was allowed (not blocked, not pending secrets), and the tool
-    // requires human approval, pause here and wait for a decision via /gate/respond.
-    if result.allowed && !result.requires_approval && !body.skip_approval {
-        let tool_name = body.tool_name.as_deref().unwrap_or("");
-        if TOOLS_REQUIRING_APPROVAL.contains(&tool_name) {
-            let gate_id = result.gate_id;
+    // If the command was allowed (not blocked, not pending secrets), and either
+    // (a) the tool itself requires human approval, or (b) a Patch 19b
+    // `require_approval_patterns` match has been recorded (signalled via
+    // `requires_approval=true` from `check_command_with_context`), pause here
+    // and wait for a decision via /gate/respond.
+    //
+    // Note: `has_secret_placeholders` also sets `requires_approval=true` but
+    // pairs it with `allowed=false`, so the outer `result.allowed` guard keeps
+    // it on its own "client must resolve secrets and retry" path.
+    let tool_name = body.tool_name.as_deref().unwrap_or("");
+    let pattern_triggered_approval = result.requires_approval;
+    if result.allowed
+        && !body.skip_approval
+        && (TOOLS_REQUIRING_APPROVAL.contains(&tool_name) || pattern_triggered_approval)
+    {
+        let gate_id = result.gate_id;
             let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
 
             {
@@ -299,7 +309,6 @@ async fn check_handler(
                 };
                 return Ok((StatusCode::CREATED, Json(json!(denied_result))));
             }
-        }
     }
 
     Ok((StatusCode::CREATED, Json(json!(result))))
