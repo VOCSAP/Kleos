@@ -72,3 +72,6 @@ docs/dev-notes/vector-index-investigation-2026-05-19.md
 docs/dev-notes/dreamer-brouillons-review-*.md
 docs/dev-notes/kleos-mcp-usage.md
 docs/dev-notes/agent-forge-guide.md
+
+# Project-scoped MCP server config -- path command is poste-specific (cf. Patch 18)
+.mcp.json
