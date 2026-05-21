@@ -152,19 +152,83 @@ ensure_eidolon_running || log "eidolon-supervisor: ensure-running block raised a
 
 log "SessionStart fired. HOME_DIR=$HOME_DIR"
 
-# --- 0. Start Mnemonic sidecar if not running ---
-if ! curl -sf --max-time 1 "http://localhost:7711/health" > /dev/null 2>&1; then
-  MNEMONIC_BIN="$HOME_DIR/.local/lib/mnemonic/index.ts"
-  if [ -f "$MNEMONIC_BIN" ]; then
-    ENGRAM_URL="${ENGRAM_URL:-http://localhost:4200}" ENGRAM_API_KEY="${ENGRAM_API_KEY:-}" nohup node --experimental-strip-types "$MNEMONIC_BIN" >> "$LOG_DIR/mnemonic.log" 2>&1 &
-    disown
-    log "Started Mnemonic sidecar (pid=$!)"
-    # Give it a moment to bind
-    sleep 0.5
-  else
-    log "Mnemonic binary not found at $MNEMONIC_BIN"
+# --- 0. Ensure kleos-sidecar Rust binary is running (Windows-only) ---
+# Replaces the legacy Node.js "Mnemonic sidecar" path (~/.local/lib/mnemonic/index.ts)
+# which never existed on VOCSAP hosts. The Rust binary kleos-sidecar.exe bind
+# defaults to 127.0.0.1:7711 and reads KLEOS_URL / KLEOS_API_KEY / KLEOS_SIDECAR_TOKEN
+# from env (clap-derived). Same detached launch pattern as ensure_eidolon_running.
+ensure_kleos_sidecar_running() {
+  if ! command -v tasklist.exe >/dev/null 2>&1; then
+    return 0
   fi
-fi
+
+  if tasklist.exe //FI "IMAGENAME eq kleos-sidecar.exe" 2>/dev/null \
+       | grep -qi "kleos-sidecar.exe"; then
+    log "kleos-sidecar: process already running"
+    return 0
+  fi
+
+  local bin_path=""
+  if [ -x "$HOME_DIR/.cargo/bin/kleos-sidecar.exe" ]; then
+    bin_path="$HOME_DIR/.cargo/bin/kleos-sidecar.exe"
+  elif command -v kleos-sidecar.exe >/dev/null 2>&1; then
+    bin_path="$(command -v kleos-sidecar.exe)"
+  else
+    log "kleos-sidecar: binary not found in ~/.cargo/bin or PATH (skip)"
+    return 0
+  fi
+
+  local ps_bin=""
+  if command -v pwsh.exe >/dev/null 2>&1; then
+    ps_bin="pwsh.exe"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    ps_bin="powershell.exe"
+  else
+    log "kleos-sidecar: no powershell available to launch detached (skip)"
+    return 0
+  fi
+
+  # Resolve KLEOS_API_KEY same way as eidolon-supervisor so the child inherits it.
+  if [ -z "${KLEOS_API_KEY:-}" ]; then
+    if [ -n "${EIDOLON_API_KEY:-}" ]; then
+      KLEOS_API_KEY="$EIDOLON_API_KEY"
+    else
+      local key_file="$HOME_DIR/.config/eidolon/kleos-api-key.txt"
+      if [ -f "$key_file" ]; then
+        KLEOS_API_KEY="$(tr -d '\r\n ' < "$key_file" 2>/dev/null)"
+      fi
+    fi
+    export KLEOS_API_KEY
+  fi
+
+  # URL cascade: kleos-sidecar reads KLEOS_URL (clap env, kleos-sidecar/src/main.rs:111).
+  # Mirror the same cascade used by lib-eidolon.sh / ensure_eidolon_running so the
+  # operator only has to set KLEOS_SERVER_URL once.
+  export KLEOS_URL="${KLEOS_URL:-${KLEOS_SERVER_URL:-${ENGRAM_EIDOLON_URL:-${EIDOLON_URL:-http://127.0.0.1:4200}}}}"
+  export HOME="${HOME:-$HOME_DIR}"
+
+  local win_bin win_stdout win_stderr
+  if command -v cygpath >/dev/null 2>&1; then
+    win_bin="$(cygpath -w "$bin_path")"
+    win_stdout="$(cygpath -w "$LOG_DIR/kleos-sidecar.out.log")"
+    win_stderr="$(cygpath -w "$LOG_DIR/kleos-sidecar.err.log")"
+  else
+    win_bin="$bin_path"
+    win_stdout="$LOG_DIR/kleos-sidecar.out.log"
+    win_stderr="$LOG_DIR/kleos-sidecar.err.log"
+  fi
+
+  "$ps_bin" -NoProfile -NonInteractive -Command \
+    "Start-Process -FilePath '$win_bin' -WindowStyle Hidden -RedirectStandardOutput '$win_stdout' -RedirectStandardError '$win_stderr'" \
+    >/dev/null 2>&1 || true
+
+  log "kleos-sidecar: launched (bin=$bin_path, server=$KLEOS_URL)"
+
+  # Best-effort short wait so /observe POSTs in the same SessionStart phase
+  # see a bound listener. Aligned with the prior Node.js sidecar sleep 0.5.
+  sleep 0.5
+}
+ensure_kleos_sidecar_running || log "kleos-sidecar: ensure-running block raised an error (ignored)"
 
 # --- 1. Call Eidolon /prompt/generate for brain-aware context ---
 PROMPT_RESULT=""

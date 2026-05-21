@@ -8,7 +8,11 @@
 #
 # NOTE: Use absolute paths, not $HOME -- PostToolUse hooks don't expand $HOME on Windows.
 
-SIDECAR_URL="${ENGRAM_SIDECAR_URL:-http://localhost:7711}"
+# URL cascade aligned with VOCSAP convention (kleos-sidecar Rust binary).
+# KLEOS_SIDECAR_URL is the canonical project var; ENGRAM_SIDECAR_URL kept as
+# legacy fallback for compat with upstream Ghost-Frame deployments.
+SIDECAR_URL="${KLEOS_SIDECAR_URL:-${ENGRAM_SIDECAR_URL:-http://127.0.0.1:7711}}"
+SIDECAR_TOKEN="${KLEOS_SIDECAR_TOKEN:-${ENGRAM_SIDECAR_TOKEN:-}}"
 
 # Check if sidecar is running; do NOT auto-start here (sidecar should be
 # launched by session-start hook or systemd/launchd/process manager).
@@ -18,8 +22,8 @@ fi
 
 # Single python3 invocation: read stdin directly, extract fields, fire curl.
 # Never capture stdin in a shell variable -- tool_response can be megabytes.
-python3 -c "
-import sys, json, subprocess
+SIDECAR_URL="$SIDECAR_URL" SIDECAR_TOKEN="$SIDECAR_TOKEN" python3 -c "
+import os, sys, json, subprocess
 
 try:
     data = json.load(sys.stdin)
@@ -45,10 +49,17 @@ else:
 # Send in both legacy and current format for compatibility
 payload = json.dumps({'tool': tool, 'tool_name': tool, 'summary': summary, 'content': summary})
 
+sidecar_url = os.environ.get('SIDECAR_URL', 'http://127.0.0.1:7711')
+sidecar_token = os.environ.get('SIDECAR_TOKEN', '')
+curl_args = ['curl', '-sf', '--max-time', '2', sidecar_url + '/observe',
+             '-X', 'POST', '-H', 'Content-Type: application/json']
+if sidecar_token:
+    curl_args += ['-H', 'Authorization: Bearer ' + sidecar_token]
+curl_args += ['-d', payload]
+
 try:
     subprocess.Popen(
-        ['curl', '-sf', '--max-time', '2', '$SIDECAR_URL/observe',
-         '-X', 'POST', '-H', 'Content-Type: application/json', '-d', payload],
+        curl_args,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     )
 except:
