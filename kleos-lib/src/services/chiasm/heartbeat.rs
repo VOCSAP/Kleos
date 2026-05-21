@@ -101,27 +101,45 @@ pub async fn mark_stale_tasks(
 
     let mut stale = Vec::with_capacity(ids.len());
     for task_id in ids {
-        // Mark the task stale. update_task records history atomically.
-        let updated = super::tasks::update_task(
-            db,
-            task_id,
-            super::tasks::UpdateTaskRequest {
-                title: None,
-                status: Some("stale".into()),
-                summary: Some("marked stale: heartbeat overdue".into()),
-                agent: None,
-            },
-            1,
-        )
-        .await?;
+        // Re-check the heartbeat condition at update time to prevent TOCTOU:
+        // a concurrent heartbeat after the read must prevent staling.
+        let gm = grace_multiplier;
+        let affected = db
+            .write(move |conn| {
+                let n = conn
+                    .execute(
+                        "UPDATE chiasm_tasks SET status = 'stale', \
+                         summary = 'marked stale: heartbeat overdue', \
+                         updated_at = datetime('now') \
+                         WHERE id = ?1 \
+                           AND status IN ('active', 'paused') \
+                           AND julianday('now') - julianday(last_heartbeat) \
+                               > (heartbeat_interval * ?2 / 86400.0)",
+                        rusqlite::params![task_id, gm],
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                if n > 0 {
+                    conn.execute(
+                        "INSERT INTO chiasm_task_updates (task_id, agent, status, summary) \
+                         VALUES (?1, 'system', 'stale', 'marked stale: heartbeat overdue')",
+                        rusqlite::params![task_id],
+                    )
+                    .map_err(rusqlite_to_eng_error)?;
+                }
+                Ok(n)
+            })
+            .await?;
 
-        // Release path claims. Errors here are ignored -- the status change is
-        // the authoritative signal; claim cleanup is best-effort.
-        let _ = super::claims::release_claims(db, task_id).await;
-
-        super::emit_chiasm_event(db, "task.stale", serde_json::json!({"task_id": task_id})).await;
-
-        stale.push(updated);
+        if affected > 0 {
+            // Release path claims. Errors here are ignored -- the status change is
+            // the authoritative signal; claim cleanup is best-effort.
+            let _ = super::claims::release_claims(db, task_id).await;
+            super::emit_chiasm_event(db, "task.stale", serde_json::json!({"task_id": task_id}))
+                .await;
+            if let Ok(task) = super::tasks::get_task(db, task_id, 1).await {
+                stale.push(task);
+            }
+        }
     }
 
     Ok(stale)

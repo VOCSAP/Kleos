@@ -387,7 +387,11 @@ impl SessionManager {
         use base64::Engine;
         let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag);
 
-        let mut sessions = self.sessions.lock().unwrap();
+        // Recover from poison rather than cascading a panic to all future callers.
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.insert(
             token.clone(),
             SessionEntry {
@@ -402,8 +406,12 @@ impl SessionManager {
         token
     }
 
+    /// Verify a session token and return the identity ID if valid.
     pub fn verify(&self, token: &str) -> Result<i64> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let entry = sessions
             .get(token)
             .ok_or_else(|| EngError::Auth("unknown session token".into()))?;

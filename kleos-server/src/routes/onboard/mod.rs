@@ -61,6 +61,7 @@ async fn onboard(
             space_id: None,
             parent_memory_id: None,
             chunk_embeddings: None,
+            sync_id: None,
         },
     )
     .await;
@@ -317,6 +318,7 @@ async fn fetch_url(
             space_id: None,
             parent_memory_id: None,
             chunk_embeddings: None,
+            sync_id: None,
         };
 
         if let Some(embedder) = state.current_embedder().await {

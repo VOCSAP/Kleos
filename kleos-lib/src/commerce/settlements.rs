@@ -168,22 +168,39 @@ pub async fn deduct_balance(db: &Database, user_id: i64, amount: Decimal) -> Res
 }
 
 /// Record daily spend for policy enforcement.
+/// Performs addition in Rust with Decimal to avoid float drift from SQL CAST AS REAL.
 pub async fn record_daily_spend(db: &Database, user_id: i64, amount: Decimal) -> Result<()> {
     let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let amt_str = amount.to_string();
     db.write(move |conn| {
-        conn.execute(
-            "INSERT INTO daily_spend (user_id, date, total_amount, call_count)
-             VALUES (?1, ?2, ?3, 1)
-             ON CONFLICT(user_id, date) DO UPDATE SET
-                total_amount = CAST(
-                    CAST(daily_spend.total_amount AS REAL) + CAST(?3 AS REAL)
-                    AS TEXT),
-                call_count = daily_spend.call_count + 1,
-                updated_at = datetime('now')",
-            params![user_id, date, amt_str],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        use rusqlite::OptionalExtension;
+        let existing: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT total_amount, call_count FROM daily_spend WHERE user_id = ?1 AND date = ?2",
+                params![user_id, date],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+        match existing {
+            Some((current_str, count)) => {
+                let current = Decimal::from_str(&current_str).unwrap_or(Decimal::ZERO);
+                let new_total = (current + amount).to_string();
+                conn.execute(
+                    "UPDATE daily_spend SET total_amount = ?1, call_count = ?2, updated_at = datetime('now') \
+                     WHERE user_id = ?3 AND date = ?4",
+                    params![new_total, count + 1, user_id, date],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO daily_spend (user_id, date, total_amount, call_count) VALUES (?1, ?2, ?3, 1)",
+                    params![user_id, date, amount.to_string()],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            }
+        }
         Ok(())
     })
     .await

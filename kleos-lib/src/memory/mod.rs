@@ -599,13 +599,13 @@ fn store_transactional_rusqlite(
             version, is_latest, parent_memory_id, root_memory_id,
             is_static, tags, status, space_id,
             fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state,
-            fsrs_reps, fsrs_lapses, model
+            fsrs_reps, fsrs_lapses, model, sync_id
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
             ?9, ?10, 'approved', ?11,
             1.0, 1.0, 0,
-            0, 0, ?12
+            0, 0, ?12, ?13
         )",
         rusqlite::params![
             content,
@@ -619,7 +619,8 @@ fn store_transactional_rusqlite(
             is_static,
             tags_json,
             req.space_id,
-            Option::<String>::None
+            Option::<String>::None,
+            req.sync_id.clone()
         ],
     )
     .map_err(rusqlite_to_eng_error)?;
@@ -1855,6 +1856,7 @@ mod tests {
             space_id: None,
             parent_memory_id: None,
             chunk_embeddings: None,
+            sync_id: None,
         }
     }
 

@@ -51,6 +51,7 @@ pub async fn process(
             space_id: options.space_id,
             parent_memory_id: None,
             chunk_embeddings: None,
+            sync_id: None,
         };
 
         let store_outcome = match &ctx.embedder {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -804,11 +804,15 @@ impl BrainBackend for BrainManager {
 
 #[cfg(feature = "brain_hopfield")]
 pub struct HopfieldBrainManager {
-    network: Mutex<crate::brain::hopfield::HopfieldNetwork>,
+    /// In-process Hopfield network. RwLock so reads (query, stats) don't
+    /// block each other; writes (absorb, dream, feedback, instincts) get
+    /// exclusive access.
+    network: RwLock<crate::brain::hopfield::HopfieldNetwork>,
     db: Arc<Database>,
     ready: std::sync::atomic::AtomicBool,
     pub query_state: BrainQueryState,
-    evolution: Mutex<crate::brain::evolution::EvolutionState>,
+    /// Evolution state for neuroevolution training loop.
+    evolution: RwLock<crate::brain::evolution::EvolutionState>,
 }
 
 #[cfg(feature = "brain_hopfield")]
@@ -838,11 +842,11 @@ impl HopfieldBrainManager {
         let evolution = crate::brain::evolution::EvolutionState::load_state(&db).await;
 
         Ok(Self {
-            network: Mutex::new(network),
+            network: RwLock::new(network),
             db,
             ready: std::sync::atomic::AtomicBool::new(true),
             query_state: BrainQueryState::new(),
-            evolution: Mutex::new(evolution),
+            evolution: RwLock::new(evolution),
         })
     }
 }
@@ -872,7 +876,7 @@ impl BrainBackend for HopfieldBrainManager {
         let top_k = options.top_k.unwrap_or(10);
         let beta = options.beta.map(|b| b as f32).unwrap_or(DEFAULT_BETA);
 
-        let network = self.network.lock().await;
+        let network = self.network.read().await;
         let results =
             recall::recall_pattern(&self.db, &network, &embedding, user_id, top_k, beta).await?;
 
@@ -911,7 +915,7 @@ impl BrainBackend for HopfieldBrainManager {
         let embedding = embedder.embed(&memory.content).await?;
         let importance = memory.importance.round() as i32;
 
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
 
         // Store pattern and create causal edges to temporal neighbours.
         recall::store_pattern_with_causal_edges(
@@ -952,7 +956,7 @@ impl BrainBackend for HopfieldBrainManager {
             return Ok(());
         }
 
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
         let stats = recall::decay_tick(&self.db, &mut network, user_id, ticks).await?;
 
         info!(
@@ -969,7 +973,7 @@ impl BrainBackend for HopfieldBrainManager {
     async fn stats(&self, user_id: i64) -> Result<BrainStats> {
         use crate::brain::hopfield::pattern;
 
-        let network = self.network.lock().await;
+        let network = self.network.read().await;
         let db_patterns = pattern::list_patterns(&self.db, user_id).await?;
 
         let total_strength: f32 = db_patterns.iter().map(|p| p.strength).sum();
@@ -996,7 +1000,7 @@ impl BrainBackend for HopfieldBrainManager {
         // now this consolidates against pattern-owner 1 (operator namespace)
         // and is gated to admin scope at the route boundary.
         let user_id: i64 = 1;
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
 
         // Full 6-stage consolidation: replay, merge, prune, discover, decorrelate, resolve.
         // Budget caps items processed per stage so a long idle period does not
@@ -1022,7 +1026,7 @@ impl BrainBackend for HopfieldBrainManager {
         use crate::brain::evolution::FeedbackSignal;
         use crate::brain::hopfield::recall;
 
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
 
         let mut reinforced = Vec::new();
         for id in &memory_ids {
@@ -1054,7 +1058,7 @@ impl BrainBackend for HopfieldBrainManager {
             useful,
             timestamp,
         };
-        self.evolution.lock().await.record_feedback(signal);
+        self.evolution.write().await.record_feedback(signal);
 
         Ok(BrainResponse {
             seq: None,
@@ -1068,7 +1072,7 @@ impl BrainBackend for HopfieldBrainManager {
     }
 
     async fn evolution_train(&self) -> Result<BrainResponse> {
-        let mut evo = self.evolution.lock().await;
+        let mut evo = self.evolution.write().await;
         let before = evo.generation;
         evo.train_step();
         let after = evo.generation;
@@ -1090,7 +1094,7 @@ impl BrainBackend for HopfieldBrainManager {
     async fn evolution_stats(&self) -> Result<BrainResponse> {
         use crate::brain::evolution::EvolutionStatsResult;
 
-        let evo = self.evolution.lock().await;
+        let evo = self.evolution.read().await;
         let stats = EvolutionStatsResult::from(&*evo);
 
         Ok(BrainResponse {
@@ -1109,7 +1113,7 @@ impl BrainBackend for HopfieldBrainManager {
 
         // Admin-gated at the route layer; scoped to operator namespace.
         let user_id: i64 = 1;
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
         let report = instincts::reapply_instincts(&self.db, &mut network, user_id).await?;
 
         Ok(BrainResponse {

@@ -315,6 +315,7 @@ mod tests {
             space_id: None,
             parent_memory_id: None,
             chunk_embeddings: None,
+            sync_id: None,
         }
     }
 

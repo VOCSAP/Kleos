@@ -276,6 +276,9 @@ pub struct StoreRequest {
     pub user_id: Option<i64>,
     pub space_id: Option<i64>,
     pub parent_memory_id: Option<i64>,
+    /// Externally-assigned sync identifier for cross-device deduplication.
+    #[serde(default)]
+    pub sync_id: Option<String>,
 }
 fn default_category() -> String {
     "general".to_string()

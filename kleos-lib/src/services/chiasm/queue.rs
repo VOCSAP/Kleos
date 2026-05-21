@@ -29,34 +29,23 @@ pub async fn enqueue_task(
     summary: Option<&str>,
     user_id: i64,
 ) -> Result<super::tasks::Task> {
-    let req = super::tasks::CreateTaskRequest {
-        agent: "unassigned".to_string(),
-        project: project.to_string(),
-        title: title.to_string(),
-        status: Some("queued".to_string()),
-        summary: summary.map(|s| s.to_string()),
-        user_id: Some(user_id),
-        expected_output: None,
-        output_format: None,
-        condition: None,
-        guardrail_url: None,
-        heartbeat_interval: None,
-    };
-
-    // The task is queued but not yet assigned, so flip assigned back to 0.
-    // create_task defaults assigned to the DB column default of 1, so we
-    // update it immediately after insertion within a write call.
-    let task = super::tasks::create_task(db, req).await?;
-    let task_id = task.id;
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE chiasm_tasks SET assigned = 0 WHERE id = ?1",
-            rusqlite::params![task_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
-        Ok(())
-    })
-    .await?;
+    // Single-write INSERT with assigned = 0 to prevent a TOCTOU window where
+    // another agent could claim the task between INSERT and UPDATE.
+    let project_s = project.to_string();
+    let title_s = title.to_string();
+    let summary_s = summary.map(|s| s.to_string());
+    let task_id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO chiasm_tasks (agent, project, title, status, summary, \
+                 output_format, heartbeat_interval, assigned) \
+                 VALUES ('unassigned', ?1, ?2, 'queued', ?3, 'raw', 300, 0)",
+                rusqlite::params![project_s, title_s, summary_s],
+            )
+            .map_err(rusqlite_to_eng_error)?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
     let task = super::tasks::get_task(db, task_id, user_id).await?;
     super::emit_chiasm_event(
         db,

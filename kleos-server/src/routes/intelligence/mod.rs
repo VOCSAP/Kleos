@@ -709,6 +709,7 @@ async fn extract_handler(
                 space_id: None,
                 parent_memory_id: None,
                 chunk_embeddings: None,
+                sync_id: None,
             },
         )
         .await?;

@@ -149,6 +149,7 @@ async fn execute_store(
         embedding: None,
         parent_memory_id: None,
         chunk_embeddings: None,
+        sync_id: None,
     };
 
     let store_outcome = if let Some(embedder) = state.current_embedder().await {

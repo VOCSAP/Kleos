@@ -276,7 +276,10 @@ pub async fn auth_middleware(
                             "session auth rejected: signature required for this user");
                         return unauthorized("signature required for this user");
                     }
-                    if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+                    if requires_write_scope(&method)
+                        && !is_read_only_post(&path)
+                        && !auth_ctx.has_scope(&Scope::Write)
+                    {
                         return forbid("write scope required for this method");
                     }
                     if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
@@ -572,7 +575,10 @@ pub async fn auth_middleware(
             identity: Some(identity_ctx),
         };
 
-        if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+        if requires_write_scope(&method)
+            && !is_read_only_post(&path)
+            && !auth_ctx.has_scope(&Scope::Write)
+        {
             return forbid("write scope required for this method");
         }
         if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
@@ -614,7 +620,10 @@ pub async fn auth_middleware(
                     return unauthorized("signature required for this user");
                 }
 
-                if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+                if requires_write_scope(&method)
+                    && !is_read_only_post(&path)
+                    && !auth_ctx.has_scope(&Scope::Write)
+                {
                     return forbid("write scope required for this method");
                 }
                 if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {

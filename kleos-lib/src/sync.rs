@@ -81,6 +81,7 @@ pub async fn receive_sync(
                     space_id: None,
                     parent_memory_id: None,
                     chunk_embeddings: None,
+                    sync_id: Some(change.sync_id.clone()),
                 };
                 memory::store(db, req).await?;
                 applied += 1;

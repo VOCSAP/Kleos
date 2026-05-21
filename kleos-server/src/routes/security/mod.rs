@@ -161,7 +161,27 @@ async fn record_usage_handler(
     Auth(auth): Auth,
     Json(body): Json<RecordUsageBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let quantity = body.quantity.unwrap_or(1);
+    // Clamp quantity to a sane non-negative range.
+    let quantity = body.quantity.unwrap_or(1).clamp(0, 10_000);
+    // Validate agent_id belongs to the authenticated user (if provided).
+    if let Some(agent_id) = body.agent_id {
+        let owned = state
+            .db
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM agents WHERE id = ?1 AND user_id = ?2",
+                    rusqlite::params![agent_id, auth.user_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            })
+            .await?;
+        if owned == 0 {
+            return Err(AppError(kleos_lib::EngError::Forbidden(
+                "agent_id does not belong to the authenticated user".to_string(),
+            )));
+        }
+    }
     quota::record_usage(
         &state.db,
         auth.user_id,
