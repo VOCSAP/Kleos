@@ -12,6 +12,7 @@ use ratatui::{
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 
 /// Patch 20 (2026-05-22): default HTTP client timeout in seconds. Override
 /// via `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`. Pair this with the server-side
@@ -57,8 +58,11 @@ struct Args {
     #[arg(short = 'k', long)]
     api_key: Option<String>,
 
-    /// Poll interval in milliseconds
-    #[arg(short, long, default_value = "1000")]
+    /// UI refresh tick in milliseconds. Patch 20b: lower-bounded short tick
+    /// (default 100ms) keeps the event loop responsive while a long-poll
+    /// network request runs in the background; we no longer block the loop
+    /// on `fetch_pending().await`.
+    #[arg(short, long, default_value = "100")]
     poll_ms: u64,
 }
 
@@ -90,6 +94,26 @@ struct DecideRequest {
     reason: Option<String>,
 }
 
+/// Patch 20b: outcome of an async fetch task. The background task hands
+/// this to the main loop, which then applies it to App state on its next
+/// tick. The main loop never blocks on the HTTP call.
+enum FetchOutcome {
+    Ok(Vec<Approval>),
+    RateLimited(Duration),
+    HttpError(String),
+    ParseError(String),
+    ConnectionError(String),
+}
+
+/// Patch 20b: outcome of an async decide task. Same idea as FetchOutcome
+/// but for the POST /approvals/{id}/decide call.
+enum DecideOutcome {
+    Ok,
+    RateLimited(Duration),
+    HttpError(String),
+    ConnectionError(String),
+}
+
 struct App {
     client: reqwest::Client,
     base_url: String,
@@ -103,7 +127,28 @@ struct App {
     /// not retry HTTP calls until this instant. Each tick the UI updates
     /// `last_error` with a countdown so the operator sees what is happening.
     last_429_until: Option<Instant>,
+    /// Patch 20b: in-flight background fetch task. None means no fetch is
+    /// active; `try_start_fetch` will start a new one as soon as the
+    /// previous one completes (or is dropped).
+    fetch_handle: Option<JoinHandle<FetchOutcome>>,
+    /// Patch 20b: in-flight background decide task. The TUI accepts a key
+    /// press while one is in flight (it just shows a status), the result
+    /// is applied when ready.
+    decide_handle: Option<JoinHandle<DecideOutcome>>,
+    /// Patch 20b: instant the previous fetch task completed. Combined with
+    /// `MIN_REFETCH_INTERVAL` this acts as a hard floor on the re-fetch
+    /// rate so that an upstream error which returns instantly (DNS,
+    /// connection refused, malformed response) cannot turn into a
+    /// 600 req/min hot-loop against the server. In steady state with a
+    /// long-poll that holds 30s the floor is irrelevant.
+    last_fetch_completed_at: Option<Instant>,
 }
+
+/// Patch 20b: minimum delay between two consecutive fetch attempts. Acts
+/// as a cooldown when the server-side long-poll returns immediately
+/// (error or empty list before the deadline) so the TUI does not
+/// hot-loop on transient failure.
+const MIN_REFETCH_INTERVAL: Duration = Duration::from_millis(500);
 
 impl App {
     fn new(url: String, api_key: String) -> Self {
@@ -126,13 +171,16 @@ impl App {
             last_error: None,
             detail_mode: false,
             last_429_until: None,
+            fetch_handle: None,
+            decide_handle: None,
+            last_fetch_completed_at: None,
         }
     }
 
-    /// Patch 20: if we're inside a Retry-After window, refuse to issue any
-    /// HTTP call. Returns true if the call should be skipped. The UI
-    /// status line gets a human-readable countdown.
-    fn rate_limited_skip(&mut self) -> bool {
+    /// Patch 20: returns true if a previous 429 still applies. Side effect:
+    /// updates `last_error` with a live countdown so the operator can see
+    /// how long the back-off has left to run.
+    fn in_rate_limit_window(&mut self) -> bool {
         if let Some(until) = self.last_429_until {
             let now = Instant::now();
             if now < until {
@@ -140,112 +188,184 @@ impl App {
                 self.last_error = Some(format!("Rate-limited by server, retry in {}s", wait));
                 return true;
             }
-            // Window expired -- clear and let the call go through.
             self.last_429_until = None;
         }
         false
     }
 
-    async fn fetch_pending(&mut self) {
-        if self.rate_limited_skip() {
+    /// Patch 20b: start a non-blocking fetch in the background if no fetch
+    /// is currently in flight, we're not inside a rate-limit window, and
+    /// the minimum cooldown since the previous fetch has elapsed. The
+    /// result is collected by `poll_handles` on a later tick.
+    fn try_start_fetch(&mut self) {
+        if self.fetch_handle.is_some() {
             return;
         }
-        let url = format!("{}/approvals/pending", self.base_url);
-        match self
-            .client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    match resp.json::<PendingResponse>().await {
-                        Ok(data) => {
-                            self.approvals = data.approvals;
-                            self.last_error = None;
-                            // Clamp selection to valid range
-                            if !self.approvals.is_empty() && self.selected >= self.approvals.len() {
-                                self.selected = self.approvals.len() - 1;
-                            }
-                            self.list_state.select(if self.approvals.is_empty() {
-                                None
-                            } else {
-                                Some(self.selected)
-                            });
-                        }
-                        Err(e) => {
-                            self.last_error = Some(format!("Parse error: {}", e));
-                        }
-                    }
-                } else if status.as_u16() == 429 {
-                    // Patch 20: honour Retry-After. Refusing to retry until
-                    // the window expires prevents the client from saturating
-                    // the per-key rate-limit bucket and forcing the server
-                    // to keep returning 429.
-                    let wait = parse_retry_after(&resp);
-                    self.last_429_until = Some(Instant::now() + wait);
-                    self.last_error = Some(format!(
-                        "Rate-limited by server. Backing off {}s.",
-                        wait.as_secs()
-                    ));
-                } else {
-                    self.last_error = Some(format!("HTTP {}", status));
-                }
+        if self.in_rate_limit_window() {
+            return;
+        }
+        if let Some(last) = self.last_fetch_completed_at {
+            if Instant::now() < last + MIN_REFETCH_INTERVAL {
+                return;
             }
-            Err(e) => {
-                self.last_error = Some(format!("Connection error: {}", e));
+        }
+        let client = self.client.clone();
+        let url = format!("{}/approvals/pending", self.base_url);
+        let api_key = self.api_key.clone();
+        let handle = tokio::spawn(async move {
+            match client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        match resp.json::<PendingResponse>().await {
+                            Ok(data) => FetchOutcome::Ok(data.approvals),
+                            Err(e) => FetchOutcome::ParseError(format!("{}", e)),
+                        }
+                    } else if status.as_u16() == 429 {
+                        FetchOutcome::RateLimited(parse_retry_after(&resp))
+                    } else {
+                        FetchOutcome::HttpError(format!("HTTP {}", status))
+                    }
+                }
+                Err(e) => FetchOutcome::ConnectionError(format!("{}", e)),
+            }
+        });
+        self.fetch_handle = Some(handle);
+    }
+
+    /// Patch 20b: start a non-blocking decide POST. Only one in flight at
+    /// a time; subsequent key presses are ignored while the task runs.
+    fn try_start_decide(&mut self, approved: bool) {
+        if self.approvals.is_empty() {
+            return;
+        }
+        if self.decide_handle.is_some() {
+            return;
+        }
+        if self.in_rate_limit_window() {
+            return;
+        }
+        let approval = &self.approvals[self.selected];
+        let url = format!("{}/approvals/{}/decide", self.base_url, approval.id);
+        let api_key = self.api_key.clone();
+        let client = self.client.clone();
+        let body = DecideRequest {
+            decision: if approved { "approved" } else { "denied" }.to_string(),
+            decided_by: Some("tui-operator".to_string()),
+            reason: None,
+        };
+        let handle = tokio::spawn(async move {
+            match client
+                .post(&url)
+                .header("Authorization", format!("Bearer {}", api_key))
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        DecideOutcome::Ok
+                    } else if status.as_u16() == 429 {
+                        DecideOutcome::RateLimited(parse_retry_after(&resp))
+                    } else {
+                        let body = resp.text().await.unwrap_or_default();
+                        DecideOutcome::HttpError(format!("HTTP {}: {}", status, body))
+                    }
+                }
+                Err(e) => DecideOutcome::ConnectionError(format!("{}", e)),
+            }
+        });
+        self.decide_handle = Some(handle);
+    }
+
+    /// Patch 20b: collect any finished background task and apply its result
+    /// to App state. Non-blocking: a task that is still running is left
+    /// alone and re-checked on the next tick.
+    async fn poll_handles(&mut self) {
+        if let Some(handle) = self.fetch_handle.take() {
+            if handle.is_finished() {
+                match handle.await {
+                    Ok(outcome) => self.apply_fetch_outcome(outcome),
+                    Err(e) => {
+                        self.last_error = Some(format!("fetch task aborted: {}", e));
+                    }
+                }
+                // Patch 20b: arm the cooldown for the next try_start_fetch.
+                self.last_fetch_completed_at = Some(Instant::now());
+            } else {
+                self.fetch_handle = Some(handle);
+            }
+        }
+        if let Some(handle) = self.decide_handle.take() {
+            if handle.is_finished() {
+                match handle.await {
+                    Ok(outcome) => {
+                        self.apply_decide_outcome(outcome);
+                    }
+                    Err(e) => {
+                        self.last_error = Some(format!("decide task aborted: {}", e));
+                    }
+                }
+            } else {
+                self.decide_handle = Some(handle);
             }
         }
     }
 
-    async fn decide(&mut self, approved: bool) {
-        if self.approvals.is_empty() {
-            return;
-        }
-        if self.rate_limited_skip() {
-            return;
-        }
-
-        let approval = &self.approvals[self.selected];
-        let url = format!("{}/approvals/{}/decide", self.base_url, approval.id);
-        let decision = if approved { "approved" } else { "denied" };
-
-        let req = DecideRequest {
-            decision: decision.to_string(),
-            decided_by: Some("tui-operator".to_string()),
-            reason: None,
-        };
-
-        match self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&req)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() {
-                    self.last_error = None;
-                    // Refresh list
-                    self.fetch_pending().await;
-                } else if status.as_u16() == 429 {
-                    let wait = parse_retry_after(&resp);
-                    self.last_429_until = Some(Instant::now() + wait);
-                    self.last_error = Some(format!(
-                        "Rate-limited by server. Backing off {}s.",
-                        wait.as_secs()
-                    ));
+    fn apply_fetch_outcome(&mut self, outcome: FetchOutcome) {
+        match outcome {
+            FetchOutcome::Ok(approvals) => {
+                self.approvals = approvals;
+                self.last_error = None;
+                if !self.approvals.is_empty() && self.selected >= self.approvals.len() {
+                    self.selected = self.approvals.len() - 1;
+                }
+                self.list_state.select(if self.approvals.is_empty() {
+                    None
                 } else {
-                    let body = resp.text().await.unwrap_or_default();
-                    self.last_error = Some(format!("HTTP {}: {}", status, body));
+                    Some(self.selected)
+                });
+            }
+            FetchOutcome::RateLimited(wait) => {
+                self.last_429_until = Some(Instant::now() + wait);
+                self.last_error = Some(format!(
+                    "Rate-limited by server. Backing off {}s.",
+                    wait.as_secs()
+                ));
+            }
+            FetchOutcome::HttpError(msg) | FetchOutcome::ParseError(msg)
+            | FetchOutcome::ConnectionError(msg) => {
+                self.last_error = Some(msg);
+            }
+        }
+    }
+
+    fn apply_decide_outcome(&mut self, outcome: DecideOutcome) {
+        match outcome {
+            DecideOutcome::Ok => {
+                self.last_error = None;
+                // Force a refresh: drop any in-flight fetch so the next tick
+                // immediately kicks off a new one. The drop sends a cancel
+                // to the task; reqwest aborts cleanly.
+                if let Some(handle) = self.fetch_handle.take() {
+                    handle.abort();
                 }
             }
-            Err(e) => {
-                self.last_error = Some(format!("Request error: {}", e));
+            DecideOutcome::RateLimited(wait) => {
+                self.last_429_until = Some(Instant::now() + wait);
+                self.last_error = Some(format!(
+                    "Rate-limited by server. Backing off {}s.",
+                    wait.as_secs()
+                ));
+            }
+            DecideOutcome::HttpError(msg) | DecideOutcome::ConnectionError(msg) => {
+                self.last_error = Some(msg);
             }
         }
     }
@@ -303,7 +423,7 @@ fn ui(frame: &mut Frame, app: &App) {
     let help_text = if app.detail_mode {
         " [a] Approve  [d] Deny  [Esc] Back  [q] Quit"
     } else {
-        " [↑/↓] Select  [a] Approve  [d] Deny  [Enter] Details  [q] Quit"
+        " [Up/Down] Select  [a] Approve  [d] Deny  [Enter] Details  [q] Quit"
     };
     let error_text = app
         .last_error
@@ -426,9 +546,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
 
     let detail_text = format!(
         "Action: {}\n\nRequester: {}\n\nContext:\n{}\n\nCreated: {}",
-        approval.action,
-        approval.requester,
-        context_str,
+        approval.action, approval.requester, context_str,
         approval.created_at.format("%Y-%m-%d %H:%M:%S UTC")
     );
 
@@ -472,25 +590,41 @@ async fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(args.url, api_key);
-    let poll_duration = Duration::from_millis(args.poll_ms);
+    let tick = Duration::from_millis(args.poll_ms);
 
-    // Initial fetch
-    app.fetch_pending().await;
+    // Patch 20b: kick off the very first fetch in the background so the
+    // first UI frame already shows an empty list with the long-poll in
+    // flight rather than a blank screen. The main loop's poll_handles
+    // collects the result a few ticks later.
+    app.try_start_fetch();
 
     loop {
         terminal.draw(|f| ui(f, &app))?;
 
-        // Poll for events with timeout
-        if event::poll(poll_duration)? {
+        // Patch 20b: collect finished background tasks (fetch + decide)
+        // without blocking. JoinHandle::is_finished is a synchronous check
+        // and the await on a finished handle returns immediately.
+        app.poll_handles().await;
+
+        // Patch 20b: keep a fetch in flight at all times so the server's
+        // long-poll can wake us up the moment a new approval arrives. If
+        // a fetch is already running or we're inside a 429 back-off, this
+        // is a no-op.
+        app.try_start_fetch();
+
+        // Patch 20b: short event::poll timeout (default 100ms) keeps the
+        // UI responsive while the long-poll runs in the background. The
+        // operator's key presses are handled on the next tick at worst.
+        if event::poll(tick)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('q') => break,
                         KeyCode::Char('a') => {
-                            app.decide(true).await;
+                            app.try_start_decide(true);
                         }
                         KeyCode::Char('d') => {
-                            app.decide(false).await;
+                            app.try_start_decide(false);
                         }
                         KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
                         KeyCode::Down | KeyCode::Char('j') => app.select_next(),
@@ -504,9 +638,6 @@ async fn main() -> io::Result<()> {
                     }
                 }
             }
-        } else {
-            // Timeout - refresh data
-            app.fetch_pending().await;
         }
     }
 
