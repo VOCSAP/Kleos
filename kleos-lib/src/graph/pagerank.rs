@@ -878,12 +878,17 @@ pub async fn ensure_pagerank_for_user(db: &Database, _user_id: i64) -> Result<()
     Ok(())
 }
 
-/// Rebuild pagerank for the database.
-/// Phase 5.1: user_id dropped from memories; rebuild runs once for the single
-/// tenant owner. The user_id used for pagerank metadata is 0 (sentinel).
+/// Rebuild pagerank over the database's whole memory graph in a single pass.
+///
+/// `compute_pagerank` ranks every live memory in the DB and does not filter by
+/// `user_id`, so one pass covers all owners. This is correct in both modes:
+/// in a per-owner shard there is only one owner; in single-DB (shared) mode the
+/// `prevent_cross_tenant_links` trigger keeps `memory_links` within a single
+/// owner, so the graph is a disjoint union of per-owner subgraphs and link
+/// propagation stays within each owner. The `user_id` argument is a metadata
+/// sentinel only (0); pagerank scores are per-memory.
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_all_users(db: &Database) -> Result<usize> {
-    // Single-tenant: run one rebuild pass with user_id=0 as the sentinel owner.
     let scores = compute_pagerank_for_user(db, 0).await?;
     if scores.is_empty() {
         return Ok(0);

@@ -117,14 +117,14 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND category = 'task' AND is_static = 0 \
                        AND created_at > datetime('now', '-3 days') \
                      ORDER BY importance DESC, created_at DESC LIMIT 5",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![], |row| {
+                .query_map(params![user_id], |row| {
                     Ok(MemRow {
                         id: row.get(0)?,
                         content: row.get(1)?,
@@ -167,14 +167,14 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND category = 'issue' \
                        AND created_at > datetime('now', '-7 days') \
                      ORDER BY importance DESC LIMIT 3",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![], |row| {
+                .query_map(params![user_id], |row| {
                     Ok(MemRow {
                         id: row.get(0)?,
                         content: row.get(1)?,
@@ -214,12 +214,12 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 .prepare(
                     "SELECT id, content, category, importance \
                      FROM memories \
-                     WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                     WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                      ORDER BY created_at DESC LIMIT 3",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![], |row| {
+                .query_map(params![user_id], |row| {
                     Ok(MemRow {
                         id: row.get(0)?,
                         content: row.get(1)?,

@@ -557,6 +557,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    Migration {
+        version: 64,
+        description: "readd_user_id_memory_core",
+        up: run_migration_readd_user_id_memory_core,
+        down: Some(down_migration_readd_user_id_memory_core),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -689,6 +696,8 @@ const MIGRATION_CHIASM_PATH_CLAIMS: i64 = 61;
 const MIGRATION_CHIASM_AGENT_KEYS: i64 = 62;
 /// Version number for creating handoff_atoms and atom_entity_links tables.
 const MIGRATION_HANDOFF_ATOMS: i64 = 63;
+/// Version number for re-adding user_id to the memory core tables (reverses v25).
+const MIGRATION_READD_USER_ID_MEMORY_CORE: i64 = 64;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1191,6 +1200,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 63: handoff_atoms");
         run_migration_handoff_atoms(conn)?;
         record_migration(conn, MIGRATION_HANDOFF_ATOMS, "handoff_atoms")?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_MEMORY_CORE {
+        info!("Running migration 64: readd_user_id_memory_core");
+        run_migration_readd_user_id_memory_core(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_MEMORY_CORE,
+            "readd_user_id_memory_core",
+        )?;
     }
 
     Ok(())
@@ -2165,6 +2184,118 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 25 complete: user_id dropped from memory core tables");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Migration 64: re-add user_id to memory core tables (reverses migration 25)
+// ---------------------------------------------------------------------------
+
+/// Migration 64: re-add `user_id` to `memories`, `artifacts`,
+/// `vector_sync_pending`, and `structured_facts` on the monolith, recreate the
+/// `user_id`-keyed indexes, and restore the `prevent_cross_tenant_links`
+/// trigger.
+///
+/// This reverses migration 25. Phase 5 assumed the per-tenant shard file was
+/// the only isolation boundary and stripped `user_id` from the monolith; that
+/// broke single-DB (shared) mode, where one monolith serves every user and the
+/// row-level `user_id` predicate is the isolation boundary. Legacy rows
+/// backfill to `user_id = 1` (the system owner): single-DB mode has been
+/// fail-closed since Phase 5 so no real multi-user monolith data exists to
+/// mis-attribute, and on a sharded deployment the monolith holds only
+/// system-scoped tables. New inserts carry the real `user_id`.
+///
+/// Idempotent: each `ADD COLUMN` is guarded by a `pragma_table_info` check and
+/// every index/trigger uses `IF NOT EXISTS`.
+fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Result<()> {
+    // Re-add the column to each table only if it is currently absent. ALTER
+    // TABLE ADD COLUMN errors on a duplicate column, so guard every one.
+    for table in ["memories", "artifacts", "vector_sync_pending", "structured_facts"] {
+        let has_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
+                rusqlite::params![table],
+                |row| row.get(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        if has_user_id == 0 {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"),
+                [],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            info!("Re-added {table}.user_id (migration 64)");
+        }
+    }
+
+    // Recreate the user_id-keyed indexes dropped by migration 25. Column orders
+    // match the originals (see the migration 25 comment block and migration 23).
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+         CREATE INDEX IF NOT EXISTS idx_memories_search ON memories(user_id, is_forgotten, is_archived, is_latest);
+         CREATE INDEX IF NOT EXISTS idx_memories_search_composite ON memories(user_id, is_forgotten, is_latest, category);
+         CREATE INDEX IF NOT EXISTS idx_memories_user_latest ON memories(user_id, is_latest, is_forgotten);
+         CREATE INDEX IF NOT EXISTS idx_memories_list_user_id_desc ON memories(user_id, id DESC) WHERE is_latest = 1 AND is_consolidated = 0;
+         CREATE INDEX IF NOT EXISTS idx_vector_sync_user ON vector_sync_pending(user_id);
+         CREATE INDEX IF NOT EXISTS idx_artifacts_user ON artifacts(user_id);
+         CREATE INDEX IF NOT EXISTS idx_facts_user ON structured_facts(user_id);
+         CREATE INDEX IF NOT EXISTS idx_sf_subject_verb ON structured_facts(subject COLLATE NOCASE, verb, user_id);
+         CREATE INDEX IF NOT EXISTS idx_facts_user_subject_predicate ON structured_facts(user_id, subject, predicate);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // Restore the trigger that blocks linking memories owned by different users.
+    conn.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS prevent_cross_tenant_links
+            BEFORE INSERT ON memory_links
+            BEGIN
+                SELECT RAISE(ABORT, 'cross-tenant memory links are not permitted')
+                WHERE (SELECT user_id FROM memories WHERE id = NEW.source_id)
+                   != (SELECT user_id FROM memories WHERE id = NEW.target_id);
+            END;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 64 complete: user_id re-added to memory core tables");
+    Ok(())
+}
+
+/// Reverse migration 64: drop the `prevent_cross_tenant_links` trigger, the
+/// re-added `user_id` indexes, and the `user_id` columns from the four memory
+/// core tables. Mirrors migration 25's up path.
+fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_memories_user;
+         DROP INDEX IF EXISTS idx_memories_search;
+         DROP INDEX IF EXISTS idx_memories_search_composite;
+         DROP INDEX IF EXISTS idx_memories_user_latest;
+         DROP INDEX IF EXISTS idx_memories_list_user_id_desc;
+         DROP INDEX IF EXISTS idx_vector_sync_user;
+         DROP INDEX IF EXISTS idx_artifacts_user;
+         DROP INDEX IF EXISTS idx_facts_user;
+         DROP INDEX IF EXISTS idx_sf_subject_verb;
+         DROP INDEX IF EXISTS idx_facts_user_subject_predicate;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    for table in ["memories", "artifacts", "vector_sync_pending", "structured_facts"] {
+        let has_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
+                rusqlite::params![table],
+                |row| row.get(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        if has_user_id > 0 {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+    }
+
+    info!("Migration 64 reverted: user_id dropped from memory core tables");
     Ok(())
 }
 

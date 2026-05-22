@@ -180,10 +180,15 @@ impl TenantLoader {
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
         // `Database::open_tenant`.
         let db_path = tenant_dir.join("kleos.db").to_string_lossy().into_owned();
+        // The registry user_id is `auth.user_id.to_string()` for real user
+        // shards, so it parses back to the integer owner; the reserved handoffs
+        // shard and similar use non-numeric ids and resolve to None.
+        let owner_user_id = row.user_id.parse::<i64>().ok();
         let mut db = Database::open_tenant(
             &db_path,
             Some(Arc::clone(&vector_index)),
             self.encryption_key,
+            owner_user_id,
         )
         .await?;
         db.use_chunk_vector_search = self.use_chunk_vector_search;

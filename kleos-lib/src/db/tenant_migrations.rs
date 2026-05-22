@@ -315,7 +315,20 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "handoff_atoms",
         up: apply_schema_v54_handoff_atoms,
     },
+    // Re-add user_id to shard memory core tables (reverses v22). The runner
+    // backfills existing rows to the shard owner's id after this runs; see
+    // TENANT_MIGRATION_READD_USER_ID and run_tenant_migrations.
+    TenantMigration {
+        version: 55,
+        description: "memories_user_id_readd",
+        up: apply_schema_v55_memories_readd,
+    },
 ];
+
+/// Version of the tenant migration that re-adds `user_id` to the shard memory
+/// core tables. The runner backfills existing rows to the shard owner right
+/// after this migration's SQL runs.
+const TENANT_MIGRATION_READD_USER_ID: i64 = 55;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -962,7 +975,15 @@ fn drop_column_if_exists(conn: &Connection, table: &str, column: &str, version: 
 ///
 /// Idempotent: safe to call on every tenant load. A freshly created tenant
 /// database lands at the latest version; an existing one catches up.
-pub fn run_tenant_migrations(conn: &Connection) -> Result<()> {
+///
+/// `owner_user_id` is the integer id of the user that owns this shard, parsed
+/// from the tenant's registry id (which is `auth.user_id.to_string()` for real
+/// user shards). It is `None` for shards whose tenant id is not a plain integer
+/// (the reserved handoffs shard, in-memory test shards). When the memory-core
+/// `user_id` migration (v55) is applied, existing rows are backfilled to this
+/// owner so the always-applied `WHERE user_id = ?` predicate is a no-op on the
+/// shard; with `None` the rows keep the column default.
+pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> Result<()> {
     // Tenant schema uses the `schema_migrations` table (as defined in v1).
     // Ensure it exists so we can read current_version even before v1 runs.
     conn.execute_batch(
@@ -990,6 +1011,13 @@ pub fn run_tenant_migrations(conn: &Connection) -> Result<()> {
             m.version, m.description
         );
         (m.up)(conn)?;
+        // v55 re-adds user_id with DEFAULT 1; backfill existing rows to the
+        // shard owner so the uniform predicate is a no-op on this shard.
+        if m.version == TENANT_MIGRATION_READD_USER_ID {
+            if let Some(owner) = owner_user_id {
+                backfill_tenant_memory_user_id(conn, owner)?;
+            }
+        }
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
             rusqlite::params![m.version],
@@ -1054,6 +1082,37 @@ fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v54 failed: {e}")))
 }
 
+/// Tenant v55: re-add user_id to the shard memory core tables. The SQL re-adds
+/// the columns (default 1), recreates the indexes v22 dropped, and restores the
+/// cross-tenant-link trigger. Owner backfill of existing rows happens in
+/// `run_tenant_migrations` after this runs, since SQL-only migrations cannot
+/// know the shard owner's id.
+fn apply_schema_v55_memories_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v55_memories_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 failed: {e}")))
+}
+
+/// Backfill the re-added `user_id` columns to the shard owner's id.
+///
+/// v55 re-adds `user_id` with `DEFAULT 1`, so every pre-existing row lands at 1.
+/// A shard is single-owner, so all of its memory rows belong to `owner`; setting
+/// them to `owner` makes the always-applied `WHERE user_id = ?` predicate a
+/// no-op for that shard (identical behavior to pre-repair sharded reads). When
+/// `owner` is `None` (e.g. the reserved handoffs shard, whose tenant id is not
+/// numeric, or in-memory test shards) the rows are left at the default; such
+/// shards hold no user-facing memory rows, so this is harmless.
+fn backfill_tenant_memory_user_id(conn: &Connection, owner: i64) -> Result<()> {
+    for table in ["memories", "artifacts", "vector_sync_pending"] {
+        conn.execute(
+            &format!("UPDATE {table} SET user_id = ?1"),
+            rusqlite::params![owner],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("backfilled shard memory user_id to owner {owner} (tenant migration 55)");
+    Ok(())
+}
+
 /// Latest declared tenant schema version.
 pub fn latest_version() -> i64 {
     TENANT_MIGRATIONS
@@ -1072,7 +1131,7 @@ mod tests {
     #[test]
     fn fresh_db_lands_at_latest() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let v: i64 = conn
             .query_row(
@@ -1088,8 +1147,8 @@ mod tests {
     #[test]
     fn idempotent() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1105,7 +1164,7 @@ mod tests {
     #[test]
     fn memories_table_exists_after_v1() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let exists: i64 = conn
             .query_row(
@@ -1189,7 +1248,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_scratchpad_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1206,7 +1265,7 @@ mod tests {
     #[test]
     fn scratchpad_constraint_reshaped_after_v23() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         // Two different agents in the same (session, entry_key) coexist.
         conn.execute(
@@ -1343,7 +1402,7 @@ mod tests {
         assert_eq!(pre, 0);
 
         // Run the chain; v2 adds user_id, v23 later drops it. End state: absent.
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -1443,7 +1502,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_sessions_after_v24() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -1461,7 +1520,7 @@ mod tests {
     #[test]
     fn sessions_usable_after_v24() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO sessions (id, agent) VALUES (?1, ?2)",
@@ -1667,7 +1726,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_chiasm_after_v25() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["chiasm_tasks", "chiasm_task_updates"] {
             let count: i64 = conn
@@ -1705,7 +1764,7 @@ mod tests {
     #[test]
     fn chiasm_usable_after_v25() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
 
         conn.execute(
@@ -1882,7 +1941,7 @@ mod tests {
         assert_eq!(pre, 0);
 
         // Run chain; v4 catches it up.
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -1971,7 +2030,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_approvals_after_v26() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -2004,7 +2063,7 @@ mod tests {
     #[test]
     fn approvals_usable_after_v26() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at) \
@@ -2150,7 +2209,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2231,7 +2290,7 @@ mod tests {
     #[test]
     fn broca_user_id_present_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -2257,7 +2316,7 @@ mod tests {
     #[test]
     fn broca_actions_usable_after_v27() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO broca_actions (agent, service, action, payload, narrative, axon_event_id) \
@@ -2399,7 +2458,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2496,7 +2555,7 @@ mod tests {
     #[test]
     fn projects_user_id_present_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let col_count: i64 = conn
             .query_row(
@@ -2534,7 +2593,7 @@ mod tests {
     #[test]
     fn projects_usable_after_v28() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
 
         conn.execute(
@@ -2686,7 +2745,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2799,7 +2858,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -2925,7 +2984,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3062,7 +3121,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3195,7 +3254,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3214,7 +3273,7 @@ mod tests {
         // user_id from soma_agents; after the full chain user_id is absent from
         // soma_agents but soma_groups / soma_agent_logs retain their own columns.
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let tables: i64 = conn
             .query_row(
@@ -3314,7 +3373,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3458,7 +3517,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -3475,7 +3534,7 @@ mod tests {
     #[test]
     fn graph_family_usable_after_v14() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let tables: i64 = conn
             .query_row(
@@ -3668,7 +3727,7 @@ mod tests {
             "new graph tables shouldn't exist before v14"
         );
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post_user_id: i64 = conn
             .query_row(
@@ -3838,7 +3897,7 @@ mod tests {
             .unwrap();
         assert_eq!(pre, 0);
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post: i64 = conn
             .query_row(
@@ -4012,7 +4071,7 @@ mod tests {
             "v1 user_preferences should not yet have the KV 'key' column"
         );
 
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post_conv_app: i64 = conn
             .query_row(
@@ -4513,7 +4572,7 @@ mod tests {
         assert_eq!(pre_output, 0);
 
         // Run chain; v3 adds the shim, v24 later drops it. End state: absent.
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let post_user: i64 = conn
             .query_row(
@@ -4534,12 +4593,13 @@ mod tests {
         assert_eq!(post_output, 1);
     }
 
-    /// v22: memories, artifacts, and vector_sync_pending must NOT have a
-    /// user_id column after the full migration chain completes.
+    /// v55 reverses the v22 drop: memories, artifacts, and vector_sync_pending
+    /// must have the user_id column restored after the full migration chain so
+    /// the universal `WHERE user_id = ?` predicate works in single-DB mode.
     #[test]
-    fn user_id_absent_from_memories_after_v22() {
+    fn user_id_restored_on_memory_tables_after_v55() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["memories", "artifacts", "vector_sync_pending"] {
             let count: i64 = conn
@@ -4553,8 +4613,8 @@ mod tests {
                 )
                 .unwrap_or(0);
             assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v22",
+                count, 1,
+                "table '{}' must have user_id restored after v55",
                 table
             );
         }
@@ -4564,7 +4624,7 @@ mod tests {
     #[test]
     fn memories_constraint_reshaped_after_v22() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, confidence, \
@@ -4590,7 +4650,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_activity_after_v29() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["axon_events", "soma_agents"] {
             let count: i64 = conn
@@ -4630,7 +4690,7 @@ mod tests {
     #[test]
     fn activity_tables_usable_after_v29() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO axon_events (channel, source, type, payload) \
@@ -4807,7 +4867,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_webhooks_after_v30() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -4833,7 +4893,7 @@ mod tests {
     #[test]
     fn webhooks_usable_after_v30() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO webhooks (url, events) VALUES (?1, ?2)",
@@ -4941,7 +5001,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_axon_after_v31() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         for table in &["axon_subscriptions", "axon_cursors"] {
             let count: i64 = conn
@@ -4977,7 +5037,7 @@ mod tests {
     #[test]
     fn axon_tables_usable_after_v31() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO axon_subscriptions (agent, channel) VALUES (?1, ?2)",
@@ -5097,7 +5157,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_reflections_after_v32() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -5138,7 +5198,7 @@ mod tests {
     #[test]
     fn reflections_usable_after_v32() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence) \
@@ -5218,7 +5278,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_ingestion_hashes_after_v33() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         let cols: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('ingestion_hashes')")
@@ -5248,7 +5308,7 @@ mod tests {
     #[test]
     fn ingestion_hashes_usable_after_v33() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         conn.execute(
             "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
@@ -5339,7 +5399,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_loom_after_v34() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         let wf_cols: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('loom_workflows')")
@@ -5392,7 +5452,7 @@ mod tests {
     #[test]
     fn loom_usable_after_v34() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // Insert a workflow without user_id.
         conn.execute(
@@ -5442,7 +5502,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_graph_cluster_after_v35() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // brain_edges is NOT present on tenant shards (monolith-only table).
         for table in &[
@@ -5490,7 +5550,7 @@ mod tests {
     #[test]
     fn graph_cluster_usable_after_v35() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // entities: insert without user_id
         conn.execute(
@@ -5729,7 +5789,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_thymus_after_v36() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         for table in &[
             "rubrics",
@@ -5788,7 +5848,7 @@ mod tests {
     #[test]
     fn thymus_usable_after_v36() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // rubrics: insert without user_id
         conn.execute(
@@ -6026,7 +6086,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_portability_after_v37() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         for table in &["user_preferences", "conversations"] {
             let count: i64 = conn
@@ -6088,7 +6148,7 @@ mod tests {
     #[test]
     fn portability_usable_after_v37() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).expect("migrations");
+        run_tenant_migrations(&conn, None).expect("migrations");
 
         // user_preferences: insert without user_id
         conn.execute(
@@ -6264,7 +6324,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_intelligence_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let tables = [
             "consolidations",
@@ -6343,7 +6403,7 @@ mod tests {
     #[test]
     fn intelligence_usable_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO memories (content, category, source) VALUES (?1, ?2, ?3)",
@@ -6602,7 +6662,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_skill_records_after_v39() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let col_count: i64 = conn
             .query_row(
@@ -6658,7 +6718,7 @@ mod tests {
     #[test]
     fn skill_records_usable_after_v39() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         // Insert a skill without user_id -- must succeed.
         conn.execute(
@@ -6710,7 +6770,7 @@ mod tests {
     #[test]
     fn skill_records_fts_works_after_v39() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO skill_records (name, agent, code, description) \
@@ -6753,7 +6813,7 @@ mod tests {
     #[test]
     fn user_id_absent_from_episodes_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         let col_count: i64 = conn
             .query_row(
@@ -6797,7 +6857,7 @@ mod tests {
     #[test]
     fn episodes_usable_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         // Insert without user_id must succeed.
         conn.execute(
@@ -6830,7 +6890,7 @@ mod tests {
     #[test]
     fn episodes_fts_works_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn).unwrap();
+        run_tenant_migrations(&conn, None).unwrap();
 
         conn.execute(
             "INSERT INTO episodes (title, agent, summary) VALUES (?1, ?2, ?3)",
