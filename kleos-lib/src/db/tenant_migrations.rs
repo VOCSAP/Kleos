@@ -5877,10 +5877,11 @@ mod tests {
 
     /// After the full migration chain: v63 rebuilds entities to re-add user_id
     /// (single-DB isolation) and recreates idx_entities_user, reversing the v35
-    /// drop. The other graph-cluster tables were not part of the repair and stay
-    /// without user_id after v35.
+    /// After full migration chain: entities, structured_facts, and
+    /// entity_cooccurrences have user_id restored (v63 + v67).
+    /// memory_pagerank and pagerank_dirty remain user_id-free.
     #[test]
-    fn user_id_absent_from_graph_cluster_after_v35() {
+    fn user_id_state_for_graph_cluster_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).expect("migrations");
 
@@ -5908,14 +5909,8 @@ mod tests {
             "idx_entities_user must be restored after v63"
         );
 
-        // brain_edges is NOT present on tenant shards (monolith-only table).
-        // These graph-cluster tables were not part of the single-DB repair.
-        for table in &[
-            "structured_facts",
-            "entity_cooccurrences",
-            "memory_pagerank",
-            "pagerank_dirty",
-        ] {
+        // v67 restored user_id on structured_facts and entity_cooccurrences.
+        for table in &["structured_facts", "entity_cooccurrences"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -5926,10 +5921,30 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "user_id still present in {} after v35", table);
+            assert_eq!(count, 1, "user_id must be present in {} after v67", table);
         }
 
-        for idx in &["idx_ec_user", "idx_pagerank_user", "idx_facts_user"] {
+        // memory_pagerank and pagerank_dirty remain user_id-free.
+        for table in &["memory_pagerank", "pagerank_dirty"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "user_id must remain absent from {} (no repair needed)",
+                table
+            );
+        }
+
+        // idx_sf_user and idx_ec_user created by v67.
+        for idx in &["idx_sf_user", "idx_ec_user"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -5940,8 +5955,18 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index {} still present after v35", idx);
+            assert_eq!(count, 1, "index {} must be restored after v67", idx);
         }
+
+        // idx_pagerank_user stays absent.
+        let pr_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_pagerank_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pr_idx, 0, "idx_pagerank_user must stay absent");
     }
 
     /// v35: all 6 tables accept inserts using the new schema (no user_id).
@@ -6495,16 +6520,15 @@ mod tests {
 
     /// After the full chain: conversations.user_id is restored (v37 dropped it,
     /// v61 re-added it for single-DB isolation) while user_preferences stays
-    /// user_id-free. idx_conversations_user is restored; the user_preferences
-    /// user-scoped indexes stay gone and idx_up_domain_pref still exists.
+    /// After full chain: conversations.user_id restored at v61,
+    /// user_preferences.user_id restored at v68 (REBUILD with
+    /// UNIQUE(user_id, key)).
     #[test]
-    fn portability_user_id_state_after_v61() {
+    fn portability_user_id_state_after_full_chain() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).expect("migrations");
 
-        // conversations.user_id was dropped at v37 and re-added at v61 for
-        // single-DB isolation; user_preferences is out of that scope and stays
-        // user_id-free.
+        // conversations.user_id restored at v61.
         let conv_uid: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name='user_id'",
@@ -6517,6 +6541,7 @@ mod tests {
             "conversations.user_id must be restored after v61"
         );
 
+        // user_preferences.user_id restored at v68 (REBUILD).
         let prefs_uid: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name='user_id'",
@@ -6524,7 +6549,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(prefs_uid, 0, "user_preferences must remain user_id-free");
+        assert_eq!(
+            prefs_uid, 1,
+            "user_preferences.user_id must be restored after v68"
+        );
 
         // idx_conversations_user is restored by v61.
         let conv_idx: i64 = conn
@@ -6539,30 +6567,28 @@ mod tests {
             "idx_conversations_user must be restored after v61"
         );
 
-        // The user_preferences user-scoped indexes stay gone.
-        for idx in &["idx_up_domain_pref_user", "idx_user_prefs_user"] {
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
-                        idx
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 0, "index {} must stay absent", idx);
-        }
-
-        // New UNIQUE INDEX idx_up_domain_pref must exist.
-        let new_idx: i64 = conn
+        // v68 REBUILD drops idx_up_domain_pref and replaces it with
+        // idx_up_domain_pref_user (includes user_id in UNIQUE constraint).
+        let old_idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_up_domain_pref'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(new_idx, 1, "idx_up_domain_pref missing after v37");
+        assert_eq!(
+            old_idx, 0,
+            "idx_up_domain_pref must be replaced by idx_up_domain_pref_user after v68"
+        );
+
+        let new_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_up_domain_pref_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_idx, 1, "idx_up_domain_pref_user must exist after v68");
 
         // idx_up_domain (non-user-scoped) must be preserved.
         let domain_idx: i64 = conn
@@ -6572,7 +6598,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(domain_idx, 1, "idx_up_domain missing after v37");
+        assert_eq!(domain_idx, 1, "idx_up_domain must be preserved after v68");
     }
 
     /// After the full chain both tables stay usable: user_preferences (still
@@ -7124,10 +7150,11 @@ mod tests {
         }
     }
 
-    /// v39: user_id must be absent from skill_records and
-    /// idx_skill_records_user must be dropped after the full migration chain.
+    /// After full chain: skill_records.user_id restored at v69 (REBUILD
+    /// with UNIQUE(name, agent, version, user_id)). idx_skill_records_user
+    /// is restored by the v69 REBUILD.
     #[test]
-    fn user_id_absent_from_skill_records_after_v39() {
+    fn skill_records_user_id_restored_after_v69() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
@@ -7138,12 +7165,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(
-            col_count, 0,
-            "skill_records still has user_id column after v39"
-        );
+        assert_eq!(col_count, 1, "skill_records must have user_id after v69");
 
-        // Dropped index must be gone.
+        // idx_skill_records_user restored by v69 REBUILD.
         let idx_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
@@ -7153,11 +7177,11 @@ mod tests {
             )
             .unwrap_or(0);
         assert_eq!(
-            idx_count, 0,
-            "idx_skill_records_user still present after v39"
+            idx_count, 1,
+            "idx_skill_records_user must be restored after v69"
         );
 
-        // Preserved indexes must still exist.
+        // Preserved indexes must still exist after REBUILD.
         let preserved = [
             "idx_skill_records_agent",
             "idx_skill_records_name",
@@ -7176,7 +7200,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(count, 1, "preserved index {} missing after v39", idx);
+            assert_eq!(count, 1, "preserved index {} missing after v69", idx);
         }
     }
 
