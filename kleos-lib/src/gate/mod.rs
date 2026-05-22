@@ -127,6 +127,88 @@ pub async fn check_command_with_context(
     config: &Config,
     session_id: Option<&str>,
 ) -> Result<GateCheckResult> {
+    // Patch 25: delegate to _inner with empty whitelists. Preserves existing
+    // call sites (33+ tests + 1 production site pre-Patch 25). The whitelist
+    // capability is exposed via the new `check_command_with_whitelist`.
+    check_command_with_context_inner(
+        db,
+        req,
+        user_id,
+        resolved_command,
+        blocked_patterns,
+        require_approval_patterns,
+        extra_dangerous_patterns,
+        &[],
+        &[],
+        config,
+        session_id,
+    )
+    .await
+}
+
+/// Patch 25 -- extended cascade with per-cascade whitelist + shell-aware
+/// subcommand splitting. Same semantic as `check_command_with_context` PLUS:
+///
+/// - `blocked_whitelist_patterns`: a regex match exempts a subcommand from
+///   the `blocked_patterns` cascade. Empty = no exemption applied.
+/// - `require_approval_whitelist_patterns`: idem for `require_approval`.
+///
+/// `check_dangerous_patterns` (hardcoded) AND `extra_dangerous_patterns`
+/// remain NON-overridable by whitelist (operator decision 2026-05-22).
+///
+/// The command is split into subcommands (shell-aware: respects POSIX
+/// quoting, splits on `&&`, `||`, `;`, `|`, `&` suffix; recurses into
+/// backticks, `$()`, `<()`, `>()`; heredoc bodies are excluded).
+/// Aggregation rule : ANY subcommand rejected -> whole rejected ;
+/// ANY subcommand requires approval -> whole requires approval (unless
+/// blocked first).
+///
+/// Tokenize error policy is read from
+/// `KLEOS_EIDOLON_GATE_ON_TOKENIZE_ERROR` (default `deny`).
+#[tracing::instrument(skip(db, req, resolved_command, blocked_patterns, require_approval_patterns, extra_dangerous_patterns, blocked_whitelist_patterns, require_approval_whitelist_patterns, config), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id, blocked_patterns_count = blocked_patterns.len(), require_approval_patterns_count = require_approval_patterns.len(), extra_dangerous_patterns_count = extra_dangerous_patterns.len(), blocked_whitelist_count = blocked_whitelist_patterns.len(), require_approval_whitelist_count = require_approval_whitelist_patterns.len()))]
+pub async fn check_command_with_whitelist(
+    db: &Database,
+    req: &GateCheckRequest,
+    user_id: i64,
+    resolved_command: Option<&str>,
+    blocked_patterns: &[String],
+    require_approval_patterns: &[String],
+    extra_dangerous_patterns: &[String],
+    blocked_whitelist_patterns: &[String],
+    require_approval_whitelist_patterns: &[String],
+    config: &Config,
+    session_id: Option<&str>,
+) -> Result<GateCheckResult> {
+    check_command_with_context_inner(
+        db,
+        req,
+        user_id,
+        resolved_command,
+        blocked_patterns,
+        require_approval_patterns,
+        extra_dangerous_patterns,
+        blocked_whitelist_patterns,
+        require_approval_whitelist_patterns,
+        config,
+        session_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn check_command_with_context_inner(
+    db: &Database,
+    req: &GateCheckRequest,
+    user_id: i64,
+    resolved_command: Option<&str>,
+    blocked_patterns: &[String],
+    require_approval_patterns: &[String],
+    extra_dangerous_patterns: &[String],
+    blocked_whitelist_patterns: &[String],
+    require_approval_whitelist_patterns: &[String],
+    config: &Config,
+    session_id: Option<&str>,
+) -> Result<GateCheckResult> {
     // Fast path: read-only tools are always allowed.
     if let Some(ref tool) = req.tool_name {
         if READ_ONLY_TOOLS.contains(&tool.as_str()) {
@@ -156,85 +238,148 @@ pub async fn check_command_with_context(
 
     let command_for_checks = resolved_command.unwrap_or(&req.command);
 
-    // 1. Check dangerous patterns -- cascade hardcoded -> extra (Patch 19c
-    //    additive) -> config blocked. extra_dangerous_patterns is intended for
-    //    operator-extensible OS-specific deny rules (typically Windows paths
-    //    not covered by the Linux-centric hardcoded list). Re-labelled in
-    //    the reason for traceability.
-    if let Some(reason) = check_dangerous_patterns(command_for_checks, config)
-        .or_else(|| {
-            check_blocked_patterns(command_for_checks, extra_dangerous_patterns).map(|r| {
-                r.replacen(
+    // Patch 25: split into subcommands (shell-aware). If tokenize fails and
+    // policy is Deny, block immediately with reason "cmdline malformed".
+    let policy = tokenize_error_policy();
+    let subcommands = match split_into_subcommands(command_for_checks, policy) {
+        Ok(subs) => subs,
+        Err(SplitError::Malformed(_)) => {
+            let reason = "Command rejected: cmdline malformed (shell tokenize error, policy=deny)".to_string();
+            let gate_id = store_gate_request(
+                db,
+                GateRequestInsert {
+                    user_id,
+                    agent: &req.agent,
+                    command: &req.command,
+                    context: req.context.as_deref(),
+                    status: "blocked",
+                    reason: Some(&reason),
+                    session_id,
+                },
+            )
+            .await?;
+            return Ok(GateCheckResult {
+                allowed: false,
+                reason: Some(reason),
+                resolved_command: Some(req.command.clone()),
+                gate_id,
+                requires_approval: false,
+                enrichment: None,
+            });
+        }
+    };
+    let to_check: Vec<String> = if subcommands.is_empty() {
+        vec![command_for_checks.to_string()]
+    } else {
+        subcommands
+    };
+
+    // Patch 25: compile pattern sets once (RegexSet batched).
+    let blocked_compiled = compile_patterns(blocked_patterns);
+    let require_approval_compiled = compile_patterns(require_approval_patterns);
+    let extra_dangerous_compiled = compile_patterns(extra_dangerous_patterns);
+    let blocked_wl = compile_patterns(blocked_whitelist_patterns);
+    let require_approval_wl = compile_patterns(require_approval_whitelist_patterns);
+
+    // Aggregate result across subcommands: blocked beats requires_approval beats allowed.
+    #[derive(Clone)]
+    enum Outcome {
+        Blocked(String),
+        RequiresApproval(String),
+    }
+    let mut worst: Option<Outcome> = None;
+
+    for sub in &to_check {
+        // (a) Hardcoded dangerous = non-overridable
+        if let Some(reason) = check_dangerous_patterns(sub, config) {
+            worst = Some(Outcome::Blocked(reason));
+            break;
+        }
+        // (b) Extra dangerous = non-overridable by whitelist (decision operateur 2026-05-22)
+        if let Some(reason) = check_compiled(sub, &extra_dangerous_compiled) {
+            let relabelled = reason.replacen(
+                "Command matched blocked pattern:",
+                "Command matched extra dangerous pattern:",
+                1,
+            );
+            if !matches!(worst, Some(Outcome::Blocked(_))) {
+                worst = Some(Outcome::Blocked(relabelled));
+            }
+            continue;
+        }
+        // (c) Blocked (with whitelist override)
+        if let Some(reason) = check_compiled(sub, &blocked_compiled) {
+            if check_compiled(sub, &blocked_wl).is_none() {
+                if !matches!(worst, Some(Outcome::Blocked(_))) {
+                    worst = Some(Outcome::Blocked(reason));
+                }
+                continue;
+            }
+            // whitelist matched: skip blocked cascade for this subcommand
+        }
+        // (d) Require approval (with whitelist override)
+        if let Some(reason) = check_compiled(sub, &require_approval_compiled) {
+            if check_compiled(sub, &require_approval_wl).is_none() {
+                let relabelled = reason.replacen(
                     "Command matched blocked pattern:",
-                    "Command matched extra dangerous pattern:",
+                    "Command matched require-approval pattern:",
                     1,
-                )
-            })
-        })
-        .or_else(|| check_blocked_patterns(command_for_checks, blocked_patterns))
-    {
-        // Store blocked request
-        let gate_id = store_gate_request(
-            db,
-            GateRequestInsert {
-                user_id,
-                agent: &req.agent,
-                command: &req.command,
-                context: req.context.as_deref(),
-                status: "blocked",
-                reason: Some(&reason),
-                session_id,
-            },
-        )
-        .await?;
-        return Ok(GateCheckResult {
-            allowed: false,
-            reason: Some(reason),
-            resolved_command: Some(req.command.clone()),
-            gate_id,
-            requires_approval: false,
-            enrichment: None,
-        });
+                );
+                if worst.is_none() {
+                    worst = Some(Outcome::RequiresApproval(relabelled));
+                }
+            }
+        }
     }
 
-    // 1bis. (Patch 19b) require_approval_patterns -- soft gate that hands off
-    // to a human approver via engram-approval-tui instead of blocking outright.
-    //
-    // Contract: pose `allowed = true` (provisoire) + `requires_approval = true`.
-    // C'est le caller (kleos-server routes/gate/mod.rs:207-...) qui declenche le
-    // long-poll cote serveur: insertion dans state.pending_approvals, notify TUI,
-    // attente sur oneshot::channel jusqu'a approval/timeout. La response HTTP est
-    // mutee selon la decision finale (approved -> allowed=true, denied/timeout ->
-    // allowed=false). Tant que le binaire kleos-server n'inclut pas ce code-path,
-    // le pattern resterait inerte cote pipeline -- la condition large dans le
-    // caller voit `requires_approval = true` et fait le long-poll.
-    if let Some(reason) = check_blocked_patterns(command_for_checks, require_approval_patterns) {
-        let reason = reason.replacen(
-            "Command matched blocked pattern:",
-            "Command matched require-approval pattern:",
-            1,
-        );
-        let gate_id = store_gate_request(
-            db,
-            GateRequestInsert {
-                user_id,
-                agent: &req.agent,
-                command: &req.command,
-                context: req.context.as_deref(),
-                status: "pending_approval",
-                reason: Some(&reason),
-                session_id,
-            },
-        )
-        .await?;
-        return Ok(GateCheckResult {
-            allowed: true,
-            reason: Some(reason),
-            resolved_command: Some(req.command.clone()),
-            gate_id,
-            requires_approval: true,
-            enrichment: None,
-        });
+    match worst {
+        Some(Outcome::Blocked(reason)) => {
+            let gate_id = store_gate_request(
+                db,
+                GateRequestInsert {
+                    user_id,
+                    agent: &req.agent,
+                    command: &req.command,
+                    context: req.context.as_deref(),
+                    status: "blocked",
+                    reason: Some(&reason),
+                    session_id,
+                },
+            )
+            .await?;
+            return Ok(GateCheckResult {
+                allowed: false,
+                reason: Some(reason),
+                resolved_command: Some(req.command.clone()),
+                gate_id,
+                requires_approval: false,
+                enrichment: None,
+            });
+        }
+        Some(Outcome::RequiresApproval(reason)) => {
+            let gate_id = store_gate_request(
+                db,
+                GateRequestInsert {
+                    user_id,
+                    agent: &req.agent,
+                    command: &req.command,
+                    context: req.context.as_deref(),
+                    status: "pending_approval",
+                    reason: Some(&reason),
+                    session_id,
+                },
+            )
+            .await?;
+            return Ok(GateCheckResult {
+                allowed: true,
+                reason: Some(reason),
+                resolved_command: Some(req.command.clone()),
+                gate_id,
+                requires_approval: true,
+                enrichment: None,
+            });
+        }
+        None => {} // fall through to SSH/secrets checks unchanged
     }
 
     // 2. SSH command static validation (SSRF prevention, reserved IPs)
@@ -959,7 +1104,11 @@ mod tests {
             session_id: None,
             skip_approval: false,
         };
-        let require_approval = vec!["apt install".to_string()];
+        // Patch 25 rupture semantique (hyp_e1d4c948): glob-lite pattern without
+        // wildcard is anchored at compile (^apt install$). To preserve the
+        // original intent (match any command starting with `apt install`),
+        // append `*`. Documented in docs/dev-notes/local-patches.md Patch 25.
+        let require_approval = vec!["apt install*".to_string()];
         let res = check_command_with_context(
             &db,
             &req,
@@ -1235,5 +1384,211 @@ mod tests {
         .unwrap();
         assert!(!res.allowed);
         assert!(res.requires_approval, "secret placeholder still triggers requires_approval");
+    }
+
+    // -- Patch 25 -- integration tests for whitelist + subcommand splitter --
+
+    #[tokio::test]
+    async fn patch25_whitelist_exempts_subcommand_from_require_approval() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "kleos-cli store \"this mentions git push internally\"".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let require_approval = vec!["*git push*".to_string()];
+        let require_approval_whitelist = vec!["^kleos-cli\\b".to_string()];
+        let res = check_command_with_whitelist(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &require_approval,
+            &[],
+            &[],
+            &require_approval_whitelist,
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(res.allowed);
+        assert!(
+            !res.requires_approval,
+            "kleos-cli whitelist must exempt subcommand from require_approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch25_pure_git_push_still_requires_approval_despite_whitelist() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "git push origin main".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let require_approval = vec!["*git push*".to_string()];
+        let require_approval_whitelist = vec!["^kleos-cli\\b".to_string()];
+        let res = check_command_with_whitelist(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &require_approval,
+            &[],
+            &[],
+            &require_approval_whitelist,
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(res.requires_approval, "git push without kleos-cli prefix must require approval");
+    }
+
+    #[tokio::test]
+    async fn patch25_chained_subcommand_any_requires_approval_propagates_to_whole() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "kleos-cli store \"x\" && git push origin main".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let require_approval = vec!["*git push*".to_string()];
+        let require_approval_whitelist = vec!["^kleos-cli\\b".to_string()];
+        let res = check_command_with_whitelist(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &require_approval,
+            &[],
+            &[],
+            &require_approval_whitelist,
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            res.requires_approval,
+            "second subcommand `git push` is not whitelisted -> whole requires approval"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch25_dangerous_hardcoded_non_overridable_by_whitelist() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "rm -rf /etc".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        // Even if the operator tries to whitelist rm -rf /, it must NOT pass:
+        // check_dangerous_patterns is hardcoded and ignores whitelists.
+        let blocked_whitelist = vec!["^rm".to_string()];
+        let res = check_command_with_whitelist(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &[],
+            &[],
+            &blocked_whitelist,
+            &[],
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed, "hardcoded dangerous must not be exempted by whitelist");
+        assert!(!res.requires_approval);
+    }
+
+    #[tokio::test]
+    async fn patch25_extra_dangerous_non_overridable_by_whitelist() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "Remove-Item -Recurse C:\\Windows\\System32".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let extra_dangerous = vec!["*system32*".to_string()];
+        // No whitelist for extra_dangerous (there is no extra_dangerous_whitelist
+        // by Patch 25 design). blocked_whitelist exists but does NOT bypass
+        // extra_dangerous cascade.
+        let blocked_whitelist = vec!["*system32*".to_string()];
+        let res = check_command_with_whitelist(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &[],
+            &extra_dangerous,
+            &blocked_whitelist,
+            &[],
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed, "extra_dangerous must block despite blocked_whitelist match");
+    }
+
+    #[tokio::test]
+    async fn patch25_empty_whitelist_preserves_pre_patch_behavior() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "apt install vim".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let require_approval = vec!["apt install*".to_string()];
+        // Empty whitelists = no exemption applied.
+        let res = check_command_with_whitelist(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &require_approval,
+            &[],
+            &[],
+            &[],
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(res.requires_approval, "empty whitelist must not autorize anything");
     }
 }

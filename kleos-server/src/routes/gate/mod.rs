@@ -6,7 +6,7 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::gate::{
-    approval_patterns, approval_timeout_secs, check_command_with_context, check_ssh_dns_rebind,
+    approval_patterns, approval_timeout_secs, check_command_with_whitelist, check_ssh_dns_rebind,
     cleanup_expired_approvals, complete_gate, complete_latest_gate, mark_gate_timed_out,
     parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request, GateCheckRequest,
     GateCheckResult, GateRequestInsert, PendingApproval, TOOLS_REQUIRING_APPROVAL,
@@ -102,6 +102,24 @@ async fn check_handler(
         &gate_cfg.extra_dangerous_patterns,
     );
 
+    // Patch 25: whitelist cascade for blocked + require_approval only.
+    // Empty whitelist (file missing/empty AND env unset) = no exemption
+    // applied (pre-Patch 25 behavior preserved on that cascade).
+    let blocked_whitelist_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS").ok();
+    let blocked_whitelist_raw = approval_patterns::load(
+        gate_cfg.blocked_whitelist_patterns_file.as_deref(),
+        blocked_whitelist_env.as_deref(),
+        &gate_cfg.blocked_whitelist_patterns,
+    );
+    let require_approval_whitelist_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS").ok();
+    let require_approval_whitelist_raw = approval_patterns::load(
+        gate_cfg.require_approval_whitelist_patterns_file.as_deref(),
+        require_approval_whitelist_env.as_deref(),
+        &gate_cfg.require_approval_whitelist_patterns,
+    );
+
     // credd-resolve patterns so `{{secret:...}}` placeholders work uniformly
     // across all three cascade levels.
     let mut resolved_patterns = Vec::with_capacity(blocked_raw.len());
@@ -132,7 +150,28 @@ async fn check_handler(
         );
     }
 
-    let mut result = check_command_with_context(
+    // Patch 25: credd-resolve whitelist patterns too, for parity with blocklists.
+    let mut resolved_blocked_whitelist = Vec::with_capacity(blocked_whitelist_raw.len());
+    for pattern in &blocked_whitelist_raw {
+        resolved_blocked_whitelist.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+    let mut resolved_require_approval_whitelist =
+        Vec::with_capacity(require_approval_whitelist_raw.len());
+    for pattern in &require_approval_whitelist_raw {
+        resolved_require_approval_whitelist.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+
+    let mut result = check_command_with_whitelist(
         &db,
         &body,
         auth.user_id,
@@ -140,6 +179,8 @@ async fn check_handler(
         &resolved_patterns,
         &resolved_require_approval,
         &resolved_extra_dangerous,
+        &resolved_blocked_whitelist,
+        &resolved_require_approval_whitelist,
         &state.config,
         body.session_id.as_deref(),
     )

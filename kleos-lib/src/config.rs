@@ -235,6 +235,27 @@ pub struct GateConfig {
     /// `${KLEOS_DATA_DIR}/gate/extra_dangerous_patterns.txt`).
     #[serde(default)]
     pub extra_dangerous_patterns_file: Option<std::path::PathBuf>,
+    // -- Patch 25 -- whitelist par cascade (blocked + require_approval seulement) --
+    /// Patch 25 -- patterns whitelist pour la cascade `blocked_patterns`. Un
+    /// match exempte la sous-commande de la cascade blocked. Pas de defaut
+    /// (vide = aucune whitelist active, comportement pre-Patch 25 preserve).
+    #[serde(default)]
+    pub blocked_whitelist_patterns: Vec<String>,
+    /// Patch 25 -- file override pour `blocked_whitelist_patterns` via la
+    /// cascade fichier > env > defaults vides. Typically
+    /// `${KLEOS_DATA_DIR}/gate/blocked_whitelist.txt`.
+    #[serde(default)]
+    pub blocked_whitelist_patterns_file: Option<std::path::PathBuf>,
+    /// Patch 25 -- patterns whitelist pour la cascade `require_approval`.
+    /// Un match exempte la sous-commande de la cascade require_approval.
+    /// Pas de defaut (vide = aucune whitelist active).
+    #[serde(default)]
+    pub require_approval_whitelist_patterns: Vec<String>,
+    /// Patch 25 -- file override pour `require_approval_whitelist_patterns`
+    /// via la cascade fichier > env > defaults vides. Typically
+    /// `${KLEOS_DATA_DIR}/gate/require_approval_whitelist.txt`.
+    #[serde(default)]
+    pub require_approval_whitelist_patterns_file: Option<std::path::PathBuf>,
 }
 
 impl Default for GateConfig {
@@ -263,6 +284,11 @@ impl Default for GateConfig {
             // Patch 19c: extra_dangerous_patterns opt-in additive.
             extra_dangerous_patterns: Vec::new(),
             extra_dangerous_patterns_file: None,
+            // Patch 25: whitelist defaults empty (opt-in, vide != tout autoriser).
+            blocked_whitelist_patterns: Vec::new(),
+            blocked_whitelist_patterns_file: None,
+            require_approval_whitelist_patterns: Vec::new(),
+            require_approval_whitelist_patterns_file: None,
         }
     }
 }
@@ -436,6 +462,34 @@ impl EidolonConfig {
             }
         } else if let Some(p) = gate_data_file("extra_dangerous_patterns.txt") {
             c.gate.extra_dangerous_patterns_file = Some(p);
+        }
+        // Patch 25: whitelist env loaders (blocked + require_approval only).
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS") {
+            c.gate.blocked_whitelist_patterns =
+                v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS_FILE") {
+            if !v.is_empty() {
+                c.gate.blocked_whitelist_patterns_file = Some(std::path::PathBuf::from(v));
+            }
+        } else if let Some(p) = gate_data_file("blocked_whitelist.txt") {
+            c.gate.blocked_whitelist_patterns_file = Some(p);
+        }
+        if let Ok(v) =
+            std::env::var("ENGRAM_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS")
+        {
+            c.gate.require_approval_whitelist_patterns =
+                v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Ok(v) =
+            std::env::var("ENGRAM_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS_FILE")
+        {
+            if !v.is_empty() {
+                c.gate.require_approval_whitelist_patterns_file =
+                    Some(std::path::PathBuf::from(v));
+            }
+        } else if let Some(p) = gate_data_file("require_approval_whitelist.txt") {
+            c.gate.require_approval_whitelist_patterns_file = Some(p);
         }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_RESERVED_TARGETS") {
             c.gate.reserved_targets = v.split(',').map(|s| s.trim().to_string()).collect();
