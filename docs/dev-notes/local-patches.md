@@ -2733,6 +2733,89 @@ agent-forge spec_id : `spec_0f75e1e0`.
 
 ---
 
+## Patch 25 -- regex matcher + per-cascade whitelist + subcommand splitting shell-aware (2026-05-22)
+
+### Symptome motivateur
+
+Memoire Kleos #3020 : le matcher gate Patch 19b utilisait un `contains` case-insensitive avec wildcard `*` optionnel. Consequence : `kleos-cli store "...mentions git push..."` matchait le pattern `git push` de `require_approval_patterns.txt` parce que la chaine litterale etait dans la cmdline visible par le hook. Resultat operateur : approval pending creee pour un simple store de memoire, friction UI inutile.
+
+### Approche
+
+3 changements ordonnes par dependance logique, niveau **chirurgical + additif pur** :
+
+1. **Matcher regex-based** (`kleos-lib/src/gate/validator.rs`) -- nouvelle struct `CompiledPatternSet { set: RegexSet, sources: Vec<String> }` qui wrap un `regex::RegexSet` avec une heuristique de detection au load :
+   - Pattern avec metachar regex (`^`, `$`, `[`, `(`, `\`, `+`, `?`, `{`, `|`, `.`) -> regex pure.
+   - Sinon -> glob-lite (literals + `*` wildcard), auto-converti en regex anchored `^pattern$` avec `*` -> `.*`.
+   - Prefixe `(?i)` ajoute automatiquement pour preserver le case-insensitive de pre-Patch 25 (sauf si pattern commence par `(?` -- operateur peut override).
+   - Helper `check_compiled(command, &CompiledPatternSet) -> Option<String>` retourne la source matchee (pour le reason logging).
+   - Regex invalide -> log warn + skip (pas de crash).
+   - Empty set -> retourne `None` toujours -> aucune exemption (semantique vide).
+2. **Whitelist par cascade** (`kleos-lib/src/gate/mod.rs`) -- nouvelle fn publique `check_command_with_whitelist` qui etend `check_command_with_context` avec 2 params `blocked_whitelist_patterns: &[String]` et `require_approval_whitelist_patterns: &[String]`. Logique : un pattern whitelist matche sur une sous-commande -> cette sous-commande est EXEMPTE de SA cascade. `check_dangerous_patterns` hardcoded **ET** `extra_dangerous_patterns` restent **non-exemptables** (decision operateur 2026-05-22 : extra_dangerous est surchargeable par AJOUT uniquement, pas par EXCLUSION).
+3. **Subcommand splitter shell-aware** (`kleos-lib/src/gate/validator.rs::split_into_subcommands`) -- splitte la cmdline en sous-commandes via shell connectors (`&&`, `||`, `;`, `|`, `&` suffix, backticks, `$()`, `<()`, `>()`) en respectant les quotes POSIX (via `shell-words` crate pour validation, walker char-by-char pour la position-aware split). Heredocs (`<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`) sont pre-scannees et leur body est exclus du splitter (data, pas commande). Backticks, `$()`, `<()`, `>()` evalues recursivement sur leur contenu interne (capped a depth 5, log warn si depasse). Tokenize error policy lue depuis `KLEOS_EIDOLON_GATE_ON_TOKENIZE_ERROR` (defaut `deny` -> retourne `blocked` avec raison "cmdline malformed").
+
+### Niveau de delta upstream
+
+- **`kleos-lib/src/gate/validator.rs`** : additif pur (300+ lignes en bas du fichier, zero touche aux fonctions existantes `pattern_matches`, `check_blocked_patterns`, `check_dangerous_patterns`).
+- **`kleos-lib/src/gate/mod.rs`** : `check_command_with_context` (signature inchangee) delegue maintenant a `check_command_with_context_inner` avec whitelists vides. Nouvelle fn publique `check_command_with_whitelist` ajoutee. Le caller upstream ne casse pas, le nouveau caller (kleos-server) appelle `_with_whitelist`. Backward compat 100% sauf rupture semantique des patterns glob-lite (cf. ci-dessous).
+- **`kleos-lib/src/config.rs`** : 4 nouveaux fields sur `GateConfig` (mirror de Patch 19b) + 4 env loaders.
+- **`kleos-server/src/routes/gate/mod.rs`** : 2 nouveaux blocs de chargement whitelist + 2 nouveaux blocs de credd-resolve + appel a `check_command_with_whitelist` au lieu de `check_command_with_context`.
+- **`gate-rules/`** : 2 nouveaux fichiers `blocked_whitelist.txt` + `require_approval_whitelist.txt` (vides + header explicatif). Pas de `extra_dangerous_whitelist.txt` (cascade non-exemptable).
+
+### Rupture semantique documentee
+
+La conversion glob-lite produit `^pattern$` (anchored) au lieu du `contains` pre-Patch 25. Patterns sans metachar et sans `*` deviennent strict-match. **Migration patterns existants** :
+
+| Avant Patch 25 (contains) | Apres Patch 25 (anchored) | Pour preserver contains |
+|---|---|---|
+| `apt install` | `^apt install$` | `apt install*` ou `*apt install*` |
+| `git push` | `^git push$` | `git push*` ou `*git push*` |
+| `systemctl *` | `^systemctl .*$` | inchange (deja `*` present) |
+
+L'operateur doit auditer `/var/lib/kleos/gate/{blocked,require_approval,extra_dangerous}_patterns.txt` apres deploy et migrer les patterns sans `*` qui devraient rester en contains semantic. Logging INFO automatique au load pour chaque pattern glob-lite suggere la migration.
+
+### Fichiers touches
+
+- `Cargo.toml` (workspace root) : `shell-words = "1.1"` ajoute dans `[workspace.dependencies]`.
+- `kleos-lib/Cargo.toml` : `shell-words = { workspace = true }` ajoute.
+- `kleos-lib/src/gate/validator.rs` : bloc Patch 25 (~300 lignes additives) avec `CompiledPatternSet`, `compile_patterns`, `check_compiled`, `is_obvious_regex`, `glob_lite_to_regex`, `TokenizeErrorPolicy`, `SplitError`, `split_into_subcommands`, `tokenize_error_policy`, helpers heredoc + substitution.
+- `kleos-lib/src/gate/mod.rs` : `check_command_with_context` delegue, `check_command_with_whitelist` ajoute, `check_command_with_context_inner` privee avec cascade Patch 25 complete (split + worst-result-wins aggregation).
+- `kleos-lib/src/config.rs` : 4 fields ajoutes a `GateConfig` + 4 env loaders.
+- `kleos-server/src/routes/gate/mod.rs` : 2 whitelist loaders + 2 credd-resolve blocs + appel `check_command_with_whitelist`.
+- `gate-rules/blocked_whitelist.txt` + `gate-rules/require_approval_whitelist.txt` : creation initiale (header + exemples commentes).
+- `CLAUDE.md` : doc des nouvelles env vars (Patch 25, NEW).
+
+### Env vars
+
+- `KLEOS_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS` (CSV) + `_FILE` (path) : whitelist cascade blocked.
+- `KLEOS_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS` (CSV) + `_FILE` (path) : whitelist cascade require_approval.
+- `KLEOS_EIDOLON_GATE_ON_TOKENIZE_ERROR` (`allow` | `deny`, default `deny`) : policy quand shell-words tokenize echoue.
+
+### Tests
+
+25 nouveaux tests unitaires + integration ajoutes dans `kleos-lib/src/gate/validator.rs` et `kleos-lib/src/gate/mod.rs` couvrant :
+
+- Detection heuristique format regex/glob-lite + conversion `^pattern$` + `(?i)` case-insensitive.
+- Subcommand splitter : connectors `&&`/`||`/`;`/`|`/`&`, quotes simples/doubles, escape, backticks, `$()`, `<()`, `>()`, heredoc body skip, depth cap recursion.
+- Tokenize error : policy Allow vs Deny.
+- Whitelist : exemption uniquement sur sa cascade, non-overridable `check_dangerous_patterns` et `extra_dangerous_patterns`.
+- Cascade integration : `kleos-cli store "git push" && git push` -> requires approval (1 subcommand whitelisted, 1 non).
+
+### Conditions de retrait
+
+- Upstream Ghost-Frame absorbe la generalisation regex matcher + whitelist + splitter (candidat PR upstream legitime).
+- Ou Patch 24 SSE (planifie) refond le pipeline approval -> Patch 25 peut etre simplifie (les whitelist + splitter restent utiles, mais le subcommand parsing pourrait migrer cote client TUI).
+
+### Lecons
+
+- **Backward compat partielle suffit si rupture documentee** : la rupture glob-lite anchored vs contains casse 1 test sur 51, l'operateur accepte le trade-off parce qu'il elimine le bug `kleos-cli store "git push"`. Migration via `*pattern*` est mecanique.
+- **`(?i)` prefixe par defaut > to_lowercase upstream** : preserve la perf (1 prefixe sur la regex compilee une fois) ET permet l'override `(?-i)` au cas par cas.
+- **shell-words pour validation, walker custom pour split** : `shell-words::split` ne preserve pas les positions originales necessaires au split + reconstruction. Pattern : utiliser `shell-words::split` pour DETECTER un tokenize valide, puis walker char-by-char pour le split position-aware.
+- **Non-overridable par decision operateur, pas par technique** : `extra_dangerous_patterns` aurait pu accepter une whitelist techniquement, mais l'operateur a explicitement decide que la cascade est additive uniquement. Documenter cette decision dans le patch + dans CLAUDE.md.
+
+agent-forge spec_id : `spec_aa233554`, hypothesis : `hyp_e1d4c948`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
