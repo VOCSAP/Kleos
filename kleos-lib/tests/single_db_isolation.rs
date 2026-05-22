@@ -9,6 +9,7 @@
 //! the cross-shard suite uses distinct files and would pass even if the
 //! predicate were missing.
 
+use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::db::Database;
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
@@ -143,5 +144,50 @@ async fn webhooks_isolated_between_users_single_db() {
             .expect("relist alice after delete")
             .is_empty(),
         "owner delete removes the webhook"
+    );
+}
+
+/// An approval created by one user must be invisible to another user on the
+/// same monolith database, by id and in the pending list.
+#[tokio::test]
+async fn approvals_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let req = CreateApprovalRequest {
+        action: "alice action".to_string(),
+        context: None,
+        requester: "agent".to_string(),
+        window_secs: None,
+    };
+    let approval = approvals::create_approval(&db, &req, 10)
+        .await
+        .expect("user 10 creates approval");
+
+    // User 20 must not fetch user 10's approval by id.
+    assert!(
+        approvals::get_approval(&db, &approval.id, 20)
+            .await
+            .expect("get bob")
+            .is_none(),
+        "user 20 must not read user 10's approval"
+    );
+
+    // User 20's pending list must be empty.
+    assert!(
+        approvals::list_pending(&db, 20)
+            .await
+            .expect("list bob")
+            .is_empty(),
+        "user 20's pending list must exclude user 10's approval"
+    );
+
+    // User 10 sees their own pending approval.
+    assert_eq!(
+        approvals::list_pending(&db, 10)
+            .await
+            .expect("list alice")
+            .len(),
+        1,
+        "user 10 must see their own pending approval"
     );
 }

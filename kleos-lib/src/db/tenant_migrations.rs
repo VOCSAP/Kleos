@@ -331,6 +331,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "webhooks_user_id_readd",
         up: apply_schema_v56_webhooks_readd,
     },
+    // Re-add user_id to the shard approvals table (reverses v26). The runner
+    // backfills existing approval rows to the shard owner after this runs.
+    TenantMigration {
+        version: 57,
+        description: "approvals_user_id_readd",
+        up: apply_schema_v57_approvals_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -341,6 +348,10 @@ const TENANT_MIGRATION_READD_USER_ID: i64 = 55;
 /// Version of the tenant migration that re-adds `user_id` to the shard webhooks
 /// table. The runner backfills existing webhook rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 56;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard approvals
+/// table. The runner backfills existing approval rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_APPROVALS: i64 = 57;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1119,6 +1130,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
     let tables: &[&str] = match version {
         TENANT_MIGRATION_READD_USER_ID => &["memories", "artifacts", "vector_sync_pending"],
         TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => &["webhooks"],
+        TENANT_MIGRATION_READD_USER_ID_APPROVALS => &["approvals"],
         _ => &[],
     };
     for table in tables {
@@ -1147,6 +1159,15 @@ fn backfill_tenant_table_user_id(conn: &Connection, table: &str, owner: i64) -> 
 fn apply_schema_v56_webhooks_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v56_webhooks_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v56 failed: {e}")))
+}
+
+/// Tenant v57: re-add user_id to the shard approvals table. The SQL re-adds the
+/// column (default 1) and recreates the idx_approvals_user /
+/// idx_approvals_user_status indexes. Owner backfill of existing rows happens in
+/// `run_tenant_migrations` after this runs.
+fn apply_schema_v57_approvals_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v57_approvals_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v57 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -2062,9 +2083,11 @@ mod tests {
         assert_eq!(pending_count, 1);
     }
 
-    /// v26: approvals must NOT have a user_id column after the full chain.
+    /// v57: approvals must have user_id restored after the full chain (v26
+    /// dropped it; v57 re-adds it for single-DB isolation), with both
+    /// idx_approvals_user and idx_approvals_user_status present again.
     #[test]
-    fn user_id_absent_from_approvals_after_v26() {
+    fn user_id_restored_on_approvals_after_v57() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
@@ -2075,9 +2098,9 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "approvals still has user_id column after v26");
+        assert_eq!(count, 1, "approvals must have user_id restored after v57");
 
-        // Both shim indexes are gone.
+        // Both user_id indexes are restored.
         for idx in &["idx_approvals_user", "idx_approvals_user_status"] {
             let count: i64 = conn
                 .query_row(
@@ -2089,13 +2112,14 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index '{}' still present after v26", idx);
+            assert_eq!(count, 1, "index '{}' must be restored after v57", idx);
         }
     }
 
-    /// v26: the post-drop approvals table supports the SQL shape kleos-lib
-    /// approvals/mod.rs now uses (no user_id on INSERT, no user_id
-    /// predicate on SELECT/UPDATE).
+    /// After the full chain (v26 dropped user_id, v57 re-added it with
+    /// DEFAULT 1), the approvals table stays usable: an INSERT that omits
+    /// user_id still succeeds via the column default, and lookups/updates by id
+    /// continue to work.
     #[test]
     fn approvals_usable_after_v26() {
         let conn = Connection::open_in_memory().unwrap();

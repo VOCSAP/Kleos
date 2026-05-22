@@ -571,6 +571,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_webhooks),
         transactional: true,
     },
+    Migration {
+        version: 66,
+        description: "readd_user_id_approvals",
+        up: run_migration_readd_user_id_approvals,
+        down: Some(down_migration_readd_user_id_approvals),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -707,6 +714,8 @@ const MIGRATION_HANDOFF_ATOMS: i64 = 63;
 const MIGRATION_READD_USER_ID_MEMORY_CORE: i64 = 64;
 /// Version number for re-adding user_id to the webhooks table (single-DB isolation).
 const MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 65;
+/// Version number for re-adding user_id to the approvals table (single-DB isolation).
+const MIGRATION_READD_USER_ID_APPROVALS: i64 = 66;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1228,6 +1237,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_WEBHOOKS,
             "readd_user_id_webhooks",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_APPROVALS {
+        info!("Running migration 66: readd_user_id_approvals");
+        run_migration_readd_user_id_approvals(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_APPROVALS,
+            "readd_user_id_approvals",
         )?;
     }
 
@@ -2371,6 +2390,62 @@ fn down_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     }
     info!("Migration 65 reverted: user_id dropped from webhooks");
+    Ok(())
+}
+
+/// Migration 66: re-add `user_id` to the `approvals` table (reverses migration
+/// 29). Migration 12 created approvals with `user_id` and the
+/// `idx_approvals_user` / `idx_approvals_user_status` indexes; migration 29
+/// dropped them under the per-shard-only isolation assumption. Single-DB mode
+/// needs the row-level owner back so the `WHERE user_id = ?` predicate isolates
+/// approvals per user. Existing rows backfill to `user_id = 1` (system owner);
+/// new inserts carry the real owner.
+///
+/// Idempotent: the `ADD COLUMN` is guarded and indexes use `IF NOT EXISTS`.
+fn run_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE approvals ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added approvals.user_id (migration 66)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_id);
+         CREATE INDEX IF NOT EXISTS idx_approvals_user_status ON approvals(user_id, status);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 66 complete: user_id re-added to approvals");
+    Ok(())
+}
+
+/// Reverse migration 66: drop the `user_id` indexes and column from `approvals`.
+fn down_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_approvals_user;
+         DROP INDEX IF EXISTS idx_approvals_user_status;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 66 reverted: user_id dropped from approvals");
     Ok(())
 }
 
