@@ -672,6 +672,17 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // Re-adds user_id to user_preferences that v40 dropped via REBUILD.
+    // UNIQUE constraint changes from (key) back to (user_id, key).
+    // Also re-adds the domain+preference+user_id UNIQUE INDEX that v40 dropped.
+    // transactional:false because the rebuild toggles PRAGMA foreign_keys.
+    Migration {
+        version: 77,
+        description: "readd_user_id_user_preferences",
+        up: run_migration_readd_user_id_user_preferences,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -840,6 +851,10 @@ const MIGRATION_READD_USER_ID_THYMUS: i64 = 75;
 /// schema (v64 memory-core migration path). Simple ADD COLUMN -- no UNIQUE
 /// constraint changes needed for either table.
 const MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 76;
+/// Version for the user_preferences user_id re-add migration (REBUILD).
+/// v40 dropped user_id; this restores it with UNIQUE(user_id, key) so
+/// single-DB mode can isolate preferences per user.
+const MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 77;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1471,6 +1486,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_GRAPH_REMAINDER,
             "readd_user_id_graph_remainder",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_USER_PREFERENCES {
+        info!("Running migration 77: readd_user_id_user_preferences");
+        run_migration_readd_user_id_user_preferences(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_USER_PREFERENCES,
+            "readd_user_id_user_preferences",
         )?;
     }
 
@@ -3463,6 +3488,67 @@ fn run_migration_readd_user_id_graph_remainder(conn: &rusqlite::Connection) -> R
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Migration 76 complete: graph_remainder user_id done");
+    Ok(())
+}
+
+/// Re-adds `user_id` to `user_preferences` (dropped by v40). Uses the
+/// 12-step REBUILD pattern because `UNIQUE(user_id, key)` is an in-table
+/// constraint. Also restores `idx_up_domain_pref_user` UNIQUE INDEX on
+/// `(domain, preference, user_id)`. Registered in the MIGRATIONS slice as
+/// v77; `transactional: false` because PRAGMA foreign_keys is toggled.
+fn run_migration_readd_user_id_user_preferences(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('user_preferences') WHERE name = 'user_id'")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .exists([])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = ON;
+
+         ALTER TABLE user_preferences RENAME TO _user_preferences_old_v77;
+         DROP INDEX IF EXISTS idx_up_domain;
+         DROP INDEX IF EXISTS idx_up_domain_pref;
+         DROP INDEX IF EXISTS idx_up_domain_pref_user;
+         DROP INDEX IF EXISTS idx_user_prefs_user;
+
+         CREATE TABLE user_preferences (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             user_id INTEGER NOT NULL DEFAULT 1,
+             key TEXT NOT NULL,
+             value TEXT NOT NULL,
+             domain TEXT,
+             preference TEXT,
+             strength REAL NOT NULL DEFAULT 1.0,
+             evidence_memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(user_id, key)
+         );
+
+         INSERT INTO user_preferences
+             (id, user_id, key, value, domain, preference, strength,
+              evidence_memory_id, created_at, updated_at)
+         SELECT
+             id, 1, key, value, domain, preference, strength,
+              evidence_memory_id, created_at, updated_at
+         FROM _user_preferences_old_v77;
+
+         DROP TABLE _user_preferences_old_v77;
+
+         CREATE INDEX IF NOT EXISTS idx_user_prefs_user ON user_preferences(user_id);
+         CREATE INDEX IF NOT EXISTS idx_up_domain ON user_preferences(domain COLLATE NOCASE);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_up_domain_pref_user ON user_preferences(domain, preference, user_id);
+
+         PRAGMA legacy_alter_table = OFF;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 77 complete: user_id re-added to user_preferences (REBUILD)");
     Ok(())
 }
 

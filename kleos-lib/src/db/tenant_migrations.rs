@@ -417,6 +417,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "graph_remainder_user_id_readd",
         up: apply_schema_v67_graph_remainder_readd,
     },
+    // Re-add user_id to user_preferences in tenant shards via REBUILD.
+    // v37 dropped it; UNIQUE changes from (key) back to (user_id, key).
+    // The runner backfills existing rows to the shard owner.
+    TenantMigration {
+        version: 68,
+        description: "user_preferences_user_id_readd",
+        up: apply_schema_v68_user_preferences_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -481,6 +489,10 @@ const TENANT_MIGRATION_READD_USER_ID_THYMUS: i64 = 66;
 /// never re-added on the tenant side. The runner backfills existing rows to the
 /// shard owner.
 const TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 67;
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// user_preferences table via REBUILD (UNIQUE(user_id, key)). The runner
+/// backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 68;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1286,6 +1298,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER => {
             &["structured_facts", "entity_cooccurrences"]
         }
+        TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES => &["user_preferences"],
         _ => &[],
     };
     for table in tables {
@@ -1418,6 +1431,14 @@ fn apply_schema_v67_graph_remainder_readd(conn: &Connection) -> Result<()> {
         "../tenant/schema_v67_graph_remainder_readd.sql"
     ))
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v67 failed: {e}")))
+}
+
+/// Tenant v68: re-adds `user_id` to `user_preferences` via 12-step REBUILD.
+/// UNIQUE constraint changes from `(key)` to `(user_id, key)`. The runner
+/// backfills existing rows to the shard owner after this SQL runs.
+fn apply_schema_v68_user_preferences_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v68_user_preferences_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v68 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.

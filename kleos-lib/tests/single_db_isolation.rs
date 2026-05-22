@@ -868,3 +868,35 @@ async fn structured_facts_isolated_between_users_single_db() {
         "user 10's fact must have subject Alice"
     );
 }
+
+/// Preferences set by one user must be invisible to another user sharing the
+/// same monolith database. Both users share the same key name "theme" but must
+/// see only their own value and not the other user's row.
+#[tokio::test]
+async fn user_preferences_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    // User 10 sets a preference.
+    kleos_lib::preferences::set_preference(&db, 10, "theme", "dark")
+        .await
+        .expect("user 10 sets preference");
+
+    // User 20 sets same key with different value.
+    kleos_lib::preferences::set_preference(&db, 20, "theme", "light")
+        .await
+        .expect("user 20 sets preference");
+
+    // User 10 sees only their preference.
+    let prefs_10 = kleos_lib::preferences::list_preferences(&db, 10)
+        .await
+        .expect("list prefs user 10");
+    assert_eq!(prefs_10.len(), 1);
+    assert_eq!(prefs_10[0].value, "dark");
+
+    // User 20 sees only their preference.
+    let prefs_20 = kleos_lib::preferences::list_preferences(&db, 20)
+        .await
+        .expect("list prefs user 20");
+    assert_eq!(prefs_20.len(), 1);
+    assert_eq!(prefs_20[0].value, "light");
+}

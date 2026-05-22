@@ -259,11 +259,11 @@ pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateE
 #[tracing::instrument(skip(db))]
 pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<PreferenceEntry>> {
     let sql = "SELECT domain, preference, strength FROM user_preferences \
-               WHERE strength >= 1.5 ORDER BY strength DESC LIMIT 15";
+               WHERE user_id = ?1 AND strength >= 1.5 ORDER BY strength DESC LIMIT 15";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![])
+            .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut prefs = Vec::with_capacity(15);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

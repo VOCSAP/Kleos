@@ -291,15 +291,16 @@ pub async fn fast_extract_facts(
                 }
             }
 
-            // Upsert preferences
+            // Upsert preferences scoped to the owning user so single-DB mode
+            // isolates preferences per user (user_id column restored by v77).
             for pref in &prefs {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO user_preferences (key, value, created_at, updated_at) \
-                     VALUES (?1, ?2, datetime('now'), datetime('now')) \
-                     ON CONFLICT(key) DO UPDATE SET \
+                    "INSERT INTO user_preferences (user_id, key, value, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, datetime('now'), datetime('now')) \
+                     ON CONFLICT(user_id, key) DO UPDATE SET \
                        value = excluded.value, \
                        updated_at = datetime('now')",
-                    rusqlite::params![pref.key, pref.value],
+                    rusqlite::params![user_id, pref.key, pref.value],
                 ) {
                     warn!(error = %e, "preference_upsert_failed");
                 }
