@@ -28,6 +28,7 @@ pub async fn build_cooccurrence_edges(
                      FROM memories m \
                      JOIN memory_entities me ON me.memory_id = m.id \
                      WHERE m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_latest = 1 \
+                       AND m.user_id = ?1 \
                      ORDER BY m.created_at DESC \
                      LIMIT 2000",
                 )
@@ -37,7 +38,9 @@ pub async fn build_cooccurrence_edges(
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
                 .map_err(rusqlite_to_eng_error)?;
 
             for row in rows {
@@ -154,10 +157,16 @@ pub async fn record_cooccurrence(db: &Database, entity_a: i64, entity_b: i64) ->
 /// Clears all existing co-occurrences and recomputes from all memory-entity links.
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
-    // Clear all co-occurrences
+    // Clear only the caller's co-occurrences (rows whose entities they own), so
+    // one user's rebuild cannot wipe another user's data in single-DB mode.
     db.write(move |conn| {
-        conn.execute("DELETE FROM entity_cooccurrences", [])
-            .map_err(rusqlite_to_eng_error)?;
+        conn.execute(
+            "DELETE FROM entity_cooccurrences \
+             WHERE entity_a_id IN (SELECT id FROM entities WHERE user_id = ?1) \
+                OR entity_b_id IN (SELECT id FROM entities WHERE user_id = ?1)",
+            rusqlite::params![user_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
         Ok(())
     })
     .await?;
@@ -171,6 +180,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
                      FROM memories m \
                      JOIN memory_entities me ON me.memory_id = m.id \
                      WHERE m.is_forgotten = 0 AND m.is_archived = 0 \
+                       AND m.user_id = ?1 \
                      ORDER BY m.created_at DESC",
                 )
                 .map_err(rusqlite_to_eng_error)?;
@@ -178,7 +188,9 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
             let rows = stmt
-                .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+                .query_map(rusqlite::params![user_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
                 .map_err(rusqlite_to_eng_error)?;
 
             for row in rows {
@@ -234,20 +246,22 @@ pub async fn get_cooccurring_entities(
                      ELSE co.entity_a_id \
                  END \
                  WHERE (co.entity_a_id = ?1 OR co.entity_b_id = ?1) \
+                   AND e.user_id = ?3 \
+                   AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
                  ORDER BY co.count DESC \
                  LIMIT ?2",
             )
             .map_err(rusqlite_to_eng_error)?;
 
         let rows = stmt
-            .query_map(rusqlite::params![entity_id, limit as i64], |row| {
+            .query_map(rusqlite::params![entity_id, limit as i64, user_id], |row| {
                 Ok(Entity {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     entity_type: row.get(2)?,
                     description: row.get(3)?,
                     aliases: row.get(4)?,
-                    user_id: 0,
+                    user_id,
                     space_id: row.get(5)?,
                     confidence: row.get(6)?,
                     occurrence_count: row.get(7)?,

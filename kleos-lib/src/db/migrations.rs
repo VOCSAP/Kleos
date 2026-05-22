@@ -617,6 +617,17 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_intelligence),
         transactional: true,
     },
+    // entities carries UNIQUE(name, entity_type); proper per-user isolation needs
+    // UNIQUE(name, entity_type, user_id), which requires a table rebuild (the
+    // reverse of migration 38). transactional:false because the rebuild toggles
+    // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
+    Migration {
+        version: 72,
+        description: "readd_user_id_graph_entities",
+        up: run_migration_readd_user_id_graph_entities,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -766,6 +777,10 @@ const MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 70;
 /// Version number for re-adding user_id to the intelligence tables -- reflections,
 /// consolidations, and causal_chains (single-DB isolation).
 const MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 71;
+/// Version number for re-adding user_id to the graph `entities` table with
+/// UNIQUE(name, entity_type, user_id) so entities isolate per user in single-DB
+/// mode (single-DB isolation).
+const MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 72;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1347,6 +1362,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_INTELLIGENCE,
             "readd_user_id_intelligence",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_GRAPH_ENTITIES {
+        info!("Running migration 72: readd_user_id_graph_entities");
+        run_migration_readd_user_id_graph_entities(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_GRAPH_ENTITIES,
+            "readd_user_id_graph_entities",
         )?;
     }
 
@@ -2858,6 +2883,84 @@ fn down_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Res
         }
     }
     info!("Migration 71 reverted: user_id dropped from intelligence tables");
+    Ok(())
+}
+
+/// Migration 72: re-add the `user_id` ownership column to the graph `entities`
+/// table with `UNIQUE(name, entity_type, user_id)`, reversing migration 38's
+/// drop-and-rebuild. Entities are upserted by (name, entity_type); without
+/// user_id in the constraint, two users mentioning the same name collapse into
+/// one shared row -- a cross-user leak in single-DB (shared) mode.
+///
+/// The rebuild copies every row forward preserving `id` (entity_relationships,
+/// memory_entities, and entity_cooccurrences hold FKs to entities(id)), so it
+/// runs with `PRAGMA foreign_keys = OFF`. Legacy rows backfill to `user_id = 1`
+/// (the system owner); already-merged entities cannot be un-merged. Idempotent:
+/// a no-op when `user_id` is already present (fresh databases created from the
+/// core schema, which already carries the column and constraint).
+fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        info!("entities.user_id already present, migration 72 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE entities RENAME TO _entities_old_v72;
+         DROP INDEX IF EXISTS idx_entities_name;
+         DROP INDEX IF EXISTS idx_entities_type;
+
+         CREATE TABLE entities (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             entity_type TEXT NOT NULL DEFAULT 'concept',
+             type TEXT NOT NULL DEFAULT 'generic',
+             description TEXT,
+             aliases TEXT,
+             aka TEXT,
+             metadata TEXT,
+             user_id INTEGER NOT NULL DEFAULT 1,
+             space_id INTEGER,
+             confidence REAL NOT NULL DEFAULT 1.0,
+             occurrence_count INTEGER NOT NULL DEFAULT 1,
+             first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+             last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             UNIQUE(name, entity_type, user_id)
+         );
+
+         INSERT OR IGNORE INTO entities
+             (id, name, entity_type, type, description, aliases, aka, metadata,
+              user_id, space_id, confidence, occurrence_count,
+              first_seen_at, last_seen_at, created_at, updated_at)
+         SELECT
+             id, name, entity_type, type, description, aliases, aka, metadata,
+             1, space_id, confidence, occurrence_count,
+             first_seen_at, last_seen_at, created_at, updated_at
+         FROM _entities_old_v72;
+
+         DROP TABLE _entities_old_v72;
+
+         CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+         CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type);
+         CREATE INDEX IF NOT EXISTS idx_entities_user ON entities(user_id);
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 72 complete: user_id re-added to entities with UNIQUE(name, entity_type, user_id)");
     Ok(())
 }
 

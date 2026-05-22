@@ -12,6 +12,8 @@
 use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::conversations::{self, CreateConversationRequest};
 use kleos_lib::db::Database;
+use kleos_lib::graph::entities::{self};
+use kleos_lib::graph::types::CreateEntityRequest;
 use kleos_lib::intelligence::{causal, consolidation, reflections};
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
@@ -544,5 +546,59 @@ async fn causal_chains_isolated_between_users_single_db() {
             .len(),
         1,
         "user 10 must traverse their own causal links"
+    );
+}
+
+/// A graph entity created by one user must be invisible to and unreadable by
+/// another user on the same monolith. Two users can both own an entity with the
+/// same (name, entity_type) because user_id is part of the UNIQUE key.
+#[tokio::test]
+async fn entities_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    fn entity_req(name: &str, user_id: i64) -> CreateEntityRequest {
+        CreateEntityRequest {
+            name: name.to_string(),
+            entity_type: Some("concept".to_string()),
+            description: None,
+            aliases: None,
+            user_id: Some(user_id),
+            space_id: None,
+        }
+    }
+
+    let e10 = entities::create_entity(&db, entity_req("Acme", 10), 10)
+        .await
+        .expect("user 10 creates entity");
+    // The same (name, entity_type) under a different user must not collide.
+    let e20 = entities::create_entity(&db, entity_req("Acme", 20), 20)
+        .await
+        .expect("user 20 creates same-named entity (distinct owner)");
+    assert_ne!(
+        e10.id, e20.id,
+        "same-named entities owned by different users must be distinct rows"
+    );
+
+    // User 20 cannot read user 10's entity by id.
+    assert!(
+        entities::get_entity(&db, e10.id, 20).await.is_err(),
+        "user 20 must not read user 10's entity by id"
+    );
+
+    // Each user's listing shows only their own entity.
+    let list_10 = entities::list_entities(&db, 10, 100, 0)
+        .await
+        .expect("list user 10");
+    assert_eq!(list_10.len(), 1, "user 10 sees exactly their own entity");
+    assert_eq!(list_10[0].id, e10.id);
+
+    // User 20 deleting user 10's entity is a no-op (NotFound).
+    assert!(
+        entities::delete_entity(&db, e10.id, 20).await.is_err(),
+        "user 20 must not delete user 10's entity"
+    );
+    assert!(
+        entities::get_entity(&db, e10.id, 10).await.is_ok(),
+        "user 20's delete must not remove user 10's entity"
     );
 }

@@ -375,6 +375,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "intelligence_user_id_readd",
         up: apply_schema_v62_intelligence_readd,
     },
+    // Rebuild the shard entities table to re-add user_id with
+    // UNIQUE(name, entity_type, user_id) (reverses v35). The runner backfills
+    // the copied DEFAULT-1 rows to the shard owner after this runs.
+    TenantMigration {
+        version: 63,
+        description: "graph_entities_user_id_readd",
+        up: apply_schema_v63_graph_entities_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -413,6 +421,11 @@ const TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 61;
 /// intelligence tables (reflections, consolidations, causal_chains). The runner
 /// backfills existing rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 62;
+
+/// Version of the tenant migration that rebuilds the shard entities table to
+/// re-add `user_id` with UNIQUE(name, entity_type, user_id). The runner
+/// backfills the copied rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 63;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1199,6 +1212,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE => {
             &["reflections", "consolidations", "causal_chains"]
         }
+        TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES => &["entities"],
         _ => &[],
     };
     for table in tables {
@@ -1280,6 +1294,18 @@ fn apply_schema_v61_conversations_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v62_intelligence_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v62_intelligence_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v62 failed: {e}")))
+}
+
+/// Tenant v63: rebuild the shard entities table to re-add user_id with
+/// UNIQUE(name, entity_type, user_id). The SQL runs the 12-step rebuild with
+/// PRAGMA foreign_keys = OFF so the entity_relationships / memory_entities /
+/// entity_cooccurrences FK references survive. Owner backfill of the copied
+/// DEFAULT-1 rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v63_graph_entities_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v63_graph_entities_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v63 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -3917,10 +3943,11 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // v14 added user_id; v35 removed it. Full migration chain lands at 0.
+        // v14 added user_id; v35 removed it; v63 re-added it (single-DB
+        // isolation). The full migration chain lands with the column present.
         assert_eq!(
-            post_user_id, 0,
-            "entities.user_id absent after v35 graph drop"
+            post_user_id, 1,
+            "entities.user_id restored after v63 graph re-add"
         );
 
         let post_tables: i64 = conn
@@ -5688,16 +5715,42 @@ mod tests {
         );
     }
 
-    /// v35: user_id must be absent from all 6 graph-cluster tables after the
-    /// full migration chain completes. Corresponding user indexes must be gone.
+    /// After the full migration chain: v63 rebuilds entities to re-add user_id
+    /// (single-DB isolation) and recreates idx_entities_user, reversing the v35
+    /// drop. The other graph-cluster tables were not part of the repair and stay
+    /// without user_id after v35.
     #[test]
     fn user_id_absent_from_graph_cluster_after_v35() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).expect("migrations");
 
+        // v63 restored user_id on entities.
+        let entities_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            entities_uid, 1,
+            "entities must have user_id restored after v63"
+        );
+        let entities_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_entities_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            entities_idx, 1,
+            "idx_entities_user must be restored after v63"
+        );
+
         // brain_edges is NOT present on tenant shards (monolith-only table).
+        // These graph-cluster tables were not part of the single-DB repair.
         for table in &[
-            "entities",
             "structured_facts",
             "entity_cooccurrences",
             "memory_pagerank",
@@ -5716,12 +5769,7 @@ mod tests {
             assert_eq!(count, 0, "user_id still present in {} after v35", table);
         }
 
-        for idx in &[
-            "idx_entities_user",
-            "idx_ec_user",
-            "idx_pagerank_user",
-            "idx_facts_user",
-        ] {
+        for idx in &["idx_ec_user", "idx_pagerank_user", "idx_facts_user"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -5790,14 +5838,15 @@ mod tests {
             .expect("count pagerank_dirty");
         assert_eq!(pd_count, 1, "pagerank_dirty seed row missing at id=1");
 
-        // entities UNIQUE(name, entity_type) -- duplicate should fail
+        // entities UNIQUE(name, entity_type, user_id) after v63 -- a duplicate
+        // at the same default owner (user_id = 1) should still be rejected.
         let dup = conn.execute(
             "INSERT INTO entities (name, entity_type) VALUES (?1, ?2)",
             rusqlite::params!["TestEntity", "concept"],
         );
         assert!(
             dup.is_err(),
-            "duplicate (name, entity_type) should be rejected"
+            "duplicate (name, entity_type, user_id) should be rejected"
         );
     }
 
