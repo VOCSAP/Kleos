@@ -10,6 +10,7 @@
 //! predicate were missing.
 
 use kleos_lib::approvals::{self, CreateApprovalRequest};
+use kleos_lib::conversations::{self, CreateConversationRequest};
 use kleos_lib::db::Database;
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
@@ -353,5 +354,59 @@ async fn chiasm_tasks_isolated_between_users_single_db() {
     assert!(
         chiasm::get_task(&db, t10.id, 10).await.is_ok(),
         "user 20's delete must not remove user 10's task"
+    );
+}
+
+/// A conversation created by one user must be invisible to and undeletable by
+/// another user on the same monolith.
+#[tokio::test]
+async fn conversations_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let conv = conversations::create_conversation(
+        &db,
+        CreateConversationRequest {
+            agent: "alice-agent".to_string(),
+            session_id: Some("s-alice".to_string()),
+            title: Some("alice convo".to_string()),
+            metadata: None,
+        },
+        10,
+    )
+    .await
+    .expect("user 10 creates conversation");
+
+    // User 20 cannot fetch user 10's conversation by id.
+    assert!(
+        conversations::get_conversation_for_user(&db, conv.id, 20)
+            .await
+            .is_err(),
+        "user 20 must not read user 10's conversation"
+    );
+
+    // User 20's list must be empty; user 10's must contain it.
+    assert!(
+        conversations::list_conversations(&db, 20, 100)
+            .await
+            .expect("list user 20")
+            .is_empty(),
+        "user 20 must not see user 10's conversation"
+    );
+    assert_eq!(
+        conversations::list_conversations(&db, 10, 100)
+            .await
+            .expect("list user 10")
+            .len(),
+        1,
+        "user 10 must see their own conversation"
+    );
+
+    // User 20 deleting user 10's conversation must fail / not remove it.
+    let _ = conversations::delete_conversation(&db, conv.id, 20).await;
+    assert!(
+        conversations::get_conversation_for_user(&db, conv.id, 10)
+            .await
+            .is_ok(),
+        "user 20's delete must not remove user 10's conversation"
     );
 }

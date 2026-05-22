@@ -360,6 +360,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "chiasm_tasks_user_id_readd",
         up: apply_schema_v60_chiasm_tasks_readd,
     },
+    // Re-add user_id to the shard conversations table (reverses v37). The runner
+    // backfills existing conversation rows to the shard owner after this runs.
+    TenantMigration {
+        version: 61,
+        description: "conversations_user_id_readd",
+        up: apply_schema_v61_conversations_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -389,6 +396,10 @@ const TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 59;
 /// chiasm_tasks table. The runner backfills existing task rows to the shard
 /// owner.
 const TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 60;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// conversations table. The runner backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 61;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1171,6 +1182,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => &["soma_agents"],
         TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => &["axon_events"],
         TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS => &["chiasm_tasks"],
+        TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS => &["conversations"],
         _ => &[],
     };
     for table in tables {
@@ -1234,6 +1246,14 @@ fn apply_schema_v59_axon_events_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v60_chiasm_tasks_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v60_chiasm_tasks_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v60 failed: {e}")))
+}
+
+/// Tenant v61: re-add user_id to the shard conversations table. The SQL re-adds
+/// the column (default 1) and the idx_conversations_user index. Owner backfill
+/// of existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v61_conversations_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v61_conversations_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v61 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -6218,34 +6238,48 @@ mod tests {
         }
     }
 
-    /// v37: user_id must be absent from both user_preferences and conversations
-    /// after the full migration chain. All related user-scoped indexes must be gone
-    /// and the new idx_up_domain_pref must exist.
+    /// After the full chain: conversations.user_id is restored (v37 dropped it,
+    /// v61 re-added it for single-DB isolation) while user_preferences stays
+    /// user_id-free. idx_conversations_user is restored; the user_preferences
+    /// user-scoped indexes stay gone and idx_up_domain_pref still exists.
     #[test]
-    fn user_id_absent_from_portability_after_v37() {
+    fn portability_user_id_state_after_v61() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).expect("migrations");
 
-        for table in &["user_preferences", "conversations"] {
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
-                        table
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap();
-            assert_eq!(count, 0, "user_id still present in {} after v37", table);
-        }
+        // conversations.user_id was dropped at v37 and re-added at v61 for
+        // single-DB isolation; user_preferences is out of that scope and stays
+        // user_id-free.
+        let conv_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(conv_uid, 1, "conversations.user_id must be restored after v61");
 
-        // Old user-scoped indexes must be gone.
-        for idx in &[
-            "idx_conversations_user",
-            "idx_up_domain_pref_user",
-            "idx_user_prefs_user",
-        ] {
+        let prefs_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(prefs_uid, 0, "user_preferences must remain user_id-free");
+
+        // idx_conversations_user is restored by v61.
+        let conv_idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_conversations_user'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(conv_idx, 1, "idx_conversations_user must be restored after v61");
+
+        // The user_preferences user-scoped indexes stay gone.
+        for idx in &["idx_up_domain_pref_user", "idx_user_prefs_user"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6256,7 +6290,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index {} still present after v37", idx);
+            assert_eq!(count, 0, "index {} must stay absent", idx);
         }
 
         // New UNIQUE INDEX idx_up_domain_pref must exist.
@@ -6280,9 +6314,10 @@ mod tests {
         assert_eq!(domain_idx, 1, "idx_up_domain missing after v37");
     }
 
-    /// v37: both tables accept inserts using the new schema (no user_id).
-    /// UNIQUE(key) on user_preferences rejects duplicate keys.
-    /// Messages can still be inserted via a parent conversation (FK preserved).
+    /// After the full chain both tables stay usable: user_preferences (still
+    /// user_id-free) enforces UNIQUE(key), and conversations (user_id re-added
+    /// at v61 with DEFAULT 1) accepts an insert that omits user_id. Messages can
+    /// still be inserted via a parent conversation (FK preserved).
     #[test]
     fn portability_usable_after_v37() {
         let conn = Connection::open_in_memory().unwrap();

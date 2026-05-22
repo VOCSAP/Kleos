@@ -603,6 +603,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_chiasm_tasks),
         transactional: true,
     },
+    Migration {
+        version: 70,
+        description: "readd_user_id_conversations",
+        up: run_migration_readd_user_id_conversations,
+        down: Some(down_migration_readd_user_id_conversations),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -747,6 +754,8 @@ const MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 67;
 const MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 68;
 /// Version number for re-adding user_id to the chiasm_tasks table (single-DB isolation).
 const MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 69;
+/// Version number for re-adding user_id to the conversations table (single-DB isolation).
+const MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 70;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1308,6 +1317,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_CHIASM_TASKS,
             "readd_user_id_chiasm_tasks",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_CONVERSATIONS {
+        info!("Running migration 70: readd_user_id_conversations");
+        run_migration_readd_user_id_conversations(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_CONVERSATIONS,
+            "readd_user_id_conversations",
         )?;
     }
 
@@ -2686,6 +2705,59 @@ fn down_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Res
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     }
     info!("Migration 69 reverted: user_id dropped from chiasm_tasks");
+    Ok(())
+}
+
+/// Migration 70: re-add `user_id` to the `conversations` table. Migration 40
+/// dropped it (Shape A simple DROP COLUMN); single-DB mode needs the row-level
+/// owner so conversation reads/writes and message scoping isolate per user.
+/// conversations has no UNIQUE/FK on the column, so the simple
+/// ALTER TABLE ADD COLUMN path is sufficient. Legacy rows backfill to
+/// `user_id = 1`; new conversations carry the creator's id. The `messages`
+/// table has no user_id and is scoped via its parent conversation.
+///
+/// Idempotent: the `ADD COLUMN` is guarded and the index uses `IF NOT EXISTS`.
+fn run_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE conversations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added conversations.user_id (migration 70)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 70 complete: user_id re-added to conversations");
+    Ok(())
+}
+
+/// Reverse migration 70: drop the `idx_conversations_user` index and the
+/// `user_id` column from `conversations`.
+fn down_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_conversations_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        conn.execute("ALTER TABLE conversations DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 70 reverted: user_id dropped from conversations");
     Ok(())
 }
 
