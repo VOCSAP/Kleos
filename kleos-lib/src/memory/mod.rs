@@ -1706,9 +1706,10 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
 
 #[tracing::instrument(skip(db))]
 pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
-    // Scope the memory-core counts to the owner so single-DB (shared) mode
-    // reports per-user stats. Other subsystems (conversations, episodes,
-    // entities, skills) are separate isolation surfaces, out of scope here.
+    // Scope counts to the owner so single-DB (shared) mode reports per-user
+    // stats. conversations, episodes, and entities now carry user_id (re-added
+    // by the single-DB repair). The skills count is scoped once skill_records
+    // carries user_id on shards (skills repair step).
     let memories: i64 = db
         .read(move |conn| {
             conn.query_row(
@@ -1730,30 +1731,30 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
         })
         .await?;
     let conversations: i64 = db
-        .read(|conn| {
+        .read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM conversations",
-                rusqlite::params![],
+                "SELECT COUNT(*) FROM conversations WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
         })
         .await?;
     let episodes: i64 = db
-        .read(|conn| {
+        .read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM episodes",
-                rusqlite::params![],
+                "SELECT COUNT(*) FROM episodes WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)
         })
         .await?;
     let entities: i64 = db
-        .read(|conn| {
+        .read(move |conn| {
             conn.query_row(
-                "SELECT COUNT(*) FROM entities",
-                rusqlite::params![],
+                "SELECT COUNT(*) FROM entities WHERE user_id = ?1",
+                rusqlite::params![user_id],
                 |row| row.get(0),
             )
             .map_err(rusqlite_to_eng_error)

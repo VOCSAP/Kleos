@@ -383,6 +383,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "graph_entities_user_id_readd",
         up: apply_schema_v63_graph_entities_readd,
     },
+    // Re-add user_id to the shard episodes table (reverses v40). The runner
+    // backfills existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 64,
+        description: "episodes_user_id_readd",
+        up: apply_schema_v64_episodes_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -426,6 +433,10 @@ const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 62;
 /// re-add `user_id` with UNIQUE(name, entity_type, user_id). The runner
 /// backfills the copied rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 63;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard episodes
+/// table. The runner backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_EPISODES: i64 = 64;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1213,6 +1224,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
             &["reflections", "consolidations", "causal_chains"]
         }
         TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES => &["entities"],
+        TENANT_MIGRATION_READD_USER_ID_EPISODES => &["episodes"],
         _ => &[],
     };
     for table in tables {
@@ -1306,6 +1318,14 @@ fn apply_schema_v63_graph_entities_readd(conn: &Connection) -> Result<()> {
         "../tenant/schema_v63_graph_entities_readd.sql"
     ))
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v63 failed: {e}")))
+}
+
+/// Tenant v64: re-add user_id to the shard episodes table. The SQL re-adds the
+/// column (default 1) and the idx_episodes_user index. Owner backfill of
+/// existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v64_episodes_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v64_episodes_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v64 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -7100,8 +7120,9 @@ mod tests {
         assert_eq!(desc_hits, 1, "skills_fts description not indexed after v39");
     }
 
-    /// v40: user_id must be absent from episodes and idx_episodes_user must be
-    /// dropped after the full migration chain.
+    /// After the full migration chain, v64 re-adds user_id to episodes
+    /// (single-DB isolation), reversing the v40 drop, and recreates
+    /// idx_episodes_user.
     #[test]
     fn user_id_absent_from_episodes_after_v40() {
         let conn = Connection::open_in_memory().unwrap();
@@ -7114,9 +7135,12 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(col_count, 0, "episodes still has user_id column after v40");
+        assert_eq!(
+            col_count, 1,
+            "episodes must have user_id restored after v64"
+        );
 
-        // Dropped index must be gone.
+        // Index must be restored.
         let idx_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
@@ -7125,7 +7149,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(idx_count, 0, "idx_episodes_user still present after v40");
+        assert_eq!(idx_count, 1, "idx_episodes_user must be restored after v64");
 
         // Preserved indexes must still exist.
         let preserved = ["idx_episodes_session", "idx_episodes_agent"];

@@ -628,6 +628,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 73,
+        description: "readd_user_id_episodes",
+        up: run_migration_readd_user_id_episodes,
+        down: Some(down_migration_readd_user_id_episodes),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -781,6 +788,8 @@ const MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 71;
 /// UNIQUE(name, entity_type, user_id) so entities isolate per user in single-DB
 /// mode (single-DB isolation).
 const MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 72;
+/// Version number for re-adding user_id to the episodes table (single-DB isolation).
+const MIGRATION_READD_USER_ID_EPISODES: i64 = 73;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1372,6 +1381,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_GRAPH_ENTITIES,
             "readd_user_id_graph_entities",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_EPISODES {
+        info!("Running migration 73: readd_user_id_episodes");
+        run_migration_readd_user_id_episodes(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_EPISODES,
+            "readd_user_id_episodes",
         )?;
     }
 
@@ -2961,6 +2980,53 @@ fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Re
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 72 complete: user_id re-added to entities with UNIQUE(name, entity_type, user_id)");
+    Ok(())
+}
+
+/// Migration 73: re-add the `user_id` ownership column to `episodes`,
+/// reversing migration 43's drop, so episodes isolate per user in single-DB
+/// mode. Existing rows default to `user_id = 1`; new episodes carry the
+/// creator's id. Idempotent: a no-op when the column is already present (fresh
+/// databases created from the core schema, which already carries it).
+fn run_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE episodes ADD COLUMN user_id INTEGER DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added episodes.user_id (migration 73)");
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_episodes_user ON episodes(user_id);")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 73 complete: user_id re-added to episodes");
+    Ok(())
+}
+
+/// Reverse migration 73: drop the `idx_episodes_user` index and the `user_id`
+/// column from `episodes`.
+fn down_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_episodes_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        conn.execute("ALTER TABLE episodes DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 73 reverted: user_id dropped from episodes");
     Ok(())
 }
 

@@ -12,6 +12,7 @@
 use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::conversations::{self, CreateConversationRequest};
 use kleos_lib::db::Database;
+use kleos_lib::episodes::{self, CreateEpisodeRequest};
 use kleos_lib::graph::entities::{self};
 use kleos_lib::graph::types::CreateEntityRequest;
 use kleos_lib::intelligence::{causal, consolidation, reflections};
@@ -601,4 +602,46 @@ async fn entities_isolated_between_users_single_db() {
         entities::get_entity(&db, e10.id, 10).await.is_ok(),
         "user 20's delete must not remove user 10's entity"
     );
+}
+
+/// An episode created by one user must be invisible to and unreadable by
+/// another user on the same monolith.
+#[tokio::test]
+async fn episodes_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let ep = episodes::create_episode(
+        &db,
+        CreateEpisodeRequest {
+            title: Some("alice episode".to_string()),
+            session_id: Some("s-alice".to_string()),
+            agent: Some("alice-agent".to_string()),
+            summary: None,
+        },
+        10,
+    )
+    .await
+    .expect("user 10 creates episode");
+
+    // User 20 cannot fetch user 10's episode by id.
+    assert!(
+        episodes::get_episode_for_user(&db, ep.id, 20)
+            .await
+            .is_err(),
+        "user 20 must not read user 10's episode"
+    );
+
+    // User 20's list is empty; user 10's contains it.
+    assert!(
+        episodes::list_episodes(&db, 20, 100)
+            .await
+            .expect("list user 20")
+            .is_empty(),
+        "user 20 must not see user 10's episode"
+    );
+    let list_10 = episodes::list_episodes(&db, 10, 100)
+        .await
+        .expect("list user 10");
+    assert_eq!(list_10.len(), 1, "user 10 must see their own episode");
+    assert_eq!(list_10[0].id, ep.id);
 }

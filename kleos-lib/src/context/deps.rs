@@ -147,13 +147,13 @@ pub async fn get_version_chain(
 pub async fn get_episode_summary(
     db: &Database,
     ep_id: i64,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Option<EpisodeSummary>> {
-    let sql = "SELECT id, summary, started_at FROM episodes WHERE id = ?1";
+    let sql = "SELECT id, summary, started_at FROM episodes WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![ep_id])
+            .query(rusqlite::params![ep_id, user_id])
             .map_err(rusqlite_to_eng_error)?;
         match rows.next().map_err(rusqlite_to_eng_error)? {
             Some(row) => Ok(Some(EpisodeSummary {
