@@ -596,6 +596,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_axon_events),
         transactional: true,
     },
+    Migration {
+        version: 69,
+        description: "readd_user_id_chiasm_tasks",
+        up: run_migration_readd_user_id_chiasm_tasks,
+        down: Some(down_migration_readd_user_id_chiasm_tasks),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -738,6 +745,8 @@ const MIGRATION_READD_USER_ID_APPROVALS: i64 = 66;
 const MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 67;
 /// Version number for re-adding user_id to the axon_events table (single-DB isolation).
 const MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 68;
+/// Version number for re-adding user_id to the chiasm_tasks table (single-DB isolation).
+const MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 69;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1289,6 +1298,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_AXON_EVENTS,
             "readd_user_id_axon_events",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_CHIASM_TASKS {
+        info!("Running migration 69: readd_user_id_chiasm_tasks");
+        run_migration_readd_user_id_chiasm_tasks(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_CHIASM_TASKS,
+            "readd_user_id_chiasm_tasks",
         )?;
     }
 
@@ -2615,6 +2634,58 @@ fn down_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Resu
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     }
     info!("Migration 68 reverted: user_id dropped from axon_events");
+    Ok(())
+}
+
+/// Migration 69: re-add `user_id` to the `chiasm_tasks` table. Migration 28
+/// dropped it; single-DB mode needs the row-level owner so task reads/writes
+/// (get/list/update/delete/queue/feed/stats) isolate per user. chiasm_tasks has
+/// no UNIQUE/FK on the column, so the simple ALTER TABLE ADD COLUMN path is
+/// sufficient. Legacy rows backfill to `user_id = 1`; new tasks carry the
+/// creator's id.
+///
+/// Idempotent: the `ADD COLUMN` is guarded and the index uses `IF NOT EXISTS`.
+fn run_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE chiasm_tasks ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added chiasm_tasks.user_id (migration 69)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_user ON chiasm_tasks(user_id, status);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 69 complete: user_id re-added to chiasm_tasks");
+    Ok(())
+}
+
+/// Reverse migration 69: drop the `idx_chiasm_tasks_user` index and the
+/// `user_id` column from `chiasm_tasks`.
+fn down_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        conn.execute("ALTER TABLE chiasm_tasks DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 69 reverted: user_id dropped from chiasm_tasks");
     Ok(())
 }
 

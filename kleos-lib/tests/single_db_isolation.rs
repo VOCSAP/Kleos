@@ -14,6 +14,7 @@ use kleos_lib::db::Database;
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
 use kleos_lib::services::axon::{self, PublishEventRequest};
+use kleos_lib::services::chiasm::{self, CreateTaskRequest};
 use kleos_lib::services::soma::{self, RegisterAgentRequest};
 use kleos_lib::webhooks;
 
@@ -290,5 +291,67 @@ async fn axon_events_isolated_between_users_single_db() {
     assert!(
         q10.iter().any(|e| e.id == ev.id),
         "user 10 must see their own event"
+    );
+}
+
+/// Build a minimal chiasm task request owned by `user_id`.
+fn task_req(title: &str, user_id: i64) -> CreateTaskRequest {
+    CreateTaskRequest {
+        agent: "agent".to_string(),
+        project: "proj".to_string(),
+        title: title.to_string(),
+        status: None,
+        summary: None,
+        user_id: Some(user_id),
+        expected_output: None,
+        output_format: None,
+        condition: None,
+        guardrail_url: None,
+        heartbeat_interval: None,
+    }
+}
+
+/// A chiasm task created by one user must be invisible to and unmodifiable by
+/// another user on the same monolith.
+#[tokio::test]
+async fn chiasm_tasks_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let t10 = chiasm::create_task(&db, task_req("alice task", 10))
+        .await
+        .expect("user 10 creates task");
+    chiasm::create_task(&db, task_req("bob task", 20))
+        .await
+        .expect("user 20 creates task");
+
+    // User 20 cannot fetch user 10's task by id.
+    assert!(
+        chiasm::get_task(&db, t10.id, 20).await.is_err(),
+        "user 20 must not read user 10's task by id"
+    );
+
+    // Each user's listing shows only their own task.
+    let list_10 = chiasm::list_tasks(&db, 10, None, None, None, 100, 0)
+        .await
+        .expect("list user 10");
+    assert!(
+        list_10.iter().all(|t| t.title == "alice task"),
+        "user 10's list must contain only their task"
+    );
+    let list_20 = chiasm::list_tasks(&db, 20, None, None, None, 100, 0)
+        .await
+        .expect("list user 20");
+    assert!(
+        list_20.iter().all(|t| t.title == "bob task"),
+        "user 20's list must contain only their task"
+    );
+
+    // User 20 deleting user 10's task is a no-op.
+    chiasm::delete_task(&db, t10.id, 20)
+        .await
+        .expect("cross-user delete ok");
+    assert!(
+        chiasm::get_task(&db, t10.id, 10).await.is_ok(),
+        "user 20's delete must not remove user 10's task"
     );
 }

@@ -353,6 +353,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "axon_events_user_id_readd",
         up: apply_schema_v59_axon_events_readd,
     },
+    // Re-add user_id to the shard chiasm_tasks table (reverses v25). The runner
+    // backfills existing task rows to the shard owner after this runs.
+    TenantMigration {
+        version: 60,
+        description: "chiasm_tasks_user_id_readd",
+        up: apply_schema_v60_chiasm_tasks_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -377,6 +384,11 @@ const TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 58;
 /// axon_events table. The runner backfills existing event rows to the shard
 /// owner.
 const TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 59;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// chiasm_tasks table. The runner backfills existing task rows to the shard
+/// owner.
+const TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 60;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1158,6 +1170,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_APPROVALS => &["approvals"],
         TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => &["soma_agents"],
         TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => &["axon_events"],
+        TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS => &["chiasm_tasks"],
         _ => &[],
     };
     for table in tables {
@@ -1213,6 +1226,14 @@ fn apply_schema_v58_soma_agents_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v59_axon_events_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v59_axon_events_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v59 failed: {e}")))
+}
+
+/// Tenant v60: re-add user_id to the shard chiasm_tasks table. The SQL re-adds
+/// the column (default 1) and the idx_chiasm_tasks_user index. Owner backfill of
+/// existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v60_chiasm_tasks_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v60_chiasm_tasks_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v60 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -1823,32 +1844,39 @@ mod tests {
         assert_eq!(update_count, 1);
     }
 
-    /// v25: chiasm_tasks and chiasm_task_updates must NOT have a user_id
-    /// column after the full migration chain completes.
+    /// After the full chain (v25 dropped chiasm_tasks.user_id, v60 re-added it),
+    /// chiasm_tasks carries user_id again while chiasm_task_updates stays
+    /// user_id-free (scoped via its parent task).
     #[test]
-    fn user_id_absent_from_chiasm_after_v25() {
+    fn user_id_restored_on_chiasm_tasks_after_v60() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
-        for table in &["chiasm_tasks", "chiasm_task_updates"] {
-            let count: i64 = conn
-                .query_row(
-                    &format!(
-                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
-                        table
-                    ),
-                    [],
-                    |r| r.get(0),
-                )
-                .unwrap_or(0);
-            assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v25",
-                table
-            );
-        }
+        // v25 dropped chiasm_tasks.user_id; v60 re-added it for single-DB
+        // isolation. chiasm_task_updates is scoped via its parent task and keeps
+        // no user_id of its own.
+        let tasks_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(tasks_uid, 1, "chiasm_tasks must have user_id after v60");
 
-        // idx_chiasm_tasks_user is gone.
+        let updates_uid: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('chiasm_task_updates') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(
+            updates_uid, 0,
+            "chiasm_task_updates must remain user_id-free (scoped via parent task)"
+        );
+
+        // idx_chiasm_tasks_user is restored.
         let idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_chiasm_tasks_user'",
@@ -1856,12 +1884,12 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0);
+        assert_eq!(idx, 1, "idx_chiasm_tasks_user must be restored after v60");
     }
 
-    /// v25: the post-drop chiasm tables support the SQL shape kleos-lib
-    /// services/chiasm.rs now uses (no user_id on INSERT, no user_id
-    /// predicate on SELECT/UPDATE/DELETE). FK cascade from
+    /// After the full chain (v25 dropped user_id, v60 re-added it with
+    /// DEFAULT 1), the chiasm tables stay usable: a chiasm_tasks INSERT that
+    /// omits user_id still succeeds via the default, and the FK cascade from
     /// chiasm_tasks.id to chiasm_task_updates.task_id still works.
     #[test]
     fn chiasm_usable_after_v25() {
