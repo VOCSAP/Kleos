@@ -57,6 +57,7 @@ ndarray = { workspace = true }
 reqwest = { workspace = true }
 dirs = { workspace = true }
 regex = { workspace = true }
+shell-words = { workspace = true }
 zip = { workspace = true }
 pdf-extract = { workspace = true }
 rand = { workspace = true }
