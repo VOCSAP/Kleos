@@ -1501,11 +1501,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     if current_version < MIGRATION_READD_USER_ID_THYMUS {
         info!("Running migration 75: readd_user_id_thymus");
         run_migration_readd_user_id_thymus(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_THYMUS,
-            "readd_user_id_thymus",
-        )?;
+        record_migration(conn, MIGRATION_READD_USER_ID_THYMUS, "readd_user_id_thymus")?;
     }
 
     if current_version < MIGRATION_READD_USER_ID_GRAPH_REMAINDER {
@@ -1531,11 +1527,7 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     if current_version < MIGRATION_READD_USER_ID_SKILLS {
         info!("Running migration 78: readd_user_id_skills");
         run_migration_readd_user_id_skills(conn)?;
-        record_migration(
-            conn,
-            MIGRATION_READD_USER_ID_SKILLS,
-            "readd_user_id_skills",
-        )?;
+        record_migration(conn, MIGRATION_READD_USER_ID_SKILLS, "readd_user_id_skills")?;
     }
 
     if current_version < MIGRATION_READD_USER_ID_BRAIN {
@@ -3176,9 +3168,7 @@ fn run_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<(
 /// This function must NOT run inside a transaction (transactional: false in the
 /// MIGRATIONS slice). The current_state rebuild toggles PRAGMA foreign_keys,
 /// which SQLite forbids inside a SAVEPOINT or active transaction.
-fn run_migration_readd_user_id_intelligence_remainder(
-    conn: &rusqlite::Connection,
-) -> Result<()> {
+fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connection) -> Result<()> {
     // -----------------------------------------------------------------------
     // current_state: 12-step UNIQUE-constraint rebuild
     // Adds user_id NOT NULL DEFAULT 1 and changes UNIQUE(agent, key) to
@@ -3334,10 +3324,8 @@ fn run_migration_readd_user_id_intelligence_remainder(
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         info!("Re-added memory_feedback.user_id (migration 74)");
     }
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 74 complete: user_id re-added to intelligence remainder tables");
     Ok(())
@@ -3429,10 +3417,8 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         info!("Re-added evaluations.user_id (migration 75)");
     }
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     // -----------------------------------------------------------------------
     // quality_metrics: ADD COLUMN user_id + index
@@ -3515,9 +3501,7 @@ fn run_migration_readd_user_id_graph_remainder(conn: &rusqlite::Connection) -> R
     // entity_cooccurrences: ADD COLUMN with idempotency guard.
     // Use INTEGER DEFAULT 1 (no NOT NULL) to match the CORE schema definition.
     let has_user_id: bool = conn
-        .prepare(
-            "SELECT 1 FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'",
-        )
+        .prepare("SELECT 1 FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'")
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
         .exists([])
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -3532,10 +3516,8 @@ fn run_migration_readd_user_id_graph_remainder(conn: &rusqlite::Connection) -> R
     // Ensure idx_sf_user exists on structured_facts (which already has the
     // column from v64 / CORE schema). IF NOT EXISTS makes this a no-op on
     // databases that already carry the index.
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_sf_user ON structured_facts(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sf_user ON structured_facts(user_id);")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Migration 76 complete: graph_remainder user_id done");
     Ok(())
 }

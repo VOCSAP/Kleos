@@ -257,8 +257,12 @@ pub async fn list_skills(
             let mut rows = stmt
                 .query(params![agent_str, user_id, limit as i64, offset as i64])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
-                skills.push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            {
+                skills
+                    .push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
             }
         } else {
             let sql = format!(
@@ -273,8 +277,12 @@ pub async fn list_skills(
             let mut rows = stmt
                 .query(params![user_id, limit as i64, offset as i64])
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            while let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
-                skills.push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            {
+                skills
+                    .push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
             }
         };
         Ok(skills)

@@ -252,7 +252,12 @@ pub async fn set_state(
 /// Fetch a single state entry for the given agent/key/user.
 /// The WHERE predicate includes user_id to enforce single-DB isolation.
 #[tracing::instrument(skip(db), fields(agent = %agent, key = %key, user_id))]
-pub async fn get_state(db: &Database, agent: &str, key: &str, user_id: i64) -> Result<CurrentState> {
+pub async fn get_state(
+    db: &Database,
+    agent: &str,
+    key: &str,
+    user_id: i64,
+) -> Result<CurrentState> {
     let agent = agent.to_string();
     let key = key.to_string();
     let sql = format!(

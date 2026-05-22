@@ -40,11 +40,7 @@ pub async fn store_edge(
 
 /// Get all edges originating from a given pattern, scoped to `user_id`.
 #[tracing::instrument(skip(db), fields(source_id, user_id))]
-pub async fn get_edges_from(
-    db: &Database,
-    source_id: i64,
-    user_id: i64,
-) -> Result<Vec<BrainEdge>> {
+pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -68,11 +64,7 @@ pub async fn get_edges_from(
 
 /// Get all edges connected to a pattern (either direction), scoped to `user_id`.
 #[tracing::instrument(skip(db), fields(pattern_id, user_id))]
-pub async fn get_edges_for(
-    db: &Database,
-    pattern_id: i64,
-    user_id: i64,
-) -> Result<Vec<BrainEdge>> {
+pub async fn get_edges_for(db: &Database, pattern_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
@@ -115,13 +107,7 @@ pub async fn strengthen_edge(
                      SET weight = MIN(1.0, weight + ?1) \
                      WHERE source_id = ?2 AND target_id = ?3 \
                        AND edge_type = ?4 AND user_id = ?5",
-                    rusqlite::params![
-                        boost as f64,
-                        source_id,
-                        target_id,
-                        edge_type_str,
-                        user_id
-                    ],
+                    rusqlite::params![boost as f64, source_id, target_id, edge_type_str, user_id],
                 )
                 .map_err(rusqlite_to_eng_error)?;
             Ok(n)

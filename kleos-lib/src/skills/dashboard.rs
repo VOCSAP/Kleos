@@ -61,13 +61,17 @@ pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> 
         .optional()
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
         .ok_or_else(|| EngError::Internal("no result from overview query".into()))
-    }).await.or_else(|_| Ok(SkillOverview {
-        total_skills: 0,
-        active_skills: 0,
-        deprecated_skills: 0,
-        total_executions: 0,
-        avg_trust_score: 0.0,
-    }))
+    })
+    .await
+    .or_else(|_| {
+        Ok(SkillOverview {
+            total_skills: 0,
+            active_skills: 0,
+            deprecated_skills: 0,
+            total_executions: 0,
+            avg_trust_score: 0.0,
+        })
+    })
 }
 
 /// Get stats for all active skills scoped to the calling user.

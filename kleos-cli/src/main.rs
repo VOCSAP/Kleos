@@ -1371,7 +1371,10 @@ async fn main() {
                             })
                             .unwrap_or_default();
                         if !full_key.is_empty() {
-                            println!("Created API key: id={} name=\"{}\" scopes={}", id, name, scopes);
+                            println!(
+                                "Created API key: id={} name=\"{}\" scopes={}",
+                                id, name, scopes
+                            );
                             println!();
                             println!("  {}", full_key);
                             println!();
@@ -3779,7 +3782,10 @@ mod tests {
         );
         // A plain name is unchanged.
         assert_eq!(
-            sanitize_download_name("report.pdf").unwrap().to_str().unwrap(),
+            sanitize_download_name("report.pdf")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "report.pdf"
         );
         // Names with no usable final component are refused.

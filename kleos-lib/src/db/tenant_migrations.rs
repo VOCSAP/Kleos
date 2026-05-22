@@ -1452,8 +1452,10 @@ fn apply_schema_v67_graph_remainder_readd(conn: &Connection) -> Result<()> {
 /// UNIQUE constraint changes from `(key)` to `(user_id, key)`. The runner
 /// backfills existing rows to the shard owner after this SQL runs.
 fn apply_schema_v68_user_preferences_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v68_user_preferences_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v68 failed: {e}")))
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v68_user_preferences_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v68 failed: {e}")))
 }
 
 /// Tenant v69: re-adds `user_id` to `skill_records` via 12-step REBUILD.
@@ -6208,11 +6210,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(
-                count, 1,
-                "user_id must be present in {} after v66",
-                table
-            );
+            assert_eq!(count, 1, "user_id must be present in {} after v66", table);
         }
 
         for idx in &[
@@ -6270,7 +6268,10 @@ mod tests {
             "INSERT INTO rubrics (name, criteria, user_id) VALUES (?1, ?2, ?3)",
             rusqlite::params!["test-rubric", "[]", 1_i64],
         );
-        assert!(dup.is_err(), "duplicate (user_id, name) in rubrics should be rejected");
+        assert!(
+            dup.is_err(),
+            "duplicate (user_id, name) in rubrics should be rejected"
+        );
 
         // rubrics: same name for different user must succeed (isolation)
         conn.execute(
@@ -6795,11 +6796,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(
-                count, 1,
-                "{} must have user_id restored after v65",
-                table
-            );
+            assert_eq!(count, 1, "{} must have user_id restored after v65", table);
         }
 
         // v62 recreated these user-scoped indexes.

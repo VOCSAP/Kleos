@@ -153,7 +153,14 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
                  capabilities = excluded.capabilities,
                  config = excluded.config,
                  updated_at = datetime('now')",
-            rusqlite::params![name, type_, description, capabilities_str, config_str, user_id],
+            rusqlite::params![
+                name,
+                type_,
+                description,
+                capabilities_str,
+                config_str,
+                user_id
+            ],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -272,8 +279,7 @@ pub async fn list_agents(
     // user_id is always the first bound parameter; type/status are appended.
     let mut clauses: Vec<String> = vec!["user_id = ?1".to_string()];
     let mut idx = 2usize;
-    let mut params: Vec<rusqlite::types::Value> =
-        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
     if let Some(t) = type_filter {
         clauses.push(format!("type = ?{}", idx));
         params.push(rusqlite::types::Value::Text(t.to_string()));

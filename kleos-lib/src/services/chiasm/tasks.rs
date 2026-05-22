@@ -310,8 +310,7 @@ pub async fn list_tasks(
     // user_id is always the first bound parameter; status/agent/project append.
     let mut clauses: Vec<String> = vec!["user_id = ?1".to_string()];
     let mut idx = 2usize;
-    let mut params: Vec<rusqlite::types::Value> =
-        vec![rusqlite::types::Value::Integer(user_id)];
+    let mut params: Vec<rusqlite::types::Value> = vec![rusqlite::types::Value::Integer(user_id)];
 
     if let Some(s) = status {
         clauses.push(format!("status = ?{}", idx));

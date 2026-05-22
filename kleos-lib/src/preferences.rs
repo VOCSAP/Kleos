@@ -105,8 +105,11 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
 pub async fn delete_all_preferences(db: &Database, user_id: i64) -> Result<u64> {
     let affected = db
         .write(move |conn| {
-            conn.execute("DELETE FROM user_preferences WHERE user_id = ?1", params![user_id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            conn.execute(
+                "DELETE FROM user_preferences WHERE user_id = ?1",
+                params![user_id],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await?;
     Ok(affected as u64)

@@ -368,7 +368,15 @@ async fn log_event_handler(
     Path(agent_id): Path<i64>,
     Json(body): Json<LogEventBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let id = log_event(&db, agent_id, auth.user_id, &body.level, &body.message, body.data).await?;
+    let id = log_event(
+        &db,
+        agent_id,
+        auth.user_id,
+        &body.level,
+        &body.message,
+        body.data,
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(json!({ "id": id }))))
 }
 

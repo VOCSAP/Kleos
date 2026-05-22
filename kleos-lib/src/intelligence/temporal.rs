@@ -277,7 +277,11 @@ pub async fn store_pattern(db: &Database, pattern: &TemporalPattern, user_id: i6
 /// `memory_ids` JSON text is deserialised back into `Vec<i64>`; a NULL or
 /// malformed column yields an empty vec rather than an error.
 #[tracing::instrument(skip(db), fields(user_id, limit))]
-pub async fn list_patterns(db: &Database, user_id: i64, limit: i64) -> Result<Vec<TemporalPattern>> {
+pub async fn list_patterns(
+    db: &Database,
+    user_id: i64,
+    limit: i64,
+) -> Result<Vec<TemporalPattern>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
