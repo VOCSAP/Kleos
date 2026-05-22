@@ -76,3 +76,4 @@ docs/dev-notes/agent-forge-guide.md
 # Project-scoped MCP server config -- path command is poste-specific (cf. Patch 18)
 .mcp.json
 /.forge
+.deploy-patch21.sh

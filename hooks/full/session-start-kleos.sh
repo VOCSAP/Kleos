@@ -20,7 +20,7 @@ resolve_home() {
 
 HOME_DIR="$(resolve_home)"
 LOG_DIR="$HOME_DIR/.claude/logs"
-STATE_DIR="$HOME_DIR/.claude/session-env"
+STATE_DIR="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}"
 SESSION_KEY="${PPID:-$$}"
 STAMP_FILE="$STATE_DIR/engram-ready-${SESSION_KEY}"
 CRED_SESSION_ENV="$STATE_DIR/cred-get-session.env"
@@ -432,14 +432,34 @@ If Chiasm task ID exists at /tmp/chiasm-claude-task-id, update task status on ch
 EIDOLON: Before ANY destructive/irreversible action, the pre-bash-guardrail hook handles gate checks automatically. If gate returns deny, STOP and ask the operator. No exceptions."
 
 # ── Growth materialization ─────────────────────────────────────────────
-# DISABLED 2026-05-20 (spec_fe726101): the original GET /growth/materialize call
-# does not match the real kleos-server route, which is POST with body
-# {observation_id: i64} (kleos-server/src/routes/growth/mod.rs:24,50-60). The
-# server materializes ONE observation per call; there is no aggregated markdown
-# export route. Re-enabling requires either (a) creating a new server route
-# (e.g. GET /growth/digest) or (b) replacing this with GET /growth/observations
-# + client-side markdown formatting. Tracked in docs/dev-notes/agent-forge-guide.md
-# section 10. Until then GROWTH.md is not refreshed by SessionStart.
+# DISABLED 2026-05-20 (spec_fe726101) + investigation 2026-05-22.
+#
+# Le bloc est laisse COMMENTE plutot que supprime pour documenter l'intention
+# originale et le sujet ouvert (cf. docs/dev-notes/growth-per-project-todo.md
+# gitignored). Resume :
+#
+# - L'auteur visait un export markdown agrege des growth observations a injecter
+#   en additionalContext SessionStart sous une section "## Growth & Learnings".
+# - La route appelee (GET /growth/materialize) n'existe pas. La vraie route est
+#   POST {observation_id: i64} qui promeut UNE observation en memoire persistante
+#   (semantique inverse). Cf. kleos-server/src/routes/growth/mod.rs:24,50-60.
+# - Investigation 2026-05-22 sur LXC 121 via GET /growth/observations : la
+#   feature growth tourne cote serveur (Brain dreamer emet ~5 observations
+#   recentes, toutes source="dreamer-growth"). Mais list_observations(limit)
+#   ne filtre ni par service ni par projet, donc un brief client melangerait
+#   toutes les sessions cross-repo (Kleos, Mnemo, AiDex, ...).
+# - Aucun consommateur n'invoque POST /growth/reflect avec service=claude-code,
+#   donc zero observation claude-code-growth n'existe meme si on filtrait.
+#
+# Pour reactiver utilement :
+# 1. Ajouter un filtre per-project cote serveur (option B2 tags ou A2 colonne
+#    project existante). Voir TODO ci-dessus.
+# 2. Declencher reflect(service=claude-code) quelque part (SessionEnd hook,
+#    sidecar, ou slash command manuel).
+# 3. Remplacer le call ci-dessous par GET /growth/observations?project=<repo>
+#    + formatage markdown client.
+#
+# Pre-requis : decisions operateur tracees dans le TODO.
 GROWTH_MD=""
 # GROWTH_RESULT=$(eidolon_call GET "/growth/materialize?service=claude-code&limit=30&max_bytes=16000" 2>/dev/null || true)
 # if [ -n "$GROWTH_RESULT" ] && [ "$GROWTH_RESULT" != "null" ]; then
