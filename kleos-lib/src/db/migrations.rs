@@ -694,6 +694,16 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // Re-adds user_id to brain_edges that v38 dropped.
+    // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not
+    // include user_id.
+    Migration {
+        version: 79,
+        description: "readd_user_id_brain_edges",
+        up: run_migration_readd_user_id_brain_edges,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -870,6 +880,10 @@ const MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 77;
 /// v42 dropped user_id; this restores it with UNIQUE(name, agent, version, user_id)
 /// so single-DB mode can isolate skills per user.
 const MIGRATION_READD_USER_ID_SKILLS: i64 = 78;
+/// Version for the brain_edges user_id re-add migration.
+/// v38 dropped user_id; this restores it as a simple ADD COLUMN since
+/// UNIQUE(source_id, target_id, edge_type) does not include user_id.
+const MIGRATION_READD_USER_ID_BRAIN: i64 = 79;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1521,6 +1535,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_SKILLS,
             "readd_user_id_skills",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_BRAIN {
+        info!("Running migration 79: readd_user_id_brain_edges");
+        run_migration_readd_user_id_brain_edges(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_BRAIN,
+            "readd_user_id_brain_edges",
         )?;
     }
 
@@ -3718,6 +3742,28 @@ fn run_migration_readd_user_id_skills(conn: &rusqlite::Connection) -> Result<()>
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Migration 78 complete: user_id re-added to skill_records (REBUILD + FTS)");
+    Ok(())
+}
+
+/// Re-adds `user_id` to `brain_edges` (dropped by v38). Simple ADD COLUMN
+/// since `UNIQUE(source_id, target_id, edge_type)` does not include user_id.
+/// `brain_patterns` already has `user_id` (never dropped). Registered in
+/// MIGRATIONS as v79; `transactional: false` for pragma guard consistency.
+fn run_migration_readd_user_id_brain_edges(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('brain_edges') WHERE name = 'user_id'")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .exists([])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE brain_edges ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;\
+         CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 79 complete: user_id re-added to brain_edges");
     Ok(())
 }
 

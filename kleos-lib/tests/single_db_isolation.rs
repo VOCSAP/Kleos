@@ -966,3 +966,36 @@ async fn skill_records_isolated_between_users_single_db() {
     assert_eq!(skills_20.len(), 1);
     assert_eq!(skills_20[0].description, Some("user 20 skill".into()));
 }
+
+/// Brain edges stored by one user must be invisible to another user sharing the
+/// same monolith database. Uses distinct (source, target) pairs to avoid the
+/// UNIQUE(source_id, target_id, edge_type) conflict that would cause an ON
+/// CONFLICT update across users.
+#[tokio::test]
+async fn brain_edges_isolated_between_users_single_db() {
+    use kleos_lib::brain::hopfield::edges::{self, EdgeType};
+
+    let db = monolith().await;
+
+    // User 10 stores an edge between patterns 100 -> 200.
+    edges::store_edge(&db, 100, 200, 0.8, EdgeType::Association, 10)
+        .await
+        .expect("user 10 stores edge");
+
+    // User 20 stores an edge between different pattern ids (300 -> 400).
+    edges::store_edge(&db, 300, 400, 0.5, EdgeType::Association, 20)
+        .await
+        .expect("user 20 stores edge");
+
+    // User 10 sees only their edge.
+    let count_10 = edges::count_edges(&db, 10)
+        .await
+        .expect("count_edges user 10");
+    assert_eq!(count_10, 1, "user 10 must see exactly their own edge");
+
+    // User 20 sees only their edge.
+    let count_20 = edges::count_edges(&db, 20)
+        .await
+        .expect("count_edges user 20");
+    assert_eq!(count_20, 1, "user 20 must see exactly their own edge");
+}
