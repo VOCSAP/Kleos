@@ -13,6 +13,7 @@ use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::db::Database;
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
+use kleos_lib::services::soma::{self, RegisterAgentRequest};
 use kleos_lib::webhooks;
 
 /// Build a monolith (non-tenant) in-memory database with the full monolith
@@ -189,5 +190,59 @@ async fn approvals_isolated_between_users_single_db() {
             .len(),
         1,
         "user 10 must see their own pending approval"
+    );
+}
+
+/// Build a minimal agent registration owned by `user_id`.
+fn agent_req(name: &str, user_id: i64) -> RegisterAgentRequest {
+    RegisterAgentRequest {
+        user_id: Some(user_id),
+        name: name.to_string(),
+        type_: "cli".to_string(),
+        description: None,
+        capabilities: None,
+        config: None,
+    }
+}
+
+/// soma_agents must isolate per user on one monolith: two users can both own an
+/// agent with the same name (UNIQUE(name, user_id)), neither sees nor can delete
+/// the other's, and the register upsert never clobbers across users.
+#[tokio::test]
+async fn soma_agents_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let a10 = soma::register_agent(&db, agent_req("claude-code", 10))
+        .await
+        .expect("user 10 registers claude-code");
+    // The same agent name under a different user must succeed, not collide.
+    let a20 = soma::register_agent(&db, agent_req("claude-code", 20))
+        .await
+        .expect("user 20 registers claude-code (distinct owner)");
+    assert_ne!(
+        a10.id, a20.id,
+        "same-named agents owned by different users must be distinct rows"
+    );
+
+    // User 20 cannot read user 10's agent by id.
+    assert!(
+        soma::get_agent(&db, a10.id, 20).await.is_err(),
+        "user 20 must not read user 10's agent by id"
+    );
+
+    // Each user's listing shows only their own agent.
+    let list_10 = soma::list_agents(&db, 10, None, None, 100)
+        .await
+        .expect("list user 10");
+    assert_eq!(list_10.len(), 1, "user 10 sees exactly their own agent");
+    assert_eq!(list_10[0].id, a10.id);
+
+    // User 20 deleting user 10's agent is a no-op.
+    soma::delete_agent(&db, a10.id, 20)
+        .await
+        .expect("cross-user delete call ok");
+    assert!(
+        soma::get_agent(&db, a10.id, 10).await.is_ok(),
+        "user 20's delete must not remove user 10's agent"
     );
 }

@@ -338,6 +338,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "approvals_user_id_readd",
         up: apply_schema_v57_approvals_readd,
     },
+    // Re-add user_id to the shard soma_agents table with UNIQUE(name, user_id)
+    // via the 12-step rebuild (reverses v29's drop, mirrors monolith v67). The
+    // runner backfills existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 58,
+        description: "soma_agents_user_id_readd",
+        up: apply_schema_v58_soma_agents_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -352,6 +360,11 @@ const TENANT_MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 56;
 /// Version of the tenant migration that re-adds `user_id` to the shard approvals
 /// table. The runner backfills existing approval rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_APPROVALS: i64 = 57;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// soma_agents table. The runner backfills existing agent rows to the shard
+/// owner after the rebuild copies them at the DEFAULT.
+const TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 58;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1131,6 +1144,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID => &["memories", "artifacts", "vector_sync_pending"],
         TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => &["webhooks"],
         TENANT_MIGRATION_READD_USER_ID_APPROVALS => &["approvals"],
+        TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => &["soma_agents"],
         _ => &[],
     };
     for table in tables {
@@ -1168,6 +1182,16 @@ fn apply_schema_v56_webhooks_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v57_approvals_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v57_approvals_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v57 failed: {e}")))
+}
+
+/// Tenant v58: rebuild the shard soma_agents table to re-add user_id with
+/// UNIQUE(name, user_id). The SQL runs the 12-step rebuild with
+/// PRAGMA foreign_keys = OFF so the soma_agent_groups / soma_agent_logs FK
+/// references survive. Owner backfill of the copied DEFAULT-1 rows happens in
+/// `run_tenant_migrations` after this runs.
+fn apply_schema_v58_soma_agents_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v58_soma_agents_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v58 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -3329,9 +3353,11 @@ mod tests {
     /// Verifies soma family tables are usable after applying v12.
     #[test]
     fn soma_family_usable_after_v12() {
-        // v12 added soma_groups/soma_agent_groups/soma_agent_logs. v29 drops
-        // user_id from soma_agents; after the full chain user_id is absent from
-        // soma_agents but soma_groups / soma_agent_logs retain their own columns.
+        // v12 added soma_groups/soma_agent_groups/soma_agent_logs. v29 dropped
+        // user_id from soma_agents and v58 re-added it (DEFAULT 1) via the
+        // rebuild; after the full chain a soma_agents INSERT that omits user_id
+        // still succeeds via the default, and soma_groups / soma_agent_logs
+        // retain their own columns.
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 

@@ -578,6 +578,17 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_approvals),
         transactional: true,
     },
+    // soma_agents carries UNIQUE(name); proper per-user isolation needs
+    // UNIQUE(name, user_id), which requires the 12-step rebuild (migration 44
+    // pattern). transactional:false because the rebuild toggles
+    // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
+    Migration {
+        version: 67,
+        description: "readd_user_id_soma_agents",
+        up: run_migration_readd_user_id_soma_agents,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -716,6 +727,8 @@ const MIGRATION_READD_USER_ID_MEMORY_CORE: i64 = 64;
 const MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 65;
 /// Version number for re-adding user_id to the approvals table (single-DB isolation).
 const MIGRATION_READD_USER_ID_APPROVALS: i64 = 66;
+/// Version number for re-adding user_id to soma_agents via the UNIQUE(name,user_id) rebuild.
+const MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 67;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1247,6 +1260,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_APPROVALS,
             "readd_user_id_approvals",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_SOMA_AGENTS {
+        info!("Running migration 67: readd_user_id_soma_agents");
+        run_migration_readd_user_id_soma_agents(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_SOMA_AGENTS,
+            "readd_user_id_soma_agents",
         )?;
     }
 
@@ -2446,6 +2469,81 @@ fn down_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     }
     info!("Migration 66 reverted: user_id dropped from approvals");
+    Ok(())
+}
+
+/// Migration 67: re-add `user_id` to `soma_agents` with a per-user uniqueness
+/// boundary. Migration 32 dropped `soma_agents.user_id` under the per-shard-only
+/// isolation assumption. The table carries `UNIQUE(name)`, which in single-DB
+/// mode lets one user clobber another's agent (the `register_agent` upsert keys
+/// on `name`) and blocks distinct users from reusing an agent name. Restoring
+/// correct isolation therefore requires `UNIQUE(name, user_id)`, which cannot be
+/// done with `ALTER`; this uses the 12-step rebuild (migration 44 pattern).
+///
+/// `soma_agents` is FK-referenced by `soma_agent_groups` and `soma_agent_logs`
+/// (ON DELETE CASCADE); the rebuild preserves `id` values and runs with
+/// `PRAGMA foreign_keys = OFF` so those references stay valid. Legacy rows
+/// backfill to `user_id = 1` (the system owner). Idempotent: no-op if `user_id`
+/// is already present.
+fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        info!("soma_agents.user_id already present, migration 67 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE soma_agents RENAME TO _soma_agents_old_v67;
+
+         DROP INDEX IF EXISTS idx_soma_agents_type;
+         DROP INDEX IF EXISTS idx_soma_agents_status;
+
+         CREATE TABLE soma_agents (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             name TEXT NOT NULL,
+             type TEXT NOT NULL,
+             description TEXT,
+             capabilities TEXT NOT NULL DEFAULT '[]',
+             status TEXT NOT NULL DEFAULT 'pending'
+                 CHECK(status IN ('pending','online','offline','error')),
+             config TEXT NOT NULL DEFAULT '{}',
+             heartbeat_at TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             quality_score REAL,
+             drift_flags TEXT DEFAULT '[]',
+             user_id INTEGER NOT NULL DEFAULT 1,
+             UNIQUE(name, user_id)
+         );
+
+         INSERT INTO soma_agents
+             (id, name, type, description, capabilities, status, config, heartbeat_at,
+              created_at, updated_at, quality_score, drift_flags, user_id)
+         SELECT id, name, type, description, capabilities, status, config, heartbeat_at,
+                created_at, updated_at, quality_score, drift_flags, 1
+         FROM _soma_agents_old_v67;
+
+         DROP TABLE _soma_agents_old_v67;
+
+         CREATE INDEX idx_soma_agents_type ON soma_agents(type);
+         CREATE INDEX idx_soma_agents_status ON soma_agents(status);
+         CREATE INDEX idx_soma_agents_user ON soma_agents(user_id);
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 67 complete: user_id re-added to soma_agents with UNIQUE(name, user_id)");
     Ok(())
 }
 
