@@ -399,6 +399,15 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "intelligence_remainder_user_id_readd",
         up: apply_schema_v65_intelligence_remainder_readd,
     },
+    // Re-add user_id to the five shard thymus tables -- rubrics (UNIQUE
+    // rebuild from UNIQUE(name) to UNIQUE(user_id, name)), evaluations,
+    // quality_metrics, session_quality, behavioral_drift_events (reverses v36).
+    // The runner backfills existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 66,
+        description: "thymus_user_id_readd",
+        up: apply_schema_v66_thymus_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -452,6 +461,12 @@ const TENANT_MIGRATION_READD_USER_ID_EPISODES: i64 = 64;
 /// temporal_patterns, digests, memory_feedback). The runner backfills existing
 /// rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 65;
+
+/// Version of the tenant migration that re-adds `user_id` to the five shard
+/// thymus tables (rubrics, evaluations, quality_metrics, session_quality,
+/// behavioral_drift_events) that v36 dropped. The runner backfills existing
+/// rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_THYMUS: i64 = 66;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1247,6 +1262,13 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
             "digests",
             "memory_feedback",
         ],
+        TENANT_MIGRATION_READD_USER_ID_THYMUS => &[
+            "rubrics",
+            "evaluations",
+            "quality_metrics",
+            "session_quality",
+            "behavioral_drift_events",
+        ],
         _ => &[],
     };
     for table in tables {
@@ -1359,6 +1381,16 @@ fn apply_schema_v65_intelligence_remainder_readd(conn: &Connection) -> Result<()
         "../tenant/schema_v65_intelligence_remainder_readd.sql"
     ))
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v65 failed: {e}")))
+}
+
+/// Tenant v66: re-add user_id to the five thymus tables that v36 dropped
+/// (rubrics via UNIQUE rebuild from UNIQUE(name) to UNIQUE(user_id, name),
+/// evaluations, quality_metrics, session_quality, behavioral_drift_events).
+/// Owner backfill of existing rows happens in `run_tenant_migrations` after
+/// this runs.
+fn apply_schema_v66_thymus_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v66_thymus_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v66 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -6077,10 +6109,12 @@ mod tests {
         assert_eq!(runs_col, 0, "loom_runs still has user_id after v34");
     }
 
-    /// v36: user_id must be absent from all 5 thymus tables after the full
-    /// migration chain completes. Corresponding user indexes must be gone.
+    /// v36 dropped user_id from all 5 thymus tables; v66 re-adds it. After the
+    /// full migration chain (which now includes v66) user_id must be PRESENT
+    /// in all 5 thymus tables and the user-scoped indexes must exist.
+    /// The old idx_rubrics_name index is replaced by idx_rubrics_user_name.
     #[test]
-    fn user_id_absent_from_thymus_after_v36() {
+    fn user_id_present_in_thymus_after_v66() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).expect("migrations");
 
@@ -6101,7 +6135,11 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "user_id still present in {} after v36", table);
+            assert_eq!(
+                count, 1,
+                "user_id must be present in {} after v66",
+                table
+            );
         }
 
         for idx in &[
@@ -6122,80 +6160,88 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(count, 0, "index {} still present after v36", idx);
+            assert_eq!(count, 1, "index {} must be present after v66", idx);
         }
 
-        // New unique index on rubrics.name must exist.
-        let rubrics_idx: i64 = conn
+        // idx_rubrics_name (the v36 per-name unique index) must be gone now
+        // that rubrics.user_id exists and UNIQUE(user_id, name) is used.
+        let old_idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_rubrics_name'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(rubrics_idx, 1, "idx_rubrics_name missing after v36");
+        assert_eq!(old_idx, 0, "idx_rubrics_name must be gone after v66");
     }
 
-    /// v36: all 5 thymus tables accept inserts using the new schema (no user_id).
-    /// The new UNIQUE INDEX idx_rubrics_name on rubrics.name is enforced.
+    /// v66: all 5 thymus tables accept inserts with user_id (or via DEFAULT).
+    /// The UNIQUE INDEX idx_rubrics_user_name on (user_id, name) is enforced.
     #[test]
-    fn thymus_usable_after_v36() {
+    fn thymus_usable_after_v66() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).expect("migrations");
 
-        // rubrics: insert without user_id
+        // rubrics: insert with explicit user_id
         conn.execute(
-            "INSERT INTO rubrics (name, description, criteria) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["test-rubric", "desc", "[]"],
+            "INSERT INTO rubrics (name, description, criteria, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["test-rubric", "desc", "[]", 1_i64],
         )
         .expect("insert rubric");
         let rubric_id: i64 = conn
             .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .unwrap();
 
-        // rubrics: duplicate name must be rejected (new UNIQUE INDEX)
+        // rubrics: duplicate (user_id, name) must be rejected
         let dup = conn.execute(
-            "INSERT INTO rubrics (name, criteria) VALUES (?1, ?2)",
-            rusqlite::params!["test-rubric", "[]"],
+            "INSERT INTO rubrics (name, criteria, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-rubric", "[]", 1_i64],
         );
-        assert!(dup.is_err(), "duplicate rubric name should be rejected");
+        assert!(dup.is_err(), "duplicate (user_id, name) in rubrics should be rejected");
 
-        // evaluations: insert without user_id
+        // rubrics: same name for different user must succeed (isolation)
         conn.execute(
-            "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![rubric_id, "test-agent", "subj", "{}", "{}", "{}", 0.9_f64, "tester"],
+            "INSERT INTO rubrics (name, criteria, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["test-rubric", "[]", 2_i64],
+        )
+        .expect("same name for different user must be allowed");
+
+        // evaluations: insert with user_id
+        conn.execute(
+            "INSERT INTO evaluations (rubric_id, agent, subject, input, output, scores, overall_score, evaluator, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![rubric_id, "test-agent", "subj", "{}", "{}", "{}", 0.9_f64, "tester", 1_i64],
         )
         .expect("insert evaluation");
 
-        // quality_metrics: insert without user_id
+        // quality_metrics: insert with user_id
         conn.execute(
-            "INSERT INTO quality_metrics (agent, metric, value, tags) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["test-agent", "accuracy", 0.95_f64, "{}"],
+            "INSERT INTO quality_metrics (agent, metric, value, tags, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test-agent", "accuracy", 0.95_f64, "{}", 1_i64],
         )
         .expect("insert quality_metric");
 
-        // session_quality: insert without user_id
+        // session_quality: insert with user_id
         conn.execute(
-            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["sess-1", "test-agent", 5_i32, "[]", "[]"],
+            "INSERT INTO session_quality (session_id, agent, turn_count, rules_followed, rules_drifted, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["sess-1", "test-agent", 5_i32, "[]", "[]", 1_i64],
         )
         .expect("insert session_quality");
 
-        // behavioral_drift_events: insert without user_id
+        // behavioral_drift_events: insert with user_id
         conn.execute(
-            "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal) \
-             VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["test-agent", "priority", "low", "test signal"],
+            "INSERT INTO behavioral_drift_events (agent, drift_type, severity, signal, user_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["test-agent", "priority", "low", "test signal", 1_i64],
         )
         .expect("insert behavioral_drift_event");
 
-        // Verify all rows exist.
+        // Verify all rows exist. Two rubrics were inserted (user 1 and user 2).
         let rubric_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM rubrics", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rubric_count, 1);
+        assert_eq!(rubric_count, 2);
 
         let eval_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM evaluations", [], |r| r.get(0))

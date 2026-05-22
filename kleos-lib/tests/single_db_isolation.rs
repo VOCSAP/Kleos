@@ -23,6 +23,7 @@ use kleos_lib::memory::{self};
 use kleos_lib::services::axon::{self, PublishEventRequest};
 use kleos_lib::services::chiasm::{self, CreateTaskRequest};
 use kleos_lib::services::soma::{self, RegisterAgentRequest};
+use kleos_lib::services::thymus::{self, CreateRubricRequest, RecordMetricRequest};
 use kleos_lib::webhooks;
 
 /// Build a monolith (non-tenant) in-memory database with the full monolith
@@ -738,4 +739,81 @@ async fn memory_feedback_isolated_between_users_single_db() {
         .expect("feedback_stats user 10");
     assert_eq!(stats_10.helpful, 1, "user 10 must see their own feedback");
     assert_eq!(stats_10.total, 1);
+}
+
+/// Thymus rubrics are scoped by user_id. A rubric created by user 10 must be
+/// absent from user 20's list_rubrics and return NotFound on get_rubric.
+#[tokio::test]
+async fn thymus_rubrics_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let rubric = thymus::create_rubric(
+        &db,
+        CreateRubricRequest {
+            name: "alice-rubric".to_string(),
+            description: None,
+            criteria: serde_json::json!([{"name": "quality", "weight": 1.0, "scale_min": 0.0, "scale_max": 1.0}]),
+            user_id: Some(10),
+        },
+    )
+    .await
+    .expect("user 10 creates rubric");
+
+    // User 20 cannot fetch user 10's rubric by id.
+    assert!(
+        thymus::get_rubric(&db, rubric.id, 20).await.is_err(),
+        "user 20 must not read user 10's rubric by id"
+    );
+
+    // User 20's list is empty.
+    let list_20 = thymus::list_rubrics(&db, 20)
+        .await
+        .expect("list_rubrics user 20");
+    assert!(
+        list_20.is_empty(),
+        "user 20 must not see user 10's rubric in list"
+    );
+
+    // User 10 sees their own rubric.
+    let list_10 = thymus::list_rubrics(&db, 10)
+        .await
+        .expect("list_rubrics user 10");
+    assert_eq!(list_10.len(), 1, "user 10 must see their own rubric");
+    assert_eq!(list_10[0].id, rubric.id);
+}
+
+/// Quality metrics are scoped by user_id. A metric recorded by user 10 must
+/// be absent from user 20's get_metrics call.
+#[tokio::test]
+async fn thymus_metrics_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    thymus::record_metric(
+        &db,
+        RecordMetricRequest {
+            agent: "alice-agent".to_string(),
+            metric: "accuracy".to_string(),
+            value: 0.95,
+            tags: None,
+            user_id: Some(10),
+        },
+    )
+    .await
+    .expect("user 10 records metric");
+
+    // User 20 sees no metrics.
+    let metrics_20 = thymus::get_metrics(&db, 20, None, None, None, 100)
+        .await
+        .expect("get_metrics user 20");
+    assert!(
+        metrics_20.is_empty(),
+        "user 20 must not see user 10's quality metric"
+    );
+
+    // User 10 sees their own metric.
+    let metrics_10 = thymus::get_metrics(&db, 10, None, None, None, 100)
+        .await
+        .expect("get_metrics user 10");
+    assert_eq!(metrics_10.len(), 1, "user 10 must see their own metric");
+    assert!((metrics_10[0].value - 0.95).abs() < 1e-9);
 }

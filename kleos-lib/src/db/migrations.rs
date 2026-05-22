@@ -647,6 +647,19 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // Re-adds user_id to the 5 thymus tables that migration 39 dropped:
+    // rubrics (UNIQUE rebuild -- index changes from name to (user_id, name)),
+    // evaluations, quality_metrics, session_quality, behavioral_drift_events.
+    // transactional:false because the rubrics rebuild toggles PRAGMA
+    // foreign_keys (evaluations holds a FK to rubrics.id) and SQLite forbids
+    // that inside a SAVEPOINT.
+    Migration {
+        version: 75,
+        description: "readd_user_id_thymus",
+        up: run_migration_readd_user_id_thymus,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -806,6 +819,10 @@ const MIGRATION_READD_USER_ID_EPISODES: i64 = 73;
 /// (current_state, reconsolidations, temporal_patterns, digests, memory_feedback)
 /// that migration 71 did not cover (single-DB isolation).
 const MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 74;
+/// Version number for re-adding user_id to the 5 thymus tables (rubrics,
+/// evaluations, quality_metrics, session_quality, behavioral_drift_events)
+/// that migration 39 dropped (single-DB isolation).
+const MIGRATION_READD_USER_ID_THYMUS: i64 = 75;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1417,6 +1434,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER,
             "readd_user_id_intelligence_remainder",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_THYMUS {
+        info!("Running migration 75: readd_user_id_thymus");
+        run_migration_readd_user_id_thymus(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_THYMUS,
+            "readd_user_id_thymus",
         )?;
     }
 
@@ -3212,6 +3239,170 @@ fn run_migration_readd_user_id_intelligence_remainder(
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 74 complete: user_id re-added to intelligence remainder tables");
+    Ok(())
+}
+
+/// Re-adds `user_id` to the 5 thymus tables that migration 39 dropped:
+/// rubrics (12-step UNIQUE-constraint rebuild because evaluations has a FK to
+/// rubrics.id and the UNIQUE constraint must change from UNIQUE(name) to
+/// UNIQUE(user_id, name)), evaluations, quality_metrics, session_quality, and
+/// behavioral_drift_events. The last four take a simple ADD COLUMN path. All
+/// sections are pragma-guarded (idempotent).
+///
+/// This function must NOT run inside a transaction (transactional: false in the
+/// MIGRATIONS slice). The rubrics rebuild toggles PRAGMA foreign_keys, which
+/// SQLite forbids inside a SAVEPOINT or active transaction.
+fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()> {
+    // -----------------------------------------------------------------------
+    // rubrics: 12-step UNIQUE-constraint rebuild
+    // Adds user_id NOT NULL DEFAULT 1 and changes UNIQUE(name) to
+    // UNIQUE(user_id, name). evaluations references rubrics(id) so
+    // foreign_keys must be toggled off for the rename/recreate.
+    // -----------------------------------------------------------------------
+    let rubrics_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if rubrics_has_user_id == 0 {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+
+             ALTER TABLE rubrics RENAME TO _rubrics_old_v75;
+             DROP INDEX IF EXISTS idx_rubrics_name;
+             DROP INDEX IF EXISTS idx_rubrics_user_name;
+             DROP INDEX IF EXISTS idx_rubrics_user;
+
+             CREATE TABLE rubrics (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 name TEXT NOT NULL,
+                 description TEXT,
+                 criteria TEXT NOT NULL DEFAULT '[]',
+                 user_id INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+
+             INSERT INTO rubrics (id, name, description, criteria, user_id, created_at, updated_at)
+             SELECT id, name, description, criteria, 1, created_at, updated_at
+             FROM _rubrics_old_v75;
+
+             DROP TABLE _rubrics_old_v75;
+
+             CREATE UNIQUE INDEX idx_rubrics_user_name ON rubrics(user_id, name);
+             CREATE INDEX idx_rubrics_user ON rubrics(user_id);
+
+             PRAGMA legacy_alter_table = OFF;
+             PRAGMA foreign_keys = ON;",
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 75: rubrics rebuilt with UNIQUE(user_id, name)");
+    } else {
+        // Fresh database already has user_id; still ensure all indexes exist.
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_rubrics_user_name ON rubrics(user_id, name);
+             CREATE INDEX IF NOT EXISTS idx_rubrics_user ON rubrics(user_id);",
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+
+    // -----------------------------------------------------------------------
+    // evaluations: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let eval_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if eval_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE evaluations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added evaluations.user_id (migration 75)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // -----------------------------------------------------------------------
+    // quality_metrics: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let qm_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if qm_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE quality_metrics ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added quality_metrics.user_id (migration 75)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_quality_metrics_user ON quality_metrics(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // -----------------------------------------------------------------------
+    // session_quality: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let sq_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if sq_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE session_quality ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added session_quality.user_id (migration 75)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // -----------------------------------------------------------------------
+    // behavioral_drift_events: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let bde_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if bde_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE behavioral_drift_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added behavioral_drift_events.user_id (migration 75)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 75 complete: user_id re-added to all 5 thymus tables");
     Ok(())
 }
 
