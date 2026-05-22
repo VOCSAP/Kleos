@@ -230,14 +230,18 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
     .await
 }
 
-#[tracing::instrument(skip(db))]
-pub async fn get_current_state(db: &Database, _user_id: i64) -> Result<Vec<StateEntry>> {
+/// Retrieve the most recent current_state entries for the given user.
+/// The WHERE user_id = ?1 predicate enforces single-DB isolation: in shared
+/// mode each user sees only their own state entries.
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateEntry>> {
     let sql = "SELECT key, value, updated_count FROM current_state \
+               WHERE user_id = ?1 \
                ORDER BY updated_at DESC LIMIT 30";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
         let mut rows = stmt
-            .query(rusqlite::params![])
+            .query(rusqlite::params![user_id])
             .map_err(rusqlite_to_eng_error)?;
         let mut entries = Vec::with_capacity(30);
         while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {

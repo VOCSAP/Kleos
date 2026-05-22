@@ -390,6 +390,15 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "episodes_user_id_readd",
         up: apply_schema_v64_episodes_readd,
     },
+    // Re-add user_id to the shard intelligence remainder tables -- current_state
+    // (UNIQUE rebuild), reconsolidations, temporal_patterns, digests,
+    // memory_feedback (reverses v38 for these 5 tables). The runner backfills
+    // existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 65,
+        description: "intelligence_remainder_user_id_readd",
+        up: apply_schema_v65_intelligence_remainder_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -437,6 +446,12 @@ const TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 63;
 /// Version of the tenant migration that re-adds `user_id` to the shard episodes
 /// table. The runner backfills existing rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_EPISODES: i64 = 64;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// intelligence remainder tables (current_state, reconsolidations,
+/// temporal_patterns, digests, memory_feedback). The runner backfills existing
+/// rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 65;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1225,6 +1240,13 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         }
         TENANT_MIGRATION_READD_USER_ID_GRAPH_ENTITIES => &["entities"],
         TENANT_MIGRATION_READD_USER_ID_EPISODES => &["episodes"],
+        TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER => &[
+            "current_state",
+            "reconsolidations",
+            "temporal_patterns",
+            "digests",
+            "memory_feedback",
+        ],
         _ => &[],
     };
     for table in tables {
@@ -1326,6 +1348,17 @@ fn apply_schema_v63_graph_entities_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v64_episodes_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v64_episodes_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v64 failed: {e}")))
+}
+
+/// Tenant v65: re-add user_id to the five intelligence remainder tables
+/// (current_state via UNIQUE rebuild, reconsolidations, temporal_patterns,
+/// digests, memory_feedback). Owner backfill of existing rows happens in
+/// `run_tenant_migrations` after this runs.
+fn apply_schema_v65_intelligence_remainder_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v65_intelligence_remainder_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v65 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -6602,15 +6635,15 @@ mod tests {
 
     /// After the full migration chain: v62 re-adds user_id to consolidations
     /// and causal_chains (single-DB isolation), so those two must have the
-    /// column and their idx_*_user index back. The other intelligence tables
-    /// dropped at v38 stay without user_id. causal_links never had user_id.
+    /// column and their idx_*_user index back. v65 restores user_id to the
+    /// remaining 5 intelligence tables. causal_links never had user_id.
     #[test]
     fn user_id_absent_from_intelligence_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
-        // v62 restored user_id on these two.
-        for table in &["consolidations", "causal_chains"] {
+        // v62 restored user_id on these three.
+        for table in &["reflections", "consolidations", "causal_chains"] {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6624,16 +6657,15 @@ mod tests {
             assert_eq!(count, 1, "{} must have user_id restored after v62", table);
         }
 
-        // These intelligence tables were not part of the single-DB repair and
-        // stay without user_id after v38.
-        let still_dropped = [
+        // v65 restored user_id on these five (the remainder after v62).
+        let restored_by_v65 = [
             "current_state",
             "reconsolidations",
             "temporal_patterns",
             "digests",
             "memory_feedback",
         ];
-        for table in &still_dropped {
+        for table in &restored_by_v65 {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6644,10 +6676,14 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(count, 0, "{} still has user_id column after v38", table);
+            assert_eq!(
+                count, 1,
+                "{} must have user_id restored after v65",
+                table
+            );
         }
 
-        // v62 recreated these two user-scoped indexes.
+        // v62 recreated these user-scoped indexes.
         for idx in &["idx_consolidations_user", "idx_causal_chains_user"] {
             let count: i64 = conn
                 .query_row(
@@ -6662,15 +6698,16 @@ mod tests {
             assert_eq!(count, 1, "index {} must be restored after v62", idx);
         }
 
-        // Verify dropped indexes for the not-repaired tables are still gone.
-        let dropped_indexes = [
+        // v65 recreated these user-scoped indexes for the remainder tables.
+        let restored_indexes_v65 = [
             "idx_current_state_user",
             "idx_cs_key_user",
             "idx_temporal_patterns_user",
             "idx_digests_user",
             "idx_feedback_user",
+            "idx_reconsolidations_user",
         ];
-        for idx in &dropped_indexes {
+        for idx in &restored_indexes_v65 {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6681,7 +6718,7 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap_or(0);
-            assert_eq!(count, 0, "index {} still present after v38", idx);
+            assert_eq!(count, 1, "index {} must be restored after v65", idx);
         }
 
         // Verify preserved indexes still exist.
@@ -6708,10 +6745,11 @@ mod tests {
         }
     }
 
-    /// Intelligence tables accept INSERTs that omit user_id (consolidations and
-    /// causal_chains default it to 1 after the v62 re-add; the others never had
-    /// it), the in-table UNIQUE(agent, key) on current_state works correctly,
-    /// and causal_links.chain_id FK to causal_chains(id) is preserved.
+    /// After v65 all intelligence tables carry user_id. Verify that the
+    /// new UNIQUE(agent, key, user_id) constraint on current_state correctly
+    /// isolates upserts per user, and that the remaining four remainder tables
+    /// accept INSERTs with the user_id column. causal_links.chain_id FK to
+    /// causal_chains(id) must still be preserved.
     #[test]
     fn intelligence_usable_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
@@ -6724,31 +6762,32 @@ mod tests {
         .unwrap();
         let mid = conn.last_insert_rowid();
 
-        // consolidations (no user_id)
+        // consolidations (user_id defaults to 1 after v62)
         conn.execute(
             "INSERT INTO consolidations (source_ids, strategy, confidence) VALUES (?1, ?2, ?3)",
             rusqlite::params!["[1,2,3]", "merge", 0.9_f64],
         )
         .unwrap();
 
-        // current_state UNIQUE(agent, key) -- upsert collapses duplicates
+        // current_state UNIQUE(agent, key, user_id) after v65 -- upsert collapses
+        // duplicates for the same (agent, key, user_id) triple.
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["claude", "location", "home"],
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "home", 1_i64],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["claude", "location", "office"],
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["claude", "location", "office", 1_i64],
         )
         .unwrap();
         // Two different agents may share the same key name.
         conn.execute(
-            "INSERT INTO current_state (agent, key, value) VALUES (?1, ?2, ?3) \
-             ON CONFLICT(agent, key) DO UPDATE SET value = excluded.value",
-            rusqlite::params!["test-agent", "location", "dumpster"],
+            "INSERT INTO current_state (agent, key, value, user_id) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(agent, key, user_id) DO UPDATE SET value = excluded.value",
+            rusqlite::params!["test-agent", "location", "dumpster", 1_i64],
         )
         .unwrap();
 
@@ -6757,19 +6796,19 @@ mod tests {
             .unwrap();
         assert_eq!(
             cs_count, 2,
-            "upsert must collapse claude/location to one row; gir/location is separate"
+            "upsert must collapse claude/location/1 to one row; test-agent/location/1 is separate"
         );
 
         let val: String = conn
             .query_row(
-                "SELECT value FROM current_state WHERE agent='claude' AND key='location'",
+                "SELECT value FROM current_state WHERE agent='claude' AND key='location' AND user_id=1",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(val, "office", "last upsert value must win");
 
-        // causal_chains (no user_id) + causal_links FK preserved
+        // causal_chains + causal_links FK preserved
         conn.execute(
             "INSERT INTO causal_chains (root_memory_id, description) VALUES (?1, ?2)",
             rusqlite::params![mid, "v38 chain"],
@@ -6793,29 +6832,29 @@ mod tests {
             .unwrap();
         assert_eq!(link_count, 1, "causal_links FK to causal_chains must work");
 
-        // Shape A tables (no user_id)
+        // Remainder tables now carry user_id (v65).
         conn.execute(
-            "INSERT INTO reconsolidations (memory_id, old_content, new_content) \
-             VALUES (?1, 'old', 'new')",
-            rusqlite::params![mid],
+            "INSERT INTO reconsolidations (memory_id, old_content, new_content, user_id) \
+             VALUES (?1, 'old', 'new', ?2)",
+            rusqlite::params![mid, 1_i64],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO temporal_patterns (pattern_type, description) VALUES (?1, ?2)",
-            rusqlite::params!["daily", "morning routine"],
+            "INSERT INTO temporal_patterns (pattern_type, description, user_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["daily", "morning routine", 1_i64],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO digests (period, content, memory_count) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["daily", "digest body", 10_i64],
+            "INSERT INTO digests (period, content, memory_count, user_id) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["daily", "digest body", 10_i64, 1_i64],
         )
         .unwrap();
 
         conn.execute(
-            "INSERT INTO memory_feedback (memory_id, rating) VALUES (?1, ?2)",
-            rusqlite::params![mid, "helpful"],
+            "INSERT INTO memory_feedback (memory_id, user_id, rating) VALUES (?1, ?2, ?3)",
+            rusqlite::params![mid, 1_i64, "helpful"],
         )
         .unwrap();
 

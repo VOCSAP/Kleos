@@ -303,15 +303,16 @@ pub async fn fast_extract_facts(
                 }
             }
 
-            // Upsert state
+            // Upsert state scoped to the owning user so single-DB mode isolates
+            // state entries per user. UNIQUE constraint is now (agent, key, user_id).
             for state in &states {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO current_state (agent, key, value, created_at, updated_at) \
-                     VALUES ('system', ?1, ?2, datetime('now'), datetime('now')) \
-                     ON CONFLICT(agent, key) DO UPDATE SET \
+                    "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
+                     VALUES ('system', ?1, ?2, ?3, datetime('now'), datetime('now')) \
+                     ON CONFLICT(agent, key, user_id) DO UPDATE SET \
                        value = excluded.value, \
                        updated_at = datetime('now')",
-                    rusqlite::params![state.key, state.value],
+                    rusqlite::params![state.key, state.value, user_id],
                 ) {
                     warn!(error = %e, "state_upsert_failed");
                 }

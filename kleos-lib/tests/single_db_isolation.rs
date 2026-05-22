@@ -13,9 +13,11 @@ use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::conversations::{self, CreateConversationRequest};
 use kleos_lib::db::Database;
 use kleos_lib::episodes::{self, CreateEpisodeRequest};
+use kleos_lib::facts;
 use kleos_lib::graph::entities::{self};
 use kleos_lib::graph::types::CreateEntityRequest;
-use kleos_lib::intelligence::{causal, consolidation, reflections};
+use kleos_lib::intelligence::{causal, consolidation, feedback, reflections};
+use kleos_lib::intelligence::types::FeedbackRequest;
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
 use kleos_lib::services::axon::{self, PublishEventRequest};
@@ -644,4 +646,96 @@ async fn episodes_isolated_between_users_single_db() {
         .expect("list user 10");
     assert_eq!(list_10.len(), 1, "user 10 must see their own episode");
     assert_eq!(list_10[0].id, ep.id);
+}
+
+/// current_state entries are scoped by (agent, key, user_id). A state entry
+/// written by user 10 must be invisible when user 20 calls get_state or
+/// list_state -- even for the same agent/key names.
+#[tokio::test]
+async fn current_state_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    // User 10 sets a state entry.
+    facts::set_state(&db, "alice-agent", "location", "home", 10)
+        .await
+        .expect("user 10 sets state");
+
+    // User 20 fetches the same agent/key -- must not find it.
+    assert!(
+        facts::get_state(&db, "alice-agent", "location", 20)
+            .await
+            .is_err(),
+        "user 20 must not read user 10's current_state by key"
+    );
+
+    // User 20's list_state for the same agent must be empty.
+    let list_20 = facts::list_state(&db, "alice-agent", 20)
+        .await
+        .expect("list_state user 20");
+    assert!(
+        list_20.is_empty(),
+        "user 20 must not see user 10's current_state entries"
+    );
+
+    // User 10 sees their own entry.
+    let entry = facts::get_state(&db, "alice-agent", "location", 10)
+        .await
+        .expect("user 10 reads own state");
+    assert_eq!(entry.value, "home");
+
+    // Two users can hold the same key independently -- no UNIQUE collision.
+    facts::set_state(&db, "alice-agent", "location", "office", 20)
+        .await
+        .expect("user 20 sets same key without collision");
+    let e20 = facts::get_state(&db, "alice-agent", "location", 20)
+        .await
+        .expect("user 20 reads own state");
+    assert_eq!(e20.value, "office");
+    // User 10's value must remain unchanged.
+    let e10 = facts::get_state(&db, "alice-agent", "location", 10)
+        .await
+        .expect("user 10 value still intact");
+    assert_eq!(e10.value, "home");
+}
+
+/// memory_feedback rows are scoped by user_id. User 10's feedback must not
+/// appear in user 20's feedback_stats, and must appear in user 10's stats.
+#[tokio::test]
+async fn memory_feedback_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    // User 10 stores a memory and rates it.
+    let mid = memory::store(&db, store_req("alice recall memory", 10))
+        .await
+        .expect("store memory")
+        .id;
+
+    feedback::record_feedback(
+        &db,
+        10,
+        &FeedbackRequest {
+            memory_id: mid,
+            rating: "helpful".to_string(),
+            context: None,
+        },
+    )
+    .await
+    .expect("user 10 records feedback");
+
+    // User 20's feedback_stats must show zero across all buckets.
+    let stats_20 = feedback::feedback_stats(&db, 20)
+        .await
+        .expect("feedback_stats user 20");
+    assert_eq!(
+        stats_20.total, 0,
+        "user 20 must not see user 10's feedback (total must be 0)"
+    );
+    assert_eq!(stats_20.helpful, 0);
+
+    // User 10 sees their own feedback.
+    let stats_10 = feedback::feedback_stats(&db, 10)
+        .await
+        .expect("feedback_stats user 10");
+    assert_eq!(stats_10.helpful, 1, "user 10 must see their own feedback");
+    assert_eq!(stats_10.total, 1);
 }

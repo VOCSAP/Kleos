@@ -17,12 +17,14 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
 
-/// Track that a memory category was accessed at this time.
-/// Builds the temporal pattern database over time.
+/// Track that a memory category was accessed at this time, scoped to the
+/// given user. Builds the temporal pattern database over time.
+/// user_id is written to temporal_patterns to isolate access tracking per user
+/// in single-DB mode.
 #[tracing::instrument(skip(db), fields(user_id, category = %category, project_id = ?project_id))]
 pub async fn track_temporal_access(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     category: &str,
     project_id: Option<i64>,
 ) -> Result<()> {
@@ -34,9 +36,10 @@ pub async fn track_temporal_access(
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO temporal_patterns (pattern_type, description, memory_ids, confidence, created_at) \
-             VALUES ('access', ?1, ?2, 1.0, datetime('now'))",
-            params![description, project_str],
+            "INSERT INTO temporal_patterns \
+             (pattern_type, description, memory_ids, confidence, user_id, created_at) \
+             VALUES ('access', ?1, ?2, 1.0, ?3, datetime('now'))",
+            params![description, project_str, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -72,19 +75,20 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     };
     let time_context = format!("{} {}", day_name, time_period);
 
-    // Get temporal patterns for this time slot
+    // Get temporal patterns for this time slot, scoped to the caller's user_id
+    // so single-DB mode does not surface another user's access patterns.
     let pattern_query = format!("%dow:{},hour:{}%", dow, hour);
     let predicted_categories: Vec<String> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT description FROM temporal_patterns \
-                     WHERE description LIKE ?1 \
+                     WHERE description LIKE ?1 AND user_id = ?2 \
                      ORDER BY created_at DESC LIMIT 20",
                 )
                 .map_err(rusqlite_to_eng_error)?;
             let rows = stmt
-                .query_map(params![pattern_query], |row| row.get::<_, String>(0))
+                .query_map(params![pattern_query, user_id], |row| row.get::<_, String>(0))
                 .map_err(rusqlite_to_eng_error)?;
             let descs: Vec<String> = rows
                 .collect::<rusqlite::Result<Vec<_>>>()

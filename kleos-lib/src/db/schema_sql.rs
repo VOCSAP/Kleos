@@ -450,7 +450,7 @@ pub const CORE_SCHEMA_SQL: &str = r#"
         CREATE INDEX IF NOT EXISTS idx_current_state_agent ON current_state(agent);
         CREATE INDEX IF NOT EXISTS idx_current_state_user ON current_state(user_id);
         CREATE INDEX IF NOT EXISTS idx_cs_key ON current_state(key COLLATE NOCASE);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_cs_key_user ON current_state(key, user_id);
+        CREATE INDEX IF NOT EXISTS idx_cs_key_user ON current_state(key, user_id);
 
         -- User preferences
         CREATE TABLE IF NOT EXISTS user_preferences (

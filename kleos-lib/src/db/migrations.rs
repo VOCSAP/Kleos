@@ -635,6 +635,18 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_episodes),
         transactional: true,
     },
+    // Re-adds user_id to the remaining 5 intelligence tables that v71 skipped:
+    // current_state (UNIQUE rebuild), reconsolidations, temporal_patterns,
+    // digests, and memory_feedback. transactional:false because the
+    // current_state rebuild toggles PRAGMA foreign_keys, which SQLite forbids
+    // inside a SAVEPOINT.
+    Migration {
+        version: 74,
+        description: "readd_user_id_intelligence_remainder",
+        up: run_migration_readd_user_id_intelligence_remainder,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -790,6 +802,10 @@ const MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 71;
 const MIGRATION_READD_USER_ID_GRAPH_ENTITIES: i64 = 72;
 /// Version number for re-adding user_id to the episodes table (single-DB isolation).
 const MIGRATION_READD_USER_ID_EPISODES: i64 = 73;
+/// Version number for re-adding user_id to the remaining 5 intelligence tables
+/// (current_state, reconsolidations, temporal_patterns, digests, memory_feedback)
+/// that migration 71 did not cover (single-DB isolation).
+const MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 74;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1391,6 +1407,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_EPISODES,
             "readd_user_id_episodes",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER {
+        info!("Running migration 74: readd_user_id_intelligence_remainder");
+        run_migration_readd_user_id_intelligence_remainder(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER,
+            "readd_user_id_intelligence_remainder",
         )?;
     }
 
@@ -3007,6 +3033,185 @@ fn run_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<(
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_episodes_user ON episodes(user_id);")
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Migration 73 complete: user_id re-added to episodes");
+    Ok(())
+}
+
+/// Migration 74: re-add `user_id` to the five intelligence tables skipped by
+/// migration 71: current_state (full UNIQUE-constraint rebuild), reconsolidations,
+/// temporal_patterns, digests, and memory_feedback.
+///
+/// current_state carries UNIQUE(agent, key, user_id) -- the original constraint
+/// was UNIQUE(agent, key) -- so per-user isolation requires a table rebuild that
+/// changes the constraint shape. The other four tables take a simple
+/// ALTER TABLE ADD COLUMN path. All sections are pragma-guarded (idempotent).
+///
+/// This function must NOT run inside a transaction (transactional: false in the
+/// MIGRATIONS slice). The current_state rebuild toggles PRAGMA foreign_keys,
+/// which SQLite forbids inside a SAVEPOINT or active transaction.
+fn run_migration_readd_user_id_intelligence_remainder(
+    conn: &rusqlite::Connection,
+) -> Result<()> {
+    // -----------------------------------------------------------------------
+    // current_state: 12-step UNIQUE-constraint rebuild
+    // Adds user_id NOT NULL DEFAULT 1 and changes UNIQUE(agent, key) to
+    // UNIQUE(agent, key, user_id).
+    // -----------------------------------------------------------------------
+    let cs_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    if cs_has_user_id == 0 {
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             PRAGMA legacy_alter_table = ON;
+
+             ALTER TABLE current_state RENAME TO _current_state_old_v74;
+             DROP INDEX IF EXISTS idx_current_state_agent;
+             DROP INDEX IF EXISTS idx_current_state_user;
+             DROP INDEX IF EXISTS idx_cs_key;
+             DROP INDEX IF EXISTS idx_cs_key_user;
+
+             CREATE TABLE current_state (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 agent TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 memory_id INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+                 previous_value TEXT,
+                 previous_memory_id INTEGER,
+                 updated_count INTEGER NOT NULL DEFAULT 1,
+                 user_id INTEGER NOT NULL DEFAULT 1,
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 UNIQUE(agent, key, user_id)
+             );
+
+             INSERT INTO current_state
+                 (id, agent, key, value, memory_id, previous_value, previous_memory_id,
+                  updated_count, user_id, updated_at, created_at)
+             SELECT
+                 id, agent, key, value, memory_id, previous_value, previous_memory_id,
+                 updated_count, 1, updated_at, created_at
+             FROM _current_state_old_v74;
+
+             DROP TABLE _current_state_old_v74;
+
+             CREATE INDEX IF NOT EXISTS idx_current_state_agent ON current_state(agent);
+             CREATE INDEX IF NOT EXISTS idx_current_state_user ON current_state(user_id);
+             CREATE INDEX IF NOT EXISTS idx_cs_key ON current_state(key COLLATE NOCASE);
+             CREATE INDEX IF NOT EXISTS idx_cs_key_user ON current_state(key, user_id);
+
+             PRAGMA legacy_alter_table = OFF;
+             PRAGMA foreign_keys = ON;",
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 74: current_state rebuilt with UNIQUE(agent, key, user_id)");
+    } else {
+        // Fresh database already has user_id; still ensure all indexes exist.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_current_state_agent ON current_state(agent);
+             CREATE INDEX IF NOT EXISTS idx_current_state_user ON current_state(user_id);
+             CREATE INDEX IF NOT EXISTS idx_cs_key ON current_state(key COLLATE NOCASE);
+             CREATE INDEX IF NOT EXISTS idx_cs_key_user ON current_state(key, user_id);",
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+
+    // -----------------------------------------------------------------------
+    // reconsolidations: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let recons_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('reconsolidations') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if recons_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE reconsolidations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added reconsolidations.user_id (migration 74)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_reconsolidations_user ON reconsolidations(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // -----------------------------------------------------------------------
+    // temporal_patterns: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let tp_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('temporal_patterns') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if tp_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE temporal_patterns ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added temporal_patterns.user_id (migration 74)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_temporal_patterns_user ON temporal_patterns(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // -----------------------------------------------------------------------
+    // digests: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let dig_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('digests') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if dig_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE digests ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added digests.user_id (migration 74)");
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_digests_user ON digests(user_id);")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    // -----------------------------------------------------------------------
+    // memory_feedback: ADD COLUMN user_id + index
+    // -----------------------------------------------------------------------
+    let mf_has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('memory_feedback') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if mf_has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE memory_feedback ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added memory_feedback.user_id (migration 74)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+
+    info!("Migration 74 complete: user_id re-added to intelligence remainder tables");
     Ok(())
 }
 
