@@ -68,6 +68,16 @@ pub struct AppState {
     /// Notification channel for approval events. TUI clients can subscribe to
     /// be notified when approvals are created or decided.
     pub approval_notify: Option<watch::Sender<()>>,
+    /// Patch 20 (2026-05-22): per-tenant signal channels for the
+    /// /supervisor/pending long-poll. A `watch::Sender<()>` is created lazily
+    /// on the first long-poll or inject for a given user_id; subsequent
+    /// inject handlers signal the matching tenant so any blocked long-poll
+    /// for that tenant returns immediately. Scoped per-tenant (not global)
+    /// so an inject for user A does not wake long-pollers of user B. Memory
+    /// footprint is negligible (~64 bytes per active tenant) and no
+    /// cleanup is required at usual scale; cleanup can be added later if
+    /// the entry count ever becomes a concern.
+    pub supervisor_notifiers: Arc<RwLock<HashMap<i64, watch::Sender<()>>>>,
     /// Pending tool approvals waiting for a human decision via the respond endpoint.
     #[allow(clippy::type_complexity)]
     pub pending_approvals:

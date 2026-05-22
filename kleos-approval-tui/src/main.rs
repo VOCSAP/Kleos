@@ -11,7 +11,34 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Patch 20 (2026-05-22): default HTTP client timeout in seconds. Override
+/// via `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`. Pair this with the server-side
+/// `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS` (default 30s) so that the
+/// client laisse marge to the server to return its graceful empty-list
+/// response before timing out on the network.
+const DEFAULT_HTTP_LONGPOLL_TIMEOUT_SECS: u64 = 60;
+
+fn http_longpoll_timeout() -> Duration {
+    let secs = std::env::var("KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_LONGPOLL_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Patch 20: parse the `Retry-After` header (seconds) from a 429 response.
+/// Falls back to 60 seconds if the header is missing or unparseable so the
+/// client never hot-loops on 429.
+fn parse_retry_after(resp: &reqwest::Response) -> Duration {
+    resp.headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(60))
+}
 
 #[derive(Parser)]
 #[command(name = "kleos-approval-tui")]
@@ -72,14 +99,25 @@ struct App {
     list_state: ListState,
     last_error: Option<String>,
     detail_mode: bool,
+    /// Patch 20: when set, the server has issued a 429 and the client must
+    /// not retry HTTP calls until this instant. Each tick the UI updates
+    /// `last_error` with a countdown so the operator sees what is happening.
+    last_429_until: Option<Instant>,
 }
 
 impl App {
     fn new(url: String, api_key: String) -> Self {
         let mut list_state = ListState::default();
         list_state.select(Some(0));
+        // Patch 20: configure the reqwest client with the long-poll timeout
+        // so a single GET can sit on the wire while the server holds the
+        // connection open in long-poll mode.
+        let client = reqwest::Client::builder()
+            .timeout(http_longpoll_timeout())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: url,
             api_key,
             approvals: Vec::new(),
@@ -87,10 +125,31 @@ impl App {
             list_state,
             last_error: None,
             detail_mode: false,
+            last_429_until: None,
         }
     }
 
+    /// Patch 20: if we're inside a Retry-After window, refuse to issue any
+    /// HTTP call. Returns true if the call should be skipped. The UI
+    /// status line gets a human-readable countdown.
+    fn rate_limited_skip(&mut self) -> bool {
+        if let Some(until) = self.last_429_until {
+            let now = Instant::now();
+            if now < until {
+                let wait = (until - now).as_secs() + 1;
+                self.last_error = Some(format!("Rate-limited by server, retry in {}s", wait));
+                return true;
+            }
+            // Window expired -- clear and let the call go through.
+            self.last_429_until = None;
+        }
+        false
+    }
+
     async fn fetch_pending(&mut self) {
+        if self.rate_limited_skip() {
+            return;
+        }
         let url = format!("{}/approvals/pending", self.base_url);
         match self
             .client
@@ -100,7 +159,8 @@ impl App {
             .await
         {
             Ok(resp) => {
-                if resp.status().is_success() {
+                let status = resp.status();
+                if status.is_success() {
                     match resp.json::<PendingResponse>().await {
                         Ok(data) => {
                             self.approvals = data.approvals;
@@ -119,8 +179,19 @@ impl App {
                             self.last_error = Some(format!("Parse error: {}", e));
                         }
                     }
+                } else if status.as_u16() == 429 {
+                    // Patch 20: honour Retry-After. Refusing to retry until
+                    // the window expires prevents the client from saturating
+                    // the per-key rate-limit bucket and forcing the server
+                    // to keep returning 429.
+                    let wait = parse_retry_after(&resp);
+                    self.last_429_until = Some(Instant::now() + wait);
+                    self.last_error = Some(format!(
+                        "Rate-limited by server. Backing off {}s.",
+                        wait.as_secs()
+                    ));
                 } else {
-                    self.last_error = Some(format!("HTTP {}", resp.status()));
+                    self.last_error = Some(format!("HTTP {}", status));
                 }
             }
             Err(e) => {
@@ -131,6 +202,9 @@ impl App {
 
     async fn decide(&mut self, approved: bool) {
         if self.approvals.is_empty() {
+            return;
+        }
+        if self.rate_limited_skip() {
             return;
         }
 
@@ -153,12 +227,19 @@ impl App {
             .await
         {
             Ok(resp) => {
-                if resp.status().is_success() {
+                let status = resp.status();
+                if status.is_success() {
                     self.last_error = None;
                     // Refresh list
                     self.fetch_pending().await;
+                } else if status.as_u16() == 429 {
+                    let wait = parse_retry_after(&resp);
+                    self.last_429_until = Some(Instant::now() + wait);
+                    self.last_error = Some(format!(
+                        "Rate-limited by server. Backing off {}s.",
+                        wait.as_secs()
+                    ));
                 } else {
-                    let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
                     self.last_error = Some(format!("HTTP {}: {}", status, body));
                 }
