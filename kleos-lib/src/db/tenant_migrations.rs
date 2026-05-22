@@ -425,6 +425,15 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "user_preferences_user_id_readd",
         up: apply_schema_v68_user_preferences_readd,
     },
+    // Re-add user_id to skill_records in tenant shards via REBUILD.
+    // v39 dropped it; UNIQUE changes from (name, agent, version) back to
+    // (name, agent, version, user_id). Also drops/recreates FTS triggers.
+    // The runner backfills existing rows to the shard owner.
+    TenantMigration {
+        version: 69,
+        description: "skills_user_id_readd",
+        up: apply_schema_v69_skills_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -493,6 +502,11 @@ const TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 67;
 /// user_preferences table via REBUILD (UNIQUE(user_id, key)). The runner
 /// backfills existing rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 68;
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// skill_records table via REBUILD (UNIQUE(name, agent, version, user_id)).
+/// Also drops and recreates FTS triggers. The runner backfills existing rows
+/// to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_SKILLS: i64 = 69;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1299,6 +1313,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
             &["structured_facts", "entity_cooccurrences"]
         }
         TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES => &["user_preferences"],
+        TENANT_MIGRATION_READD_USER_ID_SKILLS => &["skill_records"],
         _ => &[],
     };
     for table in tables {
@@ -1439,6 +1454,16 @@ fn apply_schema_v67_graph_remainder_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v68_user_preferences_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v68_user_preferences_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v68 failed: {e}")))
+}
+
+/// Tenant v69: re-adds `user_id` to `skill_records` via 12-step REBUILD.
+/// UNIQUE constraint changes from `(name, agent, version)` to
+/// `(name, agent, version, user_id)`. Drops and recreates FTS triggers so
+/// the shadow table stays consistent across the rename. The runner backfills
+/// existing rows to the shard owner after this SQL runs.
+fn apply_schema_v69_skills_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v69_skills_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v69 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.

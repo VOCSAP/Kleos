@@ -900,3 +900,69 @@ async fn user_preferences_isolated_between_users_single_db() {
     assert_eq!(prefs_20.len(), 1);
     assert_eq!(prefs_20[0].value, "light");
 }
+
+/// Skills created by one user must be invisible to another user sharing the
+/// same monolith database. Both users create a skill with the same name and
+/// agent but must see only their own row. The UNIQUE(name, agent, version,
+/// user_id) constraint allows both rows to coexist.
+#[tokio::test]
+async fn skill_records_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    // User 10 creates a skill.
+    let req1 = kleos_lib::skills::CreateSkillRequest {
+        name: "my_skill".into(),
+        agent: "agent1".into(),
+        description: Some("user 10 skill".into()),
+        code: "console.log('hello')".into(),
+        language: Some("javascript".into()),
+        user_id: Some(10),
+        parent_skill_id: None,
+        metadata: None,
+        tags: None,
+        tool_deps: None,
+        kind: None,
+        source_plugin: None,
+        source_path: None,
+        content_hash: None,
+    };
+    kleos_lib::skills::create_skill(&db, req1)
+        .await
+        .expect("user 10 creates skill");
+
+    // User 20 creates a skill with the same name and agent (allowed since
+    // different user_id in the UNIQUE constraint).
+    let req2 = kleos_lib::skills::CreateSkillRequest {
+        name: "my_skill".into(),
+        agent: "agent1".into(),
+        description: Some("user 20 skill".into()),
+        code: "console.log('world')".into(),
+        language: Some("javascript".into()),
+        user_id: Some(20),
+        parent_skill_id: None,
+        metadata: None,
+        tags: None,
+        tool_deps: None,
+        kind: None,
+        source_plugin: None,
+        source_path: None,
+        content_hash: None,
+    };
+    kleos_lib::skills::create_skill(&db, req2)
+        .await
+        .expect("user 20 creates skill");
+
+    // User 10 sees only their skill.
+    let skills_10 = kleos_lib::skills::list_skills(&db, 10, None, 100, 0)
+        .await
+        .expect("list skills user 10");
+    assert_eq!(skills_10.len(), 1);
+    assert_eq!(skills_10[0].description, Some("user 10 skill".into()));
+
+    // User 20 sees only their skill.
+    let skills_20 = kleos_lib::skills::list_skills(&db, 20, None, 100, 0)
+        .await
+        .expect("list skills user 20");
+    assert_eq!(skills_20.len(), 1);
+    assert_eq!(skills_20[0].description, Some("user 20 skill".into()));
+}
