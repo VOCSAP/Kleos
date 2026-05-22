@@ -2514,6 +2514,46 @@ Operateur 2026-05-22 a configure server=30 (LXC 121
 fonctionnel ; en cas de timeout reseau cote client, monter
 `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` a 60 ou plus sur le poste Windows.
 
+### Patch 20b (2026-05-22) -- bug `key:0` et architecture TUI non-bloquante
+
+Deux points decouverts immediatement apres le deploy Patch 20 :
+
+1. **Bug Design C `key:0`** : les helpers `open_access_context()` et
+   `synthetic_key_for_identity_with_scopes()` (`kleos-server/src/middleware/auth.rs:80,109`)
+   stampent tous deux `ApiKey.id = 0` (pas de row backing). Le keying
+   `format!("key:{}", id)` collapsait alors **toutes** les requetes
+   synthetiques (open access + chaque PIV identity) dans le meme bucket
+   `key:0`, pire que l'ancien `user:{user_id}` qui isolait au moins par
+   tenant.
+
+   Fix : dans `rate_limit_middleware` (`middleware/rate_limit.rs:172`), si
+   `ctx.key.id == 0`, fallback sur `format!("synth:user:{}", ctx.user_id)`.
+   La branche `key:{id}` regulier (cles d'`api_keys`) est inchangee.
+
+2. **TUI bloque pendant le long-poll** : la boucle `fetch_pending().await`
+   bloquait pendant 30s (server long-poll timeout), rendant la TUI
+   non-reactive aux touches. Pour un workflow d'approbation a 120s, ca
+   ne va pas.
+
+   Refactor `kleos-approval-tui/src/main.rs` : `fetch_pending` et
+   `decide` deviennent des `tokio::task::JoinHandle<FetchOutcome>` /
+   `JoinHandle<DecideOutcome>` lances en arriere-plan. Champs `App.fetch_handle`
+   et `App.decide_handle`. Methode `App::poll_handles()` (non-bloquante,
+   `JoinHandle::is_finished` + `await` immediat si fini) appelee a chaque
+   tick. Methode `App::try_start_fetch()` (non-bloquante) re-arme un
+   fetch des qu'aucun n'est en vol et que la fenetre 429 est expiree.
+   La boucle principale `event::poll(tick)` passe d'un tick 1s a 100ms
+   pour rester reactive (l'argument CLI `--poll-ms` reste mais la
+   semantique change : 100ms = latence max sur les keypresses, pas
+   periode de polling reseau).
+
+Tests : `cargo check -p kleos-server` et `-p kleos-approval-tui`
+restent verts. agent-forge `hyp_d48abd7a` cover.
+
+Reste a deployer : rebuild WSL kleos-server, scp + chmod 755 + restart
+LXC 121 ; rebuild Windows MSVC kleos-approval-tui, copy vers
+`%USERPROFILE%\.cargo\bin\engram-approval-tui.exe`.
+
 ### Lecons
 
 - **Verifier `TENANT_MIGRATIONS` au merge upstream**. Tout commit upstream

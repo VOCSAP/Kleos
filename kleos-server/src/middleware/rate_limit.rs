@@ -161,16 +161,32 @@ pub async fn rate_limit_middleware(
     // user into one shared bucket, so a buggy bearer (e.g. a TUI ignoring
     // Retry-After) saturated every other bearer of the same user. The
     // new keying gives each bearer its own independent budget while
-    // keeping the declared `rate_limit` value as the limit. If a global
-    // per-user umbrella is needed later, it can be layered on top as a
-    // secondary check; not in this patch.
-    let (key_id, limit) = match auth_ctx {
-        Some(ctx) => (ctx.key.id, ctx.key.rate_limit as i64),
+    // keeping the declared `rate_limit` value as the limit.
+    //
+    // Patch 20b (2026-05-22): synthetic AuthContexts produced by
+    // `open_access_context()` and `synthetic_key_for_identity_with_scopes()`
+    // both stamp `ApiKey.id = 0` (no row backing them in the api_keys
+    // table). With the naive Patch 20 keying every synthetic context
+    // (open access + every PIV identity holder) would collide on the same
+    // `key:0` bucket cross-tenant, which is strictly worse than the
+    // pre-Patch 20 per-user keying. When the resolved key id is zero we
+    // fall back to a per-user synthetic key so PIV identities and open
+    // access remain isolated per tenant.
+    let (bucket_key, limit) = match auth_ctx {
+        Some(ctx) => {
+            let limit = ctx.key.rate_limit as i64;
+            let key = if ctx.key.id == 0 {
+                format!("synth:user:{}", ctx.user_id)
+            } else {
+                format!("key:{}", ctx.key.id)
+            };
+            (key, limit)
+        }
         // Unauthenticated requests are handled by auth middleware; pass through here.
         None => return next.run(request).await,
     };
 
-    let key = format!("key:{}", key_id);
+    let key = bucket_key;
     let cost = endpoint_cost(&path, request.method());
 
     match ratelimit::check_and_increment_by(&state.db, &key, limit, 60, cost).await {
