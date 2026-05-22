@@ -13,6 +13,7 @@ use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::db::Database;
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
+use kleos_lib::services::axon::{self, PublishEventRequest};
 use kleos_lib::services::soma::{self, RegisterAgentRequest};
 use kleos_lib::webhooks;
 
@@ -244,5 +245,50 @@ async fn soma_agents_isolated_between_users_single_db() {
     assert!(
         soma::get_agent(&db, a10.id, 10).await.is_ok(),
         "user 20's delete must not remove user 10's agent"
+    );
+}
+
+/// An axon event published by one user must be invisible to another user on the
+/// same monolith: not fetchable by id, absent from the other user's query.
+#[tokio::test]
+async fn axon_events_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let ev = axon::publish_event(
+        &db,
+        PublishEventRequest {
+            channel: "shared-channel".to_string(),
+            action: "secret.event".to_string(),
+            payload: None,
+            source: Some("alice-agent".to_string()),
+            agent: None,
+            user_id: Some(10),
+        },
+    )
+    .await
+    .expect("user 10 publishes event");
+
+    // User 20 cannot fetch user 10's event by id.
+    assert!(
+        axon::get_event(&db, ev.id, 20).await.is_err(),
+        "user 20 must not read user 10's event by id"
+    );
+
+    // User 20's query on the same channel name must not see it.
+    let q20 = axon::query_events(&db, Some("shared-channel"), None, None, 100, 0, 20)
+        .await
+        .expect("query user 20");
+    assert!(
+        q20.iter().all(|e| e.id != ev.id),
+        "user 20's query must exclude user 10's event"
+    );
+
+    // User 10 sees their own event.
+    let q10 = axon::query_events(&db, Some("shared-channel"), None, None, 100, 0, 10)
+        .await
+        .expect("query user 10");
+    assert!(
+        q10.iter().any(|e| e.id == ev.id),
+        "user 10 must see their own event"
     );
 }

@@ -589,6 +589,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    Migration {
+        version: 68,
+        description: "readd_user_id_axon_events",
+        up: run_migration_readd_user_id_axon_events,
+        down: Some(down_migration_readd_user_id_axon_events),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -729,6 +736,8 @@ const MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 65;
 const MIGRATION_READD_USER_ID_APPROVALS: i64 = 66;
 /// Version number for re-adding user_id to soma_agents via the UNIQUE(name,user_id) rebuild.
 const MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 67;
+/// Version number for re-adding user_id to the axon_events table (single-DB isolation).
+const MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 68;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1270,6 +1279,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_SOMA_AGENTS,
             "readd_user_id_soma_agents",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_AXON_EVENTS {
+        info!("Running migration 68: readd_user_id_axon_events");
+        run_migration_readd_user_id_axon_events(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_AXON_EVENTS,
+            "readd_user_id_axon_events",
         )?;
     }
 
@@ -2544,6 +2563,58 @@ fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Resul
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 67 complete: user_id re-added to soma_agents with UNIQUE(name, user_id)");
+    Ok(())
+}
+
+/// Migration 68: re-add `user_id` to the `axon_events` table. Migration 32
+/// dropped it; single-DB mode needs the row-level owner so event reads
+/// (get/query/consume/stats/channel counts) isolate per user. axon_events is an
+/// append-only event log with no UNIQUE/FK on the column, so the simple
+/// ALTER TABLE ADD COLUMN path is sufficient. Legacy rows backfill to
+/// `user_id = 1`; new publishes carry the publisher's id.
+///
+/// Idempotent: the `ADD COLUMN` is guarded and the index uses `IF NOT EXISTS`.
+fn run_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE axon_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added axon_events.user_id (migration 68)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_axon_events_user ON axon_events(user_id, channel, id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 68 complete: user_id re-added to axon_events");
+    Ok(())
+}
+
+/// Reverse migration 68: drop the `idx_axon_events_user` index and the
+/// `user_id` column from `axon_events`.
+fn down_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 68 reverted: user_id dropped from axon_events");
     Ok(())
 }
 

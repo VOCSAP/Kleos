@@ -346,6 +346,13 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "soma_agents_user_id_readd",
         up: apply_schema_v58_soma_agents_readd,
     },
+    // Re-add user_id to the shard axon_events table (reverses v29). The runner
+    // backfills existing event rows to the shard owner after this runs.
+    TenantMigration {
+        version: 59,
+        description: "axon_events_user_id_readd",
+        up: apply_schema_v59_axon_events_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -365,6 +372,11 @@ const TENANT_MIGRATION_READD_USER_ID_APPROVALS: i64 = 57;
 /// soma_agents table. The runner backfills existing agent rows to the shard
 /// owner after the rebuild copies them at the DEFAULT.
 const TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS: i64 = 58;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// axon_events table. The runner backfills existing event rows to the shard
+/// owner.
+const TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 59;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1145,6 +1157,7 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => &["webhooks"],
         TENANT_MIGRATION_READD_USER_ID_APPROVALS => &["approvals"],
         TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => &["soma_agents"],
+        TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => &["axon_events"],
         _ => &[],
     };
     for table in tables {
@@ -1192,6 +1205,14 @@ fn apply_schema_v57_approvals_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v58_soma_agents_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v58_soma_agents_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v58 failed: {e}")))
+}
+
+/// Tenant v59: re-add user_id to the shard axon_events table. The SQL re-adds
+/// the column (default 1) and the idx_axon_events_user index. Owner backfill of
+/// existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v59_axon_events_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v59_axon_events_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v59 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
