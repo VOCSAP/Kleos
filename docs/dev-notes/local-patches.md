@@ -2554,6 +2554,39 @@ Reste a deployer : rebuild WSL kleos-server, scp + chmod 755 + restart
 LXC 121 ; rebuild Windows MSVC kleos-approval-tui, copy vers
 `%USERPROFILE%\.cargo\bin\engram-approval-tui.exe`.
 
+### Patch 20c (2026-05-22) -- long-poll proper sur `/approvals/pending`
+
+Symptome post-deploy Patch 20b : la TUI relancee voit immediatement
+"Rate-limited by server" malgre le refactor non-bloquant et le cooldown
+500ms. Verification table `rate_limits` : `ip:192.168.10.100 count=28`
+en moins d'une minute, depasse la limite preauth IP de 20/min.
+
+Cause racine : **Patch 20 a long-polle `/supervisor/pending` mais pas
+`/approvals/pending`**. Le handler `list_pending_handler` de
+`kleos-server/src/routes/approvals/mod.rs` etait reste tres simple :
+expire_stale + list_pending + return. Avec une queue vide il retournait
+en < 100ms. La TUI, qui poll cet endpoint (pas /supervisor/pending),
+enchainait alors les fetches au rythme du cooldown 500ms, soit
+~120 hits/min, blowing past le pre-auth IP 20/min.
+
+Fix : appliquer le meme pattern long-poll que `/supervisor/pending`,
+en reutilisant **le watch::Sender existant `state.approval_notify`**
+(deja signale par `create_handler` et `decide_handler`). Pas besoin
+de creer un nouveau notifier per-tenant : le notify est global mais le
+handler re-query la DB filtree par `auth.user_id` a chaque wake-up,
+donc une notif cross-tenant ne fait qu'un round-trip vide -- moins
+couteux qu'un busy-poll cote client.
+
+Nouvelle env var `KLEOS_APPROVALS_LONGPOLL_TIMEOUT_SECS` (defaut 30),
+miroir de `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS`. Le meme
+`KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` cote client couvre les deux
+endpoints avec la marge `client > server`.
+
+Aucun changement client. La TUI Patch 20b fonctionne tel quel avec
+Patch 20c : la connexion HTTP reste ouverte jusqu'a 30s, fetch
+suivant cooldown 500ms + retour long-poll, donc ~2 fetches/min en
+steady state au lieu de ~120. agent-forge hyp_4b2e8103.
+
 ### Lecons
 
 - **Verifier `TENANT_MIGRATIONS` au merge upstream**. Tout commit upstream
