@@ -154,13 +154,23 @@ pub async fn rate_limit_middleware(
 
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();
 
-    let (user_id, limit) = match auth_ctx {
-        Some(ctx) => (ctx.user_id, ctx.key.rate_limit as i64),
+    // Patch 20 (2026-05-22): rate-limit bucket is keyed per-API-key
+    // (`key:{api_key.id}`) instead of per-user (`user:{user_id}`). The
+    // `ApiKey.rate_limit` field is already declared per-key in the auth
+    // module; previously the middleware aggregated all keys of the same
+    // user into one shared bucket, so a buggy bearer (e.g. a TUI ignoring
+    // Retry-After) saturated every other bearer of the same user. The
+    // new keying gives each bearer its own independent budget while
+    // keeping the declared `rate_limit` value as the limit. If a global
+    // per-user umbrella is needed later, it can be layered on top as a
+    // secondary check; not in this patch.
+    let (key_id, limit) = match auth_ctx {
+        Some(ctx) => (ctx.key.id, ctx.key.rate_limit as i64),
         // Unauthenticated requests are handled by auth middleware; pass through here.
         None => return next.run(request).await,
     };
 
-    let key = format!("user:{}", user_id);
+    let key = format!("key:{}", key_id);
     let cost = endpoint_cost(&path, request.method());
 
     match ratelimit::check_and_increment_by(&state.db, &key, limit, 60, cost).await {

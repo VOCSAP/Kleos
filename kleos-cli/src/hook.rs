@@ -48,6 +48,83 @@ const POLICY_CACHE_TTL_SECS: u64 = 60;
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Patch 20 (2026-05-22): default HTTP timeout when long-polling
+/// `/supervisor/pending`. The matching server-side cap is
+/// `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS` (default 30s). The client
+/// timeout should be set higher so the server has time to return its
+/// graceful empty-list response before the client aborts the connection.
+/// Override via `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`.
+const DEFAULT_HTTP_LONGPOLL_TIMEOUT_SECS: u64 = 60;
+
+fn http_longpoll_timeout() -> Duration {
+    let secs = std::env::var("KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_HTTP_LONGPOLL_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Patch 20: filesystem cache path for the supervisor 429 back-off.
+/// Each hook invocation is one-shot, so we persist the retry-after deadline
+/// to disk and skip the supervisor call on subsequent invocations while
+/// the window is active. Path resolution prefers `XDG_CACHE_HOME`, then
+/// `$HOME/.cache`, then a tmp fallback to keep the hook fail-open even on
+/// minimal environments.
+fn supervisor_backoff_path() -> std::path::PathBuf {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".cache"))
+        })
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("kleos").join("supervisor-backoff-until.unix")
+}
+
+/// Patch 20: returns true if a previous 429 told us to back off and the
+/// window is still active. Side effect: removes a stale file so the next
+/// invocation has no leftover state.
+fn supervisor_in_backoff() -> bool {
+    let path = supervisor_backoff_path();
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(until_unix) = content.trim().parse::<u64>() else {
+        let _ = std::fs::remove_file(&path);
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if now < until_unix {
+        true
+    } else {
+        let _ = std::fs::remove_file(&path);
+        false
+    }
+}
+
+/// Patch 20: record a back-off deadline so subsequent hook invocations
+/// skip the supervisor drain while the rate-limit window is active. The
+/// underlying client crate exposes only the error string, not the
+/// `Retry-After` header, so we fall back to the conservative 60s default
+/// matching `parse_retry_after` on the TUI side.
+fn supervisor_record_backoff(secs: u64) {
+    let path = supervisor_backoff_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        + secs;
+    let _ = std::fs::write(&path, until.to_string());
+}
+
 // --------------------------------------------------------------------------
 // Policy fetch with cache
 // --------------------------------------------------------------------------
@@ -238,27 +315,54 @@ async fn handle_session_start(client: &Client) {
 async fn handle_user_prompt(client: &Client, input: &Value) {
     let session_id = extract_session_id(input);
 
-    // Drain supervisor for pending violations
+    // Patch 20 (2026-05-22): if a previous invocation hit a 429, the
+    // rate-limit window may still be active. Skip the supervisor drain
+    // entirely until the window expires so we don't hammer the server.
+    // Fail-open: a missed drain is benign (the next non-throttled hook
+    // invocation will pick up the queued injections).
+    if supervisor_in_backoff() {
+        return;
+    }
+
+    // Drain supervisor for pending violations. Uses the long-poll timeout
+    // (configurable via KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS, default 60s) so
+    // the server-side long-poll has time to return either a real injection
+    // or its graceful empty-list response before the client aborts.
     let encoded_session = utf8_percent_encode(&session_id, NON_ALPHANUMERIC).to_string();
     let pending_path = format!("/supervisor/pending?session_id={}", encoded_session);
-    if let Ok(v) = client
-        .get_with_timeout(&pending_path, DEFAULT_TIMEOUT)
+    match client
+        .get_with_timeout(&pending_path, http_longpoll_timeout())
         .await
     {
-        let injections = v
-            .get("injections")
-            .and_then(|x| x.as_array())
-            .cloned()
-            .unwrap_or_default();
-        if !injections.is_empty() {
-            let msg = injections
-                .first()
-                .and_then(|vio| vio.get("message").and_then(|m| m.as_str()))
-                .unwrap_or("policy violation detected");
-            emit(&build_deny_output(
-                "UserPromptSubmit",
-                &format!("Supervisor violation: {}", msg),
-            ));
+        Ok(v) => {
+            let injections = v
+                .get("injections")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if !injections.is_empty() {
+                let msg = injections
+                    .first()
+                    .and_then(|vio| vio.get("message").and_then(|m| m.as_str()))
+                    .unwrap_or("policy violation detected");
+                emit(&build_deny_output(
+                    "UserPromptSubmit",
+                    &format!("Supervisor violation: {}", msg),
+                ));
+            }
+        }
+        Err(e) => {
+            // Patch 20: detect server-side rate-limit via the error string
+            // exposed by kleos-client (`HTTP 429: ...`). On 429, record a
+            // 60s back-off so the next handful of hook invocations skip
+            // the supervisor call entirely; this matches the conservative
+            // fallback the TUI uses when Retry-After is missing.
+            if e.contains("HTTP 429") {
+                supervisor_record_backoff(60);
+            }
+            // Otherwise fail-open: surface to stderr for ops visibility but
+            // do not block the prompt.
+            eprintln!("hook: supervisor drain failed: {}", e);
         }
     }
 }

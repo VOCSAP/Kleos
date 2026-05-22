@@ -2347,6 +2347,189 @@ divergence possible tant qu'on commit toujours via le submodule local.
 
 ---
 
+## Patch 20 -- supervisor schema repair + append-only manifests + long-poll proper + rate-limit per-key + clients Retry-After (2026-05-22)
+
+### Symptome
+
+`engram-approval-tui` sur LXC 121 affiche en continu `ERROR: HTTP 429 Too Many
+Requests` alors que la liste `Pending Approvals` est vide et qu'aucune
+operation gate n'est en cours. Les logs `kleos-server` montrent :
+
+```
+ERROR ... path=/supervisor/pending ... kleos_server::error:
+Database error: no such column: claimed_at
+```
+
+repete a chaque poll long-poll (~60s) du hook claude-code qui interroge
+`/supervisor/pending`.
+
+### Cause racine -- violation de la regle append-only
+
+`TENANT_MIGRATIONS` (`kleos-lib/src/db/tenant_migrations.rs:27-280`) est
+declaree append-only ("Never renumber, never edit a past entry") mais la
+position v48 a ete reaffectee au merge VOCSAP <- upstream Ghost-Frame :
+
+1. Avant le 2026-05-07, le binaire en prod (fork VOCSAP) avait
+   `TENANT_MIGRATIONS[v48] = memories_community_id`.
+2. Le 2026-05-07 07:44:40 UTC, les tenants `2` et `handoffs` appliquent
+   correctement cette v48 (log explicite :
+   `applying tenant migration 48 (memories_community_id)`), `INSERT INTO
+   schema_migrations VALUES (48)` est committed.
+3. Au merge upstream du commit `d71342e` (2026-05-05) puis `a0880ee`
+   (2026-05-13), la position v48 a ete reaffectee a
+   `supervisor_injections_fix_schema` et l'ancienne `memories_community_id`
+   deplacee en v51.
+4. Sur tous les tenants existants depuis 2026-05-07, le runner
+   `run_tenant_migrations` voit `current_version >= 48` -> skip la nouvelle
+   v48 -> les ALTERs sur `supervisor_injections` (ajout `rule_id`,
+   `claimed_at`, reconstruction de l'index partiel) ne s'executent jamais.
+   La table reste en etat v46.
+5. L'endpoint `/supervisor/pending` (`kleos-server/src/routes/supervisor/
+   mod.rs:85-92`) execute `UPDATE supervisor_injections SET claimed_at =
+   ... WHERE claimed_at IS NULL RETURNING ...` -> SQL fail
+   `no such column: claimed_at` -> 500 a chaque poll.
+6. Le polling agressif (et le bug TUI sur Retry-After, cf. plus bas)
+   saturent le bucket `rate_limits` keye sur `user:2`, declenchant le 429
+   visible cote operateur. Le 429 finit par cascader sur toutes les
+   requetes du meme user_id (kleos-cli, hooks, TUI). Symptome final :
+   apparente saturation tous endpoints alors que la cause profonde est
+   localisee a `/supervisor/pending`.
+
+Bug secondaire decouvert pendant le diagnostic : `engram-approval-tui`
+(`kleos-approval-tui/src/main.rs:94-130`) ignore le header `Retry-After`
+sur les reponses 429. Il retape immediatement, ce qui maintient le bucket
+de rate-limit du serveur plein indefiniment. Verifie via `SELECT * FROM
+rate_limits WHERE key = 'user:2'` -> count=18, fenetre en glissement
+continu.
+
+### Reparation manuelle prod 2026-05-22
+
+DB tenants patchees a la main via sqlcipher (serveur stoppe) :
+
+```sql
+PRAGMA key = "x'<KLEOS_DB_KEY>'";
+ALTER TABLE supervisor_injections ADD COLUMN rule_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE supervisor_injections ADD COLUMN claimed_at TEXT;
+DROP INDEX IF EXISTS idx_supervisor_injections_pending;
+CREATE INDEX idx_supervisor_injections_pending
+    ON supervisor_injections(user_id, session_id)
+    WHERE claimed_at IS NULL;
+```
+
+Applique sur `/var/lib/kleos/tenants/2/kleos.db` et
+`/var/lib/kleos/tenants/handoffs/kleos.db` (seuls tenants actifs constates
+via `find /var/lib/kleos -maxdepth 3 -name 'kleos.db'`).
+
+Pour debloquer la session de diagnostic (TUI client buggy maintenait le
+429 in-flight), purge ponctuelle du bucket :
+
+```sql
+DELETE FROM rate_limits WHERE key IN ('user:2','ip:192.168.10.100');
+```
+
+Test post-fix : `GET /supervisor/pending?session_id=...` retourne
+`{"claimed":0,"injections":[],"session_id":"..."}` HTTP 200.
+
+### Implementation Patch 20 (deployee)
+
+Le patch part 1 (commit `9a7a0f1`) a livre :
+
+- Migration tenant v55 `supervisor_injections_repair` idempotente via
+  `table_has_column` guards (re-applique `ALTER TABLE ADD COLUMN rule_id`,
+  `ADD COLUMN claimed_at`, et reconstruit le partial index avec
+  `WHERE claimed_at IS NULL`). NO-OP sur tenants deja au schema
+  post-Patch 20.
+- Fichiers manifests append-only :
+  - `kleos-lib/src/db/tenant_migrations.manifest` (55 entrees, derniere
+    `55: supervisor_injections_repair`).
+  - `kleos-lib/src/db/migrations.manifest` (63 entrees, derniere
+    `63: handoff_atoms`).
+- Tests CI append-only :
+  `tenant_migrations::tests::tenant_migrations_obey_append_only_manifest`
+  et `migrations::tests::migrations_obey_append_only_manifest` qui
+  comparent byte-par-byte chaque entree (version, description) avec son
+  manifest et explosent au CI sur toute mutation d'une entree publiee.
+  Verts : 96 tenant_migrations + 9 migrations.
+
+Le patch part 2 livre :
+
+- **Long-poll proper sur `/supervisor/pending`** : nouveau champ
+  `AppState.supervisor_notifiers: Arc<RwLock<HashMap<i64, watch::Sender<()>>>>`
+  lazy par tenant. `pending_handler` boucle (UPDATE-RETURNING immediat ->
+  si vide, `tokio::time::timeout(deadline, rx.changed())` sur le
+  `watch::Receiver` du user -> retry). `inject_handler` signale le user
+  apres l'INSERT. Helper `supervisor_longpoll_timeout()` lit
+  `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS` (defaut 30s). Scope
+  per-tenant : signal pour user A ne reveille pas les long-polls de
+  user B. Memoire ~64 octets par tenant actif, pas de cleanup necessaire
+  au depart.
+- **Rate-limit middleware key par api_key** (Design C, fix semantique
+  de `ApiKey.rate_limit` existant) :
+  `kleos-server/src/middleware/rate_limit.rs:163` passe de
+  `format!("user:{}", user_id)` a `format!("key:{}", ctx.key.id)`.
+  Aucune migration de donnees (champ rate_limit deja per-key dans
+  `api_keys`).
+- **Client TUI** (`kleos-approval-tui/src/main.rs`) :
+  - Helpers `http_longpoll_timeout()` (lit
+    `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`, defaut 60s) et
+    `parse_retry_after()` (lit le header, fallback 60s).
+  - `App` recoit un champ `last_429_until: Option<Instant>`.
+  - `fetch_pending()` et `decide()` : si `last_429_until` est actif,
+    return immediat avec countdown affiche, sinon hit serveur ;
+    sur 429 received, calcul `last_429_until = now + parse_retry_after`,
+    affiche backoff. L'UI reste responsive (le sleep ne bloque pas la
+    boucle ratatui).
+  - `reqwest::Client` instancie avec `.timeout(http_longpoll_timeout())`
+    pour exploiter le long-poll serveur.
+- **Client `kleos-cli`** (`kleos-cli/src/hook.rs`) :
+  - Helpers `http_longpoll_timeout()`, `supervisor_in_backoff()`,
+    `supervisor_record_backoff()` (cache file
+    `$XDG_CACHE_HOME/kleos/supervisor-backoff-until.unix` ou fallback
+    `$HOME/.cache`).
+  - `handle_user_prompt` : skip le drain si backoff actif ; sur 429
+    detecte via le message d'erreur du client crate
+    (`get_with_timeout` expose `String`), `supervisor_record_backoff(60)`
+    et fail-open.
+- **Hooks bash** (`hooks/full/lib-eidolon.sh`) :
+  - `_EIDOLON_DEFAULT_TIMEOUT` lit `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`
+    (defaut 60s).
+  - Cache file `$XDG_CACHE_HOME/kleos/eidolon-backoff-until.unix`.
+  - Helpers `_eidolon_in_backoff()` et `_eidolon_record_backoff()`.
+  - `eidolon_call()` : skip si backoff, sinon capture le code HTTP
+    via `-w "%{http_code}"` et le header via `-D <tempfile>`. Sur 429,
+    parse `Retry-After:` et record backoff. Preserve la semantique
+    `-sf` historique (return 1 + body vide sur non-2xx) pour fail-open
+    des hooks consommateurs.
+
+### Convention defaults env vars
+
+- `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS` (server) -- defaut 30s.
+- `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` (clients) -- defaut 60s.
+
+Doc utilisateur : voir le `CLAUDE.md` projet section "Convention env vars"
+et `wiki/Configuration.md` (sous-section "Long-poll timeouts (Patch 20)").
+
+Operateur 2026-05-22 a configure server=30 (LXC 121
+`/etc/kleos/kleos.env`) et client=30 (Windows env). Setup serre mais
+fonctionnel ; en cas de timeout reseau cote client, monter
+`KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` a 60 ou plus sur le poste Windows.
+
+### Lecons
+
+- **Verifier `TENANT_MIGRATIONS` au merge upstream**. Tout commit upstream
+  qui insere ou renomme une entree dans `TENANT_MIGRATIONS` ou `MIGRATIONS`
+  doit etre verifie avant absorption. Si position deja appliquee en prod,
+  ajouter en queue (nouvelle version >= max+1) avec un nom different.
+- **Le statut `schema_migrations` n'est pas une preuve d'application**.
+  La ligne `(version, applied_at)` est INSERT separe (auto-commit SQLite).
+  Si la migration body est devenue idempotent / no-op apres coup, la
+  ligne reste mais le schema est en derive.
+- **Le 429 cote operateur est souvent la consequence, pas la cause**.
+  Diagnostic systematique : verifier `/var/log/kleos-server.log` pour les
+  ERROR repetitives sur un meme endpoint avant de blamer le rate-limit.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
