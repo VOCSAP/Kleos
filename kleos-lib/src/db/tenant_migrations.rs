@@ -315,6 +315,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "handoff_atoms",
         up: apply_schema_v54_handoff_atoms,
     },
+    // Patch 20 (2026-05-22): repair migration for tenants stuck on the
+    // pre-merge v48 body. See tenant_migrations.manifest for the full
+    // history note on why this exists.
+    TenantMigration {
+        version: 55,
+        description: "supervisor_injections_repair",
+        up: apply_schema_v55_supervisor_injections_repair,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -1054,6 +1062,44 @@ fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v54 failed: {e}")))
 }
 
+/// Tenant v55 (Patch 20, 2026-05-22): repair supervisor_injections schema for
+/// tenants that received the historical v48 body (memories_community_id, now
+/// at v51) before the upstream merge re-affected v48 to
+/// supervisor_injections_fix_schema. Those tenants have
+/// schema_migrations.version >= 48 so run_tenant_migrations skips the new v48
+/// body, leaving supervisor_injections in its v46 layout (no rule_id, no
+/// claimed_at, partial index keyed on consumed = 0). v55 re-applies the same
+/// ALTERs idempotently via table_has_column guards, so it is a NO-OP on
+/// tenants that already received the post-merge v48.
+fn apply_schema_v55_supervisor_injections_repair(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "supervisor_injections", "rule_id")? {
+        conn.execute_batch(
+            "ALTER TABLE supervisor_injections ADD COLUMN rule_id TEXT NOT NULL DEFAULT '';",
+        )
+        .map_err(|e| {
+            EngError::DatabaseMessage(format!("tenant schema v55 (rule_id) failed: {e}"))
+        })?;
+    }
+    if !table_has_column(conn, "supervisor_injections", "claimed_at")? {
+        conn.execute_batch("ALTER TABLE supervisor_injections ADD COLUMN claimed_at TEXT;")
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("tenant schema v55 (claimed_at) failed: {e}"))
+            })?;
+    }
+    // The v46 index was WHERE consumed = 0; the v48 body should have replaced
+    // it with WHERE claimed_at IS NULL. On tenants that skipped the v48 body,
+    // the old index is still in place; drop and recreate with the post-v48
+    // predicate. Idempotent on tenants where v48 already ran.
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_supervisor_injections_pending;
+         CREATE INDEX IF NOT EXISTS idx_supervisor_injections_pending
+            ON supervisor_injections(user_id, session_id)
+            WHERE claimed_at IS NULL;",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 (index) failed: {e}")))?;
+    Ok(())
+}
+
 /// Latest declared tenant schema version.
 pub fn latest_version() -> i64 {
     TENANT_MIGRATIONS
@@ -1067,6 +1113,68 @@ pub fn latest_version() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Patch 20 (2026-05-22): append-only guard. The TENANT_MIGRATIONS list
+    /// must be byte-identical to tenant_migrations.manifest for every entry
+    /// that has ever shipped. Any renumber, rename, or removal of a
+    /// historical entry will fire here at CI time, before it can ship and
+    /// silently divert a tenant schema.
+    ///
+    /// This test exists because at the 2026-05-13 VOCSAP merge of upstream
+    /// commit a0880ee, position v48 was reaffected from "memories_community_id"
+    /// to "supervisor_injections_fix_schema". Tenants migrated pre-merge had
+    /// already committed schema_migrations.version = 48 with the OLD body, so
+    /// the new v48 body was silently skipped by run_tenant_migrations. The
+    /// table supervisor_injections stayed at its v46 layout for ~9 days
+    /// before the symptoms surfaced through engram-approval-tui. The
+    /// manifest below is the safety net.
+    #[test]
+    fn tenant_migrations_obey_append_only_manifest() {
+        let manifest = include_str!("tenant_migrations.manifest");
+        let expected: Vec<(i64, &str)> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let (v, d) = l.split_once(':').unwrap_or_else(|| {
+                    panic!("malformed manifest line (expected 'N: description'): {:?}", l)
+                });
+                let version: i64 = v.trim().parse().unwrap_or_else(|_| {
+                    panic!("malformed version number in manifest line: {:?}", l)
+                });
+                (version, d.trim())
+            })
+            .collect();
+
+        for (i, (exp_v, exp_d)) in expected.iter().enumerate() {
+            let actual = TENANT_MIGRATIONS.get(i).unwrap_or_else(|| {
+                panic!(
+                    "tenant_migrations.manifest lists entry index {} (v{}: {}) but \
+                     TENANT_MIGRATIONS is shorter; a previously-published migration was \
+                     REMOVED. Append-only rule violated. Restore the entry or append a \
+                     new migration at the end instead of editing past history.",
+                    i, exp_v, exp_d
+                )
+            });
+            assert_eq!(
+                (actual.version, actual.description),
+                (*exp_v, *exp_d),
+                "tenant migration at index {} drifted from manifest: code has \
+                 (v{}, {:?}) but manifest expects (v{}, {:?}). \
+                 TENANT_MIGRATIONS is append-only; any line that ever shipped MUST stay \
+                 byte-identical. To add a NEW migration, append a new entry at the END \
+                 of both the list and tenant_migrations.manifest.",
+                i,
+                actual.version,
+                actual.description,
+                exp_v,
+                exp_d
+            );
+        }
+        // Trailing entries beyond the manifest are tolerated so a developer can
+        // add a migration to the code first and update the manifest in the
+        // same commit; reviewers MUST verify both files moved together.
+    }
 
     /// Verifies that a fresh in-memory database lands at the latest migration version.
     #[test]

@@ -1,0 +1,89 @@
+# migrations.manifest
+#
+# Byte-identical record of every MIGRATIONS entry (system / main DB) that
+# has ever shipped. Format: <version>: <description>   (blank lines and #
+# comments ignored).
+#
+# RULES (enforced by migrations_obey_append_only_manifest test):
+#   1. Lines below this header are APPEND-ONLY. Never edit, never reorder,
+#      never remove a line that has already shipped.
+#   2. To add a new main migration: append a new (version, description)
+#      line at the END here AND add the matching Migration entry at the end
+#      of MIGRATIONS in migrations.rs. Both files must move together in
+#      the same commit.
+#   3. To change behavior for an already-published version, add a NEW
+#      migration with the next higher version number; do NOT edit the old
+#      entry. The runner records the version in schema_version; changing
+#      a body for an already-applied version silently NO-OPs on every
+#      existing deployment.
+#
+# History (2026-05-22, Patch 20): introduced after a recurrence-class bug
+# in the TENANT_MIGRATIONS chain (v48 reaffected at upstream merge). The
+# same risk applies to MIGRATIONS at every future upstream rebase: a
+# concurrent definition of any v48..v63 by Ghost-Frame would silently
+# diverge from VOCSAP deployments on the next merge. The test gives the
+# diverge a CI-time error instead of a production schema drift.
+
+1: create_tables
+2: add_missing_indexes
+3: add_pagerank_tables
+4: thymus_tenant_scope
+5: app_state_table
+6: backfill_thymus_user_id
+7: vector_sync_pending
+8: add_community_id
+9: drop_is_inference
+10: syntheos_services
+11: brain_patterns
+12: approvals
+13: error_events
+14: brain_meta
+15: brain_pca_models
+16: brain_dream_runs
+17: cred_tables
+18: api_key_hash_unique
+19: api_key_hash_version
+20: link_covering_indexes
+21: upload_sessions
+22: service_dead_letters
+23: memories_list_covering_index
+24: commerce_tables
+25: drop_user_id_memory_core
+26: drop_user_id_scratchpad
+27: drop_user_id_sessions
+28: drop_user_id_chiasm
+29: drop_user_id_approvals
+30: drop_user_id_broca
+31: drop_user_id_projects
+32: drop_user_id_activity
+33: drop_user_id_webhooks
+34: drop_user_id_axon
+35: drop_user_id_growth
+36: drop_user_id_ingestion_hashes
+37: drop_user_id_loom
+38: drop_user_id_graph
+39: drop_user_id_thymus
+40: drop_user_id_portability
+41: drop_user_id_intelligence
+42: drop_user_id_skills
+43: drop_user_id_episodes
+44: readd_user_id_projects
+45: readd_user_id_broca
+46: identity_keys_and_identities
+47: audit_log_identity_columns
+48: drop_api_keys_agent_fk
+49: supervisor_injections
+50: gate_requests_session_id
+51: memory_chunks
+52: activity_log_table
+53: identity_keys_scopes
+54: tool_manifests
+55: handoffs_global
+56: user_active_and_enrollment_invites
+57: skill_dispatch_configs
+58: api_key_hash_version_fixup
+59: broca_narrative_columns
+60: chiasm_extended_fields
+61: chiasm_path_claims
+62: chiasm_agent_keys
+63: handoff_atoms
