@@ -92,15 +92,19 @@ pub async fn build_cooccurrence_edges(
     let mut edges = Vec::new();
 
     for (&(entity_a, entity_b), &count) in &pair_counts {
-        // Upsert into entity_cooccurrences table
+        // Upsert into entity_cooccurrences table scoped to the owning user.
+        // user_id is carried on insert so single-DB installs can filter by
+        // user. ON CONFLICT keys on (entity_a_id, entity_b_id) only -- the
+        // UNIQUE constraint does not include user_id.
         db.write(move |conn| {
             conn.execute(
-                "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
-                 VALUES (?1, ?2, ?3) \
+                "INSERT INTO entity_cooccurrences \
+                 (entity_a_id, entity_b_id, count, user_id) \
+                 VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
                    count = count + ?3, \
                    last_seen_at = datetime('now')",
-                rusqlite::params![entity_a, entity_b, count],
+                rusqlite::params![entity_a, entity_b, count, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(())
@@ -127,11 +131,17 @@ pub async fn build_cooccurrence_edges(
     Ok(edges)
 }
 
-/// Record a pairwise co-occurrence between two entities.
+/// Record a pairwise co-occurrence between two entities scoped to a user.
 /// The pair is stored in canonical order (smaller id first) so that
-/// (A, B) and (B, A) map to the same row.
+/// (A, B) and (B, A) map to the same row. `user_id` is written into the
+/// row so single-DB installs can filter co-occurrences per user.
 #[tracing::instrument(skip(db))]
-pub async fn record_cooccurrence(db: &Database, entity_a: i64, entity_b: i64) -> Result<()> {
+pub async fn record_cooccurrence(
+    db: &Database,
+    entity_a: i64,
+    entity_b: i64,
+    user_id: i64,
+) -> Result<()> {
     let (lo, hi) = if entity_a <= entity_b {
         (entity_a, entity_b)
     } else {
@@ -139,12 +149,13 @@ pub async fn record_cooccurrence(db: &Database, entity_a: i64, entity_b: i64) ->
     };
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO entity_cooccurrences (entity_a_id, entity_b_id, count) \
-             VALUES (?1, ?2, 1) \
+            "INSERT INTO entity_cooccurrences \
+             (entity_a_id, entity_b_id, count, user_id) \
+             VALUES (?1, ?2, 1, ?3) \
              ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET \
                count = count + 1, \
                last_seen_at = datetime('now')",
-            rusqlite::params![lo, hi],
+            rusqlite::params![lo, hi, user_id],
         )
         .map_err(rusqlite_to_eng_error)?;
         Ok(())
@@ -214,7 +225,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
 
         for i in 0..sorted.len() {
             for j in (i + 1)..sorted.len() {
-                record_cooccurrence(db, sorted[i], sorted[j]).await?;
+                record_cooccurrence(db, sorted[i], sorted[j], user_id).await?;
                 total_pairs += 1;
             }
         }

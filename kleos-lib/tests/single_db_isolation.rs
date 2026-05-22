@@ -817,3 +817,54 @@ async fn thymus_metrics_isolated_between_users_single_db() {
     assert_eq!(metrics_10.len(), 1, "user 10 must see their own metric");
     assert!((metrics_10[0].value - 0.95).abs() < 1e-9);
 }
+
+/// Structured facts are scoped by user_id. A fact created by user 10 must be
+/// absent from user 20's list_facts result, and vice versa.
+#[tokio::test]
+async fn structured_facts_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    // User 10 creates a fact.
+    let req1 = facts::CreateFactRequest {
+        memory_id: None,
+        subject: "Alice".into(),
+        predicate: "likes".into(),
+        object: "cats".into(),
+        confidence: Some(0.9),
+    };
+    facts::create_fact(&db, req1, 10)
+        .await
+        .expect("user 10 creates fact");
+
+    // User 20 creates a fact.
+    let req2 = facts::CreateFactRequest {
+        memory_id: None,
+        subject: "Bob".into(),
+        predicate: "likes".into(),
+        object: "dogs".into(),
+        confidence: Some(0.8),
+    };
+    facts::create_fact(&db, req2, 20)
+        .await
+        .expect("user 20 creates fact");
+
+    // User 20 must not see user 10's fact.
+    let facts_20 = facts::list_facts(&db, None, 100, 20)
+        .await
+        .expect("list_facts user 20");
+    assert_eq!(facts_20.len(), 1, "user 20 must see only their own fact");
+    assert_eq!(
+        facts_20[0].subject, "Bob",
+        "user 20's fact must have subject Bob"
+    );
+
+    // User 10 must see only their own fact.
+    let facts_10 = facts::list_facts(&db, None, 100, 10)
+        .await
+        .expect("list_facts user 10");
+    assert_eq!(facts_10.len(), 1, "user 10 must see only their own fact");
+    assert_eq!(
+        facts_10[0].subject, "Alice",
+        "user 10's fact must have subject Alice"
+    );
+}

@@ -408,6 +408,15 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "thymus_user_id_readd",
         up: apply_schema_v66_thymus_readd,
     },
+    // Re-add user_id to entity_cooccurrences and structured_facts in tenant
+    // shards. Both were dropped by tenant v35. structured_facts got user_id
+    // re-added on the monolith side by v64 but never on the tenant side.
+    // entity_cooccurrences never got it re-added on either side.
+    TenantMigration {
+        version: 67,
+        description: "graph_remainder_user_id_readd",
+        up: apply_schema_v67_graph_remainder_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -467,6 +476,11 @@ const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 65;
 /// behavioral_drift_events) that v36 dropped. The runner backfills existing
 /// rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_THYMUS: i64 = 66;
+/// Version of the tenant migration that re-adds `user_id` to `structured_facts`
+/// and `entity_cooccurrences` in tenant shards. Both were dropped by v35 and
+/// never re-added on the tenant side. The runner backfills existing rows to the
+/// shard owner.
+const TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 67;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1269,6 +1283,9 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
             "session_quality",
             "behavioral_drift_events",
         ],
+        TENANT_MIGRATION_READD_USER_ID_GRAPH_REMAINDER => {
+            &["structured_facts", "entity_cooccurrences"]
+        }
         _ => &[],
     };
     for table in tables {
@@ -1391,6 +1408,16 @@ fn apply_schema_v65_intelligence_remainder_readd(conn: &Connection) -> Result<()
 fn apply_schema_v66_thymus_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v66_thymus_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v66 failed: {e}")))
+}
+
+/// Tenant v67: re-adds `user_id` to `structured_facts` and
+/// `entity_cooccurrences` in tenant shards. Both were dropped by v35 and
+/// never re-added on the tenant side.
+fn apply_schema_v67_graph_remainder_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../tenant/schema_v67_graph_remainder_readd.sql"
+    ))
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v67 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.

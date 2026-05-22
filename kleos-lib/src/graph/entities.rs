@@ -808,10 +808,11 @@ pub async fn extract_and_link_entities(
         entities.push(entity);
     }
 
-    // Record pairwise co-occurrences for all entity pairs found in this memory
+    // Record pairwise co-occurrences for all entity pairs found in this memory.
+    // Pass user_id so single-DB installs can filter co-occurrences per user.
     for a in 0..entities.len() {
         for b in (a + 1)..entities.len() {
-            let _ = record_cooccurrence(db, entities[a].id, entities[b].id).await;
+            let _ = record_cooccurrence(db, entities[a].id, entities[b].id, user_id).await;
         }
     }
 

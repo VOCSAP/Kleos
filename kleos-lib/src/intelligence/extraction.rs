@@ -278,12 +278,14 @@ pub async fn fast_extract_facts(
 
     if fact_count + pref_count + state_count > 0 {
         db.write(move |conn| {
-            // Insert facts
+            // Insert facts scoped to the owning user so single-DB mode
+            // isolates facts per user (user_id column added by monolith v76).
             for fact in &facts {
                 if let Err(e) = conn.execute(
-                    "INSERT INTO structured_facts (memory_id, subject, predicate, object, confidence) \
-                     VALUES (?1, ?2, ?3, ?4, 1.0)",
-                    rusqlite::params![memory_id, fact.subject, fact.verb, fact.object],
+                    "INSERT INTO structured_facts \
+                     (memory_id, subject, predicate, object, confidence, user_id) \
+                     VALUES (?1, ?2, ?3, ?4, 1.0, ?5)",
+                    rusqlite::params![memory_id, fact.subject, fact.verb, fact.object, user_id],
                 ) {
                     warn!(error = %e, "fact_insert_failed");
                 }

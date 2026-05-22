@@ -919,13 +919,18 @@ async fn entity_cooccurrences_handler(
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 #[tracing::instrument(skip_all)]
 async fn facts_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<FactsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let facts = list_facts(&db, params.memory_id, params.limit.unwrap_or(50).min(1000))
-        .await
-        .map_err(AppError)?;
+    let facts = list_facts(
+        &db,
+        params.memory_id,
+        params.limit.unwrap_or(50).min(1000),
+        auth.user_id,
+    )
+    .await
+    .map_err(AppError)?;
     Ok(Json(json!({ "facts": facts })))
 }
 

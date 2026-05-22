@@ -79,18 +79,27 @@ fn row_to_state(row: &rusqlite::Row<'_>) -> rusqlite::Result<CurrentState> {
 
 // -- Structured facts CRUD ---
 
-/// Create a new structured fact.
-#[tracing::instrument(skip(db, req), fields(subject = %req.subject, predicate = %req.predicate, memory_id = ?req.memory_id))]
-pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<StructuredFact> {
+/// Create a new structured fact scoped to the given user.
+/// The `user_id` is written into the `user_id` column and is used to
+/// scope the post-insert re-fetch so multi-tenant single-DB installs
+/// cannot observe another user's newly inserted rows.
+#[tracing::instrument(skip(db, req), fields(subject = %req.subject, predicate = %req.predicate, memory_id = ?req.memory_id, user_id))]
+pub async fn create_fact(
+    db: &Database,
+    req: CreateFactRequest,
+    user_id: i64,
+) -> Result<StructuredFact> {
     let confidence = req.confidence.unwrap_or(1.0);
 
     if let Some(mid) = req.memory_id {
         let exists = db
             .read(move |conn| {
                 let result = conn
-                    .query_row("SELECT 1 FROM memories WHERE id = ?1", params![mid], |_| {
-                        Ok(())
-                    })
+                    .query_row(
+                        "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                        params![mid, user_id],
+                        |_| Ok(()),
+                    )
                     .optional()
                     .map_err(rusqlite_to_eng_error)?;
                 Ok(result.is_some())
@@ -113,9 +122,9 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
         .write(move |conn| {
             conn.execute(
                 "INSERT INTO structured_facts \
-                 (memory_id, subject, predicate, object, confidence) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![memory_id, subject, predicate, object, confidence],
+                 (memory_id, subject, predicate, object, confidence, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![memory_id, subject, predicate, object, confidence, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
             Ok(conn.last_insert_rowid())
@@ -126,11 +135,11 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     // inserted the row. Defense-in-depth against any future change that
     // moves the insert and select onto separate connections.
     let sql = format!(
-        "SELECT {} FROM structured_facts WHERE id = ?1",
+        "SELECT {} FROM structured_facts WHERE id = ?1 AND user_id = ?2",
         FACT_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![new_id], row_to_fact)
+        conn.query_row(&sql, params![new_id, user_id], row_to_fact)
             .optional()
             .map_err(rusqlite_to_eng_error)?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
@@ -138,17 +147,20 @@ pub async fn create_fact(db: &Database, req: CreateFactRequest) -> Result<Struct
     .await
 }
 
-/// List structured facts, optionally filtered by memory_id.
-#[tracing::instrument(skip(db), fields(memory_id_filter = ?memory_id_filter, limit))]
+/// List structured facts for a user, optionally filtered by memory_id.
+/// The `user_id` predicate enforces single-DB isolation so users sharing
+/// one monolith DB cannot observe each other's facts.
+#[tracing::instrument(skip(db), fields(memory_id_filter = ?memory_id_filter, limit, user_id))]
 pub async fn list_facts(
     db: &Database,
     memory_id_filter: Option<i64>,
     limit: usize,
+    user_id: i64,
 ) -> Result<Vec<StructuredFact>> {
     let sql = if let Some(mid) = memory_id_filter {
         format!(
             "SELECT {cols} FROM structured_facts \
-             WHERE memory_id = {mid} \
+             WHERE memory_id = {mid} AND user_id = ?1 \
              ORDER BY id DESC LIMIT {limit}",
             cols = FACT_COLUMNS,
             mid = mid,
@@ -157,6 +169,7 @@ pub async fn list_facts(
     } else {
         format!(
             "SELECT {cols} FROM structured_facts \
+             WHERE user_id = ?1 \
              ORDER BY id DESC LIMIT {limit}",
             cols = FACT_COLUMNS,
             limit = limit
@@ -166,7 +179,7 @@ pub async fn list_facts(
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
         let rows = stmt
-            .query_map([], row_to_fact)
+            .query_map(params![user_id], row_to_fact)
             .map_err(rusqlite_to_eng_error)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -177,13 +190,18 @@ pub async fn list_facts(
     .await
 }
 
-/// Hard-delete a structured fact by id (tenant-scoped).
-#[tracing::instrument(skip(db), fields(fact_id = id))]
-pub async fn delete_fact(db: &Database, id: i64) -> Result<()> {
+/// Hard-delete a structured fact by id, scoped to the given user.
+/// The `user_id` predicate ensures a user cannot delete another user's
+/// facts in single-DB mode.
+#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
+pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute("DELETE FROM structured_facts WHERE id = ?1", params![id])
-                .map_err(rusqlite_to_eng_error)
+            conn.execute(
+                "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)
         })
         .await?;
 

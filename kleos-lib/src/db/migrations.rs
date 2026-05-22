@@ -660,6 +660,18 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // Re-adds user_id to entity_cooccurrences that v38 dropped.
+    // structured_facts already got user_id from v64 (memory-core).
+    // Simple ADD COLUMN -- UNIQUE(entity_a_id, entity_b_id) does not need
+    // user_id since co-occurrence pairs are global but queried per-user via
+    // entity joins.
+    Migration {
+        version: 76,
+        description: "readd_user_id_graph_remainder",
+        up: run_migration_readd_user_id_graph_remainder,
+        down: None,
+        transactional: false,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -823,6 +835,11 @@ const MIGRATION_READD_USER_ID_INTELLIGENCE_REMAINDER: i64 = 74;
 /// evaluations, quality_metrics, session_quality, behavioral_drift_events)
 /// that migration 39 dropped (single-DB isolation).
 const MIGRATION_READD_USER_ID_THYMUS: i64 = 75;
+/// Version number for re-adding `user_id` to `entity_cooccurrences` (dropped
+/// by v38). `structured_facts` already got `user_id` re-added in the CORE
+/// schema (v64 memory-core migration path). Simple ADD COLUMN -- no UNIQUE
+/// constraint changes needed for either table.
+const MIGRATION_READD_USER_ID_GRAPH_REMAINDER: i64 = 76;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1444,6 +1461,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_THYMUS,
             "readd_user_id_thymus",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_GRAPH_REMAINDER {
+        info!("Running migration 76: readd_user_id_graph_remainder");
+        run_migration_readd_user_id_graph_remainder(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_GRAPH_REMAINDER,
+            "readd_user_id_graph_remainder",
         )?;
     }
 
@@ -3403,6 +3430,39 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
     info!("Migration 75 complete: user_id re-added to all 5 thymus tables");
+    Ok(())
+}
+
+/// Re-adds `user_id` to `entity_cooccurrences` (dropped by v38, never
+/// re-added). `structured_facts` already has `user_id` from v64.
+/// Registered in the MIGRATIONS slice as v76; `transactional: false` because
+/// the pragma_table_info guard makes it safe to re-run.
+fn run_migration_readd_user_id_graph_remainder(conn: &rusqlite::Connection) -> Result<()> {
+    // entity_cooccurrences: ADD COLUMN with idempotency guard.
+    // Use INTEGER DEFAULT 1 (no NOT NULL) to match the CORE schema definition.
+    let has_user_id: bool = conn
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'",
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .exists([])
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if !has_user_id {
+        conn.execute_batch(
+            "ALTER TABLE entity_cooccurrences ADD COLUMN user_id INTEGER DEFAULT 1;\
+             CREATE INDEX IF NOT EXISTS idx_ec_user ON entity_cooccurrences(user_id);",
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Migration 76: re-added entity_cooccurrences.user_id");
+    }
+    // Ensure idx_sf_user exists on structured_facts (which already has the
+    // column from v64 / CORE schema). IF NOT EXISTS makes this a no-op on
+    // databases that already carry the index.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_sf_user ON structured_facts(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 76 complete: graph_remainder user_id done");
     Ok(())
 }
 
