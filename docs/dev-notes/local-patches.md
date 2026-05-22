@@ -2603,6 +2603,136 @@ steady state au lieu de ~120. agent-forge hyp_4b2e8103.
 
 ---
 
+## Patch 21 -- bridge bidirectionnel `gate_requests` <-> `approvals` (2026-05-22)
+
+### Symptome
+
+Le pipeline `require_approval_patterns` du Patch 19b posait `gate_requests.status='pending_approval'` + insert dans le HashMap in-memory `state.pending_approvals` + notify `approval_notify`, mais **n'ecrivait rien dans la table `approvals`**. Or la TUI `engram-approval-tui` consomme `GET /approvals/pending` qui fait `SELECT FROM approvals WHERE status='pending'`. Resultat : tout match de pattern produisait un `gate_requests` invisible cote operateur, le caller `/gate/check` restait bloque 600s puis recevait `denied -- approval timed out or rejected`. Aucun consommateur alternatif des `gate_requests pending_approval` n'existait dans le repo (verifie via inspection live : TUI poll uniquement `/approvals/pending`, `eidolon-supervisor` push-only, GUI Svelte n'expose pas le flow).
+
+### Approche
+
+Niveau **chirurgical + additif** (cf. table de delta `rust-upstream-fork.md`) : ajouter une colonne nullable `gate_id INTEGER` a `approvals` via une nouvelle migration v56/v64 idempotente (guard `table_has_column`), faire ecrire le bloc 2bis du Patch 19b dans `approvals` via un helper `create_approval_with_gate`, et faire relayer le `decide_handler` cote `/approvals/{id}/decide` vers `state.pending_approvals.tx.send(approved)` + `respond_to_gate` quand l'approval a un `gate_id` non null.
+
+Le helper `read_gate_id_for_approval` est tolerant aux deploiements pre-migration (retourne `Ok(None)` si la colonne n'existe pas), ce qui evite une fenêtre de panne entre boot et premiere migration.
+
+Le filtre `respond_to_gate` et `mark_gate_timed_out` est elargi de `status='pending'` a `status IN ('pending', 'pending_approval')` pour permettre la transition terminale des gates Patch 19b (sans ca, les rows restaient en `pending_approval` apres timeout).
+
+### Fichiers touches (delta)
+
+- `kleos-lib/src/db/tenant_migrations.rs` -- entry `TenantMigration v56` + fn `apply_schema_v56_approvals_gate_id` avec guard `table_has_column`.
+- `kleos-lib/src/db/tenant_migrations.manifest` -- append `56: approvals_gate_id`.
+- `kleos-lib/src/db/migrations.rs` -- entry `Migration v64` + fn `run_migration_approvals_gate_id` + constant `MIGRATION_APPROVALS_GATE_ID` + bloc dispatch dans `apply_pending_migrations`.
+- `kleos-lib/src/db/migrations.manifest` -- append `64: approvals_gate_id`.
+- `kleos-lib/src/approvals/types.rs` -- champ `pub gate_id: Option<i64>` sur `Approval` (skip_serializing_if=None pour preserver le wire format).
+- `kleos-lib/src/approvals/mod.rs` -- nouvelle fn `create_approval_with_gate`, refactor de `create_approval` vers helper interne `create_approval_inner`, INSERT etendu avec fallback "no such column" (defense en profondeur), fn `read_gate_id_for_approval`, mise a jour `row_to_approval` pour initialiser `gate_id: None`.
+- `kleos-lib/src/gate/mod.rs` -- elargir filtre `status` dans `respond_to_gate` et `mark_gate_timed_out` a `IN ('pending', 'pending_approval')`.
+- `kleos-server/src/routes/gate/mod.rs` -- bloc 2bis appelle `create_approval_with_gate` apres notify, log warn (non bloquant) si echec.
+- `kleos-server/src/routes/approvals/mod.rs` -- import `read_gate_id_for_approval`, `respond_to_gate`, `ApprovalDecision`. `decide_handler` lit gate_id avant decide, puis si non null : appelle `respond_to_gate` (DB) + `state.pending_approvals.tx.send(approved)` (wake-up).
+
+### Tests
+
+- `cargo test -p kleos-lib --features bundled-sqlite --lib`: 110 passed, 1 ignored (test_tenant_isolation existant), 0 failed. Inclut `tenant_migrations_obey_append_only_manifest`, `migrations_obey_append_only_manifest`, `every_static_migration_is_dispatched`.
+- `cargo check -p kleos-server`: 0 erreurs, 10 warnings preexistants.
+- Build release WSL + deploy LXC 121 + test E2E : a faire par l'operateur (build serveur jamais lance depuis Claude, cf. memoire Kleos #3023).
+
+### Test E2E attendu post-deploy
+
+```bash
+# Terminal A : TUI sur poste operateur
+engram-approval-tui
+
+# Terminal B : caller bloquant qui matche un pattern
+curl -sf -m 660 -H "Authorization: Bearer $KEY" http://192.168.10.21:4200/gate/check \
+  -d '{"command":"systemctl status fake","agent":"test","skip_approval":false,"tool_name":"Bash"}'
+
+# Attendu : entree apparait dans la TUI sous <500ms (long-poll Patch 20c reveille).
+# Appuyer 'a' : caller debloque sous ~200ms avec {"allowed":true, "gate_id":N, ...}
+```
+
+### Leviers de desactivation (hot, sans rebuild)
+
+1. **Vider le fichier de patterns** : `truncate -s 0 /var/lib/kleos/gate/require_approval_patterns.txt`. Cache TTL 5s. Plus aucun match -> bloc 2bis jamais traverse.
+2. **Raccourcir le timeout** : `KLEOS_APPROVAL_TIMEOUT_SECS=5` dans `/etc/kleos/kleos.env`, restart kleos-server. Caller debloque en 5s (denied).
+3. **Ne pas demarrer la TUI** : audit trail en DB, timeout naturel. Comportement identique a aujourd'hui.
+
+### Patch 21.1 (2026-05-22) -- restriction du bridge aux pattern matches
+
+**Symptome post-deploy Patch 21** : chaque commande Bash via le hook `kleos-sh` PreToolUse de Claude Code declenche le bloc 2bis (tool_name=Bash est dans `TOOLS_REQUIRING_APPROVAL = [Bash, Write, Edit, WebFetch, WebSearch]`), donc Patch 21 INSERT dans `approvals` pour toutes mes Bash. La TUI affichait `Pending: 1` en boucle pour des commandes innocentes (ex: `ssh root@... grep ...`). Le `respond_to_gate` declenche par le decide TUI echouait Conflict 409 ("gate request 545 is already allowed") parce que le path normal de `check_command_with_context:281` pose status=`allowed`, pas `pending_approval`.
+
+**Approche** : un seul `if pattern_triggered_approval { ... }` wrapper autour de l'appel `create_approval_with_gate`. Niveau additif pur (~5 lignes), conservateur du comportement upstream pour `TOOLS_REQUIRING_APPROVAL` (HashMap + notify + wait timeout 600s silencieux, jamais visible TUI -- exactement le comportement pre-Patch 21). Seules les commandes matchant un `require_approval_patterns` explicite cree une row dans `approvals` -> TUI visible -> decide debloque correctement.
+
+**Fichiers touches** : `kleos-server/src/routes/gate/mod.rs` (bloc 2bis lignes ~261-310 sous Patch 21).
+
+agent-forge hypothesis: `hyp_aa454644`.
+
+**Lecon** : Patch 21 ne contenait pas de regression de son scope, mais exposait un comportement upstream pre-existant. Cross-call-site verification (cf. `.claude/rules/kleos-patching-discipline.md`) doit aussi inclure les conditions de declenchement amont, pas juste les call sites du symbole touche. Le bloc 2bis avait deux entrees (TOOLS_REQUIRING_APPROVAL OR pattern_triggered_approval), Patch 21 a uniforme le traitement sans distinguer -- Patch 21.1 corrige.
+
+### Conditions de retrait
+
+- **PR upstream candidate** : le decouplage des bus est anterieur a Patch 19b. Toute version upstream qui adopte le bridge similaire ou refactore le pipeline gate vers une file unique permet de drop Patch 21.
+- **Alternative possible** : refactor TUI sur `state.pending_approvals` via nouvelle route `/supervisor/inflight` (Option 3 du TODO), abandonnerait Patch 21. Pas envisage actuellement (perte audit trail au restart).
+
+---
+
+## Patch 23 -- cooldown adaptatif TUI sur le re-fetch /approvals/pending (2026-05-22)
+
+### Symptome
+
+Live test E2E Patch 21.1 sur LXC 121 tenant 2 : un seul approval pending matchant `systemctl *` produit un 429 HTTP cote TUI en quelques secondes. Wireshark capture **17 GET /approvals/pending** depuis le poste operateur 192.168.10.100 dans une fenetre de test (60s), pour un seul approval en attente. Le bucket `preauth_rate_limit_middleware` IP (hardcoded 20/min, cf. `kleos-server/src/middleware/rate_limit.rs:15`) sature -> 429 -> impossible d'approuver via TUI -> deadlock UX.
+
+### Cause racine
+
+Le serveur Patch 20c retourne **immediatement** quand `list_pending` n'est pas vide (correct par design : si une approval existe, le client doit la voir maintenant, pas attendre 30s). Cote TUI Patch 20b, le `MIN_REFETCH_INTERVAL = 500ms` etait calibre pour le scenario cascade (erreur reseau qui retourne instantanement, cf. rule `~/.claude/rules/rust-async-tokio.md` section "Cooldown anti-cascade"), pas pour le scenario steady-state ou une approval reste affichee 10-30s en attente de decision operateur. Resultat : 500ms cooldown x ~120 = 120 calls/min en pire cas (en pratique ~60 a cause de la latence reseau).
+
+C'est une dette UX exposee par Patch 21.1 (le bridge a rendu visible le polling agressif qui existait deja en local-state).
+
+### Approche
+
+Cooldown adaptatif selon l'etat de la queue cote client :
+
+- **Queue vide** (`self.approvals.is_empty()`) -> cooldown 500ms (`KLEOS_APPROVAL_TUI_REFETCH_BUSY_MS`, default `DEFAULT_REFETCH_BUSY_MS = 500`). Inchange vs Patch 20b. Le long-poll cote serveur tient 30s en steady state, le 500ms protege uniquement contre les erreurs instantanees (DNS fail, connection refused).
+- **Queue non-vide** (`count > 0`) -> cooldown 5s (`KLEOS_APPROVAL_TUI_REFETCH_PENDING_MS`, default `DEFAULT_REFETCH_PENDING_MS = 5000`). Calibre sur le temps de reflexion typique operateur 10-30s. Reduit la charge d'un facteur 10 (~4-6 calls pour un decide cycle 30s au lieu de ~60).
+- **Sur action operateur reussie** (`DecideOutcome::Ok`) : `last_fetch_completed_at = None` + `fetch_handle.abort()` pour bypass le cooldown 5s et avoir un refetch immediat post-decide -> UI reactive.
+
+Niveau **chirurgical** (~30 lignes ajoutees), additif sur kleos-approval-tui uniquement, candidat PR upstream.
+
+### Fichiers touches
+
+- `kleos-approval-tui/src/main.rs` : remplace la constante `MIN_REFETCH_INTERVAL` par deux constantes `DEFAULT_REFETCH_BUSY_MS` + `DEFAULT_REFETCH_PENDING_MS`, ajoute helpers `refetch_busy_interval()` / `refetch_pending_interval()` qui lisent les env vars, branche le cooldown adaptatif dans `try_start_fetch`, bypass dans `apply_decide_outcome` (`DecideOutcome::Ok`).
+
+### Tests
+
+- `cargo check -p kleos-approval-tui` : 0 erreurs, 10 warnings preexistants.
+- Build operateur : `cargo build --release -p kleos-approval-tui` (Windows MSVC, pas WSL Linux) puis copie du binaire `engram-approval-tui.exe` dans `%USERPROFILE%\.cargo\bin\`.
+
+### Conditions de retrait
+
+- **Patch 24 SSE** (planifie) : remplacement complet du polling par Server-Sent Events. Zero polling -> Patch 23 deviendrait obsolete. Voir `docs/dev-notes/sse-vs-longpoll-decision-todo.md` pour le design et la reflexion architecturale qui motive cette refonte.
+- Si upstream Ghost-Frame adopte SSE ou un autre mecanisme push, drop Patch 23 + Patch 24.
+
+### Leviers de tuning sans rebuild
+
+Sur le poste operateur, ajuster en live via env vars avant de relancer la TUI :
+
+```
+KLEOS_APPROVAL_TUI_REFETCH_BUSY_MS=500     # default, queue vide
+KLEOS_APPROVAL_TUI_REFETCH_PENDING_MS=5000 # default, queue non vide
+```
+
+Pour un poste partage entre plusieurs sessions ou pour relacher davantage la charge serveur, monter `_PENDING_MS` a 10000 (10s). Le delta UX est negligeable (5s de retard a l'apparition d'une nouvelle approval pendant qu'on en reflechit a une autre).
+
+agent-forge hypothesis : `hyp_567c06dd`.
+
+### Lecons
+
+- **Decouplage de bus producers/consumers** : avant d'ajouter un producer sur un nouveau statut/etat, mapper tous les consumers downstream (TUI, supervisor, GUI, autre client) via grep negatif `INSERT INTO <table-consumer>` depuis les sites producers. Cf. Kleos memoire #3019.
+- **`status = 'pending'` filter trop strict** : Patch 19b a introduit `'pending_approval'` sans elargir les filtres existants dans `respond_to_gate` et `mark_gate_timed_out`. Pattern general : quand on ajoute un nouveau status terminal ou intermediaire, grep tous les `WHERE status =` du domaine pour aligner.
+- **Helper "no such column" fallback** : pour les fonctions qui consomment une colonne ajoutee par une migration future, retourner `Ok(None)` plutot que crasher. Permet aux services de boot sans attendre le runner de migration.
+
+agent-forge spec_id : `spec_0f75e1e0`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

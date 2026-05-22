@@ -87,3 +87,4 @@
 61: chiasm_path_claims
 62: chiasm_agent_keys
 63: handoff_atoms
+64: approvals_gate_id

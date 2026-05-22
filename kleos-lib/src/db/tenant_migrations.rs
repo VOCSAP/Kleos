@@ -323,6 +323,15 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "supervisor_injections_repair",
         up: apply_schema_v55_supervisor_injections_repair,
     },
+    // Patch 21 (2026-05-22): adds `gate_id INTEGER` column to approvals so
+    // the gate Patch 19b pipeline can correlate a `pending_approval` row
+    // in `gate_requests` with the row consumed by the TUI through
+    // `/approvals/pending`. Idempotent via table_has_column guard.
+    TenantMigration {
+        version: 56,
+        description: "approvals_gate_id",
+        up: apply_schema_v56_approvals_gate_id,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -1097,6 +1106,27 @@ fn apply_schema_v55_supervisor_injections_repair(conn: &Connection) -> Result<()
             WHERE claimed_at IS NULL;",
     )
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 (index) failed: {e}")))?;
+    Ok(())
+}
+
+/// Tenant v56 (Patch 21, 2026-05-22): adds optional `gate_id INTEGER` to
+/// `approvals` so the gate `pending_approval` workflow can correlate a
+/// `gate_requests` row with the `approvals` row consumed by the TUI. The
+/// column is nullable; legacy approvals created via `POST /approvals`
+/// (manual workflow) keep `gate_id = NULL`. Idempotent via
+/// `table_has_column` guard, so the migration is a NO-OP if the column
+/// was previously added by a hot patch or manual intervention.
+fn apply_schema_v56_approvals_gate_id(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "approvals", "gate_id")? {
+        conn.execute_batch(
+            "ALTER TABLE approvals ADD COLUMN gate_id INTEGER;
+             CREATE INDEX IF NOT EXISTS idx_approvals_gate_id
+                ON approvals(gate_id) WHERE gate_id IS NOT NULL;",
+        )
+        .map_err(|e| {
+            EngError::DatabaseMessage(format!("tenant schema v56 (gate_id) failed: {e}"))
+        })?;
+    }
     Ok(())
 }
 

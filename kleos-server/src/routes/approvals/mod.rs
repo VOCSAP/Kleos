@@ -11,9 +11,10 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::approvals::{
-    create_approval, decide, expire_stale, get_approval, list_pending, CreateApprovalRequest,
-    DecideRequest,
+    create_approval, decide, expire_stale, get_approval, list_pending, read_gate_id_for_approval,
+    ApprovalDecision, CreateApprovalRequest, DecideRequest,
 };
+use kleos_lib::gate::respond_to_gate;
 
 mod types;
 use types::{ApprovalResponse, DecideBody};
@@ -153,11 +154,41 @@ async fn decide_handler(
 ) -> Result<Json<ApprovalResponse>, AppError> {
     let req = DecideRequest {
         decision: body.decision,
-        decided_by: body.decided_by,
-        reason: body.reason,
+        decided_by: body.decided_by.clone(),
+        reason: body.reason.clone(),
     };
 
+    // Patch 21 (2026-05-22): read the optional gate correlation BEFORE
+    // calling `decide`, so we can relay the decision to the gate caller
+    // even if downstream lookups fail later. `read_gate_id_for_approval`
+    // is safe on pre-migration deployments (returns Ok(None)).
+    let gate_id_opt = read_gate_id_for_approval(&db, &id).await?;
+
     let approval = decide(&db, &id, &req, auth.user_id).await?;
+
+    // Patch 21: if this approval was bridged from the gate pipeline,
+    // relay the decision back to the caller blocking inside check_handler.
+    // The respond_to_gate persistence is authoritative (DB CAS); the
+    // oneshot wake-up is best-effort. If the caller already timed out,
+    // both calls are no-ops and the caller has already received a denial.
+    if let Some(gate_id) = gate_id_opt {
+        let approved = matches!(approval.status, kleos_lib::approvals::ApprovalStatus::Approved)
+            || body.decision == ApprovalDecision::Approved;
+        let reason_for_gate = body.reason.as_deref();
+        if let Err(err) = respond_to_gate(&db, gate_id, approved, reason_for_gate, auth.user_id)
+            .await
+        {
+            tracing::warn!(
+                "approvals: bridged gate_id={} respond_to_gate failed: {}",
+                gate_id,
+                err
+            );
+        }
+        let mut approvals_map = state.pending_approvals.lock().await;
+        if let Some((_, tx)) = approvals_map.remove(&gate_id) {
+            let _ = tx.send(approved);
+        }
+    }
 
     // Notify any waiting watchers that a decision was made
     if let Some(ref tx) = state.approval_notify {

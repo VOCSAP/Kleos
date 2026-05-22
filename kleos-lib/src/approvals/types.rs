@@ -44,6 +44,11 @@ pub struct Approval {
     pub expires_at: DateTime<Utc>,
     pub decided_at: Option<DateTime<Utc>>,
     pub user_id: i64,
+    /// Patch 21 (2026-05-22): correlation with a `gate_requests` row when
+    /// the approval was created by the gate `require_approval_patterns`
+    /// pipeline. `None` for manual approvals created via `POST /approvals`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_id: Option<i64>,
 }
 
 impl Approval {

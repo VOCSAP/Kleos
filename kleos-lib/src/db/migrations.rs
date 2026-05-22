@@ -557,6 +557,17 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    // Patch 21 (2026-05-22): adds `gate_id INTEGER` column to approvals so
+    // the gate Patch 19b pipeline can correlate a `pending_approval` row
+    // in `gate_requests` with the row consumed by the TUI through
+    // `/approvals/pending`. Idempotent via `add_column_if_not_exists`.
+    Migration {
+        version: 64,
+        description: "approvals_gate_id",
+        up: run_migration_approvals_gate_id,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -689,6 +700,8 @@ const MIGRATION_CHIASM_PATH_CLAIMS: i64 = 61;
 const MIGRATION_CHIASM_AGENT_KEYS: i64 = 62;
 /// Version number for creating handoff_atoms and atom_entity_links tables.
 const MIGRATION_HANDOFF_ATOMS: i64 = 63;
+/// Patch 21 (2026-05-22): version number for adding `gate_id` to approvals.
+const MIGRATION_APPROVALS_GATE_ID: i64 = 64;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1193,6 +1206,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         record_migration(conn, MIGRATION_HANDOFF_ATOMS, "handoff_atoms")?;
     }
 
+    if current_version < MIGRATION_APPROVALS_GATE_ID {
+        info!("Running migration 64: approvals_gate_id");
+        run_migration_approvals_gate_id(conn)?;
+        record_migration(conn, MIGRATION_APPROVALS_GATE_ID, "approvals_gate_id")?;
+    }
+
     Ok(())
 }
 
@@ -1570,6 +1589,21 @@ fn run_migration_brain_patterns(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
         ",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    Ok(())
+}
+
+/// Migration 64 (Patch 21, 2026-05-22): adds optional `gate_id INTEGER`
+/// to `approvals` so the gate `pending_approval` workflow can correlate a
+/// `gate_requests` row with the `approvals` row consumed by the TUI.
+/// Idempotent via `add_column_if_not_exists`. Nullable column preserves
+/// retro-compatibility with manual approvals created via `POST /approvals`.
+fn run_migration_approvals_gate_id(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "approvals", "gate_id", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_approvals_gate_id
+            ON approvals(gate_id) WHERE gate_id IS NOT NULL;",
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())

@@ -337,10 +337,15 @@ pub async fn respond_to_gate(
     let approved_copy = approved;
 
     db.write(move |conn| {
+        // Patch 21 (2026-05-22): accept both `pending` (legacy upstream
+        // path via `POST /gate/respond`) and `pending_approval` (Patch 19b
+        // require_approval_patterns path) so the new bridge from
+        // `decide_handler` of /approvals can transition gates that the
+        // gate cascade put in `pending_approval`.
         let rows_affected = conn
             .execute(
                 "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
-             WHERE id = ?3 AND user_id = ?4 AND status = 'pending'",
+             WHERE id = ?3 AND user_id = ?4 AND status IN ('pending', 'pending_approval')",
                 rusqlite::params![status, reason_str, gate_id, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
@@ -402,10 +407,14 @@ pub struct GateDecision {
 pub async fn mark_gate_timed_out(db: &Database, gate_id: i64, user_id: i64) -> Result<bool> {
     let reason = "approval timed out";
     db.write(move |conn| {
+        // Patch 21 (2026-05-22): accept both `pending` and
+        // `pending_approval` so timeouts on the Patch 19b path persist a
+        // terminal `denied` status (previously the row stayed forever in
+        // `pending_approval` after the caller timed out).
         let rows_affected = conn
             .execute(
                 "UPDATE gate_requests SET status = 'denied', reason = ?1, updated_at = datetime('now')
-             WHERE id = ?2 AND user_id = ?3 AND status = 'pending'",
+             WHERE id = ?2 AND user_id = ?3 AND status IN ('pending', 'pending_approval')",
                 rusqlite::params![reason, gate_id, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
