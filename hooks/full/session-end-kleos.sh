@@ -14,7 +14,7 @@ resolve_home() {
 
 HOME_DIR="$(resolve_home)"
 LOG_DIR="$HOME_DIR/.claude/logs"
-STATE_DIR="$HOME_DIR/.claude/session-env"
+STATE_DIR="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}"
 SESSION_KEY="${PPID:-$$}"
 STAMP_FILE="$STATE_DIR/engram-ready-${SESSION_KEY}"
 mkdir -p "$LOG_DIR" 2>/dev/null || true

@@ -23,7 +23,7 @@ resolve_home() {
 
 HOME_DIR="$(resolve_home)"
 LOG_DIR="$HOME_DIR/.claude/logs"
-CRED_SESSION_ENV="$HOME_DIR/.claude/session-env/cred-get-session.env"
+CRED_SESSION_ENV="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}/cred-get-session.env"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
 if [ -f "$CRED_SESSION_ENV" ]; then
@@ -107,7 +107,7 @@ except Exception:
 log "fired. prompt_len=${#USER_MSG}"
 
 # ---- Write consent stamp (pre-bash-guardrail checks this) ----
-CONSENT_STAMP="$HOME_DIR/.claude/session-env/user-consent-stamp"
+CONSENT_STAMP="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}/user-consent-stamp"
 touch "$CONSENT_STAMP" 2>/dev/null || true
 
 # ---- Best-effort memory recall (via Mnemonic sidecar, fallback to direct Engram) ----

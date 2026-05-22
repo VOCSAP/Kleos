@@ -29,7 +29,7 @@ resolve_home() {
 }
 
 HOME_DIR="$(resolve_home)"
-STATE_DIR="$HOME_DIR/.claude/session-env"
+STATE_DIR="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}"
 LOG_DIR="$HOME_DIR/.claude/logs"
 STAMP_FILE="$STATE_DIR/engram-searched"  # kept stable: shared with session-start/session-end
 LOG_FILE="$LOG_DIR/enforce-kleos-search.log"

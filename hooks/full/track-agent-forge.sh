@@ -17,7 +17,7 @@ resolve_home() {
 }
 
 HOME_DIR="$(resolve_home)"
-STATE_DIR="$HOME_DIR/.claude/session-env"
+STATE_DIR="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}"
 LOG_DIR="$HOME_DIR/.claude/logs"
 LOG_FILE="$LOG_DIR/track-agent-forge.log"
 mkdir -p "$STATE_DIR" "$LOG_DIR" 2>/dev/null || true
@@ -79,34 +79,8 @@ if [ -n "$BASH_CMD" ] && echo "$BASH_CMD" | grep -qE 'agent-forge\s+'; then
   fi
 fi
 
-# Legacy MCP tool support (for backwards compatibility)
-case "$TOOL_NAME" in
-  mcp__agent-forge__spec_task)
-    echo "spec_task" > "$FORGE_STATE"
-    rm -f "$FORGE_VERIFY" "$FORGE_CHALLENGED" "$FORGE_DIFFED" 2>/dev/null
-    log "State: spec_task active (MCP), completion gates reset"
-    ;;
-  mcp__agent-forge__log_hypothesis)
-    echo "log_hypothesis" > "$FORGE_STATE"
-    rm -f "$FORGE_VERIFY" "$FORGE_CHALLENGED" "$FORGE_DIFFED" 2>/dev/null
-    log "State: log_hypothesis active (MCP), completion gates reset"
-    ;;
-  mcp__agent-forge__verify)
-    echo "verified" > "$FORGE_VERIFY"
-    log "State: verify completed (MCP)"
-    ;;
-  mcp__agent-forge__challenge_code)
-    echo "challenged" > "$FORGE_CHALLENGED"
-    log "State: challenge_code completed (MCP)"
-    ;;
-  mcp__agent-forge__session_diff)
-    echo "diffed" > "$FORGE_DIFFED"
-    log "State: session_diff completed (MCP)"
-    ;;
-  mcp__agent-forge__log_outcome)
-    rm -f "$FORGE_STATE" "$FORGE_VERIFY" "$FORGE_CHALLENGED" "$FORGE_DIFFED" 2>/dev/null
-    log "State: task cycle complete (MCP), all state reset"
-    ;;
-esac
+# Note 2026-05-22: l'ancien case mcp__agent-forge__<subcmd> a ete retire.
+# agent-forge reste expose en CLI uniquement (cf. bloc agent-forge\s+... ci-dessus).
+# Aucun binaire mcp__agent-forge__* n'est expose dans l'ecosysteme actuel.
 
 exit 0

@@ -19,7 +19,7 @@ resolve_home() {
 }
 
 HOME_DIR="$(resolve_home)"
-STATE_DIR="$HOME_DIR/.claude/session-env"
+STATE_DIR="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}"
 LOG_DIR="$HOME_DIR/.claude/logs"
 FORGE_STATE="$STATE_DIR/agent-forge-active"
 BYPASS_FILE="/tmp/claude-forge-bypass"

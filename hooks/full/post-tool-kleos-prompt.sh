@@ -14,7 +14,7 @@ resolve_home() {
 }
 
 HOME_DIR="$(resolve_home)"
-STATE_DIR="$HOME_DIR/.claude/session-env"
+STATE_DIR="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}"
 LAST_ERROR_FILE="$STATE_DIR/last-bash-error"
 mkdir -p "$STATE_DIR" 2>/dev/null || true
 

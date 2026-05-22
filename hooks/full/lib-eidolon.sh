@@ -13,7 +13,7 @@
 # upstream-canonical local kleos-server (127.0.0.1:4200).
 
 _HOOK_HOME="${HOME:-${USERPROFILE:-.}}"
-_CRED_SESSION_ENV="$_HOOK_HOME/.claude/session-env/cred-get-session.env"
+_CRED_SESSION_ENV="${AGENT_FORGE_STATE_DIR:-/tmp/agent-forge-state}/cred-get-session.env"
 
 if [ -f "$_CRED_SESSION_ENV" ]; then
   # SessionStart writes an export line here so later hooks can use `cred get`
