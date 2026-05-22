@@ -6,11 +6,10 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::gate::{
-    approval_patterns, check_command_with_context, check_ssh_dns_rebind,
+    approval_patterns, approval_timeout_secs, check_command_with_context, check_ssh_dns_rebind,
     cleanup_expired_approvals, complete_gate, complete_latest_gate, mark_gate_timed_out,
     parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request, GateCheckRequest,
-    GateCheckResult, GateRequestInsert, PendingApproval, APPROVAL_TIMEOUT_SECS,
-    TOOLS_REQUIRING_APPROVAL,
+    GateCheckResult, GateRequestInsert, PendingApproval, TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
@@ -91,6 +90,17 @@ async fn check_handler(
         require_env.as_deref(),
         &gate_cfg.require_approval_patterns,
     );
+    // Patch 19c: operator-extensible OS-specific deny rules. Loaded through
+    // the same cascade (file > env > defaults Vec::new()) -- typically used
+    // to add Windows-flavoured destructive patterns that the Linux-centric
+    // hardcoded `check_dangerous_patterns` does not cover.
+    let extra_dangerous_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS").ok();
+    let extra_dangerous_raw = approval_patterns::load(
+        gate_cfg.extra_dangerous_patterns_file.as_deref(),
+        extra_dangerous_env.as_deref(),
+        &gate_cfg.extra_dangerous_patterns,
+    );
 
     // credd-resolve patterns so `{{secret:...}}` placeholders work uniformly
     // across all three cascade levels.
@@ -112,6 +122,15 @@ async fn check_handler(
                 .await?,
         );
     }
+    let mut resolved_extra_dangerous = Vec::with_capacity(extra_dangerous_raw.len());
+    for pattern in &extra_dangerous_raw {
+        resolved_extra_dangerous.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
 
     let mut result = check_command_with_context(
         &db,
@@ -120,6 +139,7 @@ async fn check_handler(
         Some(&resolved_command),
         &resolved_patterns,
         &resolved_require_approval,
+        &resolved_extra_dangerous,
         &state.config,
         body.session_id.as_deref(),
     )
@@ -245,7 +265,7 @@ async fn check_handler(
             }
 
             let wait_outcome =
-                tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx)
+                tokio::time::timeout(std::time::Duration::from_secs(approval_timeout_secs()), rx)
                     .await;
 
             // SECURITY (SEC-CRIT-2): resolve the outcome against the DB, which

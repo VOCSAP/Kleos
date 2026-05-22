@@ -222,6 +222,19 @@ pub struct GateConfig {
     /// (typically `${KLEOS_DATA_DIR}/gate/require_approval_patterns.txt`).
     #[serde(default)]
     pub require_approval_patterns_file: Option<std::path::PathBuf>,
+    // -- Patch 19c -- extra_dangerous_patterns additive operateur-extensible --
+    /// Patterns destructifs operateur qui s'ajoutent au hardcoded
+    /// `check_dangerous_patterns`. Cible Windows (Remove-Item C:\Windows,
+    /// format C:, bcdedit /delete, etc.) non couvert par les paths Linux
+    /// hardcoded. Match -> block status DB (pas de hand-off TUI). Defaults
+    /// `Vec::new()` (opt-in).
+    #[serde(default)]
+    pub extra_dangerous_patterns: Vec<String>,
+    /// Optional path to a file overriding `extra_dangerous_patterns` via la
+    /// cascade fichier > env > defaults (default
+    /// `${KLEOS_DATA_DIR}/gate/extra_dangerous_patterns.txt`).
+    #[serde(default)]
+    pub extra_dangerous_patterns_file: Option<std::path::PathBuf>,
 }
 
 impl Default for GateConfig {
@@ -247,6 +260,9 @@ impl Default for GateConfig {
             require_approval_patterns: Vec::new(),
             blocked_patterns_file: None,
             require_approval_patterns_file: None,
+            // Patch 19c: extra_dangerous_patterns opt-in additive.
+            extra_dangerous_patterns: Vec::new(),
+            extra_dangerous_patterns_file: None,
         }
     }
 }
@@ -408,6 +424,18 @@ impl EidolonConfig {
             }
         } else if let Some(p) = gate_data_file("require_approval_patterns.txt") {
             c.gate.require_approval_patterns_file = Some(p);
+        }
+        // Patch 19c: extra_dangerous_patterns env loaders (additive, Windows-friendly).
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS") {
+            c.gate.extra_dangerous_patterns =
+                v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+        }
+        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS_FILE") {
+            if !v.is_empty() {
+                c.gate.extra_dangerous_patterns_file = Some(std::path::PathBuf::from(v));
+            }
+        } else if let Some(p) = gate_data_file("extra_dangerous_patterns.txt") {
+            c.gate.extra_dangerous_patterns_file = Some(p);
         }
         if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_RESERVED_TARGETS") {
             c.gate.reserved_targets = v.split(',').map(|s| s.trim().to_string()).collect();

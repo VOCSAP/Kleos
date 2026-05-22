@@ -2202,6 +2202,116 @@ puisqu'elles partagent le meme matcher. 5 tests inline `patch19b_glob_*`
 couvrent backward-compat, glob simple, glob multiples ordonnes, glob seul,
 bords (consecutive et boundary stars).
 
+### Patch 19c -- timeout env var + blocked_patterns externalises + extra_dangerous Windows
+
+Trois ameliorations interdependantes posees sur la cascade gate apres
+le fix contract long-poll de Patch 19b.
+
+#### 1. APPROVAL_TIMEOUT_SECS configurable via env var
+
+Pattern Patch 16b. La const `APPROVAL_TIMEOUT_SECS = 120` est preservee
+en tant que default pour ne pas casser les callers externes. Une nouvelle
+fn `approval_timeout_secs()` lit l'env var
+`KLEOS_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS` (apres migration KLEOS_*
+-> ENGRAM_* au boot par `config::migrate_env_prefix`) avec fallback sur
+la const + `warn!` log si la valeur n'est pas parseable. Le call site
+`routes/gate/mod.rs:check_handler` utilise la fn au lieu de la const.
+
+Motivation : 120s est court pour l'usage reel (operateur qui ne regarde
+pas l'ecran en continu). L'env var permet de tuner sans rebuild. Cote
+LXC 121, set dans `/etc/kleos/kleos.env` :
+```env
+KLEOS_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS=600
+```
+Cote hook Windows, garder `KLEOS_SH_APPROVAL_TIMEOUT_SECS` >= timeout
+serveur + marge (e.g. 660 ou plus).
+
+#### 2. Externalisation des 10 defauts BLOCKED_PATTERN dans submodule
+
+Les 10 defauts historiques de `GateConfig::default()` (destruction
+filesystem root, mkfs, dd if=, fork bomb, reboot/shutdown/halt,
+`/dev/sda`, `chmod -R 777 /`) sont copies dans
+`gate-rules/blocked_patterns.txt` du submodule. Avec ce fichier present
+(meme vide), la cascade s'arrete au niveau fichier -- l'operateur peut
+commenter ou retirer chaque pattern.
+
+Headers explicites dans le fichier rappellent que `check_dangerous_patterns`
+hardcoded reste actif au-dessus (garde-fou ultime).
+
+#### 3. Nouvelle cascade `extra_dangerous_patterns` operateur-extensible
+
+Motivation : `check_dangerous_patterns` (kleos-lib/src/gate/validator.rs)
+couvre les paths Linux (`rm -rf /home`, `/var`, `/etc`, `/usr`, `/opt`,
+`/boot`, mkfs, dd if=, etc.) mais rien de Windows-friendly. Sous Windows,
+`Remove-Item -Recurse C:\Windows\System32`, `format C:`,
+`bcdedit /delete`, `Clear-Disk`, etc. passaient sans gate hardcoded.
+
+Solution additive sans toucher au hardcoded :
+
+- `GateConfig` +2 champs `extra_dangerous_patterns: Vec<String>` +
+  `extra_dangerous_patterns_file: Option<PathBuf>`, defaults `Vec::new()`
+  et None (opt-in).
+- Env loaders `KLEOS_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS{,_FILE}`,
+  auto-resolus sous `${KLEOS_DATA_DIR}/gate/extra_dangerous_patterns.txt`.
+- Signature `check_command_with_context` etendue (8 -> 9 params)
+  avec `extra_dangerous_patterns: &[String]`. Bloc insere via `.or_else`
+  entre `check_dangerous_patterns` (hardcoded) et `check_blocked_patterns`
+  (config). Reason etiquettee `"Command matched extra dangerous pattern:"`
+  pour tracabilite.
+- Hard deny : `allowed=false`, `requires_approval=false`, status DB
+  `blocked`. Pas de hand-off TUI -- pour du soft gate operateur, voir
+  `require_approval_patterns.txt`.
+- Caller `routes/gate/mod.rs:check_handler` charge la 3e cascade via
+  `approval_patterns::load(...)`, resolve via credd, puis passe le slice
+  au pipeline.
+
+Le fichier initial `gate-rules/extra_dangerous_patterns.txt` (~40 patterns
+Windows conservatifs) couvre :
+- System directories (`*system32*`, `*syswow64*`, Remove-Item/rd/del
+  sur `C:\Windows`)
+- Volume / disk (`format c:`, `format-volume`, `clear-disk`,
+  `diskpart*clean`, `remove-partition`)
+- Boot (`bcdedit /delete`, `bcdedit /set*safeboot`, `reagentc /disable`)
+- Registry (`reg delete hklm`, `remove-itemproperty*hklm:`)
+- Services + scheduled tasks (`remove-service`, `sc.exe delete`,
+  `schtasks /delete`)
+- Power (`stop-computer`, `shutdown /s`, `shutdown /r /t 0`)
+- WSL / Hyper-V (`wsl --unregister`, `wsl --shutdown`, `hyper-v*remove-vm`)
+- Domain (`gpupdate /force /boot /sync`, `dsadd`, `dsrm`)
+
+#### Fichiers touches (Patch 19c)
+
+| Path | Action | Niveau |
+|---|---|---|
+| `kleos-lib/src/gate/mod.rs` | fn approval_timeout_secs() + signature 9 params + bloc extra dans `.or_else` + 5 tests | chirurgical |
+| `kleos-lib/src/config.rs` | +2 champs `GateConfig`, +2 env loaders, defaults preserves | additif |
+| `kleos-server/src/routes/gate/mod.rs` | caller charge 3e cascade + credd resolve + appel `approval_timeout_secs()` | chirurgical |
+| `gate-rules/blocked_patterns.txt` | NEW (submodule 0201a7a) | doc/config |
+| `gate-rules/extra_dangerous_patterns.txt` | NEW (submodule 0201a7a) | doc/config |
+| `docs/dev-notes/local-patches.md` | cette section | doc |
+
+#### Tests
+
+- Unit : `cargo test -p kleos-lib --features bundled-sqlite gate::tests::patch19c_`
+  -- 5 cas (timeout default, env override, unparseable fallback, extra
+  pattern match avec reason specifique, extra no-match passe a blocked,
+  hardcoded short-circuit sur l'extra).
+- Total 51 tests `gate::` OK Windows.
+
+#### Spec agent-forge
+
+`spec_c33dc173` completed, 3/3 verify steps OK
+(`cargo check kleos-server`, `cargo test gate::tests::patch19c_`,
+`cargo test gate::`).
+
+#### Conditions de retrait
+
+Le point 1 (timeout env var) est candidat PR upstream legitime --
+pattern generique et utile pour tout deploiement. Les points 2 et 3
+restent operateur-specifiques (defaut empty / patterns Windows) et
+peuvent etre absorbe upstream uniquement si Ghost-Frame adopte la notion
+de fichier de cascade par categorie.
+
 ### Submodule gate-rules + workflow operateur
 
 Pour faciliter l'edition des fichiers cascade niveau 1 sans SSH directement

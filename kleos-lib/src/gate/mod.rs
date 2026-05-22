@@ -26,8 +26,30 @@ pub const READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep", "LS", "TodoRead"]
 /// Tools that require human approval before execution.
 pub const TOOLS_REQUIRING_APPROVAL: &[&str] = &["Bash", "Write", "Edit", "WebFetch", "WebSearch"];
 
-/// Seconds to wait for a human approval before timing out and blocking.
+/// Default seconds to wait for a human approval before timing out and blocking.
+/// Preserved as a const for backward-compat with callers that reference it
+/// directly; the runtime value goes through `approval_timeout_secs()` which
+/// honours `KLEOS_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS` (Patch 19c).
 pub const APPROVAL_TIMEOUT_SECS: u64 = 120;
+
+/// Resolve the human-approval long-poll timeout. Reads
+/// `KLEOS_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS` (after KLEOS_* -> ENGRAM_*
+/// migration done at boot by `config::migrate_env_prefix`) with fallback on
+/// the `APPROVAL_TIMEOUT_SECS` const. Unparseable values fall back to the
+/// const with a `warn!` log; the operator never blocks on a typo.
+pub fn approval_timeout_secs() -> u64 {
+    match std::env::var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS") {
+        Ok(v) => v.parse::<u64>().unwrap_or_else(|e| {
+            tracing::warn!(
+                "ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS unparseable ({}): falling back to {}s",
+                e,
+                APPROVAL_TIMEOUT_SECS
+            );
+            APPROVAL_TIMEOUT_SECS
+        }),
+        Err(_) => APPROVAL_TIMEOUT_SECS,
+    }
+}
 
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
@@ -77,6 +99,7 @@ pub async fn check_command(
         None,
         &[],
         &[],
+        &[],
         &Config::default(),
         req.session_id.as_deref(),
     )
@@ -92,7 +115,7 @@ pub async fn check_command(
 /// `pending_approval` and returns `requires_approval=true` so the caller
 /// (Claude Code hook, sidecar, engram-approval-tui) can interrupt for human
 /// review instead of denying outright.
-#[tracing::instrument(skip(db, req, resolved_command, blocked_patterns, require_approval_patterns, config), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id, blocked_patterns_count = blocked_patterns.len(), require_approval_patterns_count = require_approval_patterns.len()))]
+#[tracing::instrument(skip(db, req, resolved_command, blocked_patterns, require_approval_patterns, extra_dangerous_patterns, config), fields(agent = %req.agent, tool_name = ?req.tool_name, command_len = req.command.len(), user_id, blocked_patterns_count = blocked_patterns.len(), require_approval_patterns_count = require_approval_patterns.len(), extra_dangerous_patterns_count = extra_dangerous_patterns.len()))]
 pub async fn check_command_with_context(
     db: &Database,
     req: &GateCheckRequest,
@@ -100,6 +123,7 @@ pub async fn check_command_with_context(
     resolved_command: Option<&str>,
     blocked_patterns: &[String],
     require_approval_patterns: &[String],
+    extra_dangerous_patterns: &[String],
     config: &Config,
     session_id: Option<&str>,
 ) -> Result<GateCheckResult> {
@@ -132,8 +156,21 @@ pub async fn check_command_with_context(
 
     let command_for_checks = resolved_command.unwrap_or(&req.command);
 
-    // 1. Check dangerous patterns (static rules + config-aware rules)
+    // 1. Check dangerous patterns -- cascade hardcoded -> extra (Patch 19c
+    //    additive) -> config blocked. extra_dangerous_patterns is intended for
+    //    operator-extensible OS-specific deny rules (typically Windows paths
+    //    not covered by the Linux-centric hardcoded list). Re-labelled in
+    //    the reason for traceability.
     if let Some(reason) = check_dangerous_patterns(command_for_checks, config)
+        .or_else(|| {
+            check_blocked_patterns(command_for_checks, extra_dangerous_patterns).map(|r| {
+                r.replacen(
+                    "Command matched blocked pattern:",
+                    "Command matched extra dangerous pattern:",
+                    1,
+                )
+            })
+        })
         .or_else(|| check_blocked_patterns(command_for_checks, blocked_patterns))
     {
         // Store blocked request
@@ -921,6 +958,7 @@ mod tests {
             None,
             &[],
             &require_approval,
+            &[],
             &Config::default(),
             None,
         )
@@ -956,6 +994,7 @@ mod tests {
             None,
             &[],
             &["rm -rf".to_string()], // listed in require_approval too -- must lose
+            &[],
             &Config::default(),
             None,
         )
@@ -984,6 +1023,7 @@ mod tests {
             None,
             &[],
             &["apt install".to_string(), "docker rm".to_string()],
+            &[],
             &Config::default(),
             None,
         )
@@ -1039,6 +1079,124 @@ mod tests {
         assert!(!pattern_matches("baz qux foo", "foo*baz")); // foo must precede baz
     }
 
+    // -- Patch 19c -- approval_timeout_secs + extra_dangerous_patterns --
+
+    #[test]
+    fn patch19c_approval_timeout_default_when_env_unset() {
+        // Save and clear in case a parent shell exported the var.
+        let prev = std::env::var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS").ok();
+        std::env::remove_var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS");
+        assert_eq!(approval_timeout_secs(), APPROVAL_TIMEOUT_SECS);
+        if let Some(v) = prev {
+            std::env::set_var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS", v);
+        }
+    }
+
+    #[test]
+    fn patch19c_approval_timeout_env_override_and_unparseable_fallback() {
+        let prev = std::env::var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS").ok();
+        std::env::set_var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS", "600");
+        assert_eq!(approval_timeout_secs(), 600);
+        std::env::set_var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS", "not-a-number");
+        assert_eq!(
+            approval_timeout_secs(),
+            APPROVAL_TIMEOUT_SECS,
+            "unparseable env must fall back to the const default"
+        );
+        match prev {
+            Some(v) => std::env::set_var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS", v),
+            None => std::env::remove_var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS"),
+        }
+    }
+
+    #[tokio::test]
+    async fn patch19c_extra_dangerous_pattern_blocks_with_specific_reason() {
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "Remove-Item -Recurse C:\\Windows\\System32".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let extra = vec!["*system32*".to_string()];
+        let res = check_command_with_context(
+            &db,
+            &req,
+            1,
+            None,
+            &[],
+            &[],
+            &extra,
+            &Config::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed, "extra dangerous match must block");
+        assert!(!res.requires_approval, "extra dangerous is hard deny, not approval");
+        let reason = res.reason.as_deref().unwrap_or("");
+        assert!(
+            reason.contains("extra dangerous pattern"),
+            "reason must distinguish extra source for traceability, got: {reason}"
+        );
+    }
+
+    #[tokio::test]
+    async fn patch19c_extra_no_match_passes_to_subsequent_stages() {
+        // No match in extra_dangerous + no match in blocked + no match in
+        // require_approval => command should be allowed.
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "echo benign".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let extra = vec!["*system32*".to_string(), "format c:".to_string()];
+        let res = check_command_with_context(
+            &db, &req, 1, None, &[], &[], &extra, &Config::default(), None,
+        )
+        .await
+        .unwrap();
+        assert!(res.allowed);
+        assert!(!res.requires_approval);
+    }
+
+    #[tokio::test]
+    async fn patch19c_hardcoded_dangerous_wins_over_extra() {
+        // If a command would match both the hardcoded dangerous list and the
+        // extra list, the hardcoded one must win (its reason is more
+        // informative and the cascade order is deterministic).
+        use crate::db::Database;
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let req = GateCheckRequest {
+            command: "rm -rf /etc/nginx".to_string(),
+            agent: "test-agent".to_string(),
+            context: None,
+            tool_name: Some("Bash".to_string()),
+            session_id: None,
+            skip_approval: false,
+        };
+        let extra = vec!["nginx".to_string()]; // would match too
+        let res = check_command_with_context(
+            &db, &req, 1, None, &[], &[], &extra, &Config::default(), None,
+        )
+        .await
+        .unwrap();
+        assert!(!res.allowed);
+        let reason = res.reason.unwrap_or_default();
+        assert!(
+            !reason.contains("extra dangerous"),
+            "hardcoded deny must short-circuit before the extra cascade, got: {reason}"
+        );
+    }
+
     #[tokio::test]
     async fn patch19b_pending_secrets_still_set_after_no_approval_match() {
         // Regression: the new bloc 2bis must not swallow has_secret_placeholders
@@ -1060,6 +1218,7 @@ mod tests {
             None,
             &[],
             &[], // no require_approval patterns
+            &[],
             &Config::default(),
             None,
         )
