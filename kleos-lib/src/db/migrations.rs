@@ -564,6 +564,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_memory_core),
         transactional: true,
     },
+    Migration {
+        version: 65,
+        description: "readd_user_id_webhooks",
+        up: run_migration_readd_user_id_webhooks,
+        down: Some(down_migration_readd_user_id_webhooks),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -698,6 +705,8 @@ const MIGRATION_CHIASM_AGENT_KEYS: i64 = 62;
 const MIGRATION_HANDOFF_ATOMS: i64 = 63;
 /// Version number for re-adding user_id to the memory core tables (reverses v25).
 const MIGRATION_READD_USER_ID_MEMORY_CORE: i64 = 64;
+/// Version number for re-adding user_id to the webhooks table (single-DB isolation).
+const MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 65;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1209,6 +1218,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_MEMORY_CORE,
             "readd_user_id_memory_core",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_WEBHOOKS {
+        info!("Running migration 65: readd_user_id_webhooks");
+        run_migration_readd_user_id_webhooks(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_WEBHOOKS,
+            "readd_user_id_webhooks",
         )?;
     }
 
@@ -2296,6 +2315,62 @@ fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resu
     }
 
     info!("Migration 64 reverted: user_id dropped from memory core tables");
+    Ok(())
+}
+
+/// Migration 65: re-add `user_id` to the `webhooks` table.
+///
+/// The monolith `webhooks` table never carried `user_id` (the shard variant did
+/// until tenant v30 dropped it). With single-DB mode now serving every user from
+/// one monolith, webhook reads/writes need a row-level owner so the always-applied
+/// `WHERE user_id = ?` predicate can isolate them. Existing rows backfill to
+/// `user_id = 1` (the system owner); single-DB mode was fail-closed before this
+/// repair, so no real multi-user webhook data exists to mis-attribute. New inserts
+/// carry the real `user_id`.
+///
+/// Idempotent: the `ADD COLUMN` is guarded by `pragma_table_info` and the index
+/// uses `IF NOT EXISTS`.
+fn run_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id == 0 {
+        conn.execute(
+            "ALTER TABLE webhooks ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
+            [],
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        info!("Re-added webhooks.user_id (migration 65)");
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("Migration 65 complete: user_id re-added to webhooks");
+    Ok(())
+}
+
+/// Reverse migration 65: drop the `idx_webhooks_user` index and the `user_id`
+/// column from `webhooks`.
+fn down_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let has_user_id: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    if has_user_id > 0 {
+        conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 65 reverted: user_id dropped from webhooks");
     Ok(())
 }
 

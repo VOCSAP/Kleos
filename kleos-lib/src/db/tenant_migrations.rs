@@ -323,12 +323,24 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "memories_user_id_readd",
         up: apply_schema_v55_memories_readd,
     },
+    // Re-add user_id to the shard webhooks table (reverses v30). The runner
+    // backfills existing webhook rows to the shard owner after this runs; see
+    // backfill_owner_tables_for_version.
+    TenantMigration {
+        version: 56,
+        description: "webhooks_user_id_readd",
+        up: apply_schema_v56_webhooks_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
 /// core tables. The runner backfills existing rows to the shard owner right
 /// after this migration's SQL runs.
 const TENANT_MIGRATION_READD_USER_ID: i64 = 55;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard webhooks
+/// table. The runner backfills existing webhook rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_WEBHOOKS: i64 = 56;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1011,12 +1023,11 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
             m.version, m.description
         );
         (m.up)(conn)?;
-        // v55 re-adds user_id with DEFAULT 1; backfill existing rows to the
-        // shard owner so the uniform predicate is a no-op on this shard.
-        if m.version == TENANT_MIGRATION_READD_USER_ID {
-            if let Some(owner) = owner_user_id {
-                backfill_tenant_memory_user_id(conn, owner)?;
-            }
+        // Migrations that re-add a DEFAULT 1 `user_id` column need their
+        // pre-existing rows backfilled to the shard owner so the uniform
+        // `WHERE user_id = ?` predicate is a no-op on this single-owner shard.
+        if let Some(owner) = owner_user_id {
+            backfill_owner_tables_for_version(conn, m.version, owner)?;
         }
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
@@ -1092,25 +1103,50 @@ fn apply_schema_v55_memories_readd(conn: &Connection) -> Result<()> {
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 failed: {e}")))
 }
 
-/// Backfill the re-added `user_id` columns to the shard owner's id.
+/// Map a just-applied tenant migration version to the tables whose re-added
+/// `user_id` column must be backfilled to the shard owner, and backfill them.
 ///
-/// v55 re-adds `user_id` with `DEFAULT 1`, so every pre-existing row lands at 1.
-/// A shard is single-owner, so all of its memory rows belong to `owner`; setting
-/// them to `owner` makes the always-applied `WHERE user_id = ?` predicate a
-/// no-op for that shard (identical behavior to pre-repair sharded reads). When
-/// `owner` is `None` (e.g. the reserved handoffs shard, whose tenant id is not
-/// numeric, or in-memory test shards) the rows are left at the default; such
-/// shards hold no user-facing memory rows, so this is harmless.
-fn backfill_tenant_memory_user_id(conn: &Connection, owner: i64) -> Result<()> {
-    for table in ["memories", "artifacts", "vector_sync_pending"] {
-        conn.execute(
-            &format!("UPDATE {table} SET user_id = ?1"),
-            rusqlite::params![owner],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+/// A `user_id`-re-add migration adds the column with `DEFAULT 1`, so every
+/// pre-existing row lands at 1. A shard is single-owner, so all of its rows
+/// belong to `owner`; setting them to `owner` makes the always-applied
+/// `WHERE user_id = ?` predicate a no-op for that shard (identical behavior to
+/// pre-repair sharded reads). Versions that do not re-add a `user_id` column,
+/// or whose rows are not owner-attributable, map to an empty table list and are
+/// a no-op here. When the shard owner is `None` (e.g. the reserved handoffs
+/// shard, whose tenant id is not numeric, or in-memory test shards) this
+/// function is not called at all and rows are left at the default.
+fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64) -> Result<()> {
+    let tables: &[&str] = match version {
+        TENANT_MIGRATION_READD_USER_ID => &["memories", "artifacts", "vector_sync_pending"],
+        TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => &["webhooks"],
+        _ => &[],
+    };
+    for table in tables {
+        backfill_tenant_table_user_id(conn, table, owner)?;
     }
-    info!("backfilled shard memory user_id to owner {owner} (tenant migration 55)");
     Ok(())
+}
+
+/// Set every existing row's `user_id` in one shard table to the shard owner.
+/// Used by [`backfill_owner_tables_for_version`] for each `user_id`-re-add
+/// migration. `table` is a fixed string literal from the version map, never
+/// caller-supplied, so the format interpolation is not an injection vector.
+fn backfill_tenant_table_user_id(conn: &Connection, table: &str, owner: i64) -> Result<()> {
+    conn.execute(
+        &format!("UPDATE {table} SET user_id = ?1"),
+        rusqlite::params![owner],
+    )
+    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    info!("backfilled shard {table}.user_id to owner {owner}");
+    Ok(())
+}
+
+/// Tenant v56: re-add user_id to the shard webhooks table. The SQL re-adds the
+/// column (default 1) and recreates the idx_webhooks_user index. Owner backfill
+/// of existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v56_webhooks_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v56_webhooks_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v56 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -4862,10 +4898,11 @@ mod tests {
         assert_eq!(col_count, 0, "user_id column must be absent after v22");
     }
 
-    /// v30: webhooks must NOT have a user_id column after the full migration
-    /// chain, and idx_webhooks_user must be gone.
+    /// v56: webhooks must have user_id restored after the full migration chain
+    /// (v30 dropped it; v56 re-adds it for single-DB isolation), and
+    /// idx_webhooks_user must be present again.
     #[test]
-    fn user_id_absent_from_webhooks_after_v30() {
+    fn user_id_restored_on_webhooks_after_v56() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
@@ -4876,7 +4913,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "webhooks still has user_id column after v30");
+        assert_eq!(count, 1, "webhooks must have user_id restored after v56");
 
         let idx: i64 = conn
             .query_row(
@@ -4885,11 +4922,13 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0, "idx_webhooks_user still exists after v30");
+        assert_eq!(idx, 1, "idx_webhooks_user must be restored after v56");
     }
 
-    /// v30: webhooks supports the SQL shape kleos-lib/src/webhooks.rs now
-    /// uses (no user_id on INSERT or SELECT).
+    /// After the full chain (v30 dropped user_id, v56 re-added it with
+    /// DEFAULT 1), the webhooks/webhook_dead_letters tables remain usable: an
+    /// INSERT that omits user_id still succeeds via the column default, and the
+    /// dead-letter FK relationship holds.
     #[test]
     fn webhooks_usable_after_v30() {
         let conn = Connection::open_in_memory().unwrap();
