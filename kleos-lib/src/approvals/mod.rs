@@ -19,6 +19,33 @@ pub async fn create_approval(
     req: &CreateApprovalRequest,
     user_id: i64,
 ) -> Result<Approval> {
+    create_approval_inner(db, req, user_id, None).await
+}
+
+/// Patch 21 (2026-05-22): variant of `create_approval` that correlates the
+/// new approval with a `gate_requests.id`. Used by the gate Patch 19b
+/// long-poll path so the TUI consumer of `/approvals/pending` can decide
+/// the gate via `POST /approvals/{id}/decide`. `gate_id` is stored
+/// verbatim in the column added by tenant migration v56 / main migration
+/// v64; if the column is missing (older deployment that has not yet run
+/// the migration), the INSERT falls back to the legacy column set and the
+/// caller logs a warning.
+#[tracing::instrument(skip(db, req), fields(action = %req.action, gate_id))]
+pub async fn create_approval_with_gate(
+    db: &Database,
+    req: &CreateApprovalRequest,
+    user_id: i64,
+    gate_id: i64,
+) -> Result<Approval> {
+    create_approval_inner(db, req, user_id, Some(gate_id)).await
+}
+
+async fn create_approval_inner(
+    db: &Database,
+    req: &CreateApprovalRequest,
+    user_id: i64,
+    gate_id: Option<i64>,
+) -> Result<Approval> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = Utc::now();
     let window = req.window_secs.unwrap_or(DEFAULT_APPROVAL_WINDOW_SECS);
@@ -31,11 +58,17 @@ pub async fn create_approval(
     let context = req.context.clone();
     let requester = req.requester.clone();
     let id_clone = id.clone();
+    let gate_id_param = gate_id;
 
     db.write(move |conn| {
-        conn.execute(
-            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        // Patch 21: the optional gate_id column was added by migration v56
+        // (tenant) / v64 (main). We always attempt the INSERT including the
+        // column; on legacy deployments where the migration has not yet
+        // run, rusqlite returns an "no such column" error which we fall
+        // back from by issuing the legacy INSERT.
+        let res = conn.execute(
+            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, gate_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 id_clone,
                 action,
@@ -44,9 +77,34 @@ pub async fn create_approval(
                 "pending",
                 created_str,
                 expires_str,
+                gate_id_param,
             ],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        );
+        if let Err(err) = res {
+            // Fallback: legacy schema without gate_id. We still create the
+            // row so a `POST /approvals` workflow keeps working, but the
+            // gate correlation is lost (the caller will time out via the
+            // existing path).
+            let msg = err.to_string();
+            if msg.contains("no such column") || msg.contains("has no column named") {
+                conn.execute(
+                    "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        id_clone,
+                        action,
+                        context,
+                        requester,
+                        "pending",
+                        created_str,
+                        expires_str,
+                    ],
+                )
+                .map_err(rusqlite_to_eng_error)?;
+            } else {
+                return Err(rusqlite_to_eng_error(err));
+            }
+        }
         Ok(())
     })
     .await?;
@@ -63,6 +121,7 @@ pub async fn create_approval(
         expires_at,
         decided_at: None,
         user_id,
+        gate_id,
     })
 }
 
@@ -195,6 +254,38 @@ pub async fn decide(
     })
 }
 
+/// Patch 21 (2026-05-22): read the optional `gate_id` correlation for an
+/// approval. Returns `Ok(None)` for legacy approvals created via
+/// `POST /approvals` and `Ok(Some(_))` for approvals created by the gate
+/// `require_approval_patterns` pipeline. Returns `Ok(None)` as a safe
+/// fallback if the column does not exist (deployment pre-migration v56),
+/// so this helper is callable from any code path without crashing.
+#[tracing::instrument(skip(db))]
+pub async fn read_gate_id_for_approval(db: &Database, id: &str) -> Result<Option<i64>> {
+    let id = id.to_string();
+    db.read(move |conn| {
+        let res = conn.query_row(
+            "SELECT gate_id FROM approvals WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, Option<i64>>(0),
+        );
+        match res {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(err) => {
+                let msg = err.to_string();
+                if msg.contains("no such column") {
+                    // Pre-migration deployment: treat as a legacy approval.
+                    Ok(None)
+                } else {
+                    Err(rusqlite_to_eng_error(err))
+                }
+            }
+        }
+    })
+    .await
+}
+
 /// Expire all stale pending approvals. Returns the number of rows updated.
 #[tracing::instrument(skip(db))]
 pub async fn expire_stale(db: &Database) -> Result<u64> {
@@ -255,6 +346,13 @@ fn row_to_approval(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Approv
         expires_at,
         decided_at,
         user_id: owner_user_id,
+        // Patch 21: `gate_id` is not read by the legacy SELECT projections
+        // used by `list_pending` / `get_approval`. The decide_handler reads
+        // it separately via `read_gate_id_for_approval` to relay the
+        // decision to the gate caller. Keeping the projection unchanged
+        // here preserves wire-format compatibility with upstream and the
+        // TUI consumer.
+        gate_id: None,
     })
 }
 

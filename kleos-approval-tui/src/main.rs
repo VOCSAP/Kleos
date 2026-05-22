@@ -144,11 +144,39 @@ struct App {
     last_fetch_completed_at: Option<Instant>,
 }
 
-/// Patch 20b: minimum delay between two consecutive fetch attempts. Acts
-/// as a cooldown when the server-side long-poll returns immediately
-/// (error or empty list before the deadline) so the TUI does not
-/// hot-loop on transient failure.
-const MIN_REFETCH_INTERVAL: Duration = Duration::from_millis(500);
+/// Patch 20b: minimum delay between two consecutive fetch attempts when
+/// the pending queue is empty. Acts as a cooldown so the TUI does not
+/// hot-loop on transient failure (DNS, connection refused, malformed
+/// response) while the server-side long-poll is otherwise expected to
+/// hold the connection 30s. Override via `KLEOS_APPROVAL_TUI_REFETCH_BUSY_MS`.
+const DEFAULT_REFETCH_BUSY_MS: u64 = 500;
+
+/// Patch 23 (2026-05-22): minimum delay between two consecutive fetch
+/// attempts when the pending queue is non-empty. The server-side long-poll
+/// (Patch 20c) returns immediately when the list is non-empty -- that is
+/// correct by design (the client must see the row now). But the TUI was
+/// re-fetching every 500ms while the operator was reading/deciding, so a
+/// single pending approval generated ~60-120 calls/min and blew through
+/// the preauth IP rate-limit (default 20/min) in seconds. With a 5s
+/// cooldown a typical 20-30s decision window costs 4-6 calls instead of
+/// ~60. Override via `KLEOS_APPROVAL_TUI_REFETCH_PENDING_MS`.
+const DEFAULT_REFETCH_PENDING_MS: u64 = 5000;
+
+fn refetch_busy_interval() -> Duration {
+    let ms = std::env::var("KLEOS_APPROVAL_TUI_REFETCH_BUSY_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_REFETCH_BUSY_MS);
+    Duration::from_millis(ms)
+}
+
+fn refetch_pending_interval() -> Duration {
+    let ms = std::env::var("KLEOS_APPROVAL_TUI_REFETCH_PENDING_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_REFETCH_PENDING_MS);
+    Duration::from_millis(ms)
+}
 
 impl App {
     fn new(url: String, api_key: String) -> Self {
@@ -205,7 +233,19 @@ impl App {
             return;
         }
         if let Some(last) = self.last_fetch_completed_at {
-            if Instant::now() < last + MIN_REFETCH_INTERVAL {
+            // Patch 23 (2026-05-22): adaptive cooldown. When the pending
+            // queue is empty, the server-side long-poll holds the
+            // connection so a 500ms floor is safe. When the queue is
+            // non-empty, the server returns immediately (Patch 20c
+            // contract) and the previous 500ms floor produced a poll
+            // storm while the operator was reading the row. 5s default
+            // is calibrated to the typical decision window (20-30s).
+            let cooldown = if self.approvals.is_empty() {
+                refetch_busy_interval()
+            } else {
+                refetch_pending_interval()
+            };
+            if Instant::now() < last + cooldown {
                 return;
             }
         }
@@ -356,6 +396,12 @@ impl App {
                 if let Some(handle) = self.fetch_handle.take() {
                     handle.abort();
                 }
+                // Patch 23 (2026-05-22): bypass the adaptive cooldown so the
+                // next try_start_fetch kicks off without waiting the 5s
+                // pending-window cooldown. Without this, the operator
+                // would see a stale UI for up to 5s after their decision
+                // even though the server is ready to push the next state.
+                self.last_fetch_completed_at = None;
             }
             DecideOutcome::RateLimited(wait) => {
                 self.last_429_until = Some(Instant::now() + wait);

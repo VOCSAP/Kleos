@@ -259,6 +259,56 @@ async fn check_handler(
                 );
             }
 
+            // Patch 21 (2026-05-22): bridge the pending gate into the
+            // `approvals` table so the TUI consumer of /approvals/pending
+            // can see and decide it. The approvals row carries `gate_id`
+            // (column added by tenant v56 / main v64) so the decide
+            // handler can relay the decision back to this caller through
+            // `state.pending_approvals`. Failure to insert is logged but
+            // does not fail the gate: the existing timeout path stays
+            // authoritative (caller will be denied after
+            // KLEOS_APPROVAL_TIMEOUT_SECS).
+            //
+            // Patch 21.1 (2026-05-22, hyp_aa454644): restrict the bridge
+            // to commands that volontarily matched a
+            // `require_approval_patterns` entry
+            // (`pattern_triggered_approval`). The legacy
+            // `TOOLS_REQUIRING_APPROVAL` path (tool_name is in {Bash,
+            // Write, Edit, WebFetch, WebSearch}) keeps its upstream
+            // behavior: in-memory wait + silent timeout, no TUI row. This
+            // avoids polluting the TUI with every Bash from Claude Code
+            // when no explicit pattern matched, while preserving the
+            // approval workflow for commands the operator chose to gate.
+            if pattern_triggered_approval {
+                let approval_req = kleos_lib::approvals::CreateApprovalRequest {
+                    action: body.command.clone(),
+                    context: Some(
+                        json!({
+                            "tool_name": tool_name,
+                            "resolved_command": result.resolved_command,
+                            "session_id": body.session_id,
+                        })
+                        .to_string(),
+                    ),
+                    requester: body.agent.clone(),
+                    window_secs: Some(approval_timeout_secs() as i64),
+                };
+                if let Err(err) = kleos_lib::approvals::create_approval_with_gate(
+                    &db,
+                    &approval_req,
+                    auth.user_id,
+                    gate_id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "gate: failed to bridge gate_id={} into approvals table: {}",
+                        gate_id,
+                        err
+                    );
+                }
+            }
+
             // Notify any watchers (e.g. TUI) that a new approval is pending.
             if let Some(ref notify) = state.approval_notify {
                 let _ = notify.send(());
