@@ -367,6 +367,14 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "conversations_user_id_readd",
         up: apply_schema_v61_conversations_readd,
     },
+    // Re-add user_id to the shard intelligence tables -- reflections,
+    // consolidations, causal_chains (reverses v32 and v38). The runner backfills
+    // existing rows to the shard owner after this runs.
+    TenantMigration {
+        version: 62,
+        description: "intelligence_user_id_readd",
+        up: apply_schema_v62_intelligence_readd,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -400,6 +408,11 @@ const TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 60;
 /// Version of the tenant migration that re-adds `user_id` to the shard
 /// conversations table. The runner backfills existing rows to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 61;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// intelligence tables (reflections, consolidations, causal_chains). The runner
+/// backfills existing rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 62;
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
 fn apply_schema_v1(conn: &Connection) -> Result<()> {
@@ -1183,6 +1196,9 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => &["axon_events"],
         TENANT_MIGRATION_READD_USER_ID_CHIASM_TASKS => &["chiasm_tasks"],
         TENANT_MIGRATION_READD_USER_ID_CONVERSATIONS => &["conversations"],
+        TENANT_MIGRATION_READD_USER_ID_INTELLIGENCE => {
+            &["reflections", "consolidations", "causal_chains"]
+        }
         _ => &[],
     };
     for table in tables {
@@ -1254,6 +1270,16 @@ fn apply_schema_v60_chiasm_tasks_readd(conn: &Connection) -> Result<()> {
 fn apply_schema_v61_conversations_readd(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v61_conversations_readd.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v61 failed: {e}")))
+}
+
+/// Tenant v62: re-add user_id to the shard intelligence tables -- reflections,
+/// consolidations, and causal_chains. The SQL re-adds each column (default 1)
+/// and recreates the idx_*_user indexes. causal_links is intentionally left
+/// without a user_id column and is scoped through its parent chain. Owner
+/// backfill of existing rows happens in `run_tenant_migrations` after this runs.
+fn apply_schema_v62_intelligence_readd(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v62_intelligence_readd.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v62 failed: {e}")))
 }
 
 /// Latest declared tenant schema version.
@@ -4800,8 +4826,9 @@ mod tests {
         assert_eq!(hit, 1, "FTS trigger must fire and index the new memory");
     }
 
-    /// v29: axon_events and soma_agents must NOT have a user_id column after
-    /// the full migration chain completes, and their user-indexes must be gone.
+    /// After the full migration chain, soma_agents (v58 rebuild) and axon_events
+    /// (v59) have user_id re-added for single-DB isolation, reversing the v29
+    /// drop, and their idx_*_user indexes are recreated.
     #[test]
     fn user_id_absent_from_activity_after_v29() {
         let conn = Connection::open_in_memory().unwrap();
@@ -4819,8 +4846,8 @@ mod tests {
                 )
                 .unwrap_or(0);
             assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v29",
+                count, 1,
+                "table '{}' must have user_id restored after the chain",
                 table
             );
         }
@@ -4836,7 +4863,11 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(idx, 0, "index '{}' still exists after v29", idx_name);
+            assert_eq!(
+                idx, 1,
+                "index '{}' must be restored after the chain",
+                idx_name
+            );
         }
     }
 
@@ -5310,10 +5341,11 @@ mod tests {
         }
     }
 
-    /// v32: reflections must NOT have a user_id column after the full
-    /// migration chain, and idx_reflections_user must be gone.
+    /// v62 re-adds user_id to reflections (reversing the v32 drop) for
+    /// single-DB isolation, and recreates idx_reflections_user. The full
+    /// migration chain must leave the column and index present.
     #[test]
-    fn user_id_absent_from_reflections_after_v32() {
+    fn user_id_restored_on_reflections_after_v62() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
@@ -5324,7 +5356,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(count, 0, "reflections still has user_id column after v32");
+        assert_eq!(count, 1, "reflections must have user_id column after v62");
 
         let idx: i64 = conn
             .query_row(
@@ -5333,7 +5365,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 0, "idx_reflections_user still exists after v32");
+        assert_eq!(idx, 1, "idx_reflections_user must be restored after v62");
 
         // idx_reflections_type and idx_reflections_period survive.
         for surviving in &["idx_reflections_type", "idx_reflections_period"] {
@@ -5351,8 +5383,9 @@ mod tests {
         }
     }
 
-    /// v32: reflections supports the SQL shape intelligence/reflections.rs
-    /// now uses (no user_id on INSERT or SELECT).
+    /// After the full chain (v62 re-adds user_id), an INSERT that omits
+    /// user_id still works -- the column defaults to 1 -- so older call shapes
+    /// remain compatible.
     #[test]
     fn reflections_usable_after_v32() {
         let conn = Connection::open_in_memory().unwrap();
@@ -6257,7 +6290,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(conv_uid, 1, "conversations.user_id must be restored after v61");
+        assert_eq!(
+            conv_uid, 1,
+            "conversations.user_id must be restored after v61"
+        );
 
         let prefs_uid: i64 = conn
             .query_row(
@@ -6276,7 +6312,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(conv_idx, 1, "idx_conversations_user must be restored after v61");
+        assert_eq!(
+            conv_idx, 1,
+            "idx_conversations_user must be restored after v61"
+        );
 
         // The user_preferences user-scoped indexes stay gone.
         for idx in &["idx_up_domain_pref_user", "idx_user_prefs_user"] {
@@ -6492,23 +6531,40 @@ mod tests {
         }
     }
 
-    /// v38: user_id must be absent from all 7 intelligence tables after the
-    /// full migration chain completes. causal_links never had user_id.
+    /// After the full migration chain: v62 re-adds user_id to consolidations
+    /// and causal_chains (single-DB isolation), so those two must have the
+    /// column and their idx_*_user index back. The other intelligence tables
+    /// dropped at v38 stay without user_id. causal_links never had user_id.
     #[test]
     fn user_id_absent_from_intelligence_after_v38() {
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
 
-        let tables = [
-            "consolidations",
+        // v62 restored user_id on these two.
+        for table in &["consolidations", "causal_chains"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "{} must have user_id restored after v62", table);
+        }
+
+        // These intelligence tables were not part of the single-DB repair and
+        // stay without user_id after v38.
+        let still_dropped = [
             "current_state",
-            "causal_chains",
             "reconsolidations",
             "temporal_patterns",
             "digests",
             "memory_feedback",
         ];
-        for table in &tables {
+        for table in &still_dropped {
             let count: i64 = conn
                 .query_row(
                     &format!(
@@ -6522,12 +6578,25 @@ mod tests {
             assert_eq!(count, 0, "{} still has user_id column after v38", table);
         }
 
-        // Verify dropped indexes are gone.
+        // v62 recreated these two user-scoped indexes.
+        for idx in &["idx_consolidations_user", "idx_causal_chains_user"] {
+            let count: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{}'",
+                        idx
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 1, "index {} must be restored after v62", idx);
+        }
+
+        // Verify dropped indexes for the not-repaired tables are still gone.
         let dropped_indexes = [
             "idx_current_state_user",
             "idx_cs_key_user",
-            "idx_consolidations_user",
-            "idx_causal_chains_user",
             "idx_temporal_patterns_user",
             "idx_digests_user",
             "idx_feedback_user",
@@ -6570,9 +6639,10 @@ mod tests {
         }
     }
 
-    /// v38: intelligence tables accept the new-shape INSERTs (no user_id) and
-    /// the in-table UNIQUE(agent, key) on current_state works correctly.
-    /// causal_links.chain_id FK to causal_chains(id) is preserved.
+    /// Intelligence tables accept INSERTs that omit user_id (consolidations and
+    /// causal_chains default it to 1 after the v62 re-add; the others never had
+    /// it), the in-table UNIQUE(agent, key) on current_state works correctly,
+    /// and causal_links.chain_id FK to causal_chains(id) is preserved.
     #[test]
     fn intelligence_usable_after_v38() {
         let conn = Connection::open_in_memory().unwrap();

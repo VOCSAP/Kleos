@@ -610,6 +610,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: Some(down_migration_readd_user_id_conversations),
         transactional: true,
     },
+    Migration {
+        version: 71,
+        description: "readd_user_id_intelligence",
+        up: run_migration_readd_user_id_intelligence,
+        down: Some(down_migration_readd_user_id_intelligence),
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -756,6 +763,9 @@ const MIGRATION_READD_USER_ID_AXON_EVENTS: i64 = 68;
 const MIGRATION_READD_USER_ID_CHIASM_TASKS: i64 = 69;
 /// Version number for re-adding user_id to the conversations table (single-DB isolation).
 const MIGRATION_READD_USER_ID_CONVERSATIONS: i64 = 70;
+/// Version number for re-adding user_id to the intelligence tables -- reflections,
+/// consolidations, and causal_chains (single-DB isolation).
+const MIGRATION_READD_USER_ID_INTELLIGENCE: i64 = 71;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1327,6 +1337,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_CONVERSATIONS,
             "readd_user_id_conversations",
+        )?;
+    }
+
+    if current_version < MIGRATION_READD_USER_ID_INTELLIGENCE {
+        info!("Running migration 71: readd_user_id_intelligence");
+        run_migration_readd_user_id_intelligence(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_READD_USER_ID_INTELLIGENCE,
+            "readd_user_id_intelligence",
         )?;
     }
 
@@ -2328,7 +2348,12 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
 fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Result<()> {
     // Re-add the column to each table only if it is currently absent. ALTER
     // TABLE ADD COLUMN errors on a duplicate column, so guard every one.
-    for table in ["memories", "artifacts", "vector_sync_pending", "structured_facts"] {
+    for table in [
+        "memories",
+        "artifacts",
+        "vector_sync_pending",
+        "structured_facts",
+    ] {
         let has_user_id: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
@@ -2399,7 +2424,12 @@ fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resu
     )
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
 
-    for table in ["memories", "artifacts", "vector_sync_pending", "structured_facts"] {
+    for table in [
+        "memories",
+        "artifacts",
+        "vector_sync_pending",
+        "structured_facts",
+    ] {
         let has_user_id: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
@@ -2445,10 +2475,8 @@ fn run_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<(
         .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
         info!("Re-added webhooks.user_id (migration 65)");
     }
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("Migration 65 complete: user_id re-added to webhooks");
     Ok(())
 }
@@ -2758,6 +2786,78 @@ fn down_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Re
             .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     }
     info!("Migration 70 reverted: user_id dropped from conversations");
+    Ok(())
+}
+
+/// Migration 71: re-add the `user_id` ownership column to the intelligence
+/// tables -- `reflections`, `consolidations`, and `causal_chains` -- so
+/// single-DB (shared) mode can scope every read by owner. Migration 35
+/// dropped it from `reflections` and migration 41 dropped it from
+/// `consolidations`/`causal_chains`; fresh databases created from the core
+/// schema already carry it on the latter two. `causal_links` deliberately
+/// has no `user_id`: it is scoped through its parent chain.
+///
+/// Existing rows default to `user_id = 1`; new rows carry the creator's id.
+///
+/// Idempotent: every `ADD COLUMN` is guarded by a `pragma_table_info` check
+/// and each index uses `IF NOT EXISTS`.
+fn run_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Result<()> {
+    for (table, index) in [
+        ("reflections", "idx_reflections_user"),
+        ("consolidations", "idx_consolidations_user"),
+        ("causal_chains", "idx_causal_chains_user"),
+    ] {
+        let has_user_id: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'user_id'"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        if has_user_id == 0 {
+            conn.execute(
+                &format!("ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"),
+                [],
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            info!("Re-added {table}.user_id (migration 71)");
+        }
+        conn.execute_batch(&format!(
+            "CREATE INDEX IF NOT EXISTS {index} ON {table}(user_id);"
+        ))
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    }
+    info!("Migration 71 complete: user_id re-added to intelligence tables");
+    Ok(())
+}
+
+/// Reverse migration 71: drop the user-scoped indexes and the `user_id`
+/// column from the three intelligence tables.
+fn down_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Result<()> {
+    for (table, index) in [
+        ("reflections", "idx_reflections_user"),
+        ("consolidations", "idx_consolidations_user"),
+        ("causal_chains", "idx_causal_chains_user"),
+    ] {
+        conn.execute_batch(&format!("DROP INDEX IF EXISTS {index};"))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let has_user_id: i64 = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'user_id'"
+                ),
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        if has_user_id > 0 {
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        }
+    }
+    info!("Migration 71 reverted: user_id dropped from intelligence tables");
     Ok(())
 }
 

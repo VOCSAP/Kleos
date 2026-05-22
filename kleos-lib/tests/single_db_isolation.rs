@@ -12,6 +12,7 @@
 use kleos_lib::approvals::{self, CreateApprovalRequest};
 use kleos_lib::conversations::{self, CreateConversationRequest};
 use kleos_lib::db::Database;
+use kleos_lib::intelligence::{causal, consolidation, reflections};
 use kleos_lib::memory::types::{ListOptions, StoreRequest};
 use kleos_lib::memory::{self};
 use kleos_lib::services::axon::{self, PublishEventRequest};
@@ -408,5 +409,140 @@ async fn conversations_isolated_between_users_single_db() {
             .await
             .is_ok(),
         "user 20's delete must not remove user 10's conversation"
+    );
+}
+
+/// A reflection created by one user must be invisible to another user listing
+/// reflections on the same monolith.
+#[tokio::test]
+async fn reflections_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    reflections::create_reflection(&db, "alice insight", "insight", &[], 0.9, 10)
+        .await
+        .expect("user 10 creates reflection");
+
+    // User 20's list must be empty; user 10's must contain it.
+    assert!(
+        reflections::list_reflections(&db, 20, 100)
+            .await
+            .expect("list user 20")
+            .is_empty(),
+        "user 20 must not see user 10's reflection"
+    );
+    let list_10 = reflections::list_reflections(&db, 10, 100)
+        .await
+        .expect("list user 10");
+    assert_eq!(list_10.len(), 1, "user 10 must see their own reflection");
+    assert_eq!(list_10[0].content, "alice insight");
+}
+
+/// A consolidation record created by one user must be invisible to another
+/// user, and a user must not be able to consolidate another user's memories.
+#[tokio::test]
+async fn consolidations_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    // User 10 owns two memories and consolidates them.
+    let m1 = memory::store(&db, store_req("alice fact one", 10))
+        .await
+        .expect("store m1")
+        .id;
+    let m2 = memory::store(&db, store_req("alice fact two", 10))
+        .await
+        .expect("store m2")
+        .id;
+
+    // User 20 must not consolidate user 10's memories.
+    assert!(
+        consolidation::consolidate(&db, &[m1.to_string(), m2.to_string()], 20)
+            .await
+            .is_err(),
+        "user 20 must not consolidate user 10's memories"
+    );
+
+    // User 10 consolidates their own memories.
+    consolidation::consolidate(&db, &[m1.to_string(), m2.to_string()], 10)
+        .await
+        .expect("user 10 consolidates own memories");
+
+    // User 20's consolidation list must be empty; user 10's must contain one.
+    assert!(
+        consolidation::list_consolidations(&db, 20, 100)
+            .await
+            .expect("list user 20")
+            .is_empty(),
+        "user 20 must not see user 10's consolidation"
+    );
+    assert_eq!(
+        consolidation::list_consolidations(&db, 10, 100)
+            .await
+            .expect("list user 10")
+            .len(),
+        1,
+        "user 10 must see their own consolidation"
+    );
+}
+
+/// A causal chain created by one user must be invisible to another user: not
+/// fetchable by id, absent from the other user's list, and its links must not
+/// surface through the other user's backward traversal.
+#[tokio::test]
+async fn causal_chains_isolated_between_users_single_db() {
+    let db = monolith().await;
+
+    let cause = memory::store(&db, store_req("alice cause", 10))
+        .await
+        .expect("store cause")
+        .id;
+    let effect = memory::store(&db, store_req("alice effect", 10))
+        .await
+        .expect("store effect")
+        .id;
+    let chain = causal::create_chain(&db, Some(cause), Some("alice chain"), 10)
+        .await
+        .expect("user 10 creates chain");
+    causal::add_link(&db, chain.id, cause, effect, 1.0, 0, 10)
+        .await
+        .expect("user 10 adds link");
+
+    // User 20 cannot fetch user 10's chain by id.
+    assert!(
+        causal::get_chain(&db, chain.id, 20).await.is_err(),
+        "user 20 must not read user 10's causal chain"
+    );
+
+    // User 20's chain list must be empty; user 10's must contain it.
+    assert!(
+        causal::list_chains(&db, 20, 100)
+            .await
+            .expect("list user 20")
+            .is_empty(),
+        "user 20 must not see user 10's chain"
+    );
+    assert_eq!(
+        causal::list_chains(&db, 10, 100)
+            .await
+            .expect("list user 10")
+            .len(),
+        1,
+        "user 10 must see their own chain"
+    );
+
+    // User 20's backward traversal must not surface user 10's causal links.
+    assert!(
+        causal::backward_chain(&db, effect, 20, 5)
+            .await
+            .expect("backward user 20")
+            .is_empty(),
+        "user 20 must not traverse user 10's causal links"
+    );
+    assert_eq!(
+        causal::backward_chain(&db, effect, 10, 5)
+            .await
+            .expect("backward user 10")
+            .len(),
+        1,
+        "user 10 must traverse their own causal links"
     );
 }
