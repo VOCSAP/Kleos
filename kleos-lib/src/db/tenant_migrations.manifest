@@ -1,0 +1,82 @@
+# tenant_migrations.manifest
+#
+# Byte-identical record of every TENANT_MIGRATIONS entry that has ever shipped.
+# Format: <version>: <description>   (blank lines and # comments ignored)
+#
+# RULES (enforced by tenant_migrations_obey_append_only_manifest test):
+#   1. Lines below this header are APPEND-ONLY. Never edit, never reorder,
+#      never remove a line that has already shipped.
+#   2. To add a new tenant migration: append a new (version, description)
+#      line at the END here AND add the matching TenantMigration entry at the
+#      end of TENANT_MIGRATIONS in tenant_migrations.rs. Both files must move
+#      together in the same commit.
+#   3. To change behavior for an already-published version, add a NEW
+#      migration with the next higher version number; do NOT edit the old
+#      entry. The runner records the version in schema_migrations; changing
+#      a body for an already-applied version silently NO-OPs on every
+#      existing deployment.
+#
+# History (2026-05-22, Patch 20): position v48 was reaffected at the
+# VOCSAP merge of upstream commits d71342e (2026-05-05) and a0880ee
+# (2026-05-13), moving "memories_community_id" to v51 and inserting
+# "supervisor_injections_fix_schema" at v48. Tenants migrated before the
+# merge were stuck on the old v48 body (memories_community_id) with
+# schema_migrations.version >= 48, so the new v48 body never ran.
+# v55 (supervisor_injections_repair) re-applies the missing ALTERs
+# idempotently. This manifest is the safety net against recurrence.
+
+1: initial_tenant_schema
+2: scratchpad_user_id_shim
+3: sessions_user_id_shim
+4: chiasm_tasks_shim
+5: approvals_shim
+6: broca_actions_shim
+7: projects_shim
+8: axon_events_and_soma_agents_shim
+9: webhooks_shim
+10: ingestion_shim
+11: axon_family_shim
+12: soma_family_shim
+13: loom_family_shim
+14: graph_family_shim
+15: thymus_family_shim
+16: portability_family_shim
+17: growth_reflections_shim
+18: intelligence_family_shim
+19: skills_family_shim
+20: episodes_user_id_and_fts_shim
+21: messages_and_fts_shim
+22: memories_user_id_drop
+23: scratchpad_user_id_drop
+24: sessions_user_id_drop
+25: chiasm_user_id_drop
+26: approvals_user_id_drop
+27: broca_user_id_drop
+28: projects_user_id_drop
+29: activity_user_id_drop
+30: webhooks_user_id_drop
+31: axon_user_id_drop
+32: growth_user_id_drop
+33: ingestion_hashes_user_id_drop
+34: loom_user_id_drop
+35: graph_cluster_user_id_drop
+36: thymus_user_id_drop
+37: portability_user_id_drop
+38: intelligence_user_id_drop
+39: skills_user_id_drop
+40: episodes_user_id_drop
+41: projects_user_id_readd
+42: broca_actions_user_id_readd
+43: handoffs_table_in_tenant_shard
+44: monolith_schema_parity
+45: memory_chunks
+46: supervisor_injections
+47: gate_requests_session_id
+48: supervisor_injections_fix_schema
+49: activity_log_table
+50: skills_cloud_kind_aliases_bundles
+51: memories_community_id
+52: syntheos_parity_chiasm_extended
+53: chiasm_agent_keys
+54: handoff_atoms
+55: supervisor_injections_repair

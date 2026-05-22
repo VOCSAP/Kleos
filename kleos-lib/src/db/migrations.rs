@@ -4231,6 +4231,66 @@ mod tests {
         rusqlite::Connection::open_in_memory().expect("open in-memory test db")
     }
 
+    /// Patch 20 (2026-05-22): append-only guard. The MIGRATIONS list must be
+    /// byte-identical to migrations.manifest for every entry that has ever
+    /// shipped. Any renumber, rename, or removal of a historical entry will
+    /// fire here at CI time, before it can ship and silently divert a
+    /// system / main DB schema.
+    ///
+    /// Introduced after a recurrence-class incident in the sister chain
+    /// TENANT_MIGRATIONS (v48 reaffected at upstream merge a0880ee on
+    /// 2026-05-13). Both chains run a `MAX(version)` based runner that
+    /// trusts the recorded version more than the body of the migration, so
+    /// any post-publish edit to a historical entry diverges silently. The
+    /// manifest is the safety net.
+    #[test]
+    fn migrations_obey_append_only_manifest() {
+        let manifest = include_str!("migrations.manifest");
+        let expected: Vec<(u32, &str)> = manifest
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| {
+                let (v, d) = l.split_once(':').unwrap_or_else(|| {
+                    panic!("malformed manifest line (expected 'N: description'): {:?}", l)
+                });
+                let version: u32 = v.trim().parse().unwrap_or_else(|_| {
+                    panic!("malformed version number in manifest line: {:?}", l)
+                });
+                (version, d.trim())
+            })
+            .collect();
+
+        for (i, (exp_v, exp_d)) in expected.iter().enumerate() {
+            let actual = MIGRATIONS.get(i).unwrap_or_else(|| {
+                panic!(
+                    "migrations.manifest lists entry index {} (v{}: {}) but \
+                     MIGRATIONS is shorter; a previously-published migration was \
+                     REMOVED. Append-only rule violated. Restore the entry or append a \
+                     new migration at the end instead of editing past history.",
+                    i, exp_v, exp_d
+                )
+            });
+            assert_eq!(
+                (actual.version, actual.description),
+                (*exp_v, *exp_d),
+                "main migration at index {} drifted from manifest: code has \
+                 (v{}, {:?}) but manifest expects (v{}, {:?}). \
+                 MIGRATIONS is append-only; any line that ever shipped MUST stay \
+                 byte-identical. To add a NEW migration, append a new entry at the END \
+                 of both the list and migrations.manifest.",
+                i,
+                actual.version,
+                actual.description,
+                exp_v,
+                exp_d
+            );
+        }
+        // Trailing entries beyond the manifest are tolerated so a developer can
+        // add a migration to the code first and update the manifest in the
+        // same commit; reviewers MUST verify both files moved together.
+    }
+
     /// Regression: every entry in MIGRATIONS must have a matching dispatch
     /// block in `run_migrations()`. Without this test, a future contributor
     /// could add a Migration entry but forget the `if current_version < ...`
