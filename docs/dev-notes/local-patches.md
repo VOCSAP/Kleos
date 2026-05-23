@@ -2997,6 +2997,125 @@ agent-forge spec_id : `spec_b6d93363`.
 
 ---
 
+## Patch 28 -- KLEOS_PREAUTH_IP_LIMIT + KLEOS_PREAUTH_IP_TRUSTED_FILE (2026-05-23)
+
+### Symptome
+
+Patch 26 (deploye LXC 121 2026-05-23 19:35 UTC) a confirme par WARN tracing
+que le HTTP 429 cote operateur poste `192.168.10.100` vient du **preauth IP
+rate-limit hardcoded a 20/min** (`kleos-server/src/middleware/rate_limit.rs:15
+PREAUTH_IP_LIMIT`). Tally observe immediatement post-deploy (200 dernieres
+lignes du log serveur) :
+
+| Path | Rejects | Source dominante |
+|---|---|---|
+| `/batch` | 90 | `kleos-sidecar` batch_flush |
+| `/search` | 2 | `kleos-cli` |
+| `/recall` | 2 | `kleos-cli` |
+| `/supervisor/pending`, `/store`, `/gate/check`, `/broca/actions`, `/axon/publish`, `/approvals/pending` | 1 chacun | TUI / hooks |
+
+91% des rejects sont alimentes par le sidecar `batch_flush`. Le poste dev
+heberge 5+ clients partageant l'IP source (sidecar, TUI, `kleos-cli`,
+`kleos-mcp`, hooks Claude Code), ce qui sature naturellement le cap 20/min
+en quelques secondes (3 sessions sidecar x 0.5 POST/s = 1.5 req/s = 90/min
+steady state, plus retry exp 3x = jusqu'a 270/min en burst).
+
+Le fix structurel cote sidecar (respect `Retry-After` + coalescing + backoff
+exponentiel) est le perimeter du peer `kleos-9` (Patch 29 candidat, planifie
+dans `docs/dev-notes/sidecar-batch-flush-todo.md`). Patch 28 traite la
+moitie serveur : rendre le cap preauth configurable et autoriser une
+whitelist d'IPs trusted pour les postes operateur connus.
+
+### Approche
+
+Niveau **chirurgical** (~50 lignes additives), pattern miroir des Patch
+existants :
+
+- **Cap configurable** -- pattern Patch 16b (`KLEOS_CONTEXT_TIMEOUT_SECS`) :
+  `const DEFAULT_PREAUTH_IP_LIMIT: i64 = 20` (renomme, signal visuel "default
+  upstream") + `fn preauth_ip_limit() -> i64` lisant `KLEOS_PREAUTH_IP_LIMIT`
+  avec fallback sur le default. Valeurs `<= 0` ou parse-fail fallback
+  silencieux (un typo ne peut pas accidentellement desactiver le rate-limit).
+- **Trusted IP whitelist par fichier** -- pattern Patch 19b (cascade
+  fichier > defaut) : `fn preauth_ip_trusted_file()` resout
+  `KLEOS_PREAUTH_IP_TRUSTED_FILE` (override) ou
+  `${KLEOS_DATA_DIR}/preauth_ip_trusted.txt` (defaut). `fn
+  preauth_ip_trusted_set()` reuse le helper Patch 19b
+  `kleos_lib::gate::approval_patterns::load(file, env, defaults)` qui gere
+  le cache TTL 5s, parse `#` comments et lignes blanches. On passe `env =
+  None` (decision operateur 2026-05-23 : fichier plus maintenable qu'env
+  var CSV).
+- **Bypass dans `preauth_rate_limit_middleware`** : apres `client_ip_key`,
+  strip le prefix `ip:` et test contre `preauth_ip_trusted_set()`. Si
+  match, `return next.run(request).await` immediat (zero DB hit, zero
+  rate-limit increment). Sinon, appel `preauth_ip_limit()` au lieu de la
+  const. WARN log Patch 26 met a jour son champ `limit` pour refleter la
+  valeur dynamique.
+
+### Fichiers touches
+
+- `kleos-server/src/middleware/rate_limit.rs` :
+  - `use std::collections::HashSet` + `use std::path::PathBuf` +
+    `use kleos_lib::gate::approval_patterns` (3 nouveaux imports).
+  - `const PREAUTH_IP_LIMIT` -> `const DEFAULT_PREAUTH_IP_LIMIT`.
+  - 3 fns helpers : `preauth_ip_limit`, `preauth_ip_trusted_file`,
+    `preauth_ip_trusted_set` (~30 lignes documentees).
+  - `preauth_rate_limit_middleware` : bypass + `let limit = preauth_ip_limit()`
+    + WARN log dynamique (3 lignes additives + 1 ligne modifiee).
+- `CLAUDE.md` : 2 nouveaux env vars ajoutes section "Convention env vars",
+  1 entree dans la liste Patches actifs.
+- `docs/dev-notes/local-patches.md` : cette section.
+
+### Tests
+
+- `cargo check -p kleos-server -p kleos-lib --features kleos-lib/bundled-sqlite` :
+  0 errors, 10 warnings (pre-existants `cred::bootstrap` ECDH/PIV fns inutilises
+  sur cible Windows, identique pre-Patch 28).
+- Pas de test unitaire nouveau cote Patch 28 : le helper `approval_patterns::load`
+  est deja teste (12 tests Patch 19b). Les fns helpers Patch 28 sont des
+  thin wrappers env-vars + path-resolution suffisamment evidents pour ne pas
+  necessiter de test dedie.
+- Tests fonctionnels post-deploy LXC 121 :
+  1. Env vars unset + fichier absent : comportement upstream identique
+     (cap 20/min, WARN reject visible sur burst).
+  2. `KLEOS_PREAUTH_IP_LIMIT=500` (via `/etc/kleos/kleos.env` puis
+     `systemctl restart kleos-server`) : WARN reject affiche `limit=500` ;
+     sidecar sature plus rare.
+  3. Creation `${KLEOS_DATA_DIR}/preauth_ip_trusted.txt` avec
+     `192.168.10.100` : zero WARN reject pour ce poste, peu importe la
+     charge. Cache 5s.
+
+### Niveau delta
+
+**Additif pur** (zero modification de signature, zero impact comportemental
+quand les 2 leviers ne sont pas actives, default identique upstream). Le
+renommage `PREAUTH_IP_LIMIT` -> `DEFAULT_PREAUTH_IP_LIMIT` est purement
+cosmetique (la const n'est utilisee qu'a un seul endroit, le middleware).
+Reuse du helper `approval_patterns::load` Patch 19b limite la duplication.
+
+### Conditions de retrait
+
+Candidat **PR upstream Ghost-Frame**. Le besoin "preauth IP configurable +
+whitelist trusted" est generaliste (n'importe quel deploiement multi-client
+sur une meme IP en a besoin). Si upstream absorbe, le patch s'efface du
+fork sans dette. Le helper reuse `kleos_lib::gate::approval_patterns::load`
+est specifique au fork (Patch 19b non-upstream pour l'instant), donc en
+cas de PR il faudrait soit porter Patch 19b en parallele, soit dupliquer
+la logique cache inline.
+
+### Hors scope (Patch 29 candidat, perimeter kleos-9)
+
+- Respect `Retry-After` cote sidecar `flush_pending` (miroir Patch 20/20c TUI).
+- Coalescing des sessions cote sidecar (1 POST `/batch` pour N sessions).
+- Backoff exponentiel sur 429.
+
+Documente dans `docs/dev-notes/sidecar-batch-flush-todo.md` (a creer par
+kleos-9).
+
+agent-forge spec_id : `spec_2764b269`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

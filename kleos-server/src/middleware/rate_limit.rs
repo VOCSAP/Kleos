@@ -1,18 +1,77 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use axum::{
     extract::{Request, State},
     middleware::Next,
     response::Response,
 };
 use kleos_lib::auth::AuthContext;
+use kleos_lib::gate::approval_patterns;
 use kleos_lib::ratelimit;
 
 use crate::middleware::client_ip::client_ip_key;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
+
 /// Pre-authentication per-IP rate limit (requests per minute). Kept low to
 /// resist brute-force auth attempts; authenticated callers use per-key limits.
-const PREAUTH_IP_LIMIT: i64 = 20;
+///
+/// Patch 28 (2026-05-23): the const is the upstream-aligned default. Operators
+/// can override at runtime via `KLEOS_PREAUTH_IP_LIMIT` (positive integer).
+/// Patch 26 confirmed that 20/min is too tight for multi-client dev hosts
+/// (sidecar + TUI + CLI + hooks sharing a single source IP); the override
+/// unblocks those workloads without changing the safe upstream default.
+const DEFAULT_PREAUTH_IP_LIMIT: i64 = 20;
+
+/// Patch 28 (2026-05-23): read `KLEOS_PREAUTH_IP_LIMIT` per-request. Invalid
+/// or non-positive values silently fall back to `DEFAULT_PREAUTH_IP_LIMIT` so
+/// a typo cannot accidentally disable the preauth rate limit. Read on every
+/// request (no `LazyLock`) so the operator can hot-tune via a service reload
+/// without a full restart cycle.
+fn preauth_ip_limit() -> i64 {
+    std::env::var("KLEOS_PREAUTH_IP_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_PREAUTH_IP_LIMIT)
+}
+
+/// Patch 28 (2026-05-23): resolve the path of the trusted-IPs whitelist file.
+/// Cascade: explicit env var `KLEOS_PREAUTH_IP_TRUSTED_FILE` wins; otherwise
+/// auto-resolve to `${KLEOS_DATA_DIR}/preauth_ip_trusted.txt` (mirrors the
+/// Patch 19b `gate_data_file` convention but without the `gate/` subdir,
+/// since this lives at the server middleware level, not the gate domain).
+fn preauth_ip_trusted_file() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("KLEOS_PREAUTH_IP_TRUSTED_FILE") {
+        if !v.is_empty() {
+            return Some(PathBuf::from(v));
+        }
+    }
+    for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+        if let Some(raw) = std::env::var_os(env) {
+            if !raw.is_empty() {
+                return Some(PathBuf::from(raw).join("preauth_ip_trusted.txt"));
+            }
+        }
+    }
+    None
+}
+
+/// Patch 28 (2026-05-23): IPs listed in the trusted file bypass the preauth
+/// IP middleware entirely. Defense-in-depth on hosts whose source IPs are
+/// known and operator-controlled. Reuses the Patch 19b loader
+/// (`kleos_lib::gate::approval_patterns::load`) which caches reads for 5s,
+/// honours `#` comments and blank lines, and returns `Vec::new()` when the
+/// file is absent or empty. We pass `env = None` because the operator chose
+/// file-only management (decision 2026-05-23: env var CSV harder to maintain
+/// than a one-IP-per-line file).
+fn preauth_ip_trusted_set() -> HashSet<String> {
+    let path = preauth_ip_trusted_file();
+    let patterns = approval_patterns::load(path.as_deref(), None, &[]);
+    patterns.into_iter().collect()
+}
 
 fn too_many_requests(retry_after: i64) -> Response {
     let body = serde_json::json!({
@@ -107,15 +166,30 @@ pub async fn preauth_rate_limit_middleware(
     }
 
     let key = client_ip_key(&request, &state.config.trusted_proxies);
-    match ratelimit::check_and_increment(&state.db, &key, PREAUTH_IP_LIMIT, 60).await {
+
+    // Patch 28 (2026-05-23): trusted-IP whitelist bypass. `key` is formatted
+    // by `client_ip_key` as `ip:<addr>` (see kleos-server/src/middleware/
+    // client_ip.rs:62); strip the prefix to match the raw IP form the
+    // operator writes in the whitelist file.
+    let ip = key.strip_prefix("ip:").unwrap_or(&key);
+    if preauth_ip_trusted_set().contains(ip) {
+        return next.run(request).await;
+    }
+
+    // Patch 28: limit is now read from env on every request (default 20/min
+    // upstream-aligned).
+    let limit = preauth_ip_limit();
+    match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
         Ok(true) => next.run(request).await,
         Ok(false) => {
             // Patch 26: surface preauth IP rejects (HTTP 429) as WARN so
             // /var/log/kleos-server.log identifies which bucket saturated
-            // without requiring rate_limits DB decryption.
+            // without requiring rate_limits DB decryption. Patch 28: emit
+            // the dynamic limit so the operator can tell which cap was
+            // active when the reject fired.
             tracing::warn!(
                 bucket = %key,
-                limit = PREAUTH_IP_LIMIT,
+                limit = limit,
                 path = %path,
                 "preauth_rate_limit reject (429)"
             );
