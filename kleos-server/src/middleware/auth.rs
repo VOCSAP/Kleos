@@ -285,12 +285,37 @@ pub async fn auth_middleware(
                     if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
                         return forbid("read scope required for this method");
                     }
+
+                    // Sliding window: roll the session forward so an active
+                    // client never hits the TTL boundary. If refresh fails
+                    // (hard cap reached) the request still completes -- the
+                    // client will be forced through fresh PIV signing on the
+                    // next call when verify() finally returns expired.
+                    let refreshed_token = match state.session_manager.refresh(&session_token) {
+                        Ok(t) => Some(t),
+                        Err(e) => {
+                            tracing::debug!(
+                                client_ip = %req_client_ip, path = %path,
+                                "session refresh declined: {e}"
+                            );
+                            None
+                        }
+                    };
+
                     let user_id = auth_ctx.user_id;
                     let mut request = request;
                     request.extensions_mut().insert(auth_ctx);
                     let span = tracing::info_span!("request",
                             user_id = user_id, method = %method, path = %path, tier = "session");
-                    return next.run(request).instrument(span).await;
+                    let mut response = next.run(request).instrument(span).await;
+
+                    if let Some(token) = refreshed_token {
+                        if let Ok(val) = axum::http::HeaderValue::from_str(&token) {
+                            response.headers_mut().insert("x-kleos-session-issued", val);
+                        }
+                    }
+
+                    return response;
                 }
                 Err(msg) => {
                     tracing::warn!(
