@@ -109,7 +109,18 @@ pub async fn preauth_rate_limit_middleware(
     let key = client_ip_key(&request, &state.config.trusted_proxies);
     match ratelimit::check_and_increment(&state.db, &key, PREAUTH_IP_LIMIT, 60).await {
         Ok(true) => next.run(request).await,
-        Ok(false) => too_many_requests(60),
+        Ok(false) => {
+            // Patch 26: surface preauth IP rejects (HTTP 429) as WARN so
+            // /var/log/kleos-server.log identifies which bucket saturated
+            // without requiring rate_limits DB decryption.
+            tracing::warn!(
+                bucket = %key,
+                limit = PREAUTH_IP_LIMIT,
+                path = %path,
+                "preauth_rate_limit reject (429)"
+            );
+            too_many_requests(60)
+        }
         Err(e) => {
             tracing::error!("preauth rate_limit check failed for {}: {}", key, e);
             let body = serde_json::json!({
@@ -191,7 +202,19 @@ pub async fn rate_limit_middleware(
 
     match ratelimit::check_and_increment_by(&state.db, &key, limit, 60, cost).await {
         Ok(true) => next.run(request).await,
-        Ok(false) => too_many_requests(60),
+        Ok(false) => {
+            // Patch 26: surface per-key rejects (HTTP 429) as WARN.
+            // bucket discriminates key:N (real API key) from synth:user:N
+            // (synthetic AuthContext fallback per Patch 20b).
+            tracing::warn!(
+                bucket = %key,
+                limit = limit,
+                cost = cost,
+                path = %path,
+                "per_key_rate_limit reject (429)"
+            );
+            too_many_requests(60)
+        }
         Err(e) => {
             // SECURITY: fail CLOSED on backend errors for authenticated
             // requests. Previously we passed the request through on error,

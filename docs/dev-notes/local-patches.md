@@ -2816,6 +2816,77 @@ agent-forge spec_id : `spec_aa233554`, hypothesis : `hyp_e1d4c948`.
 
 ---
 
+## Patch 26 -- WARN tracing sur reject 429 (preauth + per-key) (2026-05-23)
+
+### Symptome
+
+Operateur observe un HTTP 429 cote TUI `engram-approval-tui` apres deploy
+Patch 25, sans qu'aucune trace WARN/ERROR n'apparaisse dans
+`/var/log/kleos-server.log`. La fonction `too_many_requests()` dans
+`kleos-server/src/middleware/rate_limit.rs` retourne le 429 silencieusement :
+les deux bras `Ok(false)` (preauth IP a `PREAUTH_IP_LIMIT = 20/min` hardcoded,
+et per-key avec keying `key:N` ou `synth:user:N` apres fallback Patch 20b)
+emettent directement la reponse sans tracing. Seul le bras `Err(e)` log via
+`tracing::error!`. Impossible de discriminer preauth IP saturation vs per-key
+saturation sans dechiffrer la table `rate_limits` (qui requiert le
+`cipher_compatibility` specifique au bundle WSL et qui mismatch souvent avec
+le binaire `sqlcipher` du host LXC).
+
+### Approche
+
+Niveau **chirurgical** (~12 lignes ajoutees, 2 lignes touchees) : ajouter
+un `tracing::warn!(bucket, limit, path[, cost])` dans chacun des deux bras
+`Ok(false)`. Le champ `bucket = %key` est la donnee discriminante : `ip:X`
+revele preauth IP, `key:N` revele per-key vrai bearer, `synth:user:N` revele
+AuthContext synthetique (open access ou PIV).
+
+Pas d'env var, pas de changement comportemental, pas de nouveau bind. Le
+verbose-level de tracing reste pilote par `RUST_LOG` upstream (les WARN
+sont emis par defaut). Choix justifie : on accepte le bruit potentiel sous
+attaque DDoS volontaire (le serveur loguera chaque IP rejetee), qui reste
+borne par `PREAUTH_IP_LIMIT * 60 * connections_uniques` lignes/heure --
+acceptable vu le caractere transient des attaques pre-auth.
+
+### Fichiers touches
+
+- `kleos-server/src/middleware/rate_limit.rs` :
+  - `preauth_rate_limit_middleware` bras `Ok(false)` (l.110-122) : ajout
+    bloc `tracing::warn!` avec `bucket`, `limit = PREAUTH_IP_LIMIT`,
+    `path`.
+  - `rate_limit_middleware` bras `Ok(false)` (l.192-214) : ajout bloc
+    `tracing::warn!` avec `bucket`, `limit`, `cost`, `path`.
+
+### Validation
+
+Post-deploy : declencher un 429 connu (boucle `kleos-cli search` rapide ou
+TUI en pending soutenu) et grep le log :
+
+```bash
+ssh root@192.168.10.21 "tail -F /var/log/kleos-server.log | grep -E 'reject \(429\)'"
+```
+
+Verification attendue : ligne WARN avec `bucket=ip:192.168.10.X` (preauth
+IP saturated), OU `bucket=key:2` (per-key bearer principal saturated), OU
+`bucket=synth:user:N` (PIV/open-access synthetic). Permet de cibler le bon
+levier de fix (env var preauth, dedicated bearer, ou isolation synthetic).
+
+### Niveau delta
+
+**Chirurgical** (additif pur dans deux bras existants, zero refactor, zero
+changement de signature). Le hardcode `PREAUTH_IP_LIMIT` n'est pas touche
+-- une eventuelle config env var `KLEOS_PREAUTH_IP_LIMIT` serait un Patch
+distinct.
+
+### Conditions de retrait
+
+Upstream Ghost-Frame absorbe l'observabilite (PR candidat naturel,
+generaliste, sans dette de retro-compat). Sinon le patch reste leger
+indefiniment.
+
+agent-forge hypothesis : `hyp_9e17cf63`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
