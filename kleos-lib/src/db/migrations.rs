@@ -704,6 +704,19 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: false,
     },
+    // C3: convert legacy JSON-array scopes in identity_keys.scopes to the
+    // canonical CSV format used by api_keys.scopes. Rows whose value is
+    // already CSV (or empty) are left alone -- the migration is idempotent.
+    // No table rebuild: the column remains TEXT NOT NULL and the v53
+    // default lingers on disk for any column never explicitly inserted,
+    // but production paths always pass a value via enroll_handler.
+    Migration {
+        version: 80,
+        description: "identity_keys_scopes_json_to_csv",
+        up: run_migration_identity_keys_scopes_json_to_csv,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -884,6 +897,8 @@ const MIGRATION_READD_USER_ID_SKILLS: i64 = 78;
 /// v38 dropped user_id; this restores it as a simple ADD COLUMN since
 /// UNIQUE(source_id, target_id, edge_type) does not include user_id.
 const MIGRATION_READD_USER_ID_BRAIN: i64 = 79;
+/// Version number for the identity_keys.scopes JSON-to-CSV format migration.
+const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1537,6 +1552,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             conn,
             MIGRATION_READD_USER_ID_BRAIN,
             "readd_user_id_brain_edges",
+        )?;
+    }
+
+    if current_version < MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV {
+        info!("Running migration 80: identity_keys_scopes_json_to_csv");
+        run_migration_identity_keys_scopes_json_to_csv(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV,
+            "identity_keys_scopes_json_to_csv",
         )?;
     }
 
@@ -5393,6 +5418,93 @@ fn down_migration_identity_keys_scopes(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
+/// Migration 80 (C3): convert legacy JSON-array `identity_keys.scopes` values
+/// to the canonical CSV format used by `api_keys.scopes`.
+///
+/// Migration 53 introduced the `scopes` column with a JSON default
+/// (`'["read","write","admin"]'`) and the auth middleware parsed it as JSON.
+/// The C3 audit finding requires that the parser deny on unparseable input
+/// rather than silently escalating to admin, and the chosen path also moves
+/// the storage format to CSV so the same `parse_scopes` / `scopes_to_string`
+/// helpers serve both `api_keys` and `identity_keys`.
+///
+/// This migration walks every row and:
+///   - leaves rows that already look like CSV alone (idempotent)
+///   - leaves empty strings alone (the new parser treats them as explicit deny)
+///   - parses any JSON-array-shaped value and rewrites it as the equivalent
+///     CSV. Unparseable JSON is left untouched and logged -- those rows will
+///     fail authentication under the new parser, which is the audit-required
+///     least-privilege behavior (admin-fallback was the bug).
+fn run_migration_identity_keys_scopes_json_to_csv(conn: &rusqlite::Connection) -> Result<()> {
+    let has_column: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('identity_keys') WHERE name = 'scopes'",
+            [],
+            |row| row.get::<_, i64>(0).map(|c| c > 0),
+        )
+        .unwrap_or(false);
+    if !has_column {
+        // v53 never ran on this database (e.g. brand-new install before v53
+        // landed); nothing to convert.
+        return Ok(());
+    }
+
+    // Collect (id, raw_scopes) pairs first so we can iterate without holding
+    // a prepared-statement borrow while we issue UPDATEs on the same conn.
+    let mut select = conn
+        .prepare("SELECT id, scopes FROM identity_keys")
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    let rows: Vec<(i64, String)> = select
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    drop(select);
+
+    let mut converted = 0usize;
+    let mut left_alone = 0usize;
+    let mut unparseable = 0usize;
+    for (id, raw) in rows {
+        let trimmed = raw.trim();
+        // CSV or empty values are already in the target shape.
+        if !trimmed.starts_with('[') {
+            left_alone += 1;
+            continue;
+        }
+        match serde_json::from_str::<Vec<String>>(trimmed) {
+            Ok(names) => {
+                let csv = names.join(",");
+                conn.execute(
+                    "UPDATE identity_keys SET scopes = ?1 WHERE id = ?2",
+                    rusqlite::params![csv, id],
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                converted += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    id,
+                    raw = %trimmed,
+                    error = %e,
+                    "identity_keys.scopes row is JSON-shaped but unparseable; \
+                     leaving as-is, this row will fail auth under the new CSV \
+                     parser (audit-required deny-on-corruption)"
+                );
+                unparseable += 1;
+            }
+        }
+    }
+    info!(
+        converted,
+        left_alone,
+        unparseable,
+        "migration 80: identity_keys.scopes JSON-to-CSV conversion complete"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // v54: tool_manifests
 // ---------------------------------------------------------------------------
@@ -5858,6 +5970,76 @@ mod tests {
             "MIGRATIONS array contains v{highest_in_array} but run_migrations only applied up to v{applied}. \
              Did you add an entry to the MIGRATIONS array without adding the matching dispatch block?"
         );
+    }
+
+    /// Migration 80 (C3): converts legacy JSON-array `identity_keys.scopes`
+    /// values to CSV. Must convert canonical JSON, leave already-CSV rows
+    /// alone, leave empty strings alone, and not mangle malformed JSON
+    /// (those rows fail auth under the new parser, which is the intended
+    /// deny-on-corruption behavior).
+    #[test]
+    fn migration_80_scopes_json_to_csv() {
+        let conn = open_test_db();
+        run_migrations(&conn).expect("migrations apply on fresh db");
+
+        // users.id=1 may or may not exist depending on bootstrap state, and
+        // identity_keys FK-references users(id) -- use OR IGNORE so the test
+        // is independent of bootstrap.
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, username, created_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![1, "soak-user", "2026-01-01 00:00:00"],
+        )
+        .expect("insert users row");
+
+        // Simulate pre-migration state by inserting rows in all four shapes
+        // the migration must handle. The migration was already dispatched
+        // on the fresh DB above, so we exercise it idempotently by direct
+        // call after inserting the synthetic rows.
+        let inserts = [
+            (101_i64, r#"["read","write","admin"]"#, "read,write,admin"), // JSON full
+            (102_i64, r#"["read"]"#, "read"),                             // JSON single
+            (103_i64, "read,write", "read,write"),                        // already CSV
+            (104_i64, "", ""),                                            // empty stays empty
+            (105_i64, r#"[bogus json"#, r#"[bogus json"#),                // malformed left alone
+        ];
+        for (id, raw, _expected) in &inserts {
+            conn.execute(
+                "INSERT INTO identity_keys
+                 (id, user_id, tier, algo, pubkey_pem, pubkey_fingerprint, host_label, scopes)
+                 VALUES (?1, 1, 'soft', 'ed25519', 'PEM', ?2, 'h', ?3)",
+                rusqlite::params![id, format!("fp{id}"), raw],
+            )
+            .expect("insert synthetic identity_keys row");
+        }
+
+        run_migration_identity_keys_scopes_json_to_csv(&conn).expect("migration 80 re-run");
+
+        for (id, _raw, expected) in &inserts {
+            let got: String = conn
+                .query_row(
+                    "SELECT scopes FROM identity_keys WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .expect("row exists post-migration");
+            assert_eq!(
+                got, *expected,
+                "row id={id}: expected scopes={expected:?}, got {got:?}"
+            );
+        }
+
+        // Idempotency: a second run is a no-op.
+        run_migration_identity_keys_scopes_json_to_csv(&conn).expect("migration 80 idempotent");
+        for (id, _raw, expected) in &inserts {
+            let got: String = conn
+                .query_row(
+                    "SELECT scopes FROM identity_keys WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .expect("row still exists");
+            assert_eq!(got, *expected, "second pass changed row id={id}");
+        }
     }
 
     /// Regression for B4: the v48 api_keys rebuild must be safe to re-run on

@@ -101,39 +101,22 @@ fn synthetic_key_for_identity(user_id: i64) -> ApiKey {
     synthetic_key_for_identity_with_scopes(user_id, None)
 }
 
-/// Build the in-memory ApiKey for a signed-envelope request. When `scopes_json`
-/// is provided (from the v53 `identity_keys.scopes` column), parse it and use
-/// those scopes; otherwise default to full admin (legacy behavior). Unparseable
-/// JSON falls back to admin with a warning -- no PIV holder should be locked
-/// out of their own data because of a corrupt scopes value (M4).
-fn synthetic_key_for_identity_with_scopes(user_id: i64, scopes_json: Option<&str>) -> ApiKey {
-    let scopes = scopes_json
-        .and_then(|s| {
-            serde_json::from_str::<Vec<String>>(s)
-                .map_err(|e| {
-                    tracing::warn!(error = %e, raw = %s, user_id,
-                        "identity_keys.scopes JSON unparseable; falling back to admin");
-                    e
-                })
-                .ok()
-        })
-        .map(|names| {
-            names
-                .iter()
-                .filter_map(|n| match n.as_str() {
-                    "read" => Some(Scope::Read),
-                    "write" => Some(Scope::Write),
-                    "admin" => Some(Scope::Admin),
-                    other => {
-                        tracing::warn!(scope = %other, user_id,
-                            "unknown scope in identity_keys.scopes; ignoring");
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .filter(|v: &Vec<Scope>| !v.is_empty())
-        .unwrap_or_else(|| vec![Scope::Read, Scope::Write, Scope::Admin]);
+/// Build the in-memory ApiKey for a signed-envelope request. `scopes_csv` is the
+/// `identity_keys.scopes` column -- a comma-separated list using the same scope
+/// grammar as `api_keys.scopes` (e.g. "read,write"). When present it is
+/// authoritative and parsed with the canonical parser: a value that yields no
+/// known scopes is a deny (empty scope set), NEVER an escalation. Only a MISSING
+/// value (None) retains the historical admin grant -- that covers pre-v53 rows
+/// and the user-1 bootstrap caller, not freshly enrolled keys.
+fn synthetic_key_for_identity_with_scopes(user_id: i64, scopes_csv: Option<&str>) -> ApiKey {
+    let scopes = match scopes_csv {
+        // No stored scopes column value: legacy/bootstrap rows keep admin. New
+        // enrollments always populate scopes, so they never reach this arm.
+        None => vec![Scope::Read, Scope::Write, Scope::Admin],
+        // Stored scopes are authoritative. Empty or all-unknown parses to an
+        // empty scope set (deny) -- correct least privilege, not an escalation.
+        Some(raw) => kleos_lib::auth::parse_scopes(raw),
+    };
 
     ApiKey {
         id: 0,
@@ -872,4 +855,53 @@ async fn resolve_identity_by_id(
             model,
         }),
     })
+}
+
+#[cfg(test)]
+mod identity_scope_tests {
+    use super::*;
+
+    #[test]
+    fn stored_csv_scopes_are_used_verbatim() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some("read,write"));
+        assert!(key.scopes.contains(&Scope::Read));
+        assert!(key.scopes.contains(&Scope::Write));
+        assert!(
+            !key.scopes.contains(&Scope::Admin),
+            "default enrolled scopes must NOT be admin"
+        );
+    }
+
+    #[test]
+    fn empty_scopes_deny_not_admin() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some(""));
+        assert!(
+            !key.scopes.contains(&Scope::Admin),
+            "explicitly empty scopes must not escalate to admin"
+        );
+        assert!(key.scopes.is_empty(), "empty scopes string means deny");
+    }
+
+    #[test]
+    fn unknown_scopes_deny_not_admin() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some("bogus,nonsense"));
+        assert!(
+            !key.scopes.contains(&Scope::Admin),
+            "all-unknown scopes must not escalate to admin"
+        );
+        assert!(key.scopes.is_empty());
+    }
+
+    #[test]
+    fn admin_is_granted_only_when_explicitly_stored() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some("read,write,admin"));
+        assert!(key.scopes.contains(&Scope::Admin));
+    }
+
+    #[test]
+    fn missing_column_keeps_legacy_admin() {
+        // None == no stored scopes (pre-v53 rows / user-1 bootstrap path).
+        let key = synthetic_key_for_identity_with_scopes(1, None);
+        assert!(key.scopes.contains(&Scope::Admin));
+    }
 }
