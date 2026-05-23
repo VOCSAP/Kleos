@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use kleos_lib::llm::{local::LocalModelClient, CallOptions, Priority};
+use kleos_lib::llm::{local::LocalModelClient, prompts, CallOptions, Priority};
 use serde::Deserialize;
 
 const GATE_SYSTEM_PROMPT: &str = "\
@@ -109,9 +109,15 @@ impl MemoryGate {
             timeout_ms: Some(15_000),
         };
 
+        // Patch 30 (VOCSAP): allow operators to override the gate prompt via
+        // prompts-overrides/sidecar/gate/system.txt without rebuilding the
+        // sidecar. Falls back to GATE_SYSTEM_PROMPT when the override file is
+        // absent. Cache TTL 5s applies (kleos_lib::llm::prompts::TTL_SECS).
+        let system_prompt = prompts::load_prompt("sidecar/gate/system", GATE_SYSTEM_PROMPT);
+
         let response = self
             .llm
-            .call(GATE_SYSTEM_PROMPT, &truncated, Some(opts))
+            .call(&system_prompt, &truncated, Some(opts))
             .await
             .map_err(|e| format!("llm call failed: {e}"))?;
 

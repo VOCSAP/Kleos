@@ -3116,6 +3116,74 @@ agent-forge spec_id : `spec_2764b269`.
 
 ---
 
+## Patch 30 -- overlay prompt sidecar gate (id `sidecar/gate/system`) (2026-05-23)
+
+### Symptome
+
+`kleos-sidecar/src/gate.rs:6-22` definit `GATE_SYSTEM_PROMPT` comme une `const &str` hardcoded. Le gate LLM watcher consomme ce prompt pour classer chaque tour assistant de Claude Code en `store|skip`. Le prompt actuel produit beaucoup de faux positifs (FP) :
+
+- Investigation en cours sans conclusion -> `store: true`, importance 7 (devrait etre skip).
+- Restate d'instruction operateur -> `store: true` (pollution Kleos).
+- Note self-referentielle sur la session courante -> `store: true`.
+
+Simulation Ollama direct (qwen3:8b-ctx16k, reasoning off) sur 8 samples annotes (3 STORE + 5 SKIP) :
+
+| Variante | Precision | Recall | F1 |
+|---|---|---|---|
+| `v0_original` (prompt hardcoded actuel) | 0.60 | 1.00 | 0.75 |
+| `v4_combined` (strict + scale + few-shot) | **1.00** | **1.00** | **1.00** |
+
+v0 cree 2 FP sur 5 SKIP (40% de pollution). v4 cree 0 FP. Le prompt source du sidecar est l'unique levier qui mitige la pollution Kleos a la source -- les autres patches (consolidation, dedup, importance ranking) sont aval.
+
+### Approche
+
+Etendre le systeme overlay Patch 15 (`kleos-lib/src/llm/prompts.rs::load_prompt`) au sidecar **sans modifier la const hardcoded**. La const reste l'embedded default, le file overlay le surcharge quand present. Pattern strictement identique a celui des prompts `broca/*` et `growth/*` deja overlays.
+
+Implementation dans `kleos-sidecar/src/gate.rs::evaluate_single` :
+
+```rust
+// Avant (hardcoded direct) :
+let response = self.llm.call(GATE_SYSTEM_PROMPT, &truncated, Some(opts)).await...;
+
+// Apres (overlay-aware) :
+let system_prompt = prompts::load_prompt("sidecar/gate/system", GATE_SYSTEM_PROMPT);
+let response = self.llm.call(&system_prompt, &truncated, Some(opts)).await...;
+```
+
+Cascade :
+1. `prompts-overrides/sidecar/gate/system.txt` (deploye par operateur cote LXC 121 sous `${KLEOS_DATA_DIR}/prompts/sidecar/gate/system.txt` ou cote poste Windows sidecar via `${KLEOS_DATA_DIR}/prompts/`).
+2. Fallback `GATE_SYSTEM_PROMPT` const embedded (zero comportement change).
+
+Cache TTL 5s (`kleos_lib::llm::prompts::TTL_SECS`) -- hot-tune sans restart sidecar.
+
+### Niveau delta upstream
+
+**Additif pur** (~5 lignes, voir table dans CLAUDE.md "Politique d'ecart avec upstream") : 1 import + 1 ligne `load_prompt` + change de `GATE_SYSTEM_PROMPT` -> `&system_prompt` dans le call. La const reste verbatim upstream-alignee.
+
+### Fichiers touches
+
+- `kleos-sidecar/src/gate.rs` -- `use kleos_lib::llm::prompts;` + 2 lignes dans `evaluate_single` (load + use). La const `GATE_SYSTEM_PROMPT` est preservee verbatim.
+- `prompts-overrides/sidecar/gate/system.txt` -- nouveau override (v4_combined initial, voir fichier).
+- `CLAUDE.md` (gitignore repo) -- ajout `sidecar/gate/system` au catalog overlay.
+
+### Tests
+
+- `cargo check -p kleos-sidecar` : OK (0 errors, 10 warnings pre-existants).
+- `cargo test -p kleos-sidecar --lib gate` : 0 passed / 16 filtered (le sidecar n'a pas de tests unit nommes "gate" mais le code compile et les tests filterables restent fonctionnels).
+- E2E manuel : restart sidecar, observer dans `kleos-sidecar.out.log` les verdicts `flushing batch through LLM gate ... stored=N skipped=M` pendant 30 min d'usage Claude Code reel. Verifier que les false-positive samples connus (in-progress note, instruction restate, ephemeral status) sont `skipped`.
+
+### Conditions de retrait
+
+Le Patch 15 (parent) est candidat PR upstream. Si upstream absorbe Patch 15 + Patch 16, ce Patch 30 devient un simple ajout au catalog overlay sidecar/gate -- toujours utile. Si upstream ajoute son propre systeme d'overlay du gate sidecar, ce patch s'aligne sur l'API upstream et le const hardcoded reste accessible comme default. Pas de retrait standalone prevu.
+
+### Validation empirique
+
+Methodologie : Ollama direct `192.168.10.16:11434` (zero LXC 121 traffic, evite le rate-limit cascade observe pendant Patch 26+28). Script `/c/Users/Olivier/.claude/tmp/gate_sim.py` (hors-repo) implemente 5 variantes (`v0_original, v1_strict, v2_scale, v3_fewshot, v4_combined`) + scoring precision/rappel/F1 + comparaison per-sample. 8 samples annotes manuellement dans `/c/Users/Olivier/.claude/tmp/samples.json` (3 STORE + 5 SKIP). v4_combined gagne avec score parfait, latence moyenne 4.80s/call vs 3.57s baseline (+35%, sous le timeout 15s du gate).
+
+Biais reconnu : les 8 samples sont construits par l'agent (3 extraits jsonl + 5 synthetiques). Robustesse a renforcer par extension a 20-30 samples piochees aleatoirement dans plusieurs .jsonl recents + annotation par l'operateur. **Le patch d'infrastructure ne depend pas du contenu specifique de l'override** -- l'operateur peut iterer le prompt sans rebuild grace au cache TTL 5s.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
