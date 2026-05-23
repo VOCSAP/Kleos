@@ -46,8 +46,16 @@ elif isinstance(inp, dict):
 else:
     summary = ''
 
-# Send in both legacy and current format for compatibility
-payload = json.dumps({'tool': tool, 'tool_name': tool, 'summary': summary, 'content': summary})
+# session_id propagation: read from the PostToolUse event stdin and inject so
+# the sidecar routes /observe to the correct Claude session bucket instead of
+# its `default_session_id`. SessionStart hook (sidecar-session-start.sh) declares
+# this session_id to the sidecar via POST /session/start beforehand.
+sid = data.get('session_id', data.get('sessionId', '')) or ''
+
+payload_dict = {'tool': tool, 'tool_name': tool, 'summary': summary, 'content': summary}
+if sid:
+    payload_dict['session_id'] = sid
+payload = json.dumps(payload_dict)
 
 sidecar_url = os.environ.get('SIDECAR_URL', 'http://127.0.0.1:7711')
 sidecar_token = os.environ.get('SIDECAR_TOKEN', '')

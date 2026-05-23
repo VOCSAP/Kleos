@@ -38,8 +38,25 @@ except: print('unknown')
 
 log "SessionEnd fired. session_id=$SESSION_ID"
 
-# Notify Mnemonic sidecar to finalize session (fire-and-forget)
-curl -sf --max-time 5 "http://localhost:7711/end" -X POST &>/dev/null || true
+# Notify kleos-sidecar (Rust) to finalize the Claude session.
+# Pre-Phase-3: this POSTed /end with no body -> sidecar closed its default
+# session (UUID generated at boot), NOT the Claude session, so per-session
+# stats (stored_count, duration_secs) were aggregated across all sessions.
+# Phase 3: inject session_id (extracted above) so the correct bucket is
+# flushed and ended. URL + token cascade matches mnemonic-observe.sh and
+# sidecar-session-start.sh.
+SIDECAR_URL_END="${KLEOS_SIDECAR_URL:-${ENGRAM_SIDECAR_URL:-http://127.0.0.1:7711}}"
+SIDECAR_TOKEN_END="${KLEOS_SIDECAR_TOKEN:-${ENGRAM_SIDECAR_TOKEN:-}}"
+if [ "$SESSION_ID" != "unknown" ] && [ -n "$SESSION_ID" ]; then
+  SIDECAR_END_PAYLOAD=$(python3 -c "import json,sys; print(json.dumps({'session_id': sys.argv[1]}))" "$SESSION_ID" 2>/dev/null || echo '{}')
+else
+  SIDECAR_END_PAYLOAD='{}'
+fi
+curl -sf --max-time 5 "$SIDECAR_URL_END/end" \
+  -X POST \
+  ${SIDECAR_TOKEN_END:+-H "Authorization: Bearer $SIDECAR_TOKEN_END"} \
+  -H "Content-Type: application/json" \
+  -d "$SIDECAR_END_PAYLOAD" &>/dev/null || true
 
 # Build summary from recent Engram memories (best-effort, local)
 ENGRAM_CLI="$HOME_DIR/.local/bin/kleos-cli"
