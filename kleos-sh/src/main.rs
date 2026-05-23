@@ -76,8 +76,10 @@ fn emit_claude_decision(decision: &str, reason: Option<&str>, additional_context
 }
 
 /// Parse Claude Code's PreToolUse hook input from stdin. Expected shape:
-/// {"tool_name": "Bash", "tool_input": {"command": "..."}, ...}.
-/// Returns (command, tool_name) or None if the payload does not parse.
+/// {"tool_name": "Bash"|"Write"|"Edit"|"MultiEdit", "tool_input": {...}, ...}.
+/// Returns (command, tool_name) or None if the payload does not parse or the
+/// tool is not gateable. None is interpreted by the caller as a silent allow
+/// (existing fail-open hook semantics).
 fn parse_claude_hook_stdin() -> Option<(String, Option<String>)> {
     let mut buf = String::new();
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf).is_err() {
@@ -88,12 +90,47 @@ fn parse_claude_hook_stdin() -> Option<(String, Option<String>)> {
         .get("tool_name")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
-    let command = v
-        .get("tool_input")
-        .and_then(|ti| ti.get("command"))
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())?;
+    let command = extract_command_for_tool(&v, tool_name.as_deref())?;
     Some((command, tool_name))
+}
+
+/// Patch 27 -- extract the gate-relevant command from tool_input based on
+/// tool_name. Bash uses tool_input.command directly. Write/Edit/MultiEdit have
+/// no command field; we synthesize a "<verb>:<file_path>" pseudo-command so
+/// the server-side gate cascade (Patch 25 regex matcher + whitelist +
+/// require_approval) can match file write/edit operations the same way it
+/// matches shell commands. Unknown tool_name or missing required field returns
+/// None -- the caller exits 0 = silent allow per existing fail-open semantics.
+///
+/// Splitting this out of `parse_claude_hook_stdin` keeps the JSON-extraction
+/// branching unit-testable without spawning a subprocess to feed stdin.
+fn extract_command_for_tool(
+    v: &serde_json::Value,
+    tool_name: Option<&str>,
+) -> Option<String> {
+    let tool_input = v.get("tool_input")?;
+    match tool_name {
+        // tool_name absent: preserve pre-Patch-26 behavior (assume Bash-shaped
+        // payload, look for tool_input.command). This keeps any non-Claude
+        // caller that omits tool_name working.
+        Some("Bash") | None => tool_input
+            .get("command")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string()),
+        Some("Write") => tool_input
+            .get("file_path")
+            .and_then(|p| p.as_str())
+            .map(|s| format!("write:{}", s)),
+        Some("Edit") => tool_input
+            .get("file_path")
+            .and_then(|p| p.as_str())
+            .map(|s| format!("edit:{}", s)),
+        Some("MultiEdit") => tool_input
+            .get("file_path")
+            .and_then(|p| p.as_str())
+            .map(|s| format!("multiedit:{}", s)),
+        _ => None,
+    }
 }
 
 fn resolve_api_key() -> Option<String> {
@@ -584,5 +621,90 @@ mod tests {
         let v = build_claude_decision("allow", None, None).expect("non-empty body");
         let h = &v["hookSpecificOutput"];
         assert_eq!(h["permissionDecision"], "allow");
+    }
+
+    // ---- Patch 27 tests : extract_command_for_tool ------------------------
+
+    fn payload(tool: &str, input: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "tool_name": tool, "tool_input": input })
+    }
+
+    #[test]
+    fn patch27_extract_bash_returns_raw_command() {
+        let v = payload("Bash", serde_json::json!({"command": "ls -la"}));
+        assert_eq!(
+            extract_command_for_tool(&v, Some("Bash")),
+            Some("ls -la".to_string()),
+            "Bash payload must pass tool_input.command through unchanged"
+        );
+    }
+
+    #[test]
+    fn patch27_extract_write_synthesizes_pseudo_command() {
+        let v = payload("Write", serde_json::json!({"file_path": "/etc/foo.env", "content": "x"}));
+        assert_eq!(
+            extract_command_for_tool(&v, Some("Write")),
+            Some("write:/etc/foo.env".to_string()),
+            "Write payload must yield write:<file_path>"
+        );
+    }
+
+    #[test]
+    fn patch27_extract_edit_synthesizes_pseudo_command() {
+        let v = payload(
+            "Edit",
+            serde_json::json!({"file_path": "C:/Users/op/.ssh/config", "old_string": "a", "new_string": "b"}),
+        );
+        assert_eq!(
+            extract_command_for_tool(&v, Some("Edit")),
+            Some("edit:C:/Users/op/.ssh/config".to_string()),
+            "Edit payload must yield edit:<file_path>"
+        );
+    }
+
+    #[test]
+    fn patch27_extract_multiedit_synthesizes_pseudo_command() {
+        let v = payload(
+            "MultiEdit",
+            serde_json::json!({"file_path": "/var/lib/kleos/gate/blocked_patterns.txt", "edits": []}),
+        );
+        assert_eq!(
+            extract_command_for_tool(&v, Some("MultiEdit")),
+            Some("multiedit:/var/lib/kleos/gate/blocked_patterns.txt".to_string()),
+            "MultiEdit payload must yield multiedit:<file_path>, edits array ignored"
+        );
+    }
+
+    #[test]
+    fn patch27_extract_unknown_tool_returns_none() {
+        let v = payload("Read", serde_json::json!({"file_path": "/etc/passwd"}));
+        assert!(
+            extract_command_for_tool(&v, Some("Read")).is_none(),
+            "Unknown tool must return None so caller falls through to silent allow"
+        );
+        let v = payload(
+            "NotebookEdit",
+            serde_json::json!({"notebook_path": "/x.ipynb", "cell_id": "c1"}),
+        );
+        assert!(extract_command_for_tool(&v, Some("NotebookEdit")).is_none());
+    }
+
+    #[test]
+    fn patch27_extract_missing_required_field_returns_none() {
+        // Write without file_path
+        let v = payload("Write", serde_json::json!({"content": "no path"}));
+        assert!(extract_command_for_tool(&v, Some("Write")).is_none());
+        // Edit with file_path of wrong type (number instead of string)
+        let v = payload("Edit", serde_json::json!({"file_path": 42}));
+        assert!(extract_command_for_tool(&v, Some("Edit")).is_none());
+        // Bash without command
+        let v = payload("Bash", serde_json::json!({"timeout": 5}));
+        assert!(extract_command_for_tool(&v, Some("Bash")).is_none());
+        // No tool_input at all
+        let v = serde_json::json!({"tool_name": "Bash"});
+        assert!(extract_command_for_tool(&v, Some("Bash")).is_none());
+        // tool_name absent treated as Bash, no command -> None
+        let v = serde_json::json!({"tool_input": {"foo": "bar"}});
+        assert!(extract_command_for_tool(&v, None).is_none());
     }
 }

@@ -2887,6 +2887,116 @@ agent-forge hypothesis : `hyp_9e17cf63`.
 
 ---
 
+## Patch 27 -- kleos-sh extension Write/Edit/MultiEdit pseudo-command (2026-05-23)
+
+### Symptome
+
+Le matcher PreToolUse de `~/.claude/settings.json:273` declare
+`Bash|Write|Edit|MultiEdit` pour le hook `kleos-sh.exe --claude-hook
+--agent claude-code`. Or `parse_claude_hook_stdin()` dans
+`kleos-sh/src/main.rs` n'extrait que `tool_input.command`. Les payloads
+Write (`{file_path, content}`), Edit (`{file_path, old_string,
+new_string}`) et MultiEdit (`{file_path, edits}`) n'ont pas de champ
+`command` -- la fonction retourne `None`, le main exit `0` sans emit de
+JSON sur stdout, et Claude Code interprete comme un allow silencieux.
+**Resultat : toutes les ecritures et editions de fichier natives Claude
+echappent integralement au gate Kleos** (patterns, brain check, audit
+log, bridge approvals Patch 21).
+
+### Approche
+
+Niveau **chirurgical** (~50 lignes ajoutees, 1 fonction touchee, 0
+refactor). Extraction de la logique de selection dans un helper pur
+`extract_command_for_tool(&Value, Option<&str>) -> Option<String>` pour
+permettre le test unitaire sans subprocess + stdin pipe.
+
+Pour Write/Edit/MultiEdit, on synthese une **pseudo-commande**
+`"<verb>:<file_path>"` (verb = lowercase tool_name) et on l'injecte
+dans le champ `command` existant de `GateCheckRequest`. Le serveur
+applique sa cascade Patch 25 (regex auto-detect + whitelist +
+require_approval + dangerous hardcoded) sur cette string. **Zero
+changement cote `kleos-server` / `kleos-lib`** : la cascade traite
+`write:/etc/foo.env` comme n'importe quelle commande matchable par
+regex.
+
+Cote `gate-rules/` submodule, ajout de patterns dedies dans les fichiers
+existants (pas de nouveau fichier) :
+
+- `blocked_patterns.txt` : `^(?:write|edit|multiedit):.*\.env$`,
+  `.ssh`, `.pem`, `.key`, `credentials.*\.(json|yaml|yml|toml)$`.
+- `require_approval_patterns.txt` : `\.claude/settings\.json`,
+  `\.claude/hooks/`, `gate-rules/.*\.txt`, `/etc/*`.
+
+Hot-tunable via cache TTL 5s, identique au flow Patch 19b.
+
+### Fichiers touches
+
+- `kleos-sh/src/main.rs` :
+  - `parse_claude_hook_stdin` : appel a `extract_command_for_tool`
+    (vs in-line inline `.get("command")` upstream).
+  - Nouveau helper `extract_command_for_tool` (~30 lignes, match sur
+    `tool_name` avec bras Bash / Write / Edit / MultiEdit / `_`).
+  - 6 nouveaux tests unitaires `patch27_extract_*` (Bash regression,
+    Write/Edit/MultiEdit pseudo-command, unknown tool returns None,
+    missing required field returns None). Total kleos-sh : 4 -> 10
+    tests, tous passent (`cargo test -p kleos-sh`).
+- `gate-rules/blocked_patterns.txt` : section Patch 27 (~10 lignes
+  pattern + commentaires).
+- `gate-rules/require_approval_patterns.txt` : section Patch 27
+  (~8 lignes pattern + commentaires).
+- `CLAUDE.md` racine : ajout Patch 27 dans la liste active.
+
+### Validation locale
+
+```
+cargo test -p kleos-sh
+# test result: ok. 10 passed; 0 failed; 0 ignored
+```
+
+### Validation post-deploy attendue
+
+1. Rebuild `kleos-sh.exe` (Windows MSVC, build local poste operateur).
+2. Replace `~/.cargo/bin/kleos-sh.exe` cote poste.
+3. Push submodule `gate-rules/` (commit + push origin main) puis
+   `git -C /var/lib/kleos/gate pull` cote LXC 121.
+4. Test E2E :
+   - Tool Write `/tmp/test.env` -> doit recevoir `permissionDecision:
+     "deny"` (matche `^(?:write|edit|multiedit):.*\.env$`).
+   - Tool Write `/tmp/safe.txt` -> doit passer (pas de pattern matche).
+   - Tool Edit `~/.claude/settings.json` -> doit creer une approval
+     dans la TUI engram-approval-tui (bridge Patch 21 + 21.1).
+5. Bash inchange (regression-check) : `cat /tmp/safe.txt` passe, `rm
+   -rf /` toujours bloque par hardcoded dangerous.
+
+### Niveau delta
+
+**Chirurgical** (additif pur sur la branche du match, helper testable
+extrait). Zero changement cote `kleos-server` / `kleos-lib`. Zero env
+var nouvelle. Zero migration DB.
+
+### Limites assumees
+
+1. Pas de matching contenu (content_preview). Un Edit qui injecte
+   `password=foobar` ne matche pas un pattern `(?i)password`. A scoper
+   dans un Patch ulterieur avec ajout d'un champ `content_preview` au
+   payload + nouveau fichier `content_patterns.txt`.
+2. MultiEdit perd la granularite des edits individuels. Acceptable :
+   on cible le file_path global, l'operateur peut whitelister par
+   fichier.
+3. Edge case : fichier dont le nom commence litteralement par `write:`
+   ou `edit:` -- improbable, mais documente ici.
+
+### Conditions de retrait
+
+Candidat PR upstream Ghost-Frame (generaliste, sans dette retro-compat
+puisque la rebranche Bash est byte-identical au comportement
+pre-Patch 27). Le titre PR suggere : "feat(kleos-sh): gate Write/Edit/
+MultiEdit via pseudo-command".
+
+agent-forge spec_id : `spec_b6d93363`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
