@@ -228,33 +228,6 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
     .await
 }
 
-/// Gate a memory write on tenant quota (MT-F20).
-///
-/// Call at the top of every handler that can create a new memory (store,
-/// import, ingest, skill creation, etc.). Returns `Err(EngError::Forbidden)`
-/// with a `quota_exceeded` marker when the tenant is already at or above
-/// their limit, so callers can surface a 429/403 without leaking the
-/// underlying numbers.
-///
-/// NOTE: Tenant shard databases skip quota checks -- the tenant_quotas table
-/// only exists in the main database. Shards are already isolated per-user and
-/// admin-provisioned, so quota enforcement happens at the admin level.
-#[tracing::instrument(skip(db))]
-pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
-    // Tenant shards don't have tenant_quotas table -- skip check.
-    if db.is_tenant() {
-        return Ok(());
-    }
-    let status = check_quota(db, user_id).await?;
-    if !status.within_limits || status.memory_count >= status.memory_limit {
-        return Err(EngError::Forbidden(format!(
-            "quota exceeded: {} of {} memories used",
-            status.memory_count, status.memory_limit
-        )));
-    }
-    Ok(())
-}
-
 /// Check and enforce content quotas inside an open write transaction.
 ///
 /// Called from inside the `db.transaction()` closure on every memory write.
@@ -304,6 +277,28 @@ pub fn enforce_quota_in_tx(
     }
 
     Ok(())
+}
+
+/// Read quota defaults from environment variables.
+///
+/// All variables default to `None` (unlimited) when unset, preserving
+/// backward compatibility for existing tenants and bare deployments.
+///
+/// Environment variables:
+/// - `KLEOS_DEFAULT_CONTENT_QUOTA_BYTES` -- max content bytes per tenant
+/// - `KLEOS_DEFAULT_MEMORY_COUNT_QUOTA`  -- max memory rows per tenant
+/// - `KLEOS_DEFAULT_DISK_QUOTA_BYTES`    -- max shard directory bytes per tenant
+pub fn default_quota_from_env() -> crate::tenant::types::QuotaConfig {
+    /// Parse a named environment variable as i64, returning None if absent or non-numeric.
+    fn read_i64(key: &str) -> Option<i64> {
+        std::env::var(key).ok().and_then(|v| v.parse::<i64>().ok())
+    }
+
+    crate::tenant::types::QuotaConfig {
+        content_bytes: read_i64("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES"),
+        memory_count: read_i64("KLEOS_DEFAULT_MEMORY_COUNT_QUOTA"),
+        disk_bytes: read_i64("KLEOS_DEFAULT_DISK_QUOTA_BYTES"),
+    }
 }
 
 /// Record a usage event in the usage_events table.
@@ -421,5 +416,31 @@ mod enforce_quota_in_tx_tests {
         };
         let tx = conn.unchecked_transaction().unwrap();
         assert!(enforce_quota_in_tx(&tx, &quota, 50).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod env_quota_tests {
+    use super::*;
+
+    /// Env defaults: unset = None (unlimited).
+    #[test]
+    fn test_default_quota_from_env_unset() {
+        std::env::remove_var("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES");
+        std::env::remove_var("KLEOS_DEFAULT_MEMORY_COUNT_QUOTA");
+        std::env::remove_var("KLEOS_DEFAULT_DISK_QUOTA_BYTES");
+        let q = default_quota_from_env();
+        assert!(q.content_bytes.is_none());
+        assert!(q.memory_count.is_none());
+        assert!(q.disk_bytes.is_none());
+    }
+
+    /// Env defaults: set values are parsed.
+    #[test]
+    fn test_default_quota_from_env_set() {
+        std::env::set_var("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES", "1048576");
+        let q = default_quota_from_env();
+        assert_eq!(q.content_bytes, Some(1_048_576));
+        std::env::remove_var("KLEOS_DEFAULT_CONTENT_QUOTA_BYTES");
     }
 }
