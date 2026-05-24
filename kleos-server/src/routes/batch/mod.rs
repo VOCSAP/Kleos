@@ -210,7 +210,7 @@ async fn execute_update(
         chunk_embeddings: None,
     };
 
-    match memory::update(db, body.id, req, user_id).await {
+    match memory::update(db, body.id, req, user_id, false).await {
         Ok(mem) => BatchResult {
             index,
             op: "update".to_string(),

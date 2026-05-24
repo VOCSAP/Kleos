@@ -83,7 +83,7 @@ async fn update_preserves_lifecycle_fields() {
     .await
     .expect("seed lifecycle fields");
 
-    let new = memory::update(&db, id, content_update("updated content"), 1)
+    let new = memory::update(&db, id, content_update("updated content"), 1, false)
         .await
         .expect("update");
     let new_id = new.id;
@@ -146,7 +146,7 @@ async fn store_with_superseded_parent_does_not_fork() {
     let a_id = a.id;
 
     // Update A -> A' so A is no longer the latest version.
-    let a_prime = memory::update(&db, a_id, content_update("A v2"), 1)
+    let a_prime = memory::update(&db, a_id, content_update("A v2"), 1, false)
         .await
         .expect("update A");
     let root_id = a_prime.root_memory_id.unwrap_or(a_id);

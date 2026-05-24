@@ -723,7 +723,7 @@ async fn update_memory(
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.user_id).await?;
+    let updated = memory::update(&db, id, req, auth.user_id, false).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 
