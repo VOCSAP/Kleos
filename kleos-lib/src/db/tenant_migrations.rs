@@ -523,253 +523,85 @@ const TENANT_MIGRATION_READD_USER_ID_USER_PREFERENCES: i64 = 68;
 /// to the shard owner.
 const TENANT_MIGRATION_READD_USER_ID_SKILLS: i64 = 69;
 
-/// Tenant v1: applies the initial tenant schema from the embedded SQL file.
-fn apply_schema_v1(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v1.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v1 failed: {e}")))
+/// Generates a tenant migration function that loads SQL from an external file.
+macro_rules! tenant_migration_sql {
+    ($fn_name:ident, $ver:expr, $sql_path:expr) => {
+        /// Pure-SQL tenant migration loaded from an external `.sql` file.
+        fn $fn_name(conn: &Connection) -> Result<()> {
+            conn.execute_batch(include_str!($sql_path))
+                .map_err(|e| EngError::DatabaseMessage(format!("tenant schema {} failed: {e}", $ver)))
+        }
+    };
 }
 
-/// Tenant v2: adds user_id shim to the scratchpad tables.
-fn apply_schema_v2_scratchpad_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v2_scratchpad.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v2 failed: {e}")))
-}
-
-/// Tenant v3: adds user_id shim to the sessions tables.
-fn apply_schema_v3_sessions_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v3_sessions.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v3 failed: {e}")))
-}
-
-/// Tenant v4: adds user_id shim to chiasm task tables.
-fn apply_schema_v4_chiasm_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v4_chiasm.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v4 failed: {e}")))
-}
-
-/// Tenant v5: adds user_id shim to the approvals tables.
-fn apply_schema_v5_approvals_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v5_approvals.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v5 failed: {e}")))
-}
-
-/// Tenant v6: adds user_id shim to the broca_actions tables.
-fn apply_schema_v6_broca_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v6_broca.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v6 failed: {e}")))
-}
-
-/// Tenant v7: adds user_id shim to the projects tables.
-fn apply_schema_v7_projects_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v7_projects.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v7 failed: {e}")))
-}
-
-/// Tenant v8: adds axon events and soma agents tables via activity shim.
-fn apply_schema_v8_activity_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v8_activity.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v8 failed: {e}")))
-}
-
-/// Tenant v9: adds user_id shim to webhooks tables.
-fn apply_schema_v9_webhooks_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v9_webhooks.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v9 failed: {e}")))
-}
-
-/// Tenant v10: adds user_id shim to ingestion tables.
-fn apply_schema_v10_ingestion_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v10_ingestion.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v10 failed: {e}")))
-}
-
-/// Tenant v11: adds the axon family tables.
-fn apply_schema_v11_axon_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v11_axon.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v11 failed: {e}")))
-}
-
-/// Tenant v12: adds the soma family tables.
-fn apply_schema_v12_soma_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v12_soma.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v12 failed: {e}")))
-}
-
-/// Tenant v13: adds the loom workflow and run tables.
-fn apply_schema_v13_loom_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v13_loom.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v13 failed: {e}")))
-}
-
-/// Tenant v14: adds the graph family tables (entities, edges, cooccurrences).
-fn apply_schema_v14_graph_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v14_graph.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v14 failed: {e}")))
-}
-
-/// Tenant v15: adds the thymus family tables (quality metrics, evaluations).
-fn apply_schema_v15_thymus_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v15_thymus.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v15 failed: {e}")))
-}
-
-/// Tenant v16: adds the portability family tables (preferences, conversations).
-fn apply_schema_v16_portability_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v16_portability.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v16 failed: {e}")))
-}
-
-/// Tenant v17: adds the growth reflections tables.
-fn apply_schema_v17_growth_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v17_growth.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v17 failed: {e}")))
-}
-
-/// Tenant v18: adds the intelligence family tables (current_state, consolidations).
-fn apply_schema_v18_intelligence_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v18_intelligence.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v18 failed: {e}")))
-}
-
-/// Tenant v19: adds the skills family tables (skill_records, FTS shadow).
-fn apply_schema_v19_skills_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v19_skills.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v19 failed: {e}")))
-}
-
-/// Tenant v20: adds user_id and FTS to the episodes tables.
-fn apply_schema_v20_episodes_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v20_episodes.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v20 failed: {e}")))
-}
-
-/// Tenant v21: adds the messages table and its FTS shadow.
-fn apply_schema_v21_messages_shim(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v21_messages.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v21 failed: {e}")))
-}
-
-/// Tenant v22: drops user_id from memories tables.
-fn apply_schema_v22_memories_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v22_memories_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v22 failed: {e}")))
-}
-
-/// Tenant v23: drops user_id from scratchpad tables.
-fn apply_schema_v23_scratchpad_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v23_scratchpad.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v23 failed: {e}")))
-}
-
-/// Tenant v24: drops user_id from sessions tables.
-fn apply_schema_v24_sessions_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v24_sessions_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v24 failed: {e}")))
-}
-
-/// Tenant v25: drops user_id from chiasm task tables.
-fn apply_schema_v25_chiasm_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v25_chiasm_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v25 failed: {e}")))
-}
-
-/// Tenant v26: drops user_id from approvals tables.
-fn apply_schema_v26_approvals_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v26_approvals_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v26 failed: {e}")))
-}
-
-/// Tenant v27: drops user_id from broca_actions tables.
-fn apply_schema_v27_broca_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v27_broca_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v27 failed: {e}")))
-}
-
-/// Tenant v28: drops user_id from projects tables.
-fn apply_schema_v28_projects_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v28_projects_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v28 failed: {e}")))
-}
-
-/// Tenant v29: drops user_id from activity tables.
-fn apply_schema_v29_activity_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v29_activity_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v29 failed: {e}")))
-}
-
-/// Tenant v30: drops user_id from webhooks tables.
-fn apply_schema_v30_webhooks_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v30_webhooks_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v30 failed: {e}")))
-}
-
-/// Tenant v31: drops user_id from axon tables.
-fn apply_schema_v31_axon_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v31_axon_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v31 failed: {e}")))
-}
-
-/// Tenant v32: drops user_id from growth reflections tables.
-fn apply_schema_v32_growth_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v32_growth_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v32 failed: {e}")))
-}
-
-/// Tenant v33: drops user_id from ingestion_hashes tables.
-fn apply_schema_v33_ingestion_hashes_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!(
-        "../tenant/schema_v33_ingestion_hashes_drop.sql"
-    ))
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v33 failed: {e}")))
-}
-
-/// Tenant v34: drops user_id from loom workflow tables.
-fn apply_schema_v34_loom_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v34_loom_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v34 failed: {e}")))
-}
-
-/// Tenant v35: drops user_id from graph cluster tables.
-fn apply_schema_v35_graph_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v35_graph_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v35 failed: {e}")))
-}
-
-/// Tenant v36: drops user_id from thymus tables.
-fn apply_schema_v36_thymus_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v36_thymus_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v36 failed: {e}")))
-}
+// ---------------------------------------------------------------------------
+// Pure-SQL migrations (loaded from external .sql files via macro)
+// ---------------------------------------------------------------------------
+tenant_migration_sql!(apply_schema_v1, "v1", "../tenant/schema_v1.sql");
+tenant_migration_sql!(apply_schema_v2_scratchpad_shim, "v2", "../tenant/schema_v2_scratchpad.sql");
+tenant_migration_sql!(apply_schema_v3_sessions_shim, "v3", "../tenant/schema_v3_sessions.sql");
+tenant_migration_sql!(apply_schema_v4_chiasm_shim, "v4", "../tenant/schema_v4_chiasm.sql");
+tenant_migration_sql!(apply_schema_v5_approvals_shim, "v5", "../tenant/schema_v5_approvals.sql");
+tenant_migration_sql!(apply_schema_v6_broca_shim, "v6", "../tenant/schema_v6_broca.sql");
+tenant_migration_sql!(apply_schema_v7_projects_shim, "v7", "../tenant/schema_v7_projects.sql");
+tenant_migration_sql!(apply_schema_v8_activity_shim, "v8", "../tenant/schema_v8_activity.sql");
+tenant_migration_sql!(apply_schema_v9_webhooks_shim, "v9", "../tenant/schema_v9_webhooks.sql");
+tenant_migration_sql!(apply_schema_v10_ingestion_shim, "v10", "../tenant/schema_v10_ingestion.sql");
+tenant_migration_sql!(apply_schema_v11_axon_shim, "v11", "../tenant/schema_v11_axon.sql");
+tenant_migration_sql!(apply_schema_v12_soma_shim, "v12", "../tenant/schema_v12_soma.sql");
+tenant_migration_sql!(apply_schema_v13_loom_shim, "v13", "../tenant/schema_v13_loom.sql");
+tenant_migration_sql!(apply_schema_v14_graph_shim, "v14", "../tenant/schema_v14_graph.sql");
+tenant_migration_sql!(apply_schema_v15_thymus_shim, "v15", "../tenant/schema_v15_thymus.sql");
+tenant_migration_sql!(apply_schema_v16_portability_shim, "v16", "../tenant/schema_v16_portability.sql");
+tenant_migration_sql!(apply_schema_v17_growth_shim, "v17", "../tenant/schema_v17_growth.sql");
+tenant_migration_sql!(apply_schema_v18_intelligence_shim, "v18", "../tenant/schema_v18_intelligence.sql");
+tenant_migration_sql!(apply_schema_v19_skills_shim, "v19", "../tenant/schema_v19_skills.sql");
+tenant_migration_sql!(apply_schema_v20_episodes_shim, "v20", "../tenant/schema_v20_episodes.sql");
+tenant_migration_sql!(apply_schema_v21_messages_shim, "v21", "../tenant/schema_v21_messages.sql");
+tenant_migration_sql!(apply_schema_v22_memories_drop, "v22", "../tenant/schema_v22_memories_drop.sql");
+tenant_migration_sql!(apply_schema_v23_scratchpad_drop, "v23", "../tenant/schema_v23_scratchpad.sql");
+tenant_migration_sql!(apply_schema_v24_sessions_drop, "v24", "../tenant/schema_v24_sessions_drop.sql");
+tenant_migration_sql!(apply_schema_v25_chiasm_drop, "v25", "../tenant/schema_v25_chiasm_drop.sql");
+tenant_migration_sql!(apply_schema_v26_approvals_drop, "v26", "../tenant/schema_v26_approvals_drop.sql");
+tenant_migration_sql!(apply_schema_v27_broca_drop, "v27", "../tenant/schema_v27_broca_drop.sql");
+tenant_migration_sql!(apply_schema_v28_projects_drop, "v28", "../tenant/schema_v28_projects_drop.sql");
+tenant_migration_sql!(apply_schema_v29_activity_drop, "v29", "../tenant/schema_v29_activity_drop.sql");
+tenant_migration_sql!(apply_schema_v30_webhooks_drop, "v30", "../tenant/schema_v30_webhooks_drop.sql");
+tenant_migration_sql!(apply_schema_v31_axon_drop, "v31", "../tenant/schema_v31_axon_drop.sql");
+tenant_migration_sql!(apply_schema_v32_growth_drop, "v32", "../tenant/schema_v32_growth_drop.sql");
+tenant_migration_sql!(apply_schema_v33_ingestion_hashes_drop, "v33", "../tenant/schema_v33_ingestion_hashes_drop.sql");
+tenant_migration_sql!(apply_schema_v34_loom_drop, "v34", "../tenant/schema_v34_loom_drop.sql");
+tenant_migration_sql!(apply_schema_v35_graph_drop, "v35", "../tenant/schema_v35_graph_drop.sql");
+tenant_migration_sql!(apply_schema_v36_thymus_drop, "v36", "../tenant/schema_v36_thymus_drop.sql");
+tenant_migration_sql!(apply_schema_v38_intelligence_drop, "v38", "../tenant/schema_v38_intelligence_drop.sql");
+tenant_migration_sql!(apply_schema_v39_skills_drop, "v39", "../tenant/schema_v39_skills_drop.sql");
+tenant_migration_sql!(apply_schema_v40_episodes_drop, "v40", "../tenant/schema_v40_episodes_drop.sql");
+tenant_migration_sql!(apply_schema_v41_projects_readd, "v41", "../tenant/schema_v41_projects_readd.sql");
+tenant_migration_sql!(apply_schema_v43_handoffs, "v43", "../tenant/schema_v43_handoffs.sql");
+tenant_migration_sql!(apply_schema_v44_parity, "v44", "../tenant/schema_v44_parity.sql");
+tenant_migration_sql!(apply_schema_v53_chiasm_agent_keys, "v53", "../tenant/schema_v53_chiasm_agent_keys.sql");
+tenant_migration_sql!(apply_schema_v71_artifacts_fts, "v71", "../tenant/schema_v55_artifacts_fts.sql");
+tenant_migration_sql!(apply_schema_v55_memories_readd, "v55", "../tenant/schema_v55_memories_readd.sql");
+tenant_migration_sql!(apply_schema_v56_webhooks_readd, "v56", "../tenant/schema_v56_webhooks_readd.sql");
+tenant_migration_sql!(apply_schema_v57_approvals_readd, "v57", "../tenant/schema_v57_approvals_readd.sql");
+tenant_migration_sql!(apply_schema_v58_soma_agents_readd, "v58", "../tenant/schema_v58_soma_agents_readd.sql");
+tenant_migration_sql!(apply_schema_v59_axon_events_readd, "v59", "../tenant/schema_v59_axon_events_readd.sql");
+tenant_migration_sql!(apply_schema_v60_chiasm_tasks_readd, "v60", "../tenant/schema_v60_chiasm_tasks_readd.sql");
+tenant_migration_sql!(apply_schema_v61_conversations_readd, "v61", "../tenant/schema_v61_conversations_readd.sql");
+tenant_migration_sql!(apply_schema_v62_intelligence_readd, "v62", "../tenant/schema_v62_intelligence_readd.sql");
+tenant_migration_sql!(apply_schema_v63_graph_entities_readd, "v63", "../tenant/schema_v63_graph_entities_readd.sql");
+tenant_migration_sql!(apply_schema_v64_episodes_readd, "v64", "../tenant/schema_v64_episodes_readd.sql");
+tenant_migration_sql!(apply_schema_v65_intelligence_remainder_readd, "v65", "../tenant/schema_v65_intelligence_remainder_readd.sql");
+tenant_migration_sql!(apply_schema_v66_thymus_readd, "v66", "../tenant/schema_v66_thymus_readd.sql");
+tenant_migration_sql!(apply_schema_v67_graph_remainder_readd, "v67", "../tenant/schema_v67_graph_remainder_readd.sql");
+tenant_migration_sql!(apply_schema_v68_user_preferences_readd, "v68", "../tenant/schema_v68_user_preferences_readd.sql");
+tenant_migration_sql!(apply_schema_v69_skills_readd, "v69", "../tenant/schema_v69_skills_readd.sql");
 
 /// Tenant v37: drops user_id from portability tables including conversations.
 fn apply_schema_v37_portability_drop(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v37_portability_drop.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v37 failed: {e}")))?;
     drop_column_if_exists(conn, "conversations", "user_id", 37)
-}
-
-/// Tenant v38: drops user_id from intelligence tables.
-fn apply_schema_v38_intelligence_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v38_intelligence_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v38 failed: {e}")))
-}
-
-/// Tenant v39: drops user_id from skills tables.
-fn apply_schema_v39_skills_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v39_skills_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v39 failed: {e}")))
-}
-
-/// Tenant v40: drops user_id from episodes tables.
-fn apply_schema_v40_episodes_drop(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v40_episodes_drop.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v40 failed: {e}")))
-}
-
-/// Tenant v41: re-adds user_id to projects for shard/monolith schema parity.
-fn apply_schema_v41_projects_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v41_projects_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v41 failed: {e}")))
 }
 
 /// Tenant v42: re-adds user_id to broca_actions for shard/monolith schema parity.
@@ -786,18 +618,6 @@ fn apply_schema_v42_broca_readd(conn: &Connection) -> Result<()> {
             ON broca_actions(user_id, created_at DESC);",
     )
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v42 failed: {e}")))
-}
-
-/// Tenant v43: adds the handoffs table to each tenant shard.
-fn apply_schema_v43_handoffs(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v43_handoffs.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v43 failed: {e}")))
-}
-
-/// Tenant v44: brings full monolith schema parity to all tenant shards.
-fn apply_schema_v44_parity(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v44_parity.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v44 failed: {e}")))
 }
 
 /// Tenant v45: creates the memory_chunks table for chunked memory storage.
@@ -1220,24 +1040,6 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
     Ok(())
 }
 
-/// Tenant v53: per-agent bearer keys for Chiasm. CREATE TABLE IF NOT EXISTS,
-/// so the migration is idempotent and safe to apply against shards that may
-/// have inherited the table from out-of-band SQL.
-fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v53_chiasm_agent_keys.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
-}
-
-/// Tenant v71: artifacts FTS5 index. Adds the `artifacts_fts` virtual table,
-/// the AFTER INSERT/UPDATE/DELETE triggers that keep it in sync with
-/// `artifacts.content`, and a `rebuild` backfill for any rows already in the
-/// shard. Idempotent under re-run: IF NOT EXISTS guards the schema objects
-/// and FTS5's `rebuild` rewrites the index in place.
-fn apply_schema_v71_artifacts_fts(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v55_artifacts_fts.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v71 failed: {e}")))
-}
-
 /// Tenant v54: handoff atoms (extracted decision/constraint/task fragments)
 /// and their entity links. CREATE TABLE IF NOT EXISTS keeps the migration
 /// idempotent.
@@ -1282,16 +1084,6 @@ fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_ael_entity ON atom_entity_links(entity_id);",
     )
     .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v54 failed: {e}")))
-}
-
-/// Tenant v55: re-add user_id to the shard memory core tables. The SQL re-adds
-/// the columns (default 1), recreates the indexes v22 dropped, and restores the
-/// cross-tenant-link trigger. Owner backfill of existing rows happens in
-/// `run_tenant_migrations` after this runs, since SQL-only migrations cannot
-/// know the shard owner's id.
-fn apply_schema_v55_memories_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v55_memories_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 failed: {e}")))
 }
 
 /// Map a just-applied tenant migration version to the tables whose re-added
@@ -1359,138 +1151,6 @@ fn backfill_tenant_table_user_id(conn: &Connection, table: &str, owner: i64) -> 
     .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     info!("backfilled shard {table}.user_id to owner {owner}");
     Ok(())
-}
-
-/// Tenant v56: re-add user_id to the shard webhooks table. The SQL re-adds the
-/// column (default 1) and recreates the idx_webhooks_user index. Owner backfill
-/// of existing rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v56_webhooks_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v56_webhooks_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v56 failed: {e}")))
-}
-
-/// Tenant v57: re-add user_id to the shard approvals table. The SQL re-adds the
-/// column (default 1) and recreates the idx_approvals_user /
-/// idx_approvals_user_status indexes. Owner backfill of existing rows happens in
-/// `run_tenant_migrations` after this runs.
-fn apply_schema_v57_approvals_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v57_approvals_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v57 failed: {e}")))
-}
-
-/// Tenant v58: rebuild the shard soma_agents table to re-add user_id with
-/// UNIQUE(name, user_id). The SQL runs the 12-step rebuild with
-/// PRAGMA foreign_keys = OFF so the soma_agent_groups / soma_agent_logs FK
-/// references survive. Owner backfill of the copied DEFAULT-1 rows happens in
-/// `run_tenant_migrations` after this runs.
-fn apply_schema_v58_soma_agents_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v58_soma_agents_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v58 failed: {e}")))
-}
-
-/// Tenant v59: re-add user_id to the shard axon_events table. The SQL re-adds
-/// the column (default 1) and the idx_axon_events_user index. Owner backfill of
-/// existing rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v59_axon_events_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v59_axon_events_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v59 failed: {e}")))
-}
-
-/// Tenant v60: re-add user_id to the shard chiasm_tasks table. The SQL re-adds
-/// the column (default 1) and the idx_chiasm_tasks_user index. Owner backfill of
-/// existing rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v60_chiasm_tasks_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v60_chiasm_tasks_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v60 failed: {e}")))
-}
-
-/// Tenant v61: re-add user_id to the shard conversations table. The SQL re-adds
-/// the column (default 1) and the idx_conversations_user index. Owner backfill
-/// of existing rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v61_conversations_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v61_conversations_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v61 failed: {e}")))
-}
-
-/// Tenant v62: re-add user_id to the shard intelligence tables -- reflections,
-/// consolidations, and causal_chains. The SQL re-adds each column (default 1)
-/// and recreates the idx_*_user indexes. causal_links is intentionally left
-/// without a user_id column and is scoped through its parent chain. Owner
-/// backfill of existing rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v62_intelligence_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v62_intelligence_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v62 failed: {e}")))
-}
-
-/// Tenant v63: rebuild the shard entities table to re-add user_id with
-/// UNIQUE(name, entity_type, user_id). The SQL runs the 12-step rebuild with
-/// PRAGMA foreign_keys = OFF so the entity_relationships / memory_entities /
-/// entity_cooccurrences FK references survive. Owner backfill of the copied
-/// DEFAULT-1 rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v63_graph_entities_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!(
-        "../tenant/schema_v63_graph_entities_readd.sql"
-    ))
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v63 failed: {e}")))
-}
-
-/// Tenant v64: re-add user_id to the shard episodes table. The SQL re-adds the
-/// column (default 1) and the idx_episodes_user index. Owner backfill of
-/// existing rows happens in `run_tenant_migrations` after this runs.
-fn apply_schema_v64_episodes_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v64_episodes_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v64 failed: {e}")))
-}
-
-/// Tenant v65: re-add user_id to the five intelligence remainder tables
-/// (current_state via UNIQUE rebuild, reconsolidations, temporal_patterns,
-/// digests, memory_feedback). Owner backfill of existing rows happens in
-/// `run_tenant_migrations` after this runs.
-fn apply_schema_v65_intelligence_remainder_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!(
-        "../tenant/schema_v65_intelligence_remainder_readd.sql"
-    ))
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v65 failed: {e}")))
-}
-
-/// Tenant v66: re-add user_id to the five thymus tables that v36 dropped
-/// (rubrics via UNIQUE rebuild from UNIQUE(name) to UNIQUE(user_id, name),
-/// evaluations, quality_metrics, session_quality, behavioral_drift_events).
-/// Owner backfill of existing rows happens in `run_tenant_migrations` after
-/// this runs.
-fn apply_schema_v66_thymus_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v66_thymus_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v66 failed: {e}")))
-}
-
-/// Tenant v67: re-adds `user_id` to `structured_facts` and
-/// `entity_cooccurrences` in tenant shards. Both were dropped by v35 and
-/// never re-added on the tenant side.
-fn apply_schema_v67_graph_remainder_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!(
-        "../tenant/schema_v67_graph_remainder_readd.sql"
-    ))
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v67 failed: {e}")))
-}
-
-/// Tenant v68: re-adds `user_id` to `user_preferences` via 12-step REBUILD.
-/// UNIQUE constraint changes from `(key)` to `(user_id, key)`. The runner
-/// backfills existing rows to the shard owner after this SQL runs.
-fn apply_schema_v68_user_preferences_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!(
-        "../tenant/schema_v68_user_preferences_readd.sql"
-    ))
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v68 failed: {e}")))
-}
-
-/// Tenant v69: re-adds `user_id` to `skill_records` via 12-step REBUILD.
-/// UNIQUE constraint changes from `(name, agent, version)` to
-/// `(name, agent, version, user_id)`. Drops and recreates FTS triggers so
-/// the shadow table stays consistent across the rename. The runner backfills
-/// existing rows to the shard owner after this SQL runs.
-fn apply_schema_v69_skills_readd(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../tenant/schema_v69_skills_readd.sql"))
-        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v69 failed: {e}")))
 }
 
 /// Tenant v70: shard-local counter table for E2 quota enforcement.
