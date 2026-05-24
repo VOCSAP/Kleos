@@ -32,7 +32,14 @@ CREATE TABLE IF NOT EXISTS tenants (
     last_access INTEGER NOT NULL,
     deleting_at TEXT,
     deleted_at TEXT,
-    stuck_at TEXT
+    stuck_at TEXT,
+    quota_content_bytes INTEGER,
+    quota_memory_count INTEGER,
+    quota_disk_bytes INTEGER,
+    content_bytes_used INTEGER DEFAULT 0,
+    memory_count_used INTEGER DEFAULT 0,
+    disk_bytes_used INTEGER DEFAULT 0,
+    last_synced_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tenants_user_id ON tenants(user_id);
 CREATE INDEX IF NOT EXISTS idx_tenants_last_access ON tenants(last_access);
@@ -94,11 +101,23 @@ impl RegistryDb {
         conn.execute_batch(REGISTRY_SCHEMA)
             .map_err(|e| EngError::Internal(format!("failed to create registry schema: {}", e)))?;
 
-        // Migrate existing databases: add columns for deprovision state machine.
+        // Migrate existing databases: add columns that may not exist on old schemas.
         // SQLite errors if the column already exists; ignore that expected error.
+        // E1: deprovision state machine columns.
         let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN deleting_at TEXT;");
         let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN deleted_at TEXT;");
         let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN stuck_at TEXT;");
+        // E2: quota tracking columns (configured limits + observed usage).
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN quota_content_bytes INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN quota_memory_count INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN quota_disk_bytes INTEGER;");
+        let _ = conn
+            .execute_batch("ALTER TABLE tenants ADD COLUMN content_bytes_used INTEGER DEFAULT 0;");
+        let _ = conn
+            .execute_batch("ALTER TABLE tenants ADD COLUMN memory_count_used INTEGER DEFAULT 0;");
+        let _ =
+            conn.execute_batch("ALTER TABLE tenants ADD COLUMN disk_bytes_used INTEGER DEFAULT 0;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN last_synced_at TEXT;");
 
         info!("registry database opened: {}", path.display());
 
@@ -116,10 +135,20 @@ impl RegistryDb {
         conn.execute_batch(REGISTRY_SCHEMA)
             .map_err(|e| EngError::Internal(format!("failed to create registry schema: {}", e)))?;
 
-        // Migrate existing databases: add columns for deprovision state machine.
+        // Idempotent column additions (no-ops for fresh DBs, needed for upgrades).
         let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN deleting_at TEXT;");
         let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN deleted_at TEXT;");
         let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN stuck_at TEXT;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN quota_content_bytes INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN quota_memory_count INTEGER;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN quota_disk_bytes INTEGER;");
+        let _ = conn
+            .execute_batch("ALTER TABLE tenants ADD COLUMN content_bytes_used INTEGER DEFAULT 0;");
+        let _ = conn
+            .execute_batch("ALTER TABLE tenants ADD COLUMN memory_count_used INTEGER DEFAULT 0;");
+        let _ =
+            conn.execute_batch("ALTER TABLE tenants ADD COLUMN disk_bytes_used INTEGER DEFAULT 0;");
+        let _ = conn.execute_batch("ALTER TABLE tenants ADD COLUMN last_synced_at TEXT;");
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -1040,5 +1069,34 @@ mod tests {
         // Verify the tombstone still exists
         let row = db.get_by_user_id("u1").unwrap().unwrap();
         assert_eq!(row.status, TenantStatus::Tombstone);
+    }
+
+    /// Confirms E2 quota columns exist on the tenants table after open().
+    #[test]
+    fn quota_columns_exist_after_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = RegistryDb::open(dir.path()).unwrap();
+        let conn = db.conn.lock().unwrap();
+
+        for col in [
+            "quota_content_bytes",
+            "quota_memory_count",
+            "quota_disk_bytes",
+            "content_bytes_used",
+            "memory_count_used",
+            "disk_bytes_used",
+            "last_synced_at",
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('tenants') WHERE name='{col}'"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(exists, 1, "column {col} must exist on tenants table");
+        }
     }
 }
