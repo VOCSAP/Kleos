@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use kleos_lib::llm::{CallOptions, Priority};
+use kleos_lib::llm::{prompts, CallOptions, Priority};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::info;
@@ -659,8 +659,14 @@ async fn compress(
         timeout_ms: Some(state.compress_timeout_ms),
     };
 
+    // Patch 31 (VOCSAP): allow operators to override the compress prompt via
+    // prompts-overrides/sidecar/compress/system.txt without rebuilding the
+    // sidecar. Falls back to COMPRESS_SYSTEM_PROMPT when the override file is
+    // absent. Cache TTL 5s applies (kleos_lib::llm::prompts::TTL_SECS).
+    let system_prompt = prompts::load_prompt("sidecar/compress/system", COMPRESS_SYSTEM_PROMPT);
+
     match llm
-        .call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts))
+        .call(&system_prompt, &user_prompt, Some(opts))
         .await
     {
         Ok(summary) => {
