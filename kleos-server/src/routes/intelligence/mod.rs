@@ -714,6 +714,8 @@ async fn extract_handler(
                 chunk_embeddings: None,
                 sync_id: None,
             },
+            None,
+            false,
         )
         .await?;
         (c.clone(), result.id)

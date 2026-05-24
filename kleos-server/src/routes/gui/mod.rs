@@ -774,6 +774,8 @@ async fn gui_create_memory(
             chunk_embeddings: None,
             sync_id: None,
         },
+        None,
+        false,
     )
     .await?;
 

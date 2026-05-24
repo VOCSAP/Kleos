@@ -331,7 +331,7 @@ mod tests {
     }
 
     async fn seed(db: &Database, content: &str, user_id: i64) -> i64 {
-        crate::memory::store(db, req(content, user_id))
+        crate::memory::store(db, req(content, user_id), None, false)
             .await
             .expect("store")
             .id

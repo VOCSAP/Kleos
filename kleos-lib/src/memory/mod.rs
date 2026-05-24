@@ -393,11 +393,24 @@ pub async fn store_with_chunks(
             Err(e) => tracing::warn!("chunk embedding failed in store_with_chunks: {}", e),
         }
     }
-    store(db, req).await
+    store(db, req, None, false).await
 }
 
+/// Store a single memory entry, enforcing content constraints and optional tenant quota.
+///
+/// `tenant_quota` -- when `Some`, the write is gated by an atomic in-transaction
+/// quota check (E2 disk-quota path). Pass `None` for internal/background callers
+/// that are not subject to per-tenant limits.
+///
+/// `shard_read_only` -- when `true` the function returns `EngError::QuotaExceeded`
+/// immediately (E2 fast-path: shard has already exceeded disk quota).
 #[tracing::instrument(skip(db, req), fields(user_id = req.user_id.unwrap_or(0), content_len = req.content.len()))]
-pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> {
+pub async fn store(
+    db: &Database,
+    mut req: StoreRequest,
+    tenant_quota: Option<std::sync::Arc<crate::tenant::types::QuotaConfig>>,
+    shard_read_only: bool,
+) -> Result<StoreResult> {
     // 1. Validate content
     let content = req.content.trim().to_string();
     if content.is_empty() {
@@ -410,6 +423,13 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
             "content exceeds maximum size of {} bytes",
             MAX_CONTENT_SIZE
         )));
+    }
+
+    // E2: disk quota fast-path -- shard is in read-only mode.
+    if shard_read_only {
+        return Err(EngError::QuotaExceeded(
+            "tenant shard is in read-only mode (disk quota exceeded)".into(),
+        ));
     }
 
     // SEC-recall-1.8: L2-normalize the embedding before any downstream use so
@@ -427,10 +447,10 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
         .user_id
         .ok_or_else(|| EngError::InvalidInput("user_id required".into()))?;
 
-    // SECURITY (MT-F20): enforce tenant memory quota on every write path.
-    crate::quota::enforce_memory_quota(db, user_id).await?;
-
     let importance = clamp_importance(req.importance);
+
+    // Byte length of the trimmed content, used for E2 quota counter updates.
+    let content_bytes = content.len() as i64;
 
     // 2. Compute simhash of content
     let content_hash = simhash::simhash(&content);
@@ -496,10 +516,16 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
     let req_for_tx = req.clone();
     let tags_json_for_tx = tags_json.clone();
     let category_for_tx = category.clone();
+    let quota_for_tx = tenant_quota.clone();
+    let content_bytes_for_tx = content_bytes;
 
     let new_id = db
         .transaction(move |tx| {
-            store_transactional_rusqlite(
+            // E2: atomic content quota check inside the writer-serialized transaction.
+            if let Some(ref q) = quota_for_tx {
+                crate::quota::enforce_quota_in_tx(tx, q, content_bytes_for_tx)?;
+            }
+            let id = store_transactional_rusqlite(
                 tx,
                 &content_for_tx,
                 &req_for_tx,
@@ -507,7 +533,29 @@ pub async fn store(db: &Database, mut req: StoreRequest) -> Result<StoreResult> 
                 importance,
                 tags_json_for_tx,
                 &category_for_tx,
-            )
+            )?;
+            // E2: increment counters atomically in the same transaction.
+            if quota_for_tx.is_some() {
+                tx.execute(
+                    "UPDATE tenant_state SET value = value + ?1, \
+                     updated_at = datetime('now') \
+                     WHERE key = 'content_bytes'",
+                    rusqlite::params![content_bytes_for_tx],
+                )
+                .map_err(|e| {
+                    crate::EngError::DatabaseMessage(format!("counter update failed: {e}"))
+                })?;
+                tx.execute(
+                    "UPDATE tenant_state SET value = value + 1, \
+                     updated_at = datetime('now') \
+                     WHERE key = 'memory_count'",
+                    [],
+                )
+                .map_err(|e| {
+                    crate::EngError::DatabaseMessage(format!("counter update failed: {e}"))
+                })?;
+            }
+            Ok(id)
         })
         .await?;
 

@@ -63,6 +63,8 @@ async fn onboard(
             chunk_embeddings: None,
             sync_id: None,
         },
+        None,
+        false,
     )
     .await;
 
@@ -332,7 +334,7 @@ async fn fetch_url(
             }
         }
 
-        if let Ok(result) = memory::store(&db, req).await {
+        if let Ok(result) = memory::store(&db, req, None, false).await {
             cached_id = Some(result.id);
         }
     }

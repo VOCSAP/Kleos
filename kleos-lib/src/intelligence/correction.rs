@@ -43,6 +43,8 @@ pub async fn correct_memory(
             chunk_embeddings: None,
             sync_id: None,
         },
+        None,
+        false,
     )
     .await?;
 

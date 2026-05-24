@@ -116,7 +116,7 @@ async fn store_memory(
     let result = if let Some(ref e) = embedder {
         memory::store_with_chunks(&db, e.as_ref(), req).await?
     } else {
-        memory::store(&db, req).await?
+        memory::store(&db, req, None, false).await?
     };
     let embedded = pre_embedded || embedder.is_some();
     if let Some(existing_id) = result.duplicate_of {

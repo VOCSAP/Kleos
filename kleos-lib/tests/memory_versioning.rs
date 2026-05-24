@@ -65,7 +65,7 @@ async fn update_preserves_lifecycle_fields() {
     let tenant = single_tenant().await;
     let db = tenant.database();
 
-    let stored = memory::store(&db, base_store("original content"))
+    let stored = memory::store(&db, base_store("original content"), None, false)
         .await
         .expect("store");
     let id = stored.id;
@@ -140,7 +140,7 @@ async fn store_with_superseded_parent_does_not_fork() {
     let tenant = single_tenant().await;
     let db = tenant.database();
 
-    let a = memory::store(&db, base_store("A v1"))
+    let a = memory::store(&db, base_store("A v1"), None, false)
         .await
         .expect("store A");
     let a_id = a.id;
@@ -154,7 +154,7 @@ async fn store_with_superseded_parent_does_not_fork() {
     // Storing a child whose parent is the now-stale original A must error.
     let mut child = base_store("child of stale parent");
     child.parent_memory_id = Some(a_id);
-    let res = memory::store(&db, child).await;
+    let res = memory::store(&db, child, None, false).await;
     assert!(
         res.is_err(),
         "storing against a superseded parent must be refused, not forked"
