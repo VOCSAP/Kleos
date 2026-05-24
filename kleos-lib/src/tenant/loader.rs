@@ -4,7 +4,7 @@
 //! - They've been idle longer than `idle_timeout`
 //! - The number of resident tenants exceeds `max_resident`
 
-use super::types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
+use super::types::{QuotaConfig, TenantConfig, TenantHandle, TenantRow, TenantStatus};
 use crate::db::Database;
 use crate::vector::LanceIndex;
 use crate::{EngError, Result};
@@ -195,6 +195,11 @@ impl TenantLoader {
         db.chunk_vector_index = chunk_vector_index;
         let db = Arc::new(db);
 
+        let initial_quota = QuotaConfig {
+            content_bytes: row.quota_bytes,
+            memory_count: row.quota_memories,
+            disk_bytes: None,
+        };
         let handle = Arc::new(TenantHandle {
             tenant_id: tenant_id.to_string(),
             user_id: row.user_id.clone(),
@@ -203,6 +208,10 @@ impl TenantLoader {
             created_at: SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(row.created_at as u64),
             last_access: std::sync::Mutex::new(Instant::now()),
+            quota: arc_swap::ArcSwap::from_pointee(initial_quota),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            read_only: std::sync::atomic::AtomicBool::new(false),
+            shard_path: tenant_dir.clone(),
         });
 
         // Store in cache
