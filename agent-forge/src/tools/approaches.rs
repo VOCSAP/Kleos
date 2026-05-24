@@ -6,13 +6,14 @@ use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use uuid::Uuid;
 
 /// Input payload for `consider_approaches`: a problem statement, a list of
 /// candidate approaches, an optional spec linkage, and an optional index
 /// indicating which approach was ultimately chosen.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ConsiderApproachesInput {
     pub spec_id: Option<String>,
     pub problem: Option<String>,
@@ -22,7 +23,7 @@ pub struct ConsiderApproachesInput {
 
 /// One design alternative: a short name, prose description, pros, cons, and
 /// an optional numeric score (higher is better).
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ApproachItem {
     pub name: String,
     pub description: String,

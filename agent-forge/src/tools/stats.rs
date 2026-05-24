@@ -5,11 +5,12 @@
 use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// Input for `stats`: the number of past days to include in the window
 /// (default 30). All counts are filtered to rows created within this window.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct StatsInput {
     pub days: Option<i64>,
 }

@@ -7,12 +7,13 @@ use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::process::Command;
 use uuid::Uuid;
 
 /// Input for `checkpoint`: a required human-readable name and an optional description.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct CheckpointInput {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -53,7 +54,7 @@ pub fn checkpoint(db: &Database, input: CheckpointInput) -> ToolResult {
 }
 
 /// Input for `rollback`: the name of a previously created checkpoint to restore.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct RollbackInput {
     pub checkpoint_name: Option<String>,
 }
@@ -90,7 +91,7 @@ pub fn rollback(db: &Database, input: RollbackInput) -> ToolResult {
 
 /// Input for `session_learn`: the insight to record plus optional context,
 /// tags, spec linkage, and a flag to simultaneously capture it as a Kleos skill.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SessionLearnInput {
     pub discovery: Option<String>,
     pub context: Option<String>,
@@ -156,7 +157,7 @@ pub fn session_learn(db: &Database, input: SessionLearnInput) -> ToolResult {
 }
 
 /// Input for `session_recall`: a keyword to search past learnings and a result cap.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SessionRecallInput {
     pub query: Option<String>,
     pub limit: Option<usize>,

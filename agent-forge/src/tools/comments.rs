@@ -6,11 +6,12 @@
 use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::Path;
 
 /// Input payload for the `comment_check` tool: path of the file to scan.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct CommentCheckInput {
     pub file_path: Option<String>,
 }

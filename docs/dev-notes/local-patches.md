@@ -3233,6 +3233,150 @@ Identique a Patch 30. Si upstream Ghost-Frame absorbe Patch 15 + Patch 16, ce Pa
 
 ---
 
+## Patch 32 -- agent-forge gain `help` et `schema` sous-commandes (2026-05-24)
+
+### Symptome
+
+`agent-forge` est un CLI a 26 sous-commandes (spec-task, log-hypothesis,
+verify, etc.) avec des schemas d'input JSON precis (champs requis, enums
+stricts, contraintes "minimum 2 acceptance_criteria", "minimum 3 edge_cases",
+"task_type ne tolere pas 'fix' -- attend 'bugfix'"). Aucun mecanisme cote CLI
+ne renseigne l'agent IA sur ces contraintes : `agent-forge --help` (clap
+auto-genere) ne montre que les **flags** Rust (--input, --output, --db), pas
+le **body JSON** attendu. L'agent decouvre les champs par essais successifs :
+"Missing required field: task_description" -> ajout -> "Missing required
+field: task_type" -> ajout -> "Invalid value: task_type must be one of..." ->
+... -> "Minimum 3 edge cases required" -> 5 iterations pour un seul appel.
+
+La rule globale `~/.claude/rules/agent-forge.md` capture les pieges les plus
+frequents mais c'est de la doc tribale -- elle peut diverger du code et
+n'est pas accessible en session sans lecture explicite par l'agent.
+
+### Approche
+
+Niveau **additif pur** (zero changement comportemental sur les 26
+sous-commandes existantes). Patch livre **deux surfaces complementaires** :
+
+- `agent-forge help [<subcommand>]` (humain, texte) -- overview + workflow
+  + cheatsheet des 26 sous-commandes, ou schema d'input prose pour une
+  sous-commande precise (REQUIRED / OPTIONAL / RETURNS / SIDE EFFECT /
+  EXAMPLE). Hardcode en strings dans `tools/help.rs`.
+- `agent-forge schema --command <subcommand>` (machine, JSON Schema) --
+  derive a la compilation via `schemars` directement sur le struct `*Input`
+  que le dispatch path parse reellement. Garanti aligne sur le code.
+
+Les deux ecrivent sur stdout, n'utilisent pas `--input` / `--output`, ne
+touchent ni la DB ni le reseau (cout zero pour l'agent qui explore).
+
+Pour permettre `help`/`schema` sans `--input/--output`, les deux flags
+deviennent `Option<PathBuf>` au niveau clap, avec validation explicite a
+l'execution pour les 26 autres sous-commandes (helper `require_io`). Clap
+reserve le nom `help` pour sa sous-commande auto-generee : on la desactive
+via `#[command(disable_help_subcommand = true)]` pour liberer le nom (le
+flag `--help` reste fonctionnel).
+
+Le pattern hardcode + derive evite le dilemme "doc qui diverge du code" :
+
+- `help` est lisible humain mais peut etre stale -> agent fait `schema` pour
+  validation exacte en cas d'erreur repetee.
+- `schema` est garanti exact mais moins lisible -> agent prefere `help` en
+  premier contact.
+
+Un test `every_known_subcommand_has_schema` force `help::KNOWN_SUBCOMMANDS`
+et `schema::for_command` a rester synchronises : ajouter une sous-commande
+sans `JsonSchema` derive fait planter le test au CI.
+
+### Fichiers touches
+
+- `agent-forge/src/tools/help.rs` (nouveau, ~440 lignes) : `OVERVIEW`,
+  `per_subcmd()`, `KNOWN_SUBCOMMANDS`, 26 const strings, 3 tests.
+- `agent-forge/src/tools/schema.rs` (nouveau, ~80 lignes) : `for_command()`
+  dispatch via `schema_for!`, 3 tests dont cross-check.
+- `agent-forge/src/tools/mod.rs` : ajout `pub mod help;` et `pub mod schema;`.
+- `agent-forge/src/main.rs` : `Commands::Help { subcommand }` et
+  `Commands::Schema { command }` variants, `--input/--output` deviennent
+  `Option<PathBuf>`, `disable_help_subcommand = true`, helpers `run_help` /
+  `run_schema` / `require_io`, dispatch stdout avant `Database::open`.
+- `agent-forge/Cargo.toml` : `schemars = "0.8"` ajoute.
+- `agent-forge/src/tools/{spec,hypothesis,verify,comments,session,think,approaches,skills,stats,ast/repo_map,ast/search}.rs` :
+  ajout `use schemars::JsonSchema;` + `#[derive(JsonSchema)]` sur chaque
+  struct `*Input` (22 structs totales). Aucun changement de signature ou
+  de comportement.
+- `~/.claude/claude-config/KLEOS.md` (global) : nouvelle section
+  `## 1bis. agent-forge -- structured reasoning workflow` inseree entre
+  `kleos-cli` et `kleos-server`, retire agent-forge de la liste des exclus,
+  liste les 26 sous-commandes par phase, pointe vers `help` (humain) et
+  `schema` (machine). Bandeau staleness etendu pour inclure
+  `agent-forge/src/`.
+- `CLAUDE.md` projet : entree Patch 32 dans la liste des patches actifs.
+
+### Tests
+
+- `cargo build -p agent-forge` : 0 errors, 5 crates compiles (schemars + 4
+  deps transitives), 0 warnings nouveaux.
+- `cargo test -p agent-forge --bins` : 11 passed (5 existants
+  `tools::approaches::tests` + 3 nouveaux `tools::help::tests` + 3 nouveaux
+  `tools::schema::tests`).
+- Smoke tests fonctionnels (sortie verifiee) :
+  - `agent-forge help` -> overview WORKFLOW + DISCOVERY + 26 sous-commandes,
+    exit 0.
+  - `agent-forge help spec-task` -> bloc detaille REQUIRED / OPTIONAL /
+    RETURNS / EXAMPLE, exit 0.
+  - `agent-forge help nonexistent` -> stderr "unknown subcommand" + liste
+    des 26 noms valides, exit 2.
+  - `agent-forge schema --command spec-task` -> JSON Schema Draft-07 valide
+    avec `$schema`, `properties`, `type`. Parseable via `serde_json` (cf.
+    `schema::tests::schema_is_valid_json`).
+  - `agent-forge schema --command nonexistent` -> stderr similaire au help,
+    exit 2.
+- Regression : appel `get-spec` avec body invalide retourne envelope
+  `{"success": false, ..., "message": "Missing required field: spec_id"}`
+  comme pre-Patch 32 (pipeline normal intact).
+- Dogfood : verify multi-step contre `spec_6ed1cff9` -> 2/2 pass, marked
+  completed via `update-spec`.
+
+### Niveau delta
+
+**Additif pur** sur agent-forge (table de la rule
+`~/.claude/rules/rust-upstream-fork.md` -- niveau "additif pur" : nouveau
+module, nouvelle fn publique appelee depuis un site upstream non touche).
+Cout de rebase upstream estimé tres faible :
+
+- `tools/help.rs` et `tools/schema.rs` sont 100% nouveaux.
+- `tools/mod.rs` : 2 lignes ajoutees (`pub mod help;`, `pub mod schema;`),
+  zero ligne supprimee.
+- 11 fichiers `tools/*.rs` modifies : seulement +1 line par struct (`use
+  schemars::JsonSchema;` + ajout au derive `(Deserialize, JsonSchema)`).
+  Conflit potentiel uniquement si upstream change la signature d'un struct
+  `*Input` -- resolution triviale (preserver le `JsonSchema` dans le
+  derive).
+- `main.rs` : modifications plus substantielles (variants Help/Schema +
+  helpers + flags Option<PathBuf>), mais le code upstream restera
+  reconnaissable. Conflit potentiel uniquement si upstream refactor le
+  dispatch ou la structure Cli.
+- `Cargo.toml` : 1 ligne ajoutee.
+
+### Conditions de retrait
+
+Trois scenarios :
+
+1. **Upstream Ghost-Frame absorbe ce patch via PR** : Patch 32 retire de la
+   liste locale, code reste tel quel.
+2. **Upstream livre un mecanisme equivalent different** (ex: doc embedded
+   different, schema autodecouverte via API serveur) : adapter le code local
+   pour s'aligner sur l'API upstream, supprimer le code redondant. Hardcode
+   help.rs peut survivre comme catalog supplementaire.
+3. **Decision de retrait standalone** : retirer `tools/help.rs`,
+   `tools/schema.rs`, le module declaration, les 2 variants, les
+   `JsonSchema` derives, et la dep `schemars`. Toutes les modifications sont
+   localisables via `git grep "JsonSchema\|tools::help\|tools::schema"` --
+   environ 30 sites a retirer.
+
+agent-forge spec_id : `spec_6ed1cff9` (dogfood, cree et cloture via Patch
+32 lui-meme).
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

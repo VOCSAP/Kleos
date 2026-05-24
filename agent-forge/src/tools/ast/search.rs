@@ -7,13 +7,14 @@ use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
 use crate::treesitter::{is_supported_extension, parser::parse_file};
 use ignore::WalkBuilder;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::Path;
 
 /// Input for `search_code`: the symbol name fragment to search for, a root
 /// path to walk, an optional kind filter ("function", "class", etc.), and
 /// a result cap.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SearchCodeInput {
     pub query: Option<String>,
     pub path: Option<String>,

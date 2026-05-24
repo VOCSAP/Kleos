@@ -7,12 +7,13 @@ use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
 use crate::treesitter::{is_supported_extension, parser::parse_file};
 use ignore::WalkBuilder;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::Path;
 
 /// Input for `repo_map`: the directory root to scan, path fragments to
 /// prioritise, and a token budget that caps the output size.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct RepoMapInput {
     pub path: Option<String>,
     pub focus: Option<Vec<String>>,
