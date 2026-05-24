@@ -126,7 +126,25 @@ impl LocalModelClient {
     ///
     /// Validates the probe URL with `validate_outbound_url` to prevent
     /// SSRF via a malicious `OLLAMA_URL` config value.
+    ///
+    /// When an API key is configured, skips the probe entirely -- non-Ollama
+    /// endpoints (OpenRouter, Manifest, etc.) don't expose /api/tags.
     pub async fn probe(&self) -> bool {
+        // Non-Ollama endpoints don't expose /api/tags. When an API key is
+        // configured, assume the endpoint is reachable and let the circuit
+        // breaker handle actual failures.
+        if self.config.api_key.is_some() {
+            self.probe_result.store(1, Ordering::Relaxed);
+            tracing::info!(
+                msg = "ollama_probe",
+                reachable = true,
+                url = %self.config.url,
+                model = %self.config.model,
+                note = "api_key set, skipping /api/tags probe"
+            );
+            return true;
+        }
+
         let base = self
             .config
             .url
