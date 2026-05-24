@@ -700,7 +700,13 @@ async fn register_job_handlers(
     // Payload: { "deprovision_id": string, "user_id": i64, "tenant_id": string }
     if let Some(ref registry) = tenant_registry {
         let data_root = std::path::PathBuf::from(
-            std::env::var("ENGRAM_DATA_DIR").unwrap_or_else(|_| "./data".to_string()),
+            std::env::var("ENGRAM_DATA_DIR").unwrap_or_else(|_| {
+                dirs::data_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("kleos")
+                    .to_string_lossy()
+                    .into_owned()
+            }),
         );
         kleos_lib::jobs::deprovision::register_handler(
             registry.registry_db_arc(),
