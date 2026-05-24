@@ -255,6 +255,57 @@ pub async fn enforce_memory_quota(db: &Database, user_id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Check and enforce content quotas inside an open write transaction.
+///
+/// Called from inside the `db.transaction()` closure on every memory write.
+/// Because the write pool has `writer_count = 1`, this check and the
+/// subsequent INSERT are serialized by the connection pool -- no concurrent
+/// writer can pass the check between this read and that INSERT. This is
+/// TOCTOU-safe for a single-node deployment.
+///
+/// Returns `Err(EngError::QuotaExceeded)` if either the content-bytes limit
+/// or the memory-count limit would be exceeded by this write. Returns `Ok(())`
+/// immediately if both limits are `None` (unlimited).
+pub fn enforce_quota_in_tx(
+    tx: &rusqlite::Transaction,
+    quota: &crate::tenant::types::QuotaConfig,
+    content_bytes: i64,
+) -> Result<()> {
+    if quota.content_bytes.is_none() && quota.memory_count.is_none() {
+        return Ok(());
+    }
+
+    let (cur_bytes, cur_count): (i64, i64) = tx
+        .query_row(
+            "SELECT
+                (SELECT value FROM tenant_state WHERE key = 'content_bytes'),
+                (SELECT value FROM tenant_state WHERE key = 'memory_count')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("quota read failed: {e}")))?;
+
+    if let Some(limit) = quota.content_bytes {
+        if cur_bytes + content_bytes > limit {
+            return Err(EngError::QuotaExceeded(format!(
+                "content quota exceeded: {} + {} > {} bytes",
+                cur_bytes, content_bytes, limit
+            )));
+        }
+    }
+
+    if let Some(limit) = quota.memory_count {
+        if cur_count + 1 > limit {
+            return Err(EngError::QuotaExceeded(format!(
+                "memory count quota exceeded: {} + 1 > {} memories",
+                cur_count, limit
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Record a usage event in the usage_events table.
 #[tracing::instrument(skip(db, event_type))]
 pub async fn record_usage(
@@ -275,4 +326,100 @@ pub async fn record_usage(
         Ok(())
     })
     .await
+}
+
+#[cfg(test)]
+mod enforce_quota_in_tx_tests {
+    use super::*;
+    use crate::tenant::types::QuotaConfig;
+    use rusqlite::Connection;
+
+    /// Set up an in-memory DB with the tenant_state table seeded to given values.
+    fn setup_tenant_state(bytes: i64, count: i64) -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tenant_state (
+                key TEXT PRIMARY KEY,
+                value INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO tenant_state(key, value) VALUES ('content_bytes', 0);
+            INSERT INTO tenant_state(key, value) VALUES ('memory_count', 0);",
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tenant_state SET value = ?1 WHERE key = 'content_bytes'",
+            rusqlite::params![bytes],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE tenant_state SET value = ?1 WHERE key = 'memory_count'",
+            rusqlite::params![count],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Unlimited quota always passes regardless of content size.
+    #[test]
+    fn test_unlimited_quota_always_passes() {
+        let conn = setup_tenant_state(999_999_999, 999_999);
+        let quota = QuotaConfig::default();
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(enforce_quota_in_tx(&tx, &quota, 1_000_000).is_ok());
+    }
+
+    /// Content bytes quota allows write when under limit.
+    #[test]
+    fn test_content_bytes_allow() {
+        let conn = setup_tenant_state(400, 5);
+        let quota = QuotaConfig {
+            content_bytes: Some(1000),
+            memory_count: None,
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(enforce_quota_in_tx(&tx, &quota, 100).is_ok());
+    }
+
+    /// Content bytes quota rejects write that would exceed limit.
+    #[test]
+    fn test_content_bytes_deny() {
+        let conn = setup_tenant_state(950, 5);
+        let quota = QuotaConfig {
+            content_bytes: Some(1000),
+            memory_count: None,
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        let result = enforce_quota_in_tx(&tx, &quota, 100);
+        assert!(matches!(result, Err(EngError::QuotaExceeded(_))));
+    }
+
+    /// Memory count quota rejects when at limit.
+    #[test]
+    fn test_memory_count_deny() {
+        let conn = setup_tenant_state(100, 10);
+        let quota = QuotaConfig {
+            content_bytes: None,
+            memory_count: Some(10),
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        let result = enforce_quota_in_tx(&tx, &quota, 50);
+        assert!(matches!(result, Err(EngError::QuotaExceeded(_))));
+    }
+
+    /// Memory count quota allows when one below limit.
+    #[test]
+    fn test_memory_count_allow() {
+        let conn = setup_tenant_state(100, 9);
+        let quota = QuotaConfig {
+            content_bytes: None,
+            memory_count: Some(10),
+            disk_bytes: None,
+        };
+        let tx = conn.unchecked_transaction().unwrap();
+        assert!(enforce_quota_in_tx(&tx, &quota, 50).is_ok());
+    }
 }
