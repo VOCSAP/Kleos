@@ -3,11 +3,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter (sliding window with burst support, per process)
@@ -306,14 +303,14 @@ pub async fn check_rate_limit(
     db.read(move |conn| {
         let mut stmt = conn
             .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![key_owned.clone()])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let count: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let window_start: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next()? {
+            let count: i64 = row.get(0)?;
+            let window_start: String = row.get(1)?;
 
             // Check if window expired
             let expired: i64 = conn
@@ -322,7 +319,7 @@ pub async fn check_rate_limit(
                     rusqlite::params![window_start, window_seconds],
                     |r| r.get(0),
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             if expired != 0 {
                 // Window has expired -- will reset on next write
@@ -354,7 +351,7 @@ pub async fn increment_counter(db: &Database, key: &str) -> Result<()> {
                  updated_at = datetime('now')",
             rusqlite::params![key_owned],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -398,7 +395,7 @@ pub async fn check_and_increment(
                 rusqlite::params![key_owned, window_seconds],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(count <= max_requests)
     })
@@ -437,7 +434,7 @@ pub async fn check_and_increment_by(
                 rusqlite::params![key_owned, window_seconds, cost],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(count <= max_requests)
     })
@@ -458,7 +455,7 @@ pub async fn cleanup_expired_rows(db: &Database, grace_seconds: i64) -> Result<u
                  WHERE (strftime('%s', 'now') - strftime('%s', window_start)) > ?1",
                 rusqlite::params![grace_seconds],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(deleted as u64)
     })
     .await

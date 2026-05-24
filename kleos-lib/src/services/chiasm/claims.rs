@@ -42,24 +42,20 @@ pub struct PathConflict {
     pub expires_at: String,
 }
 
-/// Map a rusqlite error to the crate's EngError type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Read a `PathClaim` from an indexed rusqlite row.
 ///
 /// Column order: id, task_id, agent, project, path, claimed_at, expires_at, released
 fn row_to_claim(row: &rusqlite::Row<'_>) -> Result<PathClaim> {
     Ok(PathClaim {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        task_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-        agent: row.get(2).map_err(rusqlite_to_eng_error)?,
-        project: row.get(3).map_err(rusqlite_to_eng_error)?,
-        path: row.get(4).map_err(rusqlite_to_eng_error)?,
-        claimed_at: row.get(5).map_err(rusqlite_to_eng_error)?,
-        expires_at: row.get(6).map_err(rusqlite_to_eng_error)?,
-        released: row.get::<_, i64>(7).map_err(rusqlite_to_eng_error)? != 0,
+        id: row.get(0)?,
+        task_id: row.get(1)?,
+        agent: row.get(2)?,
+        project: row.get(3)?,
+        path: row.get(4)?,
+        claimed_at: row.get(5)?,
+        expires_at: row.get(6)?,
+        released: row.get::<_, i64>(7)? != 0,
     })
 }
 
@@ -70,13 +66,13 @@ fn get_claim(conn: &rusqlite::Connection, id: i64) -> Result<PathClaim> {
             "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
              FROM chiasm_path_claims WHERE id = ?1",
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
     let mut rows = stmt
         .query(rusqlite::params![id])
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
     let row = rows
         .next()
-        .map_err(rusqlite_to_eng_error)?
+        ?
         .ok_or_else(|| EngError::NotFound(format!("path claim {}", id)))?;
     row_to_claim(row)
 }
@@ -114,7 +110,7 @@ pub async fn create_claims(
                         format!("+{} seconds", ttl_seconds)
                     ],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 ids.push(conn.last_insert_rowid());
             }
             Ok(ids)
@@ -172,33 +168,33 @@ pub async fn check_conflicts(
                 sql.push_str(" AND task_id != ?3");
             }
 
-            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql)?;
 
             let rows_result: Result<Vec<PathConflict>> = if let Some(excl) = exclude_task_id {
                 let mut rows = stmt
                     .query(rusqlite::params![project_s, path, excl])
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let mut out = Vec::new();
-                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                while let Some(row) = rows.next()? {
                     out.push(PathConflict {
                         path: path.clone(),
-                        claimed_by_agent: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        claimed_by_task: row.get(1).map_err(rusqlite_to_eng_error)?,
-                        expires_at: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        claimed_by_agent: row.get(0)?,
+                        claimed_by_task: row.get(1)?,
+                        expires_at: row.get(2)?,
                     });
                 }
                 Ok(out)
             } else {
                 let mut rows = stmt
                     .query(rusqlite::params![project_s, path])
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let mut out = Vec::new();
-                while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                while let Some(row) = rows.next()? {
                     out.push(PathConflict {
                         path: path.clone(),
-                        claimed_by_agent: row.get(0).map_err(rusqlite_to_eng_error)?,
-                        claimed_by_task: row.get(1).map_err(rusqlite_to_eng_error)?,
-                        expires_at: row.get(2).map_err(rusqlite_to_eng_error)?,
+                        claimed_by_agent: row.get(0)?,
+                        claimed_by_task: row.get(1)?,
+                        expires_at: row.get(2)?,
                     });
                 }
                 Ok(out)
@@ -223,12 +219,12 @@ pub async fn get_claims_for_task(db: &Database, task_id: i64) -> Result<Vec<Path
                    AND expires_at > datetime('now') \
                  ORDER BY id ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![task_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             out.push(row_to_claim(row)?);
         }
         Ok(out)
@@ -249,12 +245,12 @@ pub async fn get_claims_for_project(db: &Database, project: &str) -> Result<Vec<
                    AND expires_at > datetime('now') \
                  ORDER BY id ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![project_s])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             out.push(row_to_claim(row)?);
         }
         Ok(out)
@@ -273,7 +269,7 @@ pub async fn release_claims(db: &Database, task_id: i64) -> Result<usize> {
                     "UPDATE chiasm_path_claims SET released = 1 WHERE task_id = ?1",
                     rusqlite::params![task_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(count)
         })
         .await?;

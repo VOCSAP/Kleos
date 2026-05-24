@@ -1,6 +1,6 @@
 use super::types::{GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use std::collections::{HashMap, HashSet};
 
 /// Row data for a memory node with all GUI-required fields.
@@ -18,9 +18,6 @@ struct MemoryNodeRow {
     community_id: Option<u32>,
 }
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Search graph nodes by name/content pattern.
 /// Returns nodes whose content matches the query (LIKE search).
@@ -48,7 +45,7 @@ pub async fn graph_search(
                      ORDER BY importance DESC \
                      LIMIT ?2",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(
@@ -83,7 +80,7 @@ pub async fn graph_search(
                         ))
                     },
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut nodes = Vec::new();
             for row in rows {
@@ -99,7 +96,7 @@ pub async fn graph_search(
                     source_count,
                     decay_score,
                     community_id,
-                ) = row.map_err(rusqlite_to_eng_error)?;
+                ) = row?;
 
                 let label = if content.len() > 60 {
                     format!(
@@ -152,7 +149,7 @@ pub async fn graph_search(
                      ORDER BY occurrence_count DESC \
                      LIMIT ?2",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(rusqlite::params![pattern, limit as i64, user_id], |row| {
@@ -160,11 +157,11 @@ pub async fn graph_search(
                     let name: String = row.get(1)?;
                     Ok((id, name))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut nodes = Vec::new();
             for row in rows {
-                let (id, name) = row.map_err(rusqlite_to_eng_error)?;
+                let (id, name) = row?;
                 nodes.push(GraphNode {
                     id: format!("e{}", id),
                     label: name.clone(),
@@ -303,7 +300,7 @@ pub async fn neighborhood_filtered(
                     type_clause = type_clause,
                 );
 
-                let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                let mut stmt = conn.prepare(&sql)?;
 
                 // R8 P-005: borrow params directly instead of Box::new +
                 // clone. frontier_clone and type_filter_clone outlive
@@ -331,11 +328,11 @@ pub async fn neighborhood_filtered(
                             .unwrap_or_else(|| "cite".to_string());
                         Ok((source_id, target_id, similarity, link_type_str))
                     })
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
 
                 let mut result: Vec<(i64, i64, f64, String)> = Vec::new();
                 for row in rows {
-                    result.push(row.map_err(rusqlite_to_eng_error)?);
+                    result.push(row?);
                 }
                 Ok(result)
             })
@@ -420,7 +417,7 @@ async fn batch_fetch_memory_nodes(
                 uid = uid_placeholder,
             );
 
-            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql)?;
 
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
             for &id in &ids_owned {
@@ -447,11 +444,11 @@ async fn batch_fetch_memory_nodes(
                         community_id: row.get::<_, i64>(10).ok().map(|v| v as u32),
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut result: Vec<MemoryNodeRow> = Vec::new();
             for row in mapped {
-                result.push(row.map_err(rusqlite_to_eng_error)?);
+                result.push(row?);
             }
             Ok(result)
         })

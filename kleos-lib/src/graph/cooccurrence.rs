@@ -1,12 +1,9 @@
 use super::types::{Entity, GraphEdge, LinkType};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use std::collections::HashMap;
 use tracing::info;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Build co-occurrence edges by sliding a window over recent memories.
 ///
@@ -32,7 +29,7 @@ pub async fn build_cooccurrence_edges(
                      ORDER BY m.created_at DESC \
                      LIMIT 2000",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut memory_order: Vec<i64> = Vec::new();
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
@@ -41,10 +38,10 @@ pub async fn build_cooccurrence_edges(
                 .query_map(rusqlite::params![user_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             for row in rows {
-                let (memory_id, entity_id) = row.map_err(rusqlite_to_eng_error)?;
+                let (memory_id, entity_id) = row?;
                 if !memory_entities.contains_key(&memory_id) {
                     memory_order.push(memory_id);
                 }
@@ -106,7 +103,7 @@ pub async fn build_cooccurrence_edges(
                    last_seen_at = datetime('now')",
                 rusqlite::params![entity_a, entity_b, count, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await?;
@@ -157,7 +154,7 @@ pub async fn record_cooccurrence(
                last_seen_at = datetime('now')",
             rusqlite::params![lo, hi, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -177,7 +174,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
                 OR entity_b_id IN (SELECT id FROM entities WHERE user_id = ?1)",
             rusqlite::params![user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -194,7 +191,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
                        AND m.user_id = ?1 \
                      ORDER BY m.created_at DESC",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
@@ -202,10 +199,10 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
                 .query_map(rusqlite::params![user_id], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             for row in rows {
-                let (memory_id, entity_id) = row.map_err(rusqlite_to_eng_error)?;
+                let (memory_id, entity_id) = row?;
                 memory_entities
                     .entry(memory_id)
                     .or_default()
@@ -262,7 +259,7 @@ pub async fn get_cooccurring_entities(
                  ORDER BY co.count DESC \
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(rusqlite::params![entity_id, limit as i64, user_id], |row| {
@@ -281,11 +278,11 @@ pub async fn get_cooccurring_entities(
                     created_at: row.get(10)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut entities = Vec::new();
         for row in rows {
-            entities.push(row.map_err(rusqlite_to_eng_error)?);
+            entities.push(row?);
         }
 
         Ok(entities)

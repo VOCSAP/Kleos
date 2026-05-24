@@ -4,14 +4,10 @@ pub mod types;
 
 use self::types::*;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use chrono::Utc;
 use rusqlite::params;
 
-/// Convert a rusqlite error into the crate's canonical error type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Map a role label onto the default scope set granted to a fresh API key for that role.
 fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
@@ -34,29 +30,26 @@ fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
 pub async fn compact(db: &Database) -> Result<CompactResult> {
     let size_before: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
     db.write(|conn| {
-        conn.execute_batch("VACUUM; ANALYZE")
-            .map_err(rusqlite_to_eng_error)
+        Ok(conn.execute_batch("VACUUM; ANALYZE")?)
     })
     .await?;
 
     let size_after: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -77,10 +70,10 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
         .write(move |conn| {
             let n = if let Some(_uid) = user_id {
                 conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])
-                    .map_err(rusqlite_to_eng_error)?
+                    ?
             } else {
                 conn.execute("DELETE FROM memories WHERE is_forgotten = 1", [])
-                    .map_err(rusqlite_to_eng_error)?
+                    ?
             };
             Ok(n as i64)
         })
@@ -93,13 +86,13 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
                     "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
                     [],
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
             } else {
                 conn.execute(
                     "DELETE FROM memories WHERE forget_after IS NOT NULL AND forget_after < datetime('now')",
                     [],
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
             };
             Ok(n as i64)
         })
@@ -114,7 +107,7 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
                     "DELETE FROM audit_log WHERE created_at < datetime('now', '-90 days')",
                     [],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(n as i64)
         })
         .await?
@@ -146,7 +139,7 @@ pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
                 .prepare(
                     "SELECT name, sql FROM sqlite_master WHERE type = ?1 AND name NOT LIKE ?2 ORDER BY name",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map(params!["table", "sqlite_%"], |row| {
                     Ok(SchemaTable {
@@ -154,9 +147,9 @@ pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
                         sql: row.get(1)?,
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(rows)
         })
         .await?;
@@ -165,12 +158,12 @@ pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
         .read(|conn| {
             let mut stmt = conn
                 .prepare("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name")
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map(params!["index"], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(rows)
         })
         .await?;
@@ -188,13 +181,13 @@ pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
         .read(|conn| {
             let mut stmt = conn
                 .prepare("SELECT value, updated_at FROM app_state WHERE key = ?1")
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(params!["maintenance_mode"])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let val: String = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let since: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+                ?;
+            if let Some(row) = rows.next()? {
+                let val: String = row.get(0)?;
+                let since: String = row.get(1)?;
                 Ok(Some((val, since)))
             } else {
                 Ok(None)
@@ -209,12 +202,12 @@ pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
                 .read(|conn| {
                     let mut stmt = conn
                         .prepare("SELECT value FROM app_state WHERE key = ?1")
-                        .map_err(rusqlite_to_eng_error)?;
+                        ?;
                     let mut rows = stmt
                         .query(params!["maintenance_message"])
-                        .map_err(rusqlite_to_eng_error)?;
-                    if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                        Ok(row.get(0).map_err(rusqlite_to_eng_error)?)
+                        ?;
+                    if let Some(row) = rows.next()? {
+                        Ok(row.get(0)?)
                     } else {
                         Ok(None)
                     }
@@ -259,19 +252,17 @@ pub async fn get_sla(db: &Database) -> Result<SlaResult> {
 
     let total_requests: i64 = db
         .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)
+            Ok(conn.query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))?)
         })
         .await?;
 
     let total_errors: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM audit_log WHERE action LIKE '%error%'",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -305,7 +296,7 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(UsageRow {
@@ -316,9 +307,9 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
                     api_key_count: row.get(4)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(rows)
     })
     .await
@@ -335,7 +326,7 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(TenantRow {
@@ -347,9 +338,9 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
                     created_at: row.get(5)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(rows)
     })
     .await
@@ -377,7 +368,7 @@ pub async fn provision_tenant(
                 "INSERT INTO users (username, email, role, is_admin) VALUES (?1, ?2, ?3, ?4)",
                 params![username_owned, email_owned, role_owned, is_admin],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             let user_id = conn.last_insert_rowid();
             let returned_username: String = conn
                 .query_row(
@@ -385,13 +376,13 @@ pub async fn provision_tenant(
                     params![user_id],
                     |row| row.get(0),
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             conn.execute(
                 "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3)",
                 params![user_id, "default", Option::<String>::None],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             let space_id = conn.last_insert_rowid();
 
             Ok((user_id, returned_username, space_id))
@@ -421,12 +412,12 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
             "UPDATE api_keys SET is_active = 0 WHERE user_id = ?1",
             params![user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         conn.execute("DELETE FROM spaces WHERE user_id = ?1", params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let affected = conn
             .execute("DELETE FROM users WHERE id = ?1", params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(affected > 0)
     })
     .await
@@ -439,8 +430,7 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
 #[tracing::instrument(skip(db))]
 pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
     db.write(|conn| {
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-            .map_err(rusqlite_to_eng_error)
+        Ok(conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?)
     })
     .await?;
     Ok(serde_json::json!({"status": "ok", "mode": "truncate"}))
@@ -451,8 +441,7 @@ pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
 pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
     let integrity: String = db
         .read(|conn| {
-            conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)
+            Ok(conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?)
         })
         .await
         .unwrap_or_else(|_| "unknown".to_string());
@@ -470,15 +459,15 @@ pub async fn get_state(db: &Database, key: &str) -> Result<Option<StateRow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare("SELECT key, value, updated_at FROM app_state WHERE key = ?1")
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(params![key_owned])
-            .map_err(rusqlite_to_eng_error)?;
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        if let Some(row) = rows.next()? {
             Ok(Some(StateRow {
-                key: row.get(0).map_err(rusqlite_to_eng_error)?,
-                value: row.get(1).map_err(rusqlite_to_eng_error)?,
-                updated_at: row.get(2).map_err(rusqlite_to_eng_error)?,
+                key: row.get(0)?,
+                value: row.get(1)?,
+                updated_at: row.get(2)?,
             }))
         } else {
             Ok(None)
@@ -498,7 +487,7 @@ pub async fn upsert_state(db: &Database, key: &str, value: &str) -> Result<()> {
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
             params![key_owned, value_owned],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -511,7 +500,7 @@ pub async fn delete_state(db: &Database, key: &str) -> Result<bool> {
     db.write(move |conn| {
         let affected = conn
             .execute("DELETE FROM app_state WHERE key = ?1", params![key_owned])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(affected > 0)
     })
     .await
@@ -523,7 +512,7 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
     db.read(|conn| {
         let mut stmt = conn
             .prepare("SELECT key, value, updated_at FROM app_state ORDER BY key")
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(StateRow {
@@ -532,9 +521,9 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
                     updated_at: row.get(2)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(rows)
     })
     .await
@@ -616,12 +605,12 @@ async fn export_table_user(
 ) -> Result<Vec<serde_json::Value>> {
     let sql_owned = sql.to_string();
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql_owned).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql_owned)?;
         let mut rows = stmt
             .query(params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             let mut obj = serde_json::Map::new();
             for i in 0..20usize {
                 match row.get::<_, String>(i) {
@@ -659,10 +648,10 @@ pub async fn export_data(db: &Database) -> Result<ExportData> {
 async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>> {
     let sql_owned = sql.to_string();
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql_owned).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql_owned)?;
+        let mut rows = stmt.query([])?;
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             let mut obj = serde_json::Map::new();
             for i in 0..20usize {
                 match row.get::<_, String>(i) {
@@ -699,14 +688,14 @@ pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
                  WHERE is_forgotten = 0",
                 [],
             )
-            .map_err(rusqlite_to_eng_error)?
+            ?
         } else {
             conn.execute(
                 "UPDATE memories SET embedding = NULL, embedding_vec_1024 = NULL \
                  WHERE is_forgotten = 0",
                 [],
             )
-            .map_err(rusqlite_to_eng_error)?
+            ?
         };
         Ok(n as i64)
     })
@@ -731,14 +720,14 @@ pub async fn get_memories_without_facts(
                  AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
                  LIMIT ?1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map(params![limit], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(rows)
     })
     .await
@@ -769,12 +758,12 @@ pub async fn get_memories_without_entity_links(
                  ORDER BY m.id ASC \
                  LIMIT ?1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(rows)
     })
     .await
@@ -791,14 +780,13 @@ pub async fn rebuild_fts(db: &Database) -> Result<i64> {
             "INSERT INTO memories_fts(memories_fts) VALUES('rebuild')",
             [],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
 
     db.read(|conn| {
-        conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get(0))
-            .map_err(rusqlite_to_eng_error)
+        Ok(conn.query_row("SELECT COUNT(*) FROM memories_fts", [], |row| row.get(0))?)
     })
     .await
 }
@@ -831,8 +819,7 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
         let sql = format!("SELECT COUNT(*) FROM {}", table);
         let result = db
             .read(move |conn| {
-                conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-                    .map_err(rusqlite_to_eng_error)
+                Ok(conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?)
             })
             .await;
         match result {
@@ -847,12 +834,11 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
 
     let db_size: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -868,14 +854,13 @@ pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::
     let threshold = format!("-{} days", days);
     let eligible: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories \
                  WHERE is_forgotten = 0 AND is_archived = 0 \
                  AND created_at < datetime('now', ?1)",
                 params![threshold],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     Ok(serde_json::json!({ "eligible_count": eligible, "threshold_days": days }))
@@ -956,37 +941,33 @@ pub async fn clear_crash_window(db: &Database) -> Result<()> {
 pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {
     let memory_count: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
     let user_count: i64 = db
         .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)
+            Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0))?)
         })
         .await?;
 
     let key_count: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM api_keys WHERE is_active = 1",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
     let conv_count: i64 = db
         .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)
+            Ok(conn.query_row("SELECT COUNT(*) FROM conversations", [], |row| row.get(0))?)
         })
         .await?;
 

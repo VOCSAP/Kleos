@@ -1,12 +1,9 @@
 use super::types::{GraphBuildOptions, GraphBuildResult, GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::info;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Build the full graph for the default user.
 #[tracing::instrument(skip(db))]
@@ -41,7 +38,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                      ORDER BY COALESCE(decay_score, importance) DESC \
                      LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(rusqlite::params![limit, user_id], |row| {
@@ -72,7 +69,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                         community_id,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut nodes: Vec<GraphNode> = Vec::new();
             let mut memory_ids: Vec<i64> = Vec::new();
@@ -90,7 +87,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                     source_count,
                     decay_score,
                     community_id,
-                ) = row.map_err(rusqlite_to_eng_error)?;
+                ) = row?;
 
                 let label = if content.len() > 60 {
                     format!(
@@ -167,7 +164,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
 
             let valid_set: HashSet<i64> = memory_ids.iter().copied().collect();
 
-            let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&query)?;
 
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(params.iter()), |row| {
@@ -179,13 +176,13 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                         .unwrap_or_else(|_| "cite".to_string());
                     Ok((source_id, target_id, similarity, link_type_str))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut edges: Vec<GraphEdge> = Vec::new();
 
             for row in rows {
                 let (source_id, target_id, similarity, link_type_str) =
-                    row.map_err(rusqlite_to_eng_error)?;
+                    row?;
 
                 if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
                     continue;

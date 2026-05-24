@@ -6,12 +6,8 @@
 //! `db.write()` call so it holds exactly one write connection.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
-/// Convert a `rusqlite::Error` into an `EngError`.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Prune expired events from every channel according to each channel's
 /// `retain_hours` value.
@@ -31,7 +27,7 @@ pub async fn prune_expired_events(db: &Database) -> Result<usize> {
         let channels: Vec<(String, i64)> = {
             let mut stmt = conn
                 .prepare("SELECT name, retain_hours FROM axon_channels")
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -39,11 +35,11 @@ pub async fn prune_expired_events(db: &Database) -> Result<usize> {
                     let retain_hours: i64 = row.get(1)?;
                     Ok((name, retain_hours))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut collected = Vec::new();
             for row in rows {
-                collected.push(row.map_err(rusqlite_to_eng_error)?);
+                collected.push(row?);
             }
             collected
             // `stmt` is dropped here before Phase 2
@@ -58,7 +54,7 @@ pub async fn prune_expired_events(db: &Database) -> Result<usize> {
                     "DELETE FROM axon_events WHERE channel = ?1 AND created_at < datetime('now', ?2)",
                     rusqlite::params![name, interval],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             total_deleted += deleted;
         }
 
@@ -102,7 +98,7 @@ mod tests {
                 "UPDATE axon_events SET created_at = datetime('now', '-200 hours') WHERE id = ?1",
                 rusqlite::params![ev.id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await

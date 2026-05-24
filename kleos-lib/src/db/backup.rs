@@ -5,9 +5,6 @@ pub use super::types::{CheckpointMode, RestoreReport};
 use crate::{EngError, Result};
 use std::path::Path;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Creates a consistent backup of the database using VACUUM INTO.
 /// The destination path must not contain single quotes.
@@ -77,7 +74,7 @@ pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
 
         let schema_version: i64 = conn
             .query_row("PRAGMA schema_version", [], |row| row.get(0))
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let table_count: i64 = conn
             .query_row(
@@ -85,7 +82,7 @@ pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
                 [],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let memory_count: Option<i64> = conn
             .query_row(

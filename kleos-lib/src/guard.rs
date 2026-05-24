@@ -1,12 +1,9 @@
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardRule {
@@ -165,7 +162,7 @@ pub async fn create_rule(db: &Database, rule: GuardRule, user_id: i64) -> Result
              VALUES ('create_guard_rule', 'guard_rule', ?1, datetime('now'))",
             rusqlite::params![audit_details],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         conn.execute(
             "INSERT INTO current_state (agent, key, value, user_id, created_at, updated_at) \
@@ -175,7 +172,7 @@ pub async fn create_rule(db: &Database, rule: GuardRule, user_id: i64) -> Result
                updated_at = datetime('now')",
             rusqlite::params![state_key, state_value, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(())
     })
@@ -197,7 +194,7 @@ pub async fn list_rules(db: &Database, user_id: i64) -> Result<Vec<GuardRule>> {
                  WHERE agent = 'guard' AND key LIKE 'rule:%' AND user_id = ?1 \
                  ORDER BY created_at ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(rusqlite::params![user_id], |row| {
@@ -206,12 +203,12 @@ pub async fn list_rules(db: &Database, user_id: i64) -> Result<Vec<GuardRule>> {
                 let created_at_str: String = row.get(2)?;
                 Ok((value, created_at_str))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut rules = Vec::new();
 
         for row_result in rows {
-            let (value, created_at_str) = row_result.map_err(rusqlite_to_eng_error)?;
+            let (value, created_at_str) = row_result?;
 
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&value) {
                 let name = parsed

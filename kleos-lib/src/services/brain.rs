@@ -16,9 +16,6 @@ use crate::db::Database;
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // BrainBackend trait -- unifies subprocess and in-process Hopfield
@@ -1136,20 +1133,20 @@ async fn load_brain_memory(db: &Database, memory_id: i64) -> Result<BrainMemory>
                 "SELECT id, content, category, source, importance, created_at, tags
                  FROM memories WHERE id = ?1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut rows = stmt
             .query(rusqlite::params![memory_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
-            let category: String = row.get(2).map_err(rusqlite_to_eng_error)?;
-            let source: String = row.get(3).map_err(rusqlite_to_eng_error)?;
-            let importance: f64 = row.get(4).map_err(rusqlite_to_eng_error)?;
-            let created_at: Option<String> = row.get(5).map_err(rusqlite_to_eng_error)?;
-            let tags_raw: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let content: String = row.get(1)?;
+            let category: String = row.get(2)?;
+            let source: String = row.get(3)?;
+            let importance: f64 = row.get(4)?;
+            let created_at: Option<String> = row.get(5)?;
+            let tags_raw: Option<String> = row.get(6)?;
             let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
 
             Ok(BrainMemory {
@@ -1293,28 +1290,28 @@ pub async fn get_memory_for_absorb(
             "SELECT id, content, category, source, importance, created_at, tags
              FROM memories WHERE id = ?1"
         };
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
 
         let mut rows = if scoped {
             stmt.query(rusqlite::params![id, user_id])
-                .map_err(rusqlite_to_eng_error)?
+                ?
         } else {
             stmt.query(rusqlite::params![id])
-                .map_err(rusqlite_to_eng_error)?
+                ?
         };
 
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("memory {}", id)))?;
 
-        let mem_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-        let content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
-        let category: String = row.get(2).map_err(rusqlite_to_eng_error)?;
-        let source: String = row.get(3).map_err(rusqlite_to_eng_error)?;
-        let importance: f64 = row.get(4).map_err(rusqlite_to_eng_error)?;
-        let created_at: String = row.get(5).map_err(rusqlite_to_eng_error)?;
-        let tags_raw: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
+        let mem_id: i64 = row.get(0)?;
+        let content: String = row.get(1)?;
+        let category: String = row.get(2)?;
+        let source: String = row.get(3)?;
+        let importance: f64 = row.get(4)?;
+        let created_at: String = row.get(5)?;
+        let tags_raw: Option<String> = row.get(6)?;
 
         let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
 
@@ -1378,16 +1375,16 @@ pub async fn verify_memory_ownership(
                 placeholders_joined,
             )
         };
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(params_vec.iter().cloned()))
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::Internal("count query failed".into()))?;
-        let count: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+        let count: i64 = row.get(0)?;
 
         Ok(count == expected)
     })

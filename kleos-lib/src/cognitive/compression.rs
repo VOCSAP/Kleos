@@ -1,11 +1,8 @@
 use super::types::CompressedEpisode;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::{params, OptionalExtension};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Compress memories from a weekly period into summary memories.
 /// Groups memories by week, scores sentences heuristically, creates summaries.
@@ -27,7 +24,7 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
                      GROUP BY week HAVING cnt >= 7 \
                      ORDER BY week DESC LIMIT 4",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(params![user_id], |row| {
@@ -37,11 +34,11 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
                     let end: String = row.get(4)?;
                     Ok((week, ids_str, start, end))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut weeks = Vec::new();
             for row in rows {
-                let (week, ids_str, start, end) = row.map_err(rusqlite_to_eng_error)?;
+                let (week, ids_str, start, end) = row?;
                 let ids: Vec<i64> = ids_str
                     .split(',')
                     .filter_map(|s| s.trim().parse().ok())
@@ -61,13 +58,13 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
                 for id in &ids_to_fetch {
                     let mut stmt = conn
                         .prepare("SELECT content, importance FROM memories WHERE id = ?1")
-                        .map_err(rusqlite_to_eng_error)?;
+                        ?;
                     let row = stmt
                         .query_row(params![id], |row| {
                             Ok((row.get::<_, String>(0)?, row.get::<_, i32>(1)?))
                         })
                         .optional()
-                        .map_err(rusqlite_to_eng_error)?;
+                        ?;
                     if let Some(pair) = row {
                         results.push(pair);
                     }
@@ -92,7 +89,7 @@ pub async fn compress_weekly(db: &Database, user_id: i64) -> Result<Vec<Compress
                      VALUES (?1, 'general', 'compression', 7, 1, 'approved')",
                     params![summary_clone],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 Ok(conn.last_insert_rowid())
             })
             .await?;

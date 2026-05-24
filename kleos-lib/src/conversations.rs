@@ -6,9 +6,6 @@ use crate::sessions::scrub::scrub_message;
 use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 const CONVERSATION_COLUMNS: &str = "id, agent, session_id, title, metadata, started_at, updated_at";
 
@@ -216,7 +213,7 @@ pub async fn create_conversation(
                 "INSERT INTO conversations (agent, session_id, title, metadata, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![agent, session_id, title, meta_str, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -236,7 +233,7 @@ pub async fn get_conversation_for_user(
     db.read(move |conn| {
         conn.query_row(&sql, params![id, user_id], row_to_conversation)
             .optional()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("conversation {} not found", id)))
     })
     .await
@@ -256,11 +253,10 @@ pub async fn get_conversation_by_session(
         CONVERSATION_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![agent, session_id, user_id], |row| {
+        Ok(conn.query_row(&sql, params![agent, session_id, user_id], |row| {
             row_to_conversation(row)
         })
-        .optional()
-        .map_err(rusqlite_to_eng_error)
+        .optional()?)
     })
     .await
 }
@@ -276,15 +272,15 @@ pub async fn list_conversations(
         CONVERSATION_LIST_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params![limit as i64, user_id], |row| {
                 row_to_conversation_list_item(row)
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut convs = Vec::new();
         for row in rows {
-            convs.push(row.map_err(rusqlite_to_eng_error)?);
+            convs.push(row?);
         }
         Ok(convs)
     })
@@ -304,15 +300,15 @@ pub async fn list_conversations_by_agent(
         CONVERSATION_LIST_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params![agent, limit as i64, user_id], |row| {
                 row_to_conversation_list_item(row)
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut convs = Vec::new();
         for row in rows {
-            convs.push(row.map_err(rusqlite_to_eng_error)?);
+            convs.push(row?);
         }
         Ok(convs)
     })
@@ -334,7 +330,7 @@ pub async fn update_conversation(
              updated_at = datetime('now') WHERE id = ?3 AND user_id = ?4",
             params![title, meta_str, id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -345,11 +341,10 @@ pub async fn update_conversation(
 pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM conversations WHERE id = ?1 AND user_id = ?2",
                 params![id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -365,7 +360,7 @@ pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -396,7 +391,7 @@ pub async fn add_message(
                 "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
                 params![conversation_id, role, content, meta_str],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -418,7 +413,7 @@ pub async fn add_message(
     db.read(move |conn| {
         conn.query_row(&sql, params![new_id], row_to_message)
             .optional()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created message".into()))
     })
     .await
@@ -448,16 +443,16 @@ pub async fn list_messages(
             .join(", ")
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(
                 params![conversation_id, limit as i64, offset as i64, user_id],
                 row_to_message,
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut msgs = Vec::new();
         for row in rows {
-            msgs.push(row.map_err(rusqlite_to_eng_error)?);
+            msgs.push(row?);
         }
         Ok(msgs)
     })
@@ -486,15 +481,15 @@ pub async fn search_messages(
         .to_string();
     match db
         .read(move |conn| {
-            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql)?;
             let rows = stmt
                 .query_map(params![sanitized, limit as i64, user_id], |row| {
                     row_to_message_search_result(row)
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut results = Vec::new();
             for row in rows {
-                results.push(row.map_err(rusqlite_to_eng_error)?);
+                results.push(row?);
             }
             Ok(results)
         })
@@ -526,13 +521,12 @@ pub async fn bulk_insert_conversation(
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race.
     let conv_id: i64 = db
         .write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
                 params![agent, session_id, title, meta_str, user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     for msg in req.messages {

@@ -86,31 +86,27 @@ fn parse_json(text: &str, fallback: serde_json::Value) -> serde_json::Value {
 }
 
 /// Convert a [`rusqlite::Error`] into [`EngError::DatabaseMessage`] so it can
-/// propagate through the crate's `Result` type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Map a raw rusqlite `Row` to an [`Agent`] struct. Column order must match
 /// [`AGENT_COLUMNS`]. `owner_user_id` fills `Agent.user_id`; the column is not
 /// selected (correctness comes from the always-applied `user_id` predicate, so
 /// the value is the caller's authenticated id by construction).
 fn row_to_agent(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Agent> {
-    let capabilities_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
-    let config_str: String = row.get(6).map_err(rusqlite_to_eng_error)?;
-    let drift_flags_opt: Option<String> = row.get(11).map_err(rusqlite_to_eng_error)?;
+    let capabilities_str: String = row.get(4)?;
+    let config_str: String = row.get(6)?;
+    let drift_flags_opt: Option<String> = row.get(11)?;
     Ok(Agent {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        name: row.get(1).map_err(rusqlite_to_eng_error)?,
-        type_: row.get(2).map_err(rusqlite_to_eng_error)?,
-        description: row.get(3).map_err(rusqlite_to_eng_error)?,
+        id: row.get(0)?,
+        name: row.get(1)?,
+        type_: row.get(2)?,
+        description: row.get(3)?,
         capabilities: parse_json(&capabilities_str, serde_json::json!([])),
-        status: row.get(5).map_err(rusqlite_to_eng_error)?,
+        status: row.get(5)?,
         config: parse_json(&config_str, serde_json::json!({})),
-        heartbeat_at: row.get(7).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(9).map_err(rusqlite_to_eng_error)?,
-        quality_score: row.get(10).map_err(rusqlite_to_eng_error)?,
+        heartbeat_at: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+        quality_score: row.get(10)?,
         drift_flags: drift_flags_opt
             .as_deref()
             .map(|s| parse_json(s, serde_json::json!([])))
@@ -162,7 +158,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
                 user_id
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -220,7 +216,7 @@ pub async fn heartbeat(
                      WHERE id = ?2 AND user_id = ?3",
                     rusqlite::params![status, agent_id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
             None => {
                 conn.execute(
@@ -231,7 +227,7 @@ pub async fn heartbeat(
                      WHERE id = ?1 AND user_id = ?2",
                     rusqlite::params![agent_id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
         }
         Ok(())
@@ -258,7 +254,7 @@ pub async fn set_status(db: &Database, agent_id: i64, user_id: i64, status: &str
              WHERE id = ?2 AND user_id = ?3",
             rusqlite::params![status, agent_id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -296,11 +292,11 @@ pub async fn list_agents(
     params.push(rusqlite::types::Value::Integer(limit as i64));
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let converted = rusqlite::params_from_iter(params.iter().cloned());
-        let mut rows = stmt.query(converted).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(converted)?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             out.push(row_to_agent(row, user_id)?);
         }
         Ok(out)
@@ -316,13 +312,13 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
     let sql = format!("SELECT {AGENT_COLUMNS} FROM soma_agents WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("agent {}", id)))?;
         row_to_agent(row, user_id)
     })
@@ -338,13 +334,13 @@ pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Resul
     let name_owned = name.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![name_owned.clone(), user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("agent '{}'", name_owned)))?;
         row_to_agent(row, user_id)
     })
@@ -361,7 +357,7 @@ pub async fn delete_agent(db: &Database, id: i64, user_id: i64) -> Result<()> {
             "DELETE FROM soma_agents WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -423,7 +419,7 @@ pub async fn create_group(
              VALUES (?1, ?2, ?3)",
             rusqlite::params![n, d, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -438,20 +434,20 @@ async fn get_group_by_name(db: &Database, name: &str, user_id: i64) -> Result<Gr
     let n = name.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![n.clone(), user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("group '{}'", n)))?;
         Ok(Group {
-            id: row.get(0).map_err(rusqlite_to_eng_error)?,
-            name: row.get(1).map_err(rusqlite_to_eng_error)?,
-            description: row.get(2).map_err(rusqlite_to_eng_error)?,
-            user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
-            created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            user_id: row.get(3)?,
+            created_at: row.get(4)?,
         })
     })
     .await
@@ -464,18 +460,18 @@ pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
                FROM soma_groups WHERE user_id = ?1 ORDER BY name ASC";
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             out.push(Group {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                name: row.get(1).map_err(rusqlite_to_eng_error)?,
-                description: row.get(2).map_err(rusqlite_to_eng_error)?,
-                user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
-                created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                user_id: row.get(3)?,
+                created_at: row.get(4)?,
             });
         }
         Ok(out)
@@ -490,20 +486,20 @@ pub async fn get_group(db: &Database, id: i64, user_id: i64) -> Result<Group> {
     let sql = "SELECT id, name, description, user_id, created_at
                FROM soma_groups WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("group {}", id)))?;
         Ok(Group {
-            id: row.get(0).map_err(rusqlite_to_eng_error)?,
-            name: row.get(1).map_err(rusqlite_to_eng_error)?,
-            description: row.get(2).map_err(rusqlite_to_eng_error)?,
-            user_id: row.get(3).map_err(rusqlite_to_eng_error)?,
-            created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            user_id: row.get(3)?,
+            created_at: row.get(4)?,
         })
     })
     .await
@@ -521,12 +517,12 @@ pub async fn get_group_members(db: &Database, group_id: i64, user_id: i64) -> Re
          ORDER BY a.name ASC"
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![group_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut agents = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             agents.push(row_to_agent(row, user_id)?);
         }
         Ok(agents)
@@ -549,7 +545,7 @@ pub async fn add_agent_to_group(
              VALUES (?1, ?2, ?3)",
             rusqlite::params![agent_id, group_id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -566,12 +562,11 @@ pub async fn remove_agent_from_group(
 ) -> Result<bool> {
     let n = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM soma_agent_groups
                  WHERE agent_id = ?1 AND group_id = ?2 AND user_id = ?3",
                 rusqlite::params![agent_id, group_id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     Ok(n > 0)
@@ -604,7 +599,7 @@ pub async fn log_event(
                  WHERE EXISTS (SELECT 1 FROM soma_agents WHERE id = ?1 AND user_id = ?5)",
                 rusqlite::params![agent_id, l, m, data_str, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if inserted == 0 {
             return Err(EngError::NotFound(format!("agent {}", agent_id)));
         }
@@ -637,19 +632,19 @@ pub async fn list_agent_logs(
                        WHERE l.agent_id = ?1 AND l.level = ?2
                          AND l.agent_id IN (SELECT id FROM soma_agents WHERE user_id = ?4)
                        ORDER BY l.created_at DESC LIMIT ?3";
-            let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(sql)?;
             let mut rows = stmt
                 .query(rusqlite::params![agent_id, lvl, limit, user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let data_str: Option<String> = row.get(4).map_err(rusqlite_to_eng_error)?;
+                ?;
+            while let Some(row) = rows.next()? {
+                let data_str: Option<String> = row.get(4)?;
                 out.push(AgentLog {
-                    id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                    agent_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                    level: row.get(2).map_err(rusqlite_to_eng_error)?,
-                    message: row.get(3).map_err(rusqlite_to_eng_error)?,
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    level: row.get(2)?,
+                    message: row.get(3)?,
                     data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
-                    created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                    created_at: row.get(5)?,
                 });
             }
         } else {
@@ -658,19 +653,19 @@ pub async fn list_agent_logs(
                        WHERE l.agent_id = ?1
                          AND l.agent_id IN (SELECT id FROM soma_agents WHERE user_id = ?3)
                        ORDER BY l.created_at DESC LIMIT ?2";
-            let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(sql)?;
             let mut rows = stmt
                 .query(rusqlite::params![agent_id, limit, user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let data_str: Option<String> = row.get(4).map_err(rusqlite_to_eng_error)?;
+                ?;
+            while let Some(row) = rows.next()? {
+                let data_str: Option<String> = row.get(4)?;
                 out.push(AgentLog {
-                    id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                    agent_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                    level: row.get(2).map_err(rusqlite_to_eng_error)?,
-                    message: row.get(3).map_err(rusqlite_to_eng_error)?,
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    level: row.get(2)?,
+                    message: row.get(3)?,
                     data: data_str.and_then(|s| serde_json::from_str(&s).ok()),
-                    created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                    created_at: row.get(5)?,
                 });
             }
         }
@@ -696,12 +691,12 @@ pub async fn get_stale_agents(db: &Database, user_id: i64, minutes: i64) -> Resu
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![capped, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             results.push(row_to_agent(row, user_id)?);
         }
         Ok(results)
@@ -729,12 +724,12 @@ pub async fn find_by_capability(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![like_pattern, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             let agent = row_to_agent(row, user_id)?;
             if let serde_json::Value::Array(ref arr) = agent.capabilities {
                 if arr.iter().any(|v| v.as_str() == Some(needle.as_str())) {
@@ -768,7 +763,7 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<SomaStats> {
                     Ok((total, online.unwrap_or(0), types))
                 },
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         // by_type
         let mut by_type = Vec::new();
@@ -777,14 +772,14 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<SomaStats> {
                 "SELECT type, COUNT(*) as cnt FROM soma_agents \
                  WHERE user_id = ?1 GROUP BY type ORDER BY cnt DESC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        while let Some(r) = rows.next()? {
             by_type.push(StatBreakdown {
-                name: r.get(0).map_err(rusqlite_to_eng_error)?,
-                count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                name: r.get(0)?,
+                count: r.get(1)?,
             });
         }
 
@@ -795,14 +790,14 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<SomaStats> {
                 "SELECT status, COUNT(*) as cnt FROM soma_agents \
                  WHERE user_id = ?1 GROUP BY status ORDER BY cnt DESC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        while let Some(r) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        while let Some(r) = rows.next()? {
             by_status.push(StatBreakdown {
-                name: r.get(0).map_err(rusqlite_to_eng_error)?,
-                count: r.get(1).map_err(rusqlite_to_eng_error)?,
+                name: r.get(0)?,
+                count: r.get(1)?,
             });
         }
 
@@ -891,7 +886,7 @@ pub async fn update_agent_quality(
             );
 
             let converted = rusqlite::params_from_iter(params.iter().cloned());
-            conn.execute(&sql, converted).map_err(rusqlite_to_eng_error)
+            Ok(conn.execute(&sql, converted)?)
         })
         .await?;
 
@@ -908,19 +903,19 @@ pub async fn update_agent_quality(
 pub async fn delete_group(db: &Database, group_id: i64, user_id: i64) -> Result<bool> {
     let deleted = db
         .write(move |conn| {
-            let tx = conn.transaction().map_err(rusqlite_to_eng_error)?;
+            let tx = conn.transaction()?;
             tx.execute(
                 "DELETE FROM soma_agent_groups WHERE group_id = ?1 AND user_id = ?2",
                 rusqlite::params![group_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             let n = tx
                 .execute(
                     "DELETE FROM soma_groups WHERE id = ?1 AND user_id = ?2",
                     rusqlite::params![group_id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
-            tx.commit().map_err(rusqlite_to_eng_error)?;
+                ?;
+            tx.commit()?;
             Ok(n)
         })
         .await?;

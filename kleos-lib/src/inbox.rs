@@ -3,12 +3,9 @@
 //! Ports: inbox/db.ts, inbox/routes.ts (logic)
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMemory {
@@ -36,7 +33,7 @@ pub async fn list_pending(db: &Database, limit: i64, offset: i64) -> Result<Vec<
                  WHERE status = 'pending' AND is_forgotten = 0 \
                  ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(rusqlite::params![limit, offset], |row| {
@@ -55,11 +52,11 @@ pub async fn list_pending(db: &Database, limit: i64, offset: i64) -> Result<Vec<
                     model: row.get(11)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut result = Vec::new();
         for row in rows {
-            result.push(row.map_err(rusqlite_to_eng_error)?);
+            result.push(row?);
         }
         Ok(result)
     })
@@ -69,12 +66,11 @@ pub async fn list_pending(db: &Database, limit: i64, offset: i64) -> Result<Vec<
 #[tracing::instrument(skip(db))]
 pub async fn count_pending(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*) FROM memories WHERE status = 'pending' AND is_forgotten = 0",
             [],
             |row| row.get::<_, i64>(0),
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -86,7 +82,7 @@ pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> 
             "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -99,7 +95,7 @@ pub async fn reject_memory(db: &Database, id: i64) -> Result<()> {
             "UPDATE memories SET status = 'rejected', is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -113,7 +109,7 @@ pub async fn set_forget_reason(db: &Database, id: i64, reason: &str) -> Result<(
             "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
             rusqlite::params![reason, id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -162,7 +158,7 @@ pub async fn edit_and_approve(
     );
     db.write(move |conn| {
         conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(())
     })
     .await

@@ -5,12 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::db::Database;
 use crate::memory;
 use crate::memory::types::StoreRequest;
-use crate::EngError;
 use crate::Result;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Deserialize)]
 pub struct SyncReceiveChange {
@@ -53,11 +49,11 @@ pub async fn receive_sync(
                     .read(move |conn| {
                         let mut stmt = conn
                             .prepare("SELECT id FROM memories WHERE sync_id = ?1")
-                            .map_err(rusqlite_to_eng_error)?;
+                            ?;
                         let mut rows = stmt
                             .query(rusqlite::params![sync_id])
-                            .map_err(rusqlite_to_eng_error)?;
-                        Ok(rows.next().map_err(rusqlite_to_eng_error)?.is_some())
+                            ?;
+                        Ok(rows.next()?.is_some())
                     })
                     .await?;
                 if exists {
@@ -91,11 +87,10 @@ pub async fn receive_sync(
                 let sync_id = change.sync_id.clone();
                 let affected = db
                     .write(move |conn| {
-                        conn.execute(
+                        Ok(conn.execute(
                             "UPDATE memories SET is_forgotten = 1 WHERE sync_id = ?1",
                             rusqlite::params![sync_id],
-                        )
-                        .map_err(rusqlite_to_eng_error)
+                        )?)
                     })
                     .await?;
                 if affected > 0 {

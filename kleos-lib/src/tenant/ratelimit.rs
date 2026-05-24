@@ -1,9 +1,6 @@
 use crate::tenant::pool::TenantPools;
-use crate::{EngError, Result};
+use crate::Result;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // z11-007: the in-memory per-process RateLimiter that used to live here was a
 // dead duplicate of `crate::ratelimit::RateLimiter` (the live one, used by
@@ -31,16 +28,16 @@ pub async fn check_rate_limit(
         .read(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut rows = stmt
                 .query(rusqlite::params![key_owned])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            match rows.next().map_err(rusqlite_to_eng_error)? {
+            match rows.next()? {
                 Some(r) => {
-                    let count: i64 = r.get(0).map_err(rusqlite_to_eng_error)?;
-                    let window_start: String = r.get(1).map_err(rusqlite_to_eng_error)?;
+                    let count: i64 = r.get(0)?;
+                    let window_start: String = r.get(1)?;
                     Ok(Some((count, window_start)))
                 }
                 None => Ok(None),
@@ -54,12 +51,11 @@ pub async fn check_rate_limit(
 
         let expired: i64 = db
             .read(move |conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT (strftime('%s', 'now') - strftime('%s', ?1)) > ?2",
                     rusqlite::params![window_start2, window_seconds],
                     |r| r.get(0),
-                )
-                .map_err(rusqlite_to_eng_error)
+                )?)
             })
             .await?;
 
@@ -72,7 +68,7 @@ pub async fn check_rate_limit(
                      WHERE key = ?1",
                     rusqlite::params![key_owned2],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 Ok(())
             })
             .await?;
@@ -102,7 +98,7 @@ pub async fn increment_counter(db: &TenantPools, key: &str) -> Result<()> {
                  updated_at = datetime('now')",
             rusqlite::params![key_owned],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -131,7 +127,7 @@ pub async fn check_and_increment(
     // Upsert and reset the window atomically. Returns the post-increment count.
     let count: i64 = db
         .write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO rate_limits (key, count, window_start, updated_at)
                  VALUES (?1, 1, datetime('now'), datetime('now'))
                  ON CONFLICT(key) DO UPDATE SET
@@ -147,8 +143,7 @@ pub async fn check_and_increment(
                  RETURNING count",
                 rusqlite::params![key_owned, window_seconds],
                 |r| r.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 

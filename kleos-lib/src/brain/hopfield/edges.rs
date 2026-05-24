@@ -3,10 +3,6 @@ pub use super::types::{BrainEdge, EdgeType};
 use crate::db::Database;
 use crate::{EngError, Result};
 
-/// Converts a rusqlite error into the engine error type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // Database CRUD
@@ -32,7 +28,7 @@ pub async fn store_edge(
              DO UPDATE SET weight = MAX(weight, excluded.weight)",
             rusqlite::params![source_id, target_id, weight as f64, edge_type_str, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -47,14 +43,14 @@ pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Resu
                 "SELECT id, source_id, target_id, weight, edge_type, user_id, created_at \
                  FROM brain_edges WHERE source_id = ?1 AND user_id = ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let edges = stmt
             .query_map(rusqlite::params![source_id, user_id], |row| {
                 Ok(row_to_edge_raw(row))
             })
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            ?
+            .map(|r| r.map_err(EngError::from).and_then(|inner| inner))
             .collect::<Result<Vec<BrainEdge>>>()?;
 
         Ok(edges)
@@ -72,14 +68,14 @@ pub async fn get_edges_for(db: &Database, pattern_id: i64, user_id: i64) -> Resu
                  FROM brain_edges \
                  WHERE (source_id = ?1 OR target_id = ?1) AND user_id = ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let edges = stmt
             .query_map(rusqlite::params![pattern_id, user_id], |row| {
                 Ok(row_to_edge_raw(row))
             })
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            ?
+            .map(|r| r.map_err(EngError::from).and_then(|inner| inner))
             .collect::<Result<Vec<BrainEdge>>>()?;
 
         Ok(edges)
@@ -109,7 +105,7 @@ pub async fn strengthen_edge(
                        AND edge_type = ?4 AND user_id = ?5",
                     rusqlite::params![boost as f64, source_id, target_id, edge_type_str, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(n)
         })
         .await?;
@@ -131,7 +127,7 @@ pub async fn decay_edges(db: &Database, user_id: i64, rate: f32) -> Result<usize
                 "UPDATE brain_edges SET weight = weight * ?1 WHERE user_id = ?2",
                 rusqlite::params![rate as f64, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(n)
     })
     .await
@@ -147,7 +143,7 @@ pub async fn prune_edges(db: &Database, user_id: i64, threshold: f32) -> Result<
                 "DELETE FROM brain_edges WHERE weight < ?1 AND user_id = ?2",
                 rusqlite::params![threshold as f64, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(n)
     })
     .await
@@ -163,7 +159,7 @@ pub async fn count_edges(db: &Database, user_id: i64) -> Result<i64> {
                 rusqlite::params![user_id],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(count)
     })
     .await
@@ -187,7 +183,7 @@ pub async fn delete_edge(
                AND edge_type = ?3 AND user_id = ?4",
             rusqlite::params![source_id, target_id, edge_type_str, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -201,13 +197,13 @@ pub async fn delete_edge(
 /// match the SELECT list: id, source_id, target_id, weight, edge_type,
 /// user_id, created_at.
 fn row_to_edge_raw(row: &rusqlite::Row<'_>) -> Result<BrainEdge> {
-    let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-    let source_id: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
-    let target_id: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
-    let weight: f64 = row.get(3).map_err(rusqlite_to_eng_error)?;
-    let edge_type_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
-    let user_id: i64 = row.get(5).map_err(rusqlite_to_eng_error)?;
-    let created_at: String = row.get(6).map_err(rusqlite_to_eng_error)?;
+    let id: i64 = row.get(0)?;
+    let source_id: i64 = row.get(1)?;
+    let target_id: i64 = row.get(2)?;
+    let weight: f64 = row.get(3)?;
+    let edge_type_str: String = row.get(4)?;
+    let user_id: i64 = row.get(5)?;
+    let created_at: String = row.get(6)?;
 
     Ok(BrainEdge {
         id,

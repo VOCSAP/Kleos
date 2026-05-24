@@ -13,11 +13,7 @@ use crate::db::Database;
 use crate::graph::pagerank::{
     compute_pagerank_for_user, persist_pagerank_with_snapshot, snapshot_pagerank_dirty,
 };
-use crate::EngError;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Check whether the pagerank cache needs refreshing based on dirty_count or
 /// elapsed time since last_refresh. Returns [0] (sentinel user id) if a
@@ -34,7 +30,7 @@ async fn dirty_users(db: &Database, threshold: u32, interval_secs: u64) -> crate
         );
         let needs_refresh: i64 = conn
             .query_row(&sql, rusqlite::params![threshold_i64], |row| row.get(0))
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if needs_refresh > 0 {
             Ok(vec![0i64]) // sentinel: single-tenant, user_id = 0
         } else {

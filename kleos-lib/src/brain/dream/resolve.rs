@@ -12,9 +12,6 @@ use tracing::warn;
 
 use super::StageReport;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Resolve contradictions using full interference resolution.
 ///
@@ -41,7 +38,7 @@ pub async fn resolve(
                      WHERE edge_type = ?1 \
                      ORDER BY weight DESC",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let pairs = stmt
                 .query_map(rusqlite::params![edge_type_str], |row| {
@@ -49,8 +46,8 @@ pub async fn resolve(
                     let tgt: i64 = row.get(1)?;
                     Ok((src, tgt))
                 })
-                .map_err(rusqlite_to_eng_error)?
-                .map(|r| r.map_err(rusqlite_to_eng_error))
+                ?
+                .map(|r| r.map_err(EngError::from))
                 .collect::<Result<Vec<(i64, i64)>>>()?;
 
             Ok(pairs)

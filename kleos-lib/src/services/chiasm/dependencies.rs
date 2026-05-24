@@ -8,10 +8,6 @@ use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
-/// Converts a rusqlite error into an EngError.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// A dependency edge: task `task_id` depends on task `depends_on`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,12 +45,12 @@ pub async fn has_circular_dependency(db: &Database, task_id: i64, target_id: i64
             }
             let mut stmt = conn
                 .prepare("SELECT depends_on FROM chiasm_task_dependencies WHERE task_id = ?1")
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![current])
-                .map_err(rusqlite_to_eng_error)?;
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let dep: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+                ?;
+            while let Some(row) = rows.next()? {
+                let dep: i64 = row.get(0)?;
                 queue.push_back(dep);
             }
         }
@@ -88,7 +84,7 @@ pub async fn add_dependencies(db: &Database, task_id: i64, depends_on: &[i64]) -
                  VALUES (?1, ?2)",
                 rusqlite::params![task_id, dep_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         }
         Ok(())
     })
@@ -106,19 +102,19 @@ pub async fn get_dependencies(db: &Database, task_id: i64) -> Result<Vec<Depende
                  WHERE d.task_id = ?1 \
                  ORDER BY d.id ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![task_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             out.push(Dependency {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                task_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                depends_on: row.get(2).map_err(rusqlite_to_eng_error)?,
-                depends_on_title: row.get(3).map_err(rusqlite_to_eng_error)?,
-                depends_on_status: row.get(4).map_err(rusqlite_to_eng_error)?,
-                created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                depends_on: row.get(2)?,
+                depends_on_title: row.get(3)?,
+                depends_on_status: row.get(4)?,
+                created_at: row.get(5)?,
             });
         }
         Ok(out)
@@ -130,11 +126,10 @@ pub async fn get_dependencies(db: &Database, task_id: i64) -> Result<Vec<Depende
 pub async fn remove_dependency(db: &Database, task_id: i64, dep_id: i64) -> Result<bool> {
     let n = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM chiasm_task_dependencies WHERE task_id = ?1 AND depends_on = ?2",
                 rusqlite::params![task_id, dep_id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     Ok(n > 0)
@@ -154,13 +149,13 @@ pub async fn check_and_unblock(
                 .prepare(
                     "SELECT DISTINCT task_id FROM chiasm_task_dependencies WHERE depends_on = ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![completed_task_id])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut ids = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                ids.push(row.get(0).map_err(rusqlite_to_eng_error)?);
+            while let Some(row) = rows.next()? {
+                ids.push(row.get(0)?);
             }
             Ok(ids)
         })
@@ -182,10 +177,10 @@ pub async fn check_and_unblock(
                            AND d.depends_on != ?2 \
                            AND t.status != 'completed'",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let count: i64 = stmt
                     .query_row(rusqlite::params![task_id, completed_task_id], |r| r.get(0))
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 Ok(count == 0)
             })
             .await?;

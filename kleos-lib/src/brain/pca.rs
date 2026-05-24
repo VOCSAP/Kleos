@@ -210,9 +210,6 @@ pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
 // Persistence
 // ---------------------------------------------------------------------------
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Store a PCA model to the database.
 #[tracing::instrument(skip(db, transform), fields(source_dim, target_dim))]
@@ -231,7 +228,7 @@ pub async fn store_pca_model(
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![source_dim as i64, target_dim as i64, now, blob],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -252,15 +249,15 @@ pub async fn load_pca_model(
                  WHERE source_dim = ?1 AND target_dim = ?2
                  ORDER BY fit_at DESC LIMIT 1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut rows = stmt
             .query(rusqlite::params![source_dim as i64, target_dim as i64])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+        match rows.next()? {
             Some(row) => {
-                let blob: Vec<u8> = row.get(0).map_err(rusqlite_to_eng_error)?;
+                let blob: Vec<u8> = row.get(0)?;
                 let transform: PcaTransform =
                     serde_json::from_slice(&blob).map_err(|e| EngError::Internal(e.to_string()))?;
                 Ok(Some(transform))
@@ -284,7 +281,7 @@ pub async fn cleanup_old_models(db: &Database) -> Result<usize> {
                  )",
                 [],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(affected)
     })

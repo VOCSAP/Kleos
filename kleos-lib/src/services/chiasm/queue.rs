@@ -7,12 +7,8 @@
 //! timestamp -- all in a single write transaction to prevent double-claiming.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
-/// Map a rusqlite error to the crate's EngError type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Enqueue a new task for any agent to pick up.
 ///
@@ -42,7 +38,7 @@ pub async fn enqueue_task(
                  VALUES ('unassigned', ?1, ?2, 'queued', ?3, 'raw', 300, 0, ?4)",
                 rusqlite::params![project_s, title_s, summary_s, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -90,25 +86,25 @@ pub async fn claim_next_task(
                 let sql = "SELECT id FROM chiasm_tasks \
                            WHERE status = 'queued' AND assigned = 0 AND user_id = ?2 AND project = ?1 \
                            ORDER BY created_at ASC LIMIT 1";
-                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut stmt = conn.prepare(sql)?;
                 let mut rows = stmt
                     .query(rusqlite::params![proj, user_id])
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 rows.next()
-                    .map_err(rusqlite_to_eng_error)?
-                    .map(|row| row.get::<_, i64>(0).map_err(rusqlite_to_eng_error))
+                    ?
+                    .map(|row| row.get::<_, i64>(0))
                     .transpose()?
             } else {
                 let sql = "SELECT id FROM chiasm_tasks \
                            WHERE status = 'queued' AND assigned = 0 AND user_id = ?1 \
                            ORDER BY created_at ASC LIMIT 1";
-                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut stmt = conn.prepare(sql)?;
                 let mut rows = stmt
                     .query(rusqlite::params![user_id])
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 rows.next()
-                    .map_err(rusqlite_to_eng_error)?
-                    .map(|row| row.get::<_, i64>(0).map_err(rusqlite_to_eng_error))
+                    ?
+                    .map(|row| row.get::<_, i64>(0))
                     .transpose()?
             };
 
@@ -121,7 +117,7 @@ pub async fn claim_next_task(
                      WHERE id = ?2 AND user_id = ?3",
                     rusqlite::params![agent_s, task_id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
 
             Ok(id)

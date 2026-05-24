@@ -8,9 +8,6 @@ pub use types::*;
 /// Default approval window in seconds.
 pub const DEFAULT_APPROVAL_WINDOW_SECS: i64 = 120;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> crate::EngError {
-    crate::EngError::DatabaseMessage(err.to_string())
-}
 
 /// Create a new approval request with a 120s (or custom) window.
 #[tracing::instrument(skip(db, req), fields(action = %req.action))]
@@ -47,7 +44,7 @@ pub async fn create_approval(
                 user_id,
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -78,13 +75,13 @@ pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Optio
                         created_at, expires_at, decided_at
                  FROM approvals WHERE id = ?1 AND user_id = ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut rows = stmt
             .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+        match rows.next()? {
             Some(row) => Ok(Some(row_to_approval(row, user_id)?)),
             None => Ok(None),
         }
@@ -104,18 +101,18 @@ pub async fn list_pending(db: &Database, user_id: i64) -> Result<Vec<Approval>> 
                  WHERE status = 'pending' AND user_id = ?1
                  ORDER BY expires_at ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(rusqlite::params![user_id], |row| {
                 // query_map requires a rusqlite::Result return; we map inside
                 Ok(row_to_approval(row, user_id))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut approvals = Vec::new();
         for item in rows {
-            let approval = item.map_err(rusqlite_to_eng_error)??;
+            let approval = item??;
             approvals.push(approval);
         }
         Ok(approvals)
@@ -151,7 +148,7 @@ pub async fn decide(
                 "UPDATE approvals SET status = 'expired' WHERE id = ?1 AND user_id = ?2",
                 rusqlite::params![id_str, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await?;
@@ -179,7 +176,7 @@ pub async fn decide(
              WHERE id = ?5 AND user_id = ?6",
             rusqlite::params![new_status, decided_by, reason, decided_str, id_str, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -207,7 +204,7 @@ pub async fn expire_stale(db: &Database) -> Result<u64> {
                  WHERE status = 'pending' AND expires_at < ?1",
                 rusqlite::params![now],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(rows as u64)
     })
     .await

@@ -9,9 +9,6 @@ use crate::{EngError, Result};
 
 const ENTITY_COLUMNS: &str = "id, name, entity_type, description, aliases, space_id, confidence, occurrence_count, first_seen_at, last_seen_at, created_at";
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // `ENTITY_COLUMNS` deliberately omits user_id; every read scopes by it in the
 // WHERE clause, so the returned row is known to belong to `owner_user_id` and
@@ -74,7 +71,7 @@ pub async fn create_entity(
                 user_id,
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -104,11 +101,11 @@ async fn find_entity_by_name_type(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&query)?;
         let mut rows = stmt
             .query(rusqlite::params![name, entity_type, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        match rows.next()? {
             Some(row) => Ok(Some(row_to_entity(row, user_id)?)),
             None => Ok(None),
         }
@@ -124,11 +121,11 @@ pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> 
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&query)?;
         let mut rows = stmt
             .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        match rows.next()? {
             Some(row) => row_to_entity(row, user_id),
             None => Err(EngError::NotFound(format!("entity {}", id))),
         }
@@ -153,12 +150,12 @@ pub async fn list_entities(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&query)?;
         let mut rows = stmt
             .query(rusqlite::params![user_id, limit as i64, offset as i64])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut entities = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             entities.push(row_to_entity(row, user_id)?);
         }
         Ok(entities)
@@ -180,11 +177,11 @@ pub async fn find_entity_by_name(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&query)?;
         let mut rows = stmt
             .query(rusqlite::params![name, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        match rows.next()? {
             Some(row) => Ok(Some(row_to_entity(row, user_id)?)),
             None => Ok(None),
         }
@@ -200,7 +197,7 @@ pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
                 "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
                 rusqlite::params![id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("entity {}", id)));
         }
@@ -262,7 +259,7 @@ pub async fn update_entity(
     db.write(move |conn| {
         let affected = conn
             .execute(&sql, rusqlite::params_from_iter(params.iter()))
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("entity {}", id)));
         }
@@ -295,11 +292,11 @@ pub async fn create_relationship(
         .read(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3")
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![source_id, target_id, user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            match rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            match rows.next()? {
                 Some(row) => Ok(row.get(0)?),
                 None => Ok(0i64),
             }
@@ -327,7 +324,7 @@ pub async fn create_relationship(
     // INSERT ... ON CONFLICT ... RETURNING avoids the cross-connection
     // last_insert_rowid() race inherent to a follow-up SELECT.
     db.write(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "INSERT INTO entity_relationships \
              (source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at) \
              VALUES (?1, ?2, ?3, ?4, 1, datetime('now')) \
@@ -352,8 +349,7 @@ pub async fn create_relationship(
                     created_at: row.get(6)?,
                 })
             },
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -378,16 +374,16 @@ pub async fn get_entity_relationships(
                  ORDER BY strength DESC \
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![
                 entity_id,
                 MAX_ENTITY_RELATIONSHIPS as i64,
                 user_id
             ])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rels = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             rels.push(EntityRelationship {
                 id: row.get(0)?,
                 source_entity_id: row.get(1)?,
@@ -425,11 +421,11 @@ pub async fn link_memory_entity(
                      JOIN memories m ON m.id = ?1 \
                      WHERE e.id = ?2 AND e.user_id = ?3 AND m.user_id = ?3",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![memory_id, entity_id, user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            match rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            match rows.next()? {
                 Some(row) => Ok(row.get(0)?),
                 None => Ok(0i64),
             }
@@ -449,7 +445,7 @@ pub async fn link_memory_entity(
              VALUES (?1, ?2, ?3, datetime('now'))",
             rusqlite::params![memory_id, entity_id, salience],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -471,7 +467,7 @@ pub async fn unlink_memory_entity(
                    AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)",
                 rusqlite::params![memory_id, entity_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if affected == 0 {
             return Err(EngError::NotFound(format!(
                 "entity {} not linked to memory {}",
@@ -505,12 +501,12 @@ pub async fn get_memory_entities(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&query)?;
         let mut rows = stmt
             .query(rusqlite::params![memory_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut entities = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             entities.push(row_to_entity(row, user_id)?);
         }
         Ok(entities)
@@ -530,12 +526,12 @@ pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) ->
                  JOIN entities e ON e.id = me.entity_id \
                  WHERE me.entity_id = ?1 AND e.user_id = ?2 AND m.user_id = ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![entity_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut memory_ids = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
             memory_ids.push(id);
         }
@@ -571,12 +567,12 @@ pub async fn search_entity_memories(
                  ORDER BY m.importance DESC, m.created_at DESC \
                  LIMIT ?3",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![entity_id, sanitized, limit, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             results.push(EntityMemorySearchResult {
                 id: row.get(0)?,
                 content: row.get(1)?,
@@ -622,7 +618,7 @@ pub async fn delete_relationship(
     db.write(move |conn| {
         let affected = conn
             .execute(&sql, rusqlite::params_from_iter(params.iter()))
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if affected == 0 {
             return Err(EngError::NotFound(format!(
                 "relationship {} -> {} not found",

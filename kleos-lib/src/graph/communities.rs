@@ -4,14 +4,10 @@
 
 use super::types::{CommunitiesResult, CommunityMember, CommunityStats};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use std::collections::HashMap;
 use tracing::info;
 
-/// Convert a rusqlite error into the crate's canonical error type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Compute the edge weight used by the Louvain community detector for a
 /// memory_links row. Causal links carry the most weight, corrective and
@@ -58,12 +54,12 @@ pub async fn detect_communities(
                        AND user_id = ?2 \
                      ORDER BY importance DESC, id DESC LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let ids = stmt
                 .query_map(rusqlite::params![MAX_NODES, user_id], |row| row.get(0))
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<std::result::Result<Vec<i64>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(ids)
         })
         .await?;
@@ -94,7 +90,7 @@ pub async fn detect_communities(
                      WHERE ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok(EdgeRow {
@@ -104,9 +100,9 @@ pub async fn detect_communities(
                         link_type: row.get(3)?,
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(rows)
         })
         .await?;
@@ -147,7 +143,7 @@ pub async fn detect_communities(
                     "UPDATE memories SET community_id = ?1 WHERE id = ?2",
                     rusqlite::params![idx as i64, id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
             Ok(())
         })
@@ -241,7 +237,7 @@ pub async fn detect_communities(
                 "UPDATE memories SET community_id = ?1 WHERE id = ?2",
                 rusqlite::params![cid, node_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         }
         Ok(())
     })
@@ -287,7 +283,7 @@ pub async fn get_community_members(
                    AND user_id = ?3 \
                  ORDER BY importance DESC, created_at DESC LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let members = stmt
             .query_map(
                 rusqlite::params![community_id, limit as i64, user_id],
@@ -301,9 +297,9 @@ pub async fn get_community_members(
                     })
                 },
             )
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(members)
     })
     .await
@@ -322,7 +318,7 @@ pub async fn get_community_stats(db: &Database, user_id: i64) -> Result<Vec<Comm
                    AND user_id = ?1 \
                  GROUP BY community_id ORDER BY count DESC LIMIT 50",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let stats = stmt
             .query_map(rusqlite::params![user_id], |row| {
                 Ok(CommunityStats {
@@ -332,9 +328,9 @@ pub async fn get_community_stats(db: &Database, user_id: i64) -> Result<Vec<Comm
                     categories: row.get::<_, String>(3).unwrap_or_default(),
                 })
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(stats)
     })
     .await

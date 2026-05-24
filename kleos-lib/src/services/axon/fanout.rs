@@ -4,7 +4,7 @@
 //! event payloads to registered webhook URLs via fire-and-forget HTTP POST.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
 /// A resolved webhook delivery target extracted from an `axon_subscriptions` row.
 #[derive(Debug)]
@@ -17,10 +17,6 @@ pub struct WebhookTarget {
     pub filter_type: Option<String>,
 }
 
-/// Maps a `rusqlite::Error` to an [`EngError::DatabaseMessage`].
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Queries `axon_subscriptions` for webhook targets matching a channel and event type.
 ///
@@ -39,16 +35,16 @@ pub async fn get_webhook_targets(
     db.read(move |conn| {
         let sql = "SELECT agent, webhook_url, filter_type FROM axon_subscriptions \
                    WHERE channel = ?1 AND webhook_url IS NOT NULL";
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![channel_s])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut targets = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let agent: String = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let webhook_url: String = row.get(1).map_err(rusqlite_to_eng_error)?;
-            let filter_type: Option<String> = row.get(2).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next()? {
+            let agent: String = row.get(0)?;
+            let webhook_url: String = row.get(1)?;
+            let filter_type: Option<String> = row.get(2)?;
 
             // Skip subscriptions whose filter_type does not match the event type.
             if let Some(ref ft) = filter_type {

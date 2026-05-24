@@ -3,13 +3,10 @@
 //! Ports: scratch/db.ts, scratch/types.ts, scratch/routes.ts (logic)
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScratchEntry {
@@ -60,7 +57,7 @@ pub async fn upsert_entry(
             "INSERT INTO scratchpad (session, agent, model, entry_key, value, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, datetime('now', '+' || ?6 || ' minutes')) ON CONFLICT(session, agent, entry_key) DO UPDATE SET model = excluded.model, value = excluded.value, updated_at = datetime('now'), expires_at = datetime('now', '+' || ?7 || ' minutes')",
             params![session, agent, model, key, value, ttl_str.clone(), ttl_str],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -81,16 +78,16 @@ pub async fn list_entries(
             .prepare(
                 "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE expires_at > datetime('now') AND (?1 IS NULL OR agent = ?2) AND (?3 IS NULL OR model = ?4) AND (?5 IS NULL OR session = ?6) ORDER BY updated_at DESC, agent, session, entry_key",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map(
                 params![agent.clone(), agent, model.clone(), model, session.clone(), session],
                 row_to_entry_rusqlite,
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut result = Vec::new();
         for row in rows {
-            result.push(row.map_err(rusqlite_to_eng_error)?);
+            result.push(row?);
         }
         Ok(result)
     })
@@ -105,13 +102,13 @@ pub async fn get_session_entries(db: &Database, session: &str) -> Result<Vec<Scr
             .prepare(
                 "SELECT session, agent, model, entry_key, value, created_at, updated_at, expires_at FROM scratchpad WHERE session = ?1 ORDER BY created_at ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map(params![session], row_to_entry_rusqlite)
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut result = Vec::new();
         for row in rows {
-            result.push(row.map_err(rusqlite_to_eng_error)?);
+            result.push(row?);
         }
         Ok(result)
     })
@@ -126,7 +123,7 @@ pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
             "DELETE FROM scratchpad WHERE session = ?1",
             params![session],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -141,7 +138,7 @@ pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Resu
             "DELETE FROM scratchpad WHERE session = ?1 AND entry_key = ?2",
             params![session, key],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -155,7 +152,7 @@ pub async fn purge_expired(db: &Database) -> Result<i64> {
                 "DELETE FROM scratchpad WHERE expires_at <= datetime('now')",
                 params![],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(changes as i64)
     })
     .await
@@ -214,7 +211,7 @@ pub async fn promote_entries(
                 "INSERT INTO memories (content, category, source, importance, source_count, is_latest) VALUES (?1, ?2, ?3, 5, 1, 1)",
                 params![content, category, source],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             promoted.push(conn.last_insert_rowid());
         } else {
             for r in &filtered {
@@ -224,7 +221,7 @@ pub async fn promote_entries(
                     "INSERT INTO memories (content, category, source, importance, source_count, is_latest) VALUES (?1, ?2, ?3, 5, 1, 1)",
                     params![content, category, source],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 promoted.push(conn.last_insert_rowid());
             }
         }
@@ -252,7 +249,7 @@ fn row_to_entry_rusqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScratchEnt
 /// row error as a domain error.
 #[allow(dead_code)]
 fn row_to_entry(row: &rusqlite::Row<'_>) -> Result<ScratchEntry> {
-    row_to_entry_rusqlite(row).map_err(rusqlite_to_eng_error)
+    Ok(row_to_entry_rusqlite(row)?)
 }
 
 #[cfg(test)]

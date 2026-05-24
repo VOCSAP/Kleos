@@ -15,9 +15,6 @@ use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
 use tracing::{info, warn};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[tracing::instrument(skip(db), fields(limit))]
 pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
@@ -29,7 +26,7 @@ pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<Growth
                  WHERE category = 'growth' AND is_forgotten = 0 \
                  ORDER BY created_at DESC LIMIT ?1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let observations = stmt
             .query_map(rusqlite::params![limit as i64], |row| {
@@ -41,9 +38,9 @@ pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<Growth
                     created_at: row.get(4)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(observations)
     })
@@ -60,7 +57,7 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let (content, source) = result.ok_or_else(|| {
             EngError::NotFound(format!("growth observation {} not found", observation_id))
@@ -74,7 +71,7 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
              datetime('now'), datetime('now'))",
             rusqlite::params![content, source],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -299,7 +296,7 @@ pub async fn reflect(
                  datetime('now'), datetime('now'))",
                 rusqlite::params![trimmed_for_closure, source_c, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             let memory_id = conn.last_insert_rowid();
 
@@ -309,7 +306,7 @@ pub async fn reflect(
                  VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
                 rusqlite::params![trimmed_refl, format!("[{}]", memory_id), user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             let reflection_id = conn.last_insert_rowid();
 
@@ -339,13 +336,12 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
     // Min activity threshold: 50 new memories in last hour
     let recent_count: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories \
                  WHERE user_id = ?1 AND created_at > datetime('now', '-1 hour')",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -369,7 +365,7 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
     // Build context from memory stats
     let (total, never_accessed, growth_count, avg_importance): (i64, i64, i64, f64) = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) as total, \
                         SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
                         SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
@@ -384,8 +380,7 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
                         row.get::<_, f64>(3).unwrap_or(0.0),
                     ))
                 },
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -407,16 +402,16 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
                        AND is_forgotten = 0 AND user_id = ?1 \
                      ORDER BY created_at DESC LIMIT 10",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let lines = stmt
                 .query_map(rusqlite::params![user_id], |row| {
                     let content: String = row.get(0)?;
                     Ok(format!("- {}", content))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             Ok(lines)
         })

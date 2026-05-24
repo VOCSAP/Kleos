@@ -11,10 +11,6 @@ use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 use tracing::{info, warn};
 
-/// Convert a rusqlite error into the crate's canonical error type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ============================================================================
 // PATTERN DETECTION CONSTANTS
@@ -75,7 +71,7 @@ pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<Temporal
                      ORDER BY category, created_at \
                      LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let iter = stmt
                 .query_map(params![DETECT_SCAN_LIMIT], |row| {
@@ -85,10 +81,9 @@ pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<Temporal
                         row.get::<_, String>(2)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            iter.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)
+            Ok(iter.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -266,7 +261,7 @@ pub async fn store_pattern(db: &Database, pattern: &TemporalPattern, user_id: i6
                 user_id,
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -292,7 +287,7 @@ pub async fn list_patterns(
                  ORDER BY created_at DESC \
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let iter = stmt
             .query_map(params![user_id, limit], |row| {
@@ -313,7 +308,7 @@ pub async fn list_patterns(
                     created_at,
                 ))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut patterns = Vec::new();
         for row in iter {
@@ -325,7 +320,7 @@ pub async fn list_patterns(
                 confidence,
                 recurrence,
                 created_at,
-            ) = row.map_err(rusqlite_to_eng_error)?;
+            ) = row?;
 
             // Deserialise memory_ids JSON; treat NULL or bad JSON as empty vec.
             let memory_ids: Vec<i64> = memory_ids_json
@@ -365,7 +360,7 @@ pub async fn set_fact_validity(
 
     let row = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT date_approx, date_ref FROM structured_facts WHERE id = ?1",
                 params![fact_id],
                 |row| {
@@ -374,8 +369,7 @@ pub async fn set_fact_validity(
                     Ok((date_approx, date_ref))
                 },
             )
-            .optional()
-            .map_err(rusqlite_to_eng_error)
+            .optional()?)
         })
         .await?;
 
@@ -397,7 +391,7 @@ pub async fn set_fact_validity(
             "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
             params![valid_at, fact_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -602,7 +596,7 @@ pub async fn detect_fact_contradictions(
                      ORDER BY created_at DESC
                      LIMIT 20",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(params![subject_c, verb_c, new_fact_id], |row| {
@@ -613,10 +607,9 @@ pub async fn detect_fact_contradictions(
                         old_quantity: row.get(3)?,
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -685,7 +678,7 @@ pub async fn invalidate_contradicted_facts(
                         "UPDATE structured_facts SET invalid_at = datetime('now'), invalidated_by = ?1 WHERE id = ?2 AND invalid_at IS NULL",
                         params![new_fact_id, old_fact_id],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 if affected > 0 {
                     count += 1;
                 }
@@ -718,13 +711,12 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
     // Get the memory created_at for date resolution (tenant-scoped)
     let created_at = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT created_at FROM memories WHERE id = ?1",
                 params![memory_id],
                 |row| row.get::<_, String>(0),
             )
-            .optional()
-            .map_err(rusqlite_to_eng_error)
+            .optional()?)
         })
         .await?;
 
@@ -741,7 +733,7 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
                     "SELECT id, subject, verb, object, quantity
                      FROM structured_facts WHERE memory_id = ?1 AND valid_at IS NULL",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(params![memory_id], |row| {
@@ -753,10 +745,9 @@ pub async fn post_process_new_facts(db: &Database, memory_id: i64, user_id: i64)
                         row.get::<_, Option<f64>>(4)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -808,7 +799,7 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
                      JOIN memories m ON m.id = sf.memory_id
                      WHERE sf.valid_at IS NULL",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(params![], |row| {
@@ -819,10 +810,9 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
                         row.get::<_, String>(3)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -833,9 +823,9 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
                 approx.clone()
             } else if let Some(dref) = date_ref {
                 resolve_relative_date(dref, memory_created_at)
-                    .unwrap_or_else(|| memory_created_at.clone())
+                    .unwrap_or_else(|| memory_created_at.to_string())
             } else {
-                memory_created_at.clone()
+                memory_created_at.to_string()
             };
             (*id, valid_at)
         })
@@ -849,7 +839,7 @@ pub async fn backfill_fact_validity(db: &Database, user_id: i64) -> Result<i32> 
                     "UPDATE structured_facts SET valid_at = ?1 WHERE id = ?2",
                     params![valid_at, id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 count += 1;
             }
             Ok(count)
@@ -890,7 +880,7 @@ pub async fn time_travel(
                        AND content LIKE ?2 \
                      ORDER BY created_at DESC LIMIT ?3",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(params![timestamp, pattern, limit], |row| {
@@ -902,10 +892,9 @@ pub async fn time_travel(
                         created_at: row.get(4)?,
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await
     } else {
@@ -917,7 +906,7 @@ pub async fn time_travel(
                      WHERE created_at <= ?1 AND is_forgotten = 0 \
                      ORDER BY created_at DESC LIMIT ?2",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(params![timestamp, limit], |row| {
@@ -929,10 +918,9 @@ pub async fn time_travel(
                         created_at: row.get(4)?,
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await
     }
@@ -1070,7 +1058,7 @@ mod tests {
                  VALUES (?1, ?2, ?3, 0)",
                 rusqlite::params![format!("Memory at {} in {}", ts, cat2), cat2, ts,],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await

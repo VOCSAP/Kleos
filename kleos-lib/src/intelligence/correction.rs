@@ -3,11 +3,8 @@
 use crate::db::Database;
 use crate::memory;
 use crate::memory::types::{Memory, StoreRequest};
-use crate::{EngError, Result};
+use crate::Result;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Correct a memory: create a new version with corrected content, link it to
 /// the original via 'supersedes', and mark the original as superseded.
@@ -61,7 +58,7 @@ pub async fn correct_memory(
              WHERE id = ?1",
             rusqlite::params![memory_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -77,7 +74,7 @@ pub async fn correct_memory(
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
             rusqlite::params![memory_id, old_content, new_content, reason_text, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;

@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// Configuration for the local model client.
+/// Configuration for the LLM client.
 ///
-/// Targets any OpenAI-compatible `/v1/chat/completions` endpoint. Defaults to a
-/// local Ollama server; set `api_key` (or `LLM_API_KEY`) and point `url` at a
-/// cloud provider to route Kleos's internal LLM calls through DashScope,
-/// OpenRouter, DeepSeek, etc.
+/// Targets any OpenAI-compatible `/v1/chat/completions` endpoint (mistral.rs,
+/// vLLM, llama.cpp, Ollama, cloud APIs). Set `api_key` and point `url` at any
+/// provider. Env vars: `KLEOS_LLM_URL`, `KLEOS_LLM_MODEL`, `KLEOS_LLM_API_KEY`
+/// (canonical); legacy `OLLAMA_*`, `ENGRAM_LLM_*`, `LLM_API_KEY` still work.
 #[derive(Debug, Clone)]
 pub struct OllamaConfig {
     /// OpenAI-compatible endpoint URL.
@@ -45,12 +45,20 @@ impl Default for OllamaConfig {
 }
 
 impl OllamaConfig {
+    /// Build config from environment variables.
+    /// KLEOS_LLM_* (canonical) -> OLLAMA_* / LLM_API_KEY (legacy fallback).
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
-        if let Ok(v) = std::env::var("OLLAMA_URL") {
+        // URL: KLEOS_LLM_URL -> OLLAMA_URL -> default
+        if let Ok(v) = std::env::var("KLEOS_LLM_URL")
+            .or_else(|_| std::env::var("OLLAMA_URL"))
+        {
             cfg.url = v;
         }
-        if let Ok(v) = std::env::var("OLLAMA_MODEL") {
+        // Model: KLEOS_LLM_MODEL -> OLLAMA_MODEL -> default
+        if let Ok(v) = std::env::var("KLEOS_LLM_MODEL")
+            .or_else(|_| std::env::var("OLLAMA_MODEL"))
+        {
             cfg.model = v;
         }
         if let Ok(v) = std::env::var("OLLAMA_TIMEOUT_BG_MS") {
@@ -68,7 +76,10 @@ impl OllamaConfig {
                 cfg.concurrency = n;
             }
         }
-        if let Ok(v) = std::env::var("LLM_API_KEY") {
+        // API key: KLEOS_LLM_API_KEY -> LLM_API_KEY -> None
+        if let Ok(v) = std::env::var("KLEOS_LLM_API_KEY")
+            .or_else(|_| std::env::var("LLM_API_KEY"))
+        {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
                 cfg.api_key = Some(trimmed.to_string());

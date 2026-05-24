@@ -6,12 +6,9 @@
 
 use crate::db::Database;
 use crate::intelligence::types::{ReconsolidationAction, ReconsolidationResult};
-use crate::{EngError, Result};
+use crate::Result;
 use tracing::{info, warn};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Re-evaluate a single memory against current knowledge.
 ///
@@ -35,22 +32,21 @@ pub async fn reconsolidate_memory(
                             recall_hits, recall_misses, fsrs_stability, created_at \
                      FROM memories WHERE id = ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![memory_id])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let importance: i32 = row.get(1).map_err(rusqlite_to_eng_error)?;
-                let confidence: f64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+                ?;
+            if let Some(row) = rows.next()? {
+                let importance: i32 = row.get(1)?;
+                let confidence: f64 = row.get(2)?;
                 let is_static: bool = row
                     .get::<_, i64>(3)
-                    .map_err(rusqlite_to_eng_error)
                     .map(|v| v != 0)?;
-                let access_count: i32 = row.get(4).map_err(rusqlite_to_eng_error)?;
-                let recall_hits: i32 = row.get(5).map_err(rusqlite_to_eng_error)?;
-                let recall_misses: i32 = row.get(6).map_err(rusqlite_to_eng_error)?;
-                let fsrs_stability: Option<f64> = row.get(7).map_err(rusqlite_to_eng_error)?;
-                let created_at: String = row.get(8).map_err(rusqlite_to_eng_error)?;
+                let access_count: i32 = row.get(4)?;
+                let recall_hits: i32 = row.get(5)?;
+                let recall_misses: i32 = row.get(6)?;
+                let fsrs_stability: Option<f64> = row.get(7)?;
+                let created_at: String = row.get(8)?;
                 Ok(Some((
                     importance,
                     confidence,
@@ -93,13 +89,12 @@ pub async fn reconsolidate_memory(
     // Check 1: Contradictions -- newer memories that supersede this one
     let contra_count = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memory_links \
                  WHERE target_id = ?1 AND type IN ('corrects', 'updates', 'contradicts')",
                 rusqlite::params![memory_id],
                 |row| row.get::<_, i64>(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -183,13 +178,13 @@ pub async fn reconsolidate_memory(
                  WHERE id = ?3",
                 rusqlite::params![new_importance, new_confidence, memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             conn.execute(
                 "UPDATE memories SET adaptive_score = ?1 WHERE id = ?2",
                 rusqlite::params![adaptive_score, memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             conn.execute(
                 "INSERT INTO reconsolidations \
@@ -203,7 +198,7 @@ pub async fn reconsolidate_memory(
                     user_id
                 ],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             Ok(())
         })
@@ -224,7 +219,7 @@ pub async fn reconsolidate_memory(
                 "UPDATE memories SET updated_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await?;
@@ -265,13 +260,13 @@ pub async fn run_reconsolidation_sweep(
                      ORDER BY updated_at ASC \
                      LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![batch_size as i64])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut ids = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                ids.push(row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?);
+            while let Some(row) = rows.next()? {
+                ids.push(row.get::<_, i64>(0)?);
             }
             Ok(ids)
         })
@@ -319,13 +314,13 @@ pub async fn record_recall_outcome(
                     "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1",
                     rusqlite::params![memory_id],
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
             } else {
                 conn.execute(
                     "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1",
                     rusqlite::params![memory_id],
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
             };
             Ok(n)
         })
