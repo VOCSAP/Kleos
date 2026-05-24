@@ -798,6 +798,37 @@ impl RegistryDb {
 
     // ── End deprovision query methods ─────────────────────────────────────
 
+    /// Batch update usage counters for multiple tenants.
+    ///
+    /// Executes one UPDATE per tenant row in the same connection lock acquisition.
+    /// Missing tenant rows are silently skipped (UPDATE affects 0 rows).
+    pub fn bulk_set_usage(
+        &self,
+        updates: Vec<crate::jobs::quota_sync::TenantUsageUpdate>,
+    ) -> Result<(), EngError> {
+        let conn = self.lock()?;
+        for update in &updates {
+            conn.execute(
+                "UPDATE tenants SET \
+                    content_bytes_used = ?1, \
+                    memory_count_used  = ?2, \
+                    disk_bytes_used    = ?3, \
+                    last_synced_at     = datetime('now') \
+                 WHERE user_id = ?4",
+                rusqlite::params![
+                    update.content_bytes,
+                    update.memory_count,
+                    update.disk_bytes,
+                    update.user_id,
+                ],
+            )
+            .map_err(|e| {
+                EngError::Internal(format!("bulk_set_usage failed for {}: {e}", update.user_id))
+            })?;
+        }
+        Ok(())
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, EngError> {
         self.conn
             .lock()
