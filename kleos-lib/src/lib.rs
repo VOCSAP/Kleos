@@ -30,6 +30,7 @@ pub mod ingestion;
 pub mod intelligence;
 pub mod jobs;
 pub mod llm;
+pub mod mcp_token;
 pub mod memory;
 pub mod net;
 pub mod observability;

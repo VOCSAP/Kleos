@@ -717,6 +717,13 @@ pub static MIGRATIONS: &[Migration] = &[
         down: None,
         transactional: true,
     },
+    Migration {
+        version: 81,
+        description: "mcp_tokens",
+        up: run_migration_mcp_tokens,
+        down: None,
+        transactional: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -899,6 +906,8 @@ const MIGRATION_READD_USER_ID_SKILLS: i64 = 78;
 const MIGRATION_READD_USER_ID_BRAIN: i64 = 79;
 /// Version number for the identity_keys.scopes JSON-to-CSV format migration.
 const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
+/// Version number for the MCP direct-auth token revocation table.
+const MIGRATION_MCP_TOKENS: i64 = 81;
 
 // ---------------------------------------------------------------------------
 // Up path (unchanged behavior)
@@ -1563,6 +1572,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV,
             "identity_keys_scopes_json_to_csv",
         )?;
+    }
+
+    if current_version < MIGRATION_MCP_TOKENS {
+        info!("Running migration 81: mcp_tokens");
+        run_migration_mcp_tokens(conn)?;
+        record_migration(conn, MIGRATION_MCP_TOKENS, "mcp_tokens")?;
     }
 
     Ok(())
@@ -5927,6 +5942,45 @@ fn run_migration_handoff_atoms(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(format!("migration 63 handoff_atoms: {e}")))?;
     info!("Migration 63 complete: handoff_atoms and atom_entity_links created");
+    Ok(())
+}
+
+/// Migration 81: MCP direct-auth token revocation table.
+///
+/// Stores per-token revocation state for identity-signed bearer tokens.
+/// The token itself is self-authenticating (Ed25519 sig); this table
+/// tracks jti -> is_active for revocation + last_used_at for audit.
+fn run_migration_mcp_tokens(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mcp_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            jti TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            tenant_id INTEGER,
+            identity_key_id INTEGER NOT NULL REFERENCES identity_keys(id),
+            kid TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            scopes TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT 1,
+            issued_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoke_reason TEXT,
+            last_used_at TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_mcp_tokens_user
+            ON mcp_tokens(user_id);
+        CREATE INDEX IF NOT EXISTS idx_mcp_tokens_identity_key
+            ON mcp_tokens(identity_key_id);
+        CREATE INDEX IF NOT EXISTS idx_mcp_tokens_active
+            ON mcp_tokens(is_active, expires_at);
+        CREATE INDEX IF NOT EXISTS idx_mcp_tokens_tenant
+            ON mcp_tokens(tenant_id, user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 81 mcp_tokens: {e}")))?;
+    info!("Migration 81 complete: mcp_tokens table created");
     Ok(())
 }
 

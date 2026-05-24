@@ -207,6 +207,14 @@ fn pem_to_ed25519_pubkey(pem: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+/// Parse a PEM-encoded Ed25519 public key into a VerifyingKey.
+/// Used by MCP token verification to check signatures against enrolled keys.
+pub fn pem_to_ed25519_verifying_key(pem: &str) -> Result<ed25519_dalek::VerifyingKey> {
+    let bytes = pem_to_ed25519_pubkey(pem)?;
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+        .map_err(|e| EngError::InvalidInput(format!("invalid Ed25519 public key bytes: {}", e)))
+}
+
 fn decode_pem_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
     let begin = format!("-----BEGIN {expected_label}-----");
     let end = format!("-----END {expected_label}-----");
@@ -929,6 +937,16 @@ impl RequestSigner {
 
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+
+    /// Return the raw Ed25519 secret key bytes (32 bytes).
+    /// Returns `None` if the backend is PIV (hardware key -- cannot extract).
+    pub fn ed25519_secret_bytes(&self) -> Option<[u8; 32]> {
+        match &self.backend {
+            SigningBackend::Ed25519(sk) => Some(sk.to_bytes()),
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(_) => None,
+        }
     }
 
     pub fn identity_hash(&self) -> &str {
