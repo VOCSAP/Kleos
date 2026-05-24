@@ -16,9 +16,11 @@
 //! swallowed -- regressions break CI via the swallowed-errors sweep.
 
 pub mod deprovision;
+pub mod disk_sampler;
 pub mod pagerank_refresh;
 #[cfg(feature = "tenant-sharding")]
 pub mod pagerank_refresh_tenant;
+pub mod quota_sync;
 pub mod types;
 pub use types::*;
 

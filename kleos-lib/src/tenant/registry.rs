@@ -286,6 +286,24 @@ impl TenantRegistry {
     pub fn touch(&self, tenant_id: &str) -> Result<()> {
         self.registry_db.touch(tenant_id)
     }
+
+    /// Return all currently resident tenant handles.
+    ///
+    /// Used by the disk sampler to iterate loaded tenants without re-loading
+    /// evicted ones.
+    pub async fn snapshot_all_handles(&self) -> Vec<Arc<TenantHandle>> {
+        self.loader.snapshot_all_handles().await
+    }
+
+    /// Batch-update usage counters in the registry for a list of tenants.
+    ///
+    /// Delegates to RegistryDb::bulk_set_usage.
+    pub async fn bulk_set_usage(
+        &self,
+        updates: Vec<crate::jobs::quota_sync::TenantUsageUpdate>,
+    ) -> Result<()> {
+        self.registry_db.bulk_set_usage(updates)
+    }
 }
 
 impl std::fmt::Debug for TenantRegistry {

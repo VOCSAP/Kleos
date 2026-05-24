@@ -319,6 +319,16 @@ impl TenantLoader {
         let handles = self.handles.read().await;
         handles.keys().cloned().collect()
     }
+
+    /// Return all currently resident handles as a snapshot Vec.
+    ///
+    /// Used by the disk sampler to iterate loaded tenants without re-loading
+    /// evicted ones. Snapshot is taken under a read lock; handles are Arcs so
+    /// the snapshot is cheap.
+    pub async fn snapshot_all_handles(&self) -> Vec<Arc<TenantHandle>> {
+        let handles = self.handles.read().await;
+        handles.values().cloned().collect()
+    }
 }
 
 /// Exercises tenant loader residency and first-touch concurrency behavior.
