@@ -295,6 +295,73 @@ impl TenantRegistry {
         self.loader.snapshot_all_handles().await
     }
 
+    /// Update quota limits for a tenant in the registry and refresh the in-memory handle.
+    ///
+    /// Writes the new limits to the registry then, if the handle is resident,
+    /// replaces the ArcSwap so subsequent writes see the new limits immediately.
+    pub async fn update_quota(
+        &self,
+        user_id: &str,
+        content_bytes: Option<i64>,
+        memory_count: Option<i64>,
+        disk_bytes: Option<i64>,
+    ) -> Result<()> {
+        self.registry_db
+            .update_quota(user_id, content_bytes, memory_count, disk_bytes)?;
+        if let Some(handle) = self.loader.get_if_loaded(user_id).await {
+            handle.refresh_quota(crate::tenant::types::QuotaConfig {
+                content_bytes,
+                memory_count,
+                disk_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// Recompute tenant_state counters from the live shard and return (bytes, count).
+    ///
+    /// Overwrites content_bytes and memory_count in tenant_state. Marks dirty
+    /// so the next quota_sync cycle flushes the new values to the registry.
+    pub async fn recompute_usage(&self, user_id: &str) -> Result<(i64, i64)> {
+        let handle = self
+            .get(user_id)
+            .await?
+            .ok_or_else(|| crate::EngError::NotFound(format!("tenant not found: {}", user_id)))?;
+        let db = handle.database();
+        let (bytes, count) = db
+            .write(|conn| {
+                let (b, c): (i64, i64) = conn
+                    .query_row(
+                        "SELECT COALESCE(SUM(length(content)), 0), COUNT(*) \
+                         FROM memories WHERE is_latest = 1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                conn.execute(
+                    "UPDATE tenant_state SET value = ?1, updated_at = datetime('now') \
+                     WHERE key = 'content_bytes'",
+                    rusqlite::params![b],
+                )
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                conn.execute(
+                    "UPDATE tenant_state SET value = ?1, updated_at = datetime('now') \
+                     WHERE key = 'memory_count'",
+                    rusqlite::params![c],
+                )
+                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                Ok((b, c))
+            })
+            .await?;
+        handle.mark_dirty();
+        Ok((bytes, count))
+    }
+
+    /// Read quota limits and shadow usage from the registry for a user.
+    pub fn get_quota_row(&self, user_id: &str) -> Result<crate::tenant::types::TenantQuotaRow> {
+        self.registry_db.get_quota_row(user_id)
+    }
+
     /// Batch-update usage counters in the registry for a list of tenants.
     ///
     /// Delegates to RegistryDb::bulk_set_usage.

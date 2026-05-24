@@ -829,6 +829,55 @@ impl RegistryDb {
         Ok(())
     }
 
+    /// Update configured quota limits for a tenant row.
+    pub fn update_quota(
+        &self,
+        user_id: &str,
+        content_bytes: Option<i64>,
+        memory_count: Option<i64>,
+        disk_bytes: Option<i64>,
+    ) -> Result<(), EngError> {
+        let conn = self.lock()?;
+        conn.execute(
+            "UPDATE tenants SET \
+                quota_content_bytes = ?1, \
+                quota_memory_count  = ?2, \
+                quota_disk_bytes    = ?3 \
+             WHERE user_id = ?4",
+            rusqlite::params![content_bytes, memory_count, disk_bytes, user_id],
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("update_quota failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Read quota limits and shadow usage for a tenant row.
+    pub fn get_quota_row(
+        &self,
+        user_id: &str,
+    ) -> Result<crate::tenant::types::TenantQuotaRow, EngError> {
+        let conn = self.lock()?;
+        conn.query_row(
+            "SELECT user_id, quota_content_bytes, quota_memory_count, quota_disk_bytes, \
+                    COALESCE(content_bytes_used, 0), COALESCE(memory_count_used, 0), \
+                    COALESCE(disk_bytes_used, 0), last_synced_at \
+             FROM tenants WHERE user_id = ?1",
+            rusqlite::params![user_id],
+            |row| {
+                Ok(crate::tenant::types::TenantQuotaRow {
+                    user_id: row.get(0)?,
+                    quota_content_bytes: row.get(1)?,
+                    quota_memory_count: row.get(2)?,
+                    quota_disk_bytes: row.get(3)?,
+                    content_bytes_used: row.get(4)?,
+                    memory_count_used: row.get(5)?,
+                    disk_bytes_used: row.get(6)?,
+                    last_synced_at: row.get(7)?,
+                })
+            },
+        )
+        .map_err(|e| EngError::NotFound(format!("tenant not found: {user_id}: {e}")))
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, EngError> {
         self.conn
             .lock()

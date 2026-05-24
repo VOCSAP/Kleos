@@ -314,6 +314,15 @@ impl TenantLoader {
         Ok(count)
     }
 
+    /// Return the handle for `user_id` if currently resident, without loading.
+    ///
+    /// Scans resident handles by user_id (O(n) over max_resident=512).
+    /// Used by admin quota update to refresh the ArcSwap without forcing a load.
+    pub async fn get_if_loaded(&self, user_id: &str) -> Option<Arc<TenantHandle>> {
+        let handles = self.handles.read().await;
+        handles.values().find(|h| h.user_id == user_id).cloned()
+    }
+
     /// Get all currently loaded tenant IDs.
     pub async fn loaded_tenant_ids(&self) -> Vec<String> {
         let handles = self.handles.read().await;

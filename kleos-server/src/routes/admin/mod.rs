@@ -20,7 +20,8 @@ use types::{
     AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, AsyncDeprovisionBody,
     BackfillEntitiesBody, BootstrapBody, ColdStorageParams, DeprovisionBody, GcBody,
     MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody, RecentDeprovisionQuery,
-    ReembedBody, ResetBody, SkipShardBody, VectorRebuildIndexBody, VectorSyncReplayBody,
+    ReembedBody, ResetBody, SetQuotaBody, SkipShardBody, VectorRebuildIndexBody,
+    VectorSyncReplayBody,
 };
 
 /// Reject the request with a 403 unless the auth context carries the admin scope.
@@ -144,6 +145,12 @@ pub fn router() -> Router<AppState> {
             "/admin/brain/instincts/reapply",
             post(admin_reapply_instincts),
         )
+        // E2 shard quota management
+        .route(
+            "/admin/quota/{user_id}",
+            get(get_quota_status).put(set_quota),
+        )
+        .route("/admin/quota/{user_id}/recompute", post(recompute_quota))
 }
 
 // ---------------------------------------------------------------------------
@@ -2194,6 +2201,73 @@ async fn skip_shard_deprovision(
         "skipped": true,
         "deprovision_id": dep_id,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// E2 shard quota management
+// ---------------------------------------------------------------------------
+
+/// GET /admin/quota/{user_id} -- return current quota limits and shadow usage.
+async fn get_quota_status(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant sharding not enabled".into(),
+        ))
+    })?;
+    let row = registry.get_quota_row(&user_id)?;
+    to_json(row)
+}
+
+/// PUT /admin/quota/{user_id} -- set quota limits for a tenant.
+///
+/// Writes limits to the registry and refreshes the ArcSwap on the loaded
+/// handle (if resident) so the next write sees the new limits immediately.
+async fn set_quota(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+    Json(body): Json<SetQuotaBody>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant sharding not enabled".into(),
+        ))
+    })?;
+    registry
+        .update_quota(
+            &user_id,
+            body.content_bytes,
+            body.memory_count,
+            body.disk_bytes,
+        )
+        .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// POST /admin/quota/{user_id}/recompute -- re-run the seed query to repair counters.
+///
+/// Overwrites tenant_state with a fresh scan of the memories table.
+async fn recompute_quota(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    axum::extract::Path(user_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant sharding not enabled".into(),
+        ))
+    })?;
+    let (bytes, count) = registry.recompute_usage(&user_id).await?;
+    Ok(Json(
+        json!({ "ok": true, "content_bytes": bytes, "memory_count": count }),
+    ))
 }
 
 /// Unit tests for the PITR sandbox-path validator that gates `POST /admin/pitr/prepare`.

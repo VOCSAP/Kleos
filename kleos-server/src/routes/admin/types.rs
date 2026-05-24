@@ -179,3 +179,14 @@ pub(super) struct SkipShardBody {
     /// Admin-supplied note explaining why the shard was skipped.
     pub note: Option<String>,
 }
+
+/// Request body for PUT /admin/quota/{user_id}.
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct SetQuotaBody {
+    /// Maximum content bytes (None = unlimited).
+    pub content_bytes: Option<i64>,
+    /// Maximum memory count (None = unlimited).
+    pub memory_count: Option<i64>,
+    /// Maximum disk bytes (None = unlimited).
+    pub disk_bytes: Option<i64>,
+}

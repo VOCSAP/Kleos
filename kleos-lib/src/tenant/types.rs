@@ -280,6 +280,27 @@ pub struct TenantRow {
     pub last_access: i64,
 }
 
+/// Raw quota row returned from the registry for the admin quota endpoint.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TenantQuotaRow {
+    /// The user_id for this tenant.
+    pub user_id: String,
+    /// Configured content bytes limit (None = unlimited).
+    pub quota_content_bytes: Option<i64>,
+    /// Configured memory count limit (None = unlimited).
+    pub quota_memory_count: Option<i64>,
+    /// Configured disk bytes limit (None = unlimited).
+    pub quota_disk_bytes: Option<i64>,
+    /// Last-synced content bytes usage from quota_sync.
+    pub content_bytes_used: i64,
+    /// Last-synced memory count usage from quota_sync.
+    pub memory_count_used: i64,
+    /// Last-synced disk bytes usage from quota_sync.
+    pub disk_bytes_used: i64,
+    /// When the usage was last synced (ISO 8601 datetime).
+    pub last_synced_at: Option<String>,
+}
+
 /// Configuration for tenant database connection pools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TenantPoolConfig {
