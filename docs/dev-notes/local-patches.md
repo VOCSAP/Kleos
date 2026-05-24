@@ -3184,6 +3184,55 @@ Biais reconnu : les 8 samples sont construits par l'agent (3 extraits jsonl + 5 
 
 ---
 
+## Patch 31 -- overlay prompt sidecar compress (id `sidecar/compress/system`) (2026-05-24)
+
+### Symptome
+
+`kleos-sidecar/src/routes.rs:551-560` definit `COMPRESS_SYSTEM_PROMPT` comme une `const &str` hardcoded, consommee par le handler `/compress` (`routes.rs:562`). Ce handler resume un `tool_output` volumineux via Ollama avant stockage memoire. Le prompt n'est appele par AUCUN client actuel (`/compress` est dormant -- mnemonic-observe.sh appelle `/observe` direct, le watcher gate appelle `/store` direct). Mais le mecanisme overlay devrait couvrir TOUS les prompts hardcoded du sidecar, pas seulement le gate, pour preserver le principe "tout prompt hardcoded a un overlay overlayable" introduit par Patch 30.
+
+### Approche
+
+Etendre le systeme overlay Patch 15 (`kleos-lib/src/llm/prompts.rs::load_prompt`) au compress handler, **sans modifier la const hardcoded**. Meme pattern que Patch 30 (gate). La const reste l'embedded default, le file overlay le surcharge quand present.
+
+Implementation dans `kleos-sidecar/src/routes.rs::compress` :
+
+```rust
+// Avant (hardcoded direct) :
+match llm.call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts)).await { ... }
+
+// Apres (overlay-aware) :
+let system_prompt = prompts::load_prompt("sidecar/compress/system", COMPRESS_SYSTEM_PROMPT);
+match llm.call(&system_prompt, &user_prompt, Some(opts)).await { ... }
+```
+
+Cascade et cache identiques a Patch 30 (TTL 5s, fallback embedded, zero I/O si overlay absent).
+
+### Niveau delta upstream
+
+**Additif pur** (~5 lignes) : 1 import etendu (`prompts` ajoute a la liste) + 4 lignes (commentaire + load_prompt + change de la reference dans le `call`). La const `COMPRESS_SYSTEM_PROMPT` est preservee verbatim.
+
+### Fichiers touches
+
+- `kleos-sidecar/src/routes.rs` -- import `prompts` + 4 lignes dans le handler `compress`. La const reste verbatim upstream.
+- `prompts-overrides/sidecar/compress/system.txt` -- nouveau override INITIAL verbatim copy du hardcoded (zero changement comportemental). Permet d'iterer le prompt sans rebuild quand `/compress` sera grefe dans un caller (hook PostToolUse, mnemonic-observe.sh extension, ou autre).
+
+### Tests
+
+- `cargo check -p kleos-sidecar` : OK (0 errors, 10 warnings pre-existants).
+- E2E : `/compress` n'a aucun caller actuel donc pas d'observation runtime possible. La presence du file override + load_prompt resolu correctement au boot (`KLEOS_DATA_DIR=~/.kleos/prompts/sidecar/compress/system.txt` existe) est verifiable via le meme mecanisme que Patch 30 (md5sum du file et lecture via Ollama direct).
+
+### Conditions de retrait
+
+Identique a Patch 30. Si upstream Ghost-Frame absorbe Patch 15 + Patch 16, ce Patch 31 devient un simple ajout au catalog overlay sidecar/compress -- toujours utile. Pas de retrait standalone prevu.
+
+### Pourquoi preventif (zero caller actuel)
+
+- **Coherence** : Patch 30 a fait le travail pour le gate, le meme principe doit couvrir tous les prompts hardcoded du sidecar.
+- **Future-ready** : si on decide demain de greffer `/compress` dans `mnemonic-observe.sh` (gain : economie de contexte stocke), le mecanisme overlay sera deja en place. Pas de patch a retro-fitter en urgence.
+- **Cout marginal** : ~5 lignes Rust + 1 file override verbatim. Negligeable.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
