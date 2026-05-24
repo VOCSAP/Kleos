@@ -1,8 +1,8 @@
 //! Core types for tenant management.
 
-use arc_swap::ArcSwap;
 use crate::db::Database;
 use crate::vector::VectorIndex;
+use arc_swap::ArcSwap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

@@ -1510,18 +1510,14 @@ fn apply_schema_v70_tenant_state(conn: &Connection) -> Result<()> {
          WHERE key = 'content_bytes'",
         rusqlite::params![bytes],
     )
-    .map_err(|e| {
-        EngError::DatabaseMessage(format!("tenant v70 seed content_bytes failed: {e}"))
-    })?;
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed content_bytes failed: {e}")))?;
 
     conn.execute(
         "UPDATE tenant_state SET value = ?1, updated_at = datetime('now')
          WHERE key = 'memory_count'",
         rusqlite::params![count],
     )
-    .map_err(|e| {
-        EngError::DatabaseMessage(format!("tenant v70 seed memory_count failed: {e}"))
-    })?;
+    .map_err(|e| EngError::DatabaseMessage(format!("tenant v70 seed memory_count failed: {e}")))?;
 
     Ok(())
 }
