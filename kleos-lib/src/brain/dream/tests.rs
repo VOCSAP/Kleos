@@ -283,7 +283,6 @@ async fn test_dream_run_persisted() {
                     Ok((id, user, finished))
                 },
             )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
         })
         .await
         .expect("run row should exist");

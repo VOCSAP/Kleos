@@ -56,7 +56,6 @@ async fn record_hash(db: &Database, hash: &str, _user_id: i64, job_id: &str) {
                 "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
                 rusqlite::params![h, j],
             )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
         })
         .await;
 }

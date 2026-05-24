@@ -409,8 +409,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
                 "INSERT INTO activity_log (agent, action, summary, category, importance, project, user_id, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
                 rusqlite::params![agent, action, summary, category, importance, project, user_id],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;

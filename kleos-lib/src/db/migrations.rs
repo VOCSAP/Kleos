@@ -5973,8 +5973,7 @@ mod tests {
                 "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
                 rusqlite::params![MIGRATION_CREATE_SCHEMA],
                 |row| row.get(0),
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         assert_eq!(count, 1);
 
         Ok(())

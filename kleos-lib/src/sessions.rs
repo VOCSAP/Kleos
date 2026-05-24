@@ -351,8 +351,7 @@ pub async fn create_session(
         conn.execute(
             "INSERT INTO sessions (id, agent) VALUES (?1, ?2)",
             params![id_for_insert, agent],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -370,8 +369,7 @@ pub async fn get_session(db: &Database, session_id: &str, user_id: i64) -> Resul
             params![session_id],
             row_to_session,
         )
-        .optional()
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+        .optional()?
         .ok_or_else(|| crate::EngError::NotFound("session not found".into()))
     })
     .await
@@ -392,14 +390,12 @@ pub async fn list_sessions(
             .prepare(
                 "SELECT id, agent, status, created_at, updated_at FROM sessions \
                  ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
-            .query_map(params![limit, offset], row_to_session)
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![limit, offset], row_to_session)?;
         let mut sessions = Vec::new();
         for row in rows {
-            sessions.push(row.map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?);
+            sessions.push(row?);
         }
         Ok(sessions)
     })
@@ -422,8 +418,7 @@ pub async fn append_output(db: &Database, session_id: &str, line: &str) -> Resul
                     params![sid_check],
                     |_| Ok(()),
                 )
-                .optional()
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                .optional()?;
             Ok(result.is_some())
         })
         .await?;
@@ -440,8 +435,7 @@ pub async fn append_output(db: &Database, session_id: &str, line: &str) -> Resul
         conn.execute(
             "INSERT INTO session_output (session_id, line) VALUES (?1, ?2)",
             params![sid_insert, line_owned],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -452,8 +446,7 @@ pub async fn append_output(db: &Database, session_id: &str, line: &str) -> Resul
         conn.execute(
             "UPDATE sessions SET updated_at = datetime('now') WHERE id = ?1",
             params![sid_update],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -475,8 +468,7 @@ pub async fn get_session_output(db: &Database, session_id: &str) -> Result<Vec<S
                     params![sid_check],
                     |_| Ok(()),
                 )
-                .optional()
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                .optional()?;
             Ok(result.is_some())
         })
         .await?;
@@ -493,14 +485,12 @@ pub async fn get_session_output(db: &Database, session_id: &str) -> Result<Vec<S
         let mut stmt = conn
             .prepare(
                 "SELECT line FROM session_output WHERE session_id = ?1 ORDER BY id ASC LIMIT 10000",
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
-            .query_map(params![sid_query], |row| row.get::<_, String>(0))
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![sid_query], |row| row.get::<_, String>(0))?;
         let mut lines = Vec::new();
         for row in rows {
-            lines.push(row.map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?);
+            lines.push(row?);
         }
         Ok(lines)
     })

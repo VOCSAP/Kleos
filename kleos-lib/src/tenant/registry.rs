@@ -336,20 +336,17 @@ impl TenantRegistry {
                          FROM memories WHERE is_latest = 1",
                         [],
                         |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                    )?;
                 conn.execute(
                     "UPDATE tenant_state SET value = ?1, updated_at = datetime('now') \
                      WHERE key = 'content_bytes'",
                     rusqlite::params![b],
-                )
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 conn.execute(
                     "UPDATE tenant_state SET value = ?1, updated_at = datetime('now') \
                      WHERE key = 'memory_count'",
                     rusqlite::params![c],
-                )
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 Ok((b, c))
             })
             .await?;

@@ -63,20 +63,18 @@ async fn resolve_text_substitutes_placeholders_and_logs_audit() {
     let payloads = db
         .read(|conn| {
             let mut stmt = conn
-                .prepare("SELECT service, action, payload FROM broca_actions WHERE service = 'cred' ORDER BY id ASC")
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                .prepare("SELECT service, action, payload FROM broca_actions WHERE service = 'cred' ORDER BY id ASC")?;
             let rows = stmt
                 .query_map([], |row| {
                     let service: String = row.get(0)?;
                     let action: String = row.get(1)?;
                     let payload: String = row.get(2)?;
                     Ok((service, action, payload))
-                })
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                })?;
             let mut payloads = Vec::new();
             for row in rows {
                 let (service, action, payload) =
-                    row.map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                    row?;
                 assert_eq!(service, "cred");
                 assert_eq!(action, "resolve");
                 assert!(!payload.contains("alpha-secret"));
