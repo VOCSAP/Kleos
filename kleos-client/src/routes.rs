@@ -460,12 +460,19 @@ pub static ROUTES: &[Route] = &[
         input_schema: r#"{
             "type": "object",
             "properties": {
-                "agent": {"type": "string"},
-                "handoff_type": {"type": "string"},
+                "project": {"type": "string"},
                 "content": {"type": "string"},
-                "metadata": {"type": "object"}
+                "agent": {"type": "string"},
+                "type": {"type": "string"},
+                "branch": {"type": "string"},
+                "directory": {"type": "string"},
+                "session_id": {"type": "string"},
+                "model": {"type": "string"},
+                "host": {"type": "string"},
+                "metadata": {"type": "object"},
+                "atoms": {"type": "array", "items": {"type": "object"}}
             },
-            "required": ["content"]
+            "required": ["content", "project"]
         }"#,
     },
     Route {
@@ -475,7 +482,7 @@ pub static ROUTES: &[Route] = &[
         path: "/handoffs",
         scope: Scope::Read,
         description: "List handoffs.",
-        input_schema: r#"{"type": "object", "properties": {"limit": {"type":"integer"}, "offset": {"type":"integer"}, "agent": {"type":"string"}, "handoff_type": {"type":"string"}}}"#,
+        input_schema: r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#,
     },
     Route {
         name: "handoffs.latest",
@@ -484,7 +491,7 @@ pub static ROUTES: &[Route] = &[
         path: "/handoffs/latest",
         scope: Scope::Read,
         description: "Fetch the most recent handoff.",
-        input_schema: r#"{"type": "object", "properties": {"agent": {"type":"string"}, "handoff_type": {"type":"string"}}}"#,
+        input_schema: r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#,
     },
     Route {
         name: "handoffs.search",
@@ -493,7 +500,7 @@ pub static ROUTES: &[Route] = &[
         path: "/handoffs/search",
         scope: Scope::Read,
         description: "Search handoffs by query string.",
-        input_schema: r#"{"type": "object", "properties": {"query": {"type":"string"}, "limit": {"type":"integer"}}, "required": ["query"]}"#,
+        input_schema: r#"{"type": "object", "properties": {"q": {"type":"string"}, "project": {"type":"string"}, "limit": {"type":"integer"}}, "required": ["q"]}"#,
     },
     Route {
         name: "handoffs.stats",
@@ -941,9 +948,12 @@ pub static ROUTES: &[Route] = &[
             "type": "object",
             "properties": {
                 "text": {"type":"string"},
-                "category": {"type":"string"},
+                "url": {"type":"string"},
+                "title": {"type":"string"},
                 "source": {"type":"string"},
-                "tags": {"type":"array","items":{"type":"string"}}
+                "entity_ids": {"type":"array","items":{"type":"integer"}},
+                "project_ids": {"type":"array","items":{"type":"integer"}},
+                "episode_id": {"type":"integer"}
             },
             "required": ["text"]
         }"#,
@@ -955,7 +965,19 @@ pub static ROUTES: &[Route] = &[
         path: "/import/bulk",
         scope: Scope::Write,
         description: "Bulk import of memories from a structured payload.",
-        input_schema: r#"{"type": "object", "properties": {"items": {"type":"array"}}, "required": ["items"]}"#,
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "text": {"type":"string"},
+                "url": {"type":"string"},
+                "format": {"type":"string"},
+                "mode": {"type":"string"},
+                "source": {"type":"string"},
+                "category": {"type":"string"},
+                "project_id": {"type":"integer"},
+                "episode_id": {"type":"integer"}
+            }
+        }"#,
     },
     Route {
         name: "ingestion.json",
@@ -964,7 +986,13 @@ pub static ROUTES: &[Route] = &[
         path: "/import/json",
         scope: Scope::Write,
         description: "Import memories from a JSON dump.",
-        input_schema: r#"{"type": "object", "properties": {"data": {"type":"object"}}, "required": ["data"]}"#,
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "version": {"type":"string"},
+                "memories": {"type":"array","items":{"type":"object"}}
+            }
+        }"#,
     },
     Route {
         name: "ingestion.upload_init",
@@ -977,11 +1005,12 @@ pub static ROUTES: &[Route] = &[
             "type": "object",
             "properties": {
                 "filename": {"type":"string"},
-                "size": {"type":"integer"},
-                "sha256": {"type":"string"},
-                "mime": {"type":"string"}
-            },
-            "required": ["filename", "size"]
+                "content_type": {"type":"string"},
+                "source": {"type":"string"},
+                "total_size": {"type":"integer"},
+                "total_chunks": {"type":"integer"},
+                "chunk_size": {"type":"integer"}
+            }
         }"#,
     },
     Route {
@@ -995,10 +1024,11 @@ pub static ROUTES: &[Route] = &[
             "type": "object",
             "properties": {
                 "upload_id": {"type":"string"},
-                "offset": {"type":"integer"},
+                "chunk_index": {"type":"integer"},
+                "chunk_hash": {"type":"string","description":"hex-encoded SHA-256 of decoded chunk bytes"},
                 "data": {"type":"string","description":"base64-encoded chunk"}
             },
-            "required": ["upload_id", "offset", "data"]
+            "required": ["upload_id", "chunk_index", "chunk_hash", "data"]
         }"#,
     },
     Route {
@@ -1008,7 +1038,20 @@ pub static ROUTES: &[Route] = &[
         path: "/ingest/upload/complete",
         scope: Scope::Write,
         description: "Finalise a chunked upload.",
-        input_schema: r#"{"type": "object", "properties": {"upload_id": {"type":"string"}}, "required": ["upload_id"]}"#,
+        input_schema: r#"{
+            "type": "object",
+            "properties": {
+                "upload_id": {"type":"string"},
+                "total_chunks": {"type":"integer"},
+                "final_sha256": {"type":"string"},
+                "mode": {"type":"string"},
+                "format": {"type":"string"},
+                "category": {"type":"string"},
+                "project_id": {"type":"integer"},
+                "episode_id": {"type":"integer"}
+            },
+            "required": ["upload_id"]
+        }"#,
     },
     Route {
         name: "ingestion.upload_abort",
