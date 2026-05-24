@@ -439,6 +439,16 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "tenant_state_counters",
         up: apply_schema_v70_tenant_state,
     },
+    // Tenant artifacts gained an FTS index. The legacy main-DB schema carried
+    // `artifacts_fts` but no tenant migration ever created it, so artifact
+    // search has been silently non-functional on per-tenant shards since the
+    // tenant split. v71 adds the virtual table + triggers and rebuilds the
+    // index from any artifacts already in the shard.
+    TenantMigration {
+        version: 71,
+        description: "artifacts_fts",
+        up: apply_schema_v71_artifacts_fts,
+    },
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -1216,6 +1226,16 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
 fn apply_schema_v53_chiasm_agent_keys(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../tenant/schema_v53_chiasm_agent_keys.sql"))
         .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v53 failed: {e}")))
+}
+
+/// Tenant v71: artifacts FTS5 index. Adds the `artifacts_fts` virtual table,
+/// the AFTER INSERT/UPDATE/DELETE triggers that keep it in sync with
+/// `artifacts.content`, and a `rebuild` backfill for any rows already in the
+/// shard. Idempotent under re-run: IF NOT EXISTS guards the schema objects
+/// and FTS5's `rebuild` rewrites the index in place.
+fn apply_schema_v71_artifacts_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../tenant/schema_v55_artifacts_fts.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v71 failed: {e}")))
 }
 
 /// Tenant v54: handoff atoms (extracted decision/constraint/task fragments)

@@ -713,6 +713,7 @@ async fn extract_handler(
                 parent_memory_id: None,
                 chunk_embeddings: None,
                 sync_id: None,
+                artifacts: None,
             },
             None,
             false,
