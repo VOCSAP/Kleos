@@ -84,8 +84,7 @@ pub async fn create_settlement(
                 now,
                 now
             ],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -159,8 +158,7 @@ pub async fn deduct_balance(db: &Database, user_id: i64, amount: Decimal) -> Res
             "UPDATE account_balances SET balance = ?2, updated_at = datetime('now')
              WHERE user_id = ?1",
             params![user_id, new_balance.to_string()],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         Ok(new_balance)
     })
@@ -179,8 +177,7 @@ pub async fn record_daily_spend(db: &Database, user_id: i64, amount: Decimal) ->
                 params![user_id, date],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .optional()?;
 
         match existing {
             Some((current_str, count)) => {
@@ -190,15 +187,13 @@ pub async fn record_daily_spend(db: &Database, user_id: i64, amount: Decimal) ->
                     "UPDATE daily_spend SET total_amount = ?1, call_count = ?2, updated_at = datetime('now') \
                      WHERE user_id = ?3 AND date = ?4",
                     params![new_total, count + 1, user_id, date],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             }
             None => {
                 conn.execute(
                     "INSERT INTO daily_spend (user_id, date, total_amount, call_count) VALUES (?1, ?2, ?3, 1)",
                     params![user_id, date, amount.to_string()],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             }
         }
         Ok(())

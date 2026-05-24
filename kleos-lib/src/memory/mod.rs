@@ -1950,8 +1950,7 @@ mod tests {
                  VALUES ('col-audit', 'general', 'test', 5, 1.0, \
                  datetime('now'), datetime('now'), 1, 0, 0)",
                 params![],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -1961,8 +1960,7 @@ mod tests {
         let got = db
             .read(move |conn| {
                 let mut stmt = conn
-                    .prepare(&sql)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    .prepare(&sql)?;
                 let mem = stmt
                     .query_row(params![], |row| {
                         row_to_memory(row, 1).map_err(|e| {
@@ -1970,8 +1968,7 @@ mod tests {
                                 std::io::Error::other(e.to_string()),
                             ))
                         })
-                    })
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    })?;
                 Ok(mem)
             })
             .await
@@ -2005,7 +2002,6 @@ mod tests {
                 rusqlite::params![id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await
         .expect("read valence")

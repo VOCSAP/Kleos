@@ -1,6 +1,6 @@
 use super::types::Digest;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 
 /// Generate a digest summarizing recent memory activity for the given user.
@@ -25,22 +25,20 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
                     "SELECT id, content, category, importance FROM memories \
                      WHERE is_forgotten = 0 AND created_at >= datetime('now', ?1) \
                      ORDER BY importance DESC LIMIT 50",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map(params![interval_owned], |row| {
                     let content: String = row.get(1)?;
                     let category: String = row.get(2)?;
                     let importance: i32 = row.get(3)?;
                     Ok((content, category, importance))
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                })?;
 
             let mut summaries: Vec<String> = Vec::new();
             let mut count = 0i32;
             for row in rows {
                 let (content, category, importance) =
-                    row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    row?;
                 let truncated = if content.len() > 100 {
                     content[..100].to_string()
                 } else {
@@ -77,8 +75,7 @@ pub async fn generate_digest(db: &Database, user_id: i64, period: &str) -> Resul
                 "INSERT INTO digests (period, content, memory_count, user_id, started_at, ended_at) \
                  VALUES (?1, ?2, ?3, ?4, datetime('now', ?5), datetime('now'))",
                 params![period_owned2, digest_content_clone, count, user_id, interval_owned2],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -104,8 +101,7 @@ pub async fn list_digests(db: &Database, user_id: i64, limit: usize) -> Result<V
             .prepare(
                 "SELECT id, period, content, memory_count, user_id, started_at, ended_at, created_at \
                  FROM digests WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
             .query_map(params![user_id, limit as i64], |row| {
                 Ok(Digest {
@@ -118,10 +114,8 @@ pub async fn list_digests(db: &Database, user_id: i64, limit: usize) -> Result<V
                     ended_at: row.get(6)?,
                     created_at: row.get(7)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     })
     .await
 }

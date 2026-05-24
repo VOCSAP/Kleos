@@ -71,25 +71,20 @@ pub async fn fts_search(
     match db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare(sql)
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare(sql)?;
             let mut rows = stmt
-                .query(rusqlite::params![sanitized, user_id, limit as i64])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .query(rusqlite::params![sanitized, user_id, limit as i64])?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.
             let mut hits = Vec::with_capacity(limit);
             let mut pos: usize = 0;
             while let Some(row) = rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .next()?
             {
                 let memory_id: i64 = row
-                    .get(0)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    .get(0)?;
                 let bm25_score: f64 = row
-                    .get(1)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    .get(1)?;
                 hits.push(FtsHit {
                     memory_id,
                     rank: pos,

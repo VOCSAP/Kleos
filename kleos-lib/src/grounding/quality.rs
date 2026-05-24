@@ -1,7 +1,7 @@
 // GROUNDING QUALITY - Tool quality tracking (ported from TS grounding/quality.ts)
 use super::types::{build_tool_key, parse_tool_key, ToolQualityRecord};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 
 const DEFAULT_DEGRADATION_THRESHOLD: f64 = 0.7;
@@ -55,8 +55,7 @@ impl ToolQualityManager {
                     latency_ms,
                     if success { 1.0 } else { 0.0 },
                 ],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -69,13 +68,11 @@ impl ToolQualityManager {
                 .prepare(
                     "SELECT quality_score FROM tool_quality_records \
                      WHERE tool_key = ?1 OR tool_name = ?1 ORDER BY updated_at DESC LIMIT 1",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let mut rows = stmt
-                .query_map(params![tool_name_owned], |row| row.get::<_, f64>(0))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .query_map(params![tool_name_owned], |row| row.get::<_, f64>(0))?;
             match rows.next() {
-                Some(r) => Ok(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?),
+                Some(r) => Ok(r?),
                 None => Ok(1.0),
             }
         })
@@ -89,15 +86,12 @@ impl ToolQualityManager {
                 .prepare(
                     "SELECT tool_name, quality_score FROM tool_quality_records \
                      WHERE quality_score < ?1 ORDER BY quality_score ASC",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map(params![threshold], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
@@ -116,8 +110,7 @@ impl ToolQualityManager {
                      FROM tool_quality_records \
                      ORDER BY total_calls DESC, updated_at DESC \
                      LIMIT ?1",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map(params![limit], |row| {
                     Ok(ToolQualityRecord {
@@ -134,10 +127,8 @@ impl ToolQualityManager {
                         quality_score: row.get(10)?,
                         last_execution_at: row.get(11)?,
                     })
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }

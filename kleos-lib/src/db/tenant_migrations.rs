@@ -968,8 +968,7 @@ fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool
     let table = table.replace('\'', "''");
     let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1");
     let count: i64 = conn
-        .query_row(&sql, [column], |row| row.get(0))
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .query_row(&sql, [column], |row| row.get(0))?;
     Ok(count > 0)
 }
 
@@ -1004,16 +1003,14 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     let current: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     for m in TENANT_MIGRATIONS.iter() {
         if m.version <= current {
@@ -1033,8 +1030,7 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?1)",
             rusqlite::params![m.version],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     }
 
     Ok(())
@@ -1147,8 +1143,7 @@ fn backfill_tenant_table_user_id(conn: &Connection, table: &str, owner: i64) -> 
     conn.execute(
         &format!("UPDATE {table} SET user_id = ?1"),
         rusqlite::params![owner],
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("backfilled shard {table}.user_id to owner {owner}");
     Ok(())
 }

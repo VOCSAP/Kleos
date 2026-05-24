@@ -226,7 +226,6 @@ mod tests {
     async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
             conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
         })
         .await
         .expect("query pagerank count")

@@ -18,8 +18,7 @@ pub async fn vacuum_into(db: &crate::db::Database, dest: &Path) -> Result<()> {
     }
     let sql = format!("VACUUM INTO '{}'", path_str);
     db.write(move |conn| {
-        conn.execute(&sql, [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(&sql, [])?;
         Ok(())
     })
     .await
@@ -122,14 +121,13 @@ pub async fn wal_checkpoint(
     // a fake (0,0,0)) so callers can see and log a failed checkpoint.
     db.write(move |conn| {
         let sql = format!("PRAGMA wal_checkpoint({})", mode_str);
-        conn.query_row(&sql, [], |row| {
+        Ok(conn.query_row(&sql, [], |row| {
             Ok((
                 row.get::<_, i32>(0).unwrap_or(0),
                 row.get::<_, i32>(1).unwrap_or(0),
                 row.get::<_, i32>(2).unwrap_or(0),
             ))
-        })
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })?)
     })
     .await
 }

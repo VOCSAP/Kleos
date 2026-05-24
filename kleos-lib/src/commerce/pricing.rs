@@ -54,8 +54,7 @@ pub async fn list_service_pricing(db: &Database) -> Result<Vec<ServicePricing>> 
                         is_active, created_at, updated_at
                  FROM service_pricing WHERE is_active = 1
                  ORDER BY service_id",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -71,11 +70,9 @@ pub async fn list_service_pricing(db: &Database) -> Result<Vec<ServicePricing>> 
                     created_at: row.get(7)?,
                     updated_at: row.get(8)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -89,8 +86,7 @@ pub async fn get_volume_discounts(db: &Database, service_id: &str) -> Result<Vec
                 "SELECT id, service_id, min_calls, amount
                  FROM volume_discounts WHERE service_id = ?1
                  ORDER BY min_calls ASC",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
         let rows = stmt
             .query_map(params![sid], |row| {
@@ -100,11 +96,9 @@ pub async fn get_volume_discounts(db: &Database, service_id: &str) -> Result<Vec
                     min_calls: row.get(2)?,
                     amount: Decimal::from_str(&row.get::<_, String>(3)?).unwrap_or(Decimal::ZERO),
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -163,8 +157,7 @@ pub async fn upsert_service_pricing(
                 chain_id = excluded.chain_id,
                 updated_at = datetime('now')",
             params![sid, amt, cur, ch, chain_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await

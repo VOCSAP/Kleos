@@ -474,8 +474,7 @@ mod tests {
             conn.execute(
                 "UPDATE memories SET created_at = ?1 WHERE id = ?2",
                 params![owned, mid],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await

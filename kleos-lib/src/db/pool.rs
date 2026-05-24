@@ -460,18 +460,15 @@ mod tests {
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS pool_test_rollback (id INTEGER PRIMARY KEY)",
                 [],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await?;
 
         let result = db
             .transaction(|tx| {
-                tx.execute("INSERT INTO pool_test_rollback (id) VALUES (1)", [])
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                tx.execute("INSERT INTO pool_test_missing DEFAULT VALUES", [])
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                tx.execute("INSERT INTO pool_test_rollback (id) VALUES (1)", [])?;
+                tx.execute("INSERT INTO pool_test_missing DEFAULT VALUES", [])?;
                 Ok(())
             })
             .await;
@@ -483,7 +480,6 @@ mod tests {
                 conn.query_row("SELECT COUNT(*) FROM pool_test_rollback", [], |row| {
                     row.get::<_, i64>(0)
                 })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
             })
             .await?;
 

@@ -58,8 +58,7 @@ pub async fn get_overview(db: &Database, user_id: i64) -> Result<SkillOverview> 
                 })
             },
         )
-        .optional()
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .optional()?
         .ok_or_else(|| EngError::Internal("no result from overview query".into()))
     })
     .await
@@ -97,8 +96,7 @@ pub async fn get_skill_stats(
 
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(&sql)?;
         let rows = stmt
             .query_map(params![limit, user_id], |row| {
                 let updated: String = row.get(6)?;
@@ -115,11 +113,9 @@ pub async fn get_skill_stats(
                     trust_score: row.get(5)?,
                     computed_score: compute_skill_score(sc, fc, ec, ds),
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -148,32 +144,27 @@ pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json
                 ))
             },
         )
-        .optional()
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        .optional()?
         .ok_or_else(|| EngError::NotFound(format!("skill {} not found", skill_id)))?;
 
         let (id, name, agent, description, trust_score, ec, sc, fc, avg_duration_ms, version, created_at, updated) = row;
 
         // Get tags
-        let mut stmt = conn.prepare("SELECT tag FROM skill_tags WHERE skill_id = ?1")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let tags: Vec<String> = stmt.query_map(params![skill_id], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        let mut stmt = conn.prepare("SELECT tag FROM skill_tags WHERE skill_id = ?1")?;
+        let tags: Vec<String> = stmt.query_map(params![skill_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
 
         // Get parents
-        let mut stmt = conn.prepare("SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let parents: Vec<i64> = stmt.query_map(params![skill_id], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        let mut stmt = conn.prepare("SELECT parent_id FROM skill_lineage_parents WHERE skill_id = ?1")?;
+        let parents: Vec<i64> = stmt.query_map(params![skill_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
 
         // Get recent executions
         let mut stmt = conn.prepare(
             "SELECT id, success, duration_ms, error_type, created_at FROM execution_analyses WHERE skill_id = ?1 ORDER BY id DESC LIMIT 10"
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         let executions: Vec<serde_json::Value> = stmt.query_map(params![skill_id], |row| {
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
@@ -182,8 +173,7 @@ pub async fn get_skill_detail(db: &Database, skill_id: i64) -> Result<serde_json
                 "error_type": row.get::<_, Option<String>>(3)?,
                 "created_at": row.get::<_, String>(4)?,
             }))
-        })
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        })?
         .filter_map(|r| r.ok())
         .collect();
 

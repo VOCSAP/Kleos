@@ -88,8 +88,7 @@ pub async fn create_quote(db: &Database, params: CreateQuoteParams<'_>) -> Resul
                 created_at,
                 expires_at,
             ],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -181,8 +180,7 @@ pub async fn settle_quote(db: &Database, quote_id: &str) -> Result<()> {
                 "UPDATE payment_quotes SET status = 'settled', settled_at = ?2
                  WHERE id = ?1 AND status = 'pending'",
                 params![qid, now],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         if rows == 0 {
             return Err(EngError::Conflict(format!(
                 "quote {} is not pending (may be expired or already settled)",
@@ -202,8 +200,7 @@ pub async fn mark_expired(db: &Database, quote_id: &str) -> Result<()> {
             "UPDATE payment_quotes SET status = 'expired'
              WHERE id = ?1 AND status = 'pending'",
             params![qid],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -218,8 +215,7 @@ pub async fn expire_stale_quotes(db: &Database) -> Result<i64> {
                 "UPDATE payment_quotes SET status = 'expired'
                  WHERE status = 'pending' AND expires_at < ?1",
                 params![now],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(rows as i64)
     })
     .await

@@ -394,15 +394,14 @@ pub async fn complete_latest_gate(
     // Step 1: find the most recent open gate for this session
     let row: Option<(i64, String, String)> = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, agent, created_at FROM gate_requests
                  WHERE user_id = ?1 AND session_id = ?2 AND output IS NULL
                  ORDER BY id DESC LIMIT 1",
                 rusqlite::params![uid, sid],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .optional()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            .optional()?)
         })
         .await?;
 
@@ -418,13 +417,12 @@ pub async fn complete_latest_gate(
     let opened_filter = opened_at.clone();
     let stored_count: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories
                  WHERE source = ?1 AND created_at >= ?2",
                 rusqlite::params![agent_filter, opened_filter],
                 |row| row.get::<_, i64>(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
 

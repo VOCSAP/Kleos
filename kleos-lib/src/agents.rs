@@ -1,6 +1,6 @@
 // AGENTS - Agent registration and management (ported from TS agents/)
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +79,7 @@ pub async fn insert_agent(
     let code_hash = code_hash.map(|s| s.to_string());
 
     db.write(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "INSERT INTO agents (user_id, name, category, description, code_hash) VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id, trust_score, created_at",
             params![user_id, name, category, description, code_hash],
             |row| {
@@ -89,8 +89,7 @@ pub async fn insert_agent(
                     created_at: row.get(2)?,
                 })
             },
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        )?)
     })
     .await
 }
@@ -98,13 +97,12 @@ pub async fn insert_agent(
 #[tracing::instrument(skip(db))]
 pub async fn get_agent_by_id(db: &Database, id: i64, user_id: i64) -> Result<Option<AgentRow>> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT id, user_id, name, category, description, code_hash, trust_score, total_ops, successful_ops, failed_ops, guard_allows, guard_warns, guard_blocks, is_active, last_seen_at, revoked_at, revoke_reason, created_at FROM agents WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
             row_to_agent,
         )
-        .optional()
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        .optional()?)
     })
     .await
 }
@@ -117,13 +115,12 @@ pub async fn get_agent_by_name(
 ) -> Result<Option<AgentRow>> {
     let name = name.to_string();
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT id, user_id, name, category, description, code_hash, trust_score, total_ops, successful_ops, failed_ops, guard_allows, guard_warns, guard_blocks, is_active, last_seen_at, revoked_at, revoke_reason, created_at FROM agents WHERE name = ?1 AND user_id = ?2",
             params![name, user_id],
             row_to_agent,
         )
-        .optional()
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        .optional()?)
     })
     .await
 }
@@ -133,13 +130,11 @@ pub async fn list_agents(db: &Database, user_id: i64) -> Result<Vec<AgentRow>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT id, user_id, name, category, description, code_hash, trust_score, total_ops, successful_ops, failed_ops, guard_allows, guard_warns, guard_blocks, is_active, last_seen_at, revoked_at, revoke_reason, created_at FROM agents WHERE user_id = ?1 ORDER BY created_at DESC"
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
-        let rows = stmt.query_map(params![user_id], row_to_agent)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt.query_map(params![user_id], row_to_agent)?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -151,7 +146,7 @@ pub async fn revoke_agent(db: &Database, id: i64, user_id: i64, reason: &str) ->
         conn.execute(
             "UPDATE agents SET is_active = 0, revoked_at = datetime('now'), revoke_reason = ?1, trust_score = 0 WHERE id = ?2 AND user_id = ?3",
             params![reason, id, user_id],
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -168,8 +163,7 @@ pub async fn link_key_to_agent(
         conn.execute(
             "UPDATE api_keys SET agent_id = ?1 WHERE id = ?2 AND user_id = ?3",
             params![agent_id, key_id, user_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -187,7 +181,7 @@ pub async fn get_agent_executions(
         // we also filter by user_id at the DB layer to prevent cross-tenant leaks.
         let mut stmt = conn.prepare(
             "SELECT id, action, target_type, target_id, details, execution_hash, signature, created_at FROM audit_log WHERE agent_id = ?1 AND user_id = ?2 ORDER BY created_at DESC LIMIT ?3"
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         let rows = stmt.query_map(params![agent_id, user_id, limit], |row| {
             Ok(AgentExecutionRow {
@@ -200,10 +194,9 @@ pub async fn get_agent_executions(
                 signature: row.get(6)?,
                 created_at: row.get(7)?,
             })
-        }).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        })?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }

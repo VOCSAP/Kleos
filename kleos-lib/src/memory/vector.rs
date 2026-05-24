@@ -1,6 +1,5 @@
 use super::types::VectorHit;
 use crate::db::Database;
-use crate::EngError;
 use crate::Result;
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -57,22 +56,18 @@ pub async fn vector_search(
     match db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare(sql)
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare(sql)?;
             let mut rows = stmt
-                .query(rusqlite::params![embedding_json, limit as i64, user_id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .query(rusqlite::params![embedding_json, limit as i64, user_id])?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.
             let mut hits = Vec::with_capacity(limit);
             let mut rank: usize = 0;
             while let Some(row) = rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .next()?
             {
                 let memory_id: i64 = row
-                    .get(0)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    .get(0)?;
                 hits.push(VectorHit {
                     memory_id,
                     distance: None,
@@ -152,8 +147,7 @@ async fn fetch_chunk_texts_batch(
     db: &Database,
     winners: &[(i64, usize)],
 ) -> Result<std::collections::HashMap<i64, String>> {
-    use crate::EngError;
-
+    
     if winners.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -165,8 +159,7 @@ async fn fetch_chunk_texts_batch(
             .prepare(
                 "SELECT content FROM memory_chunks \
                  WHERE memory_id = ?1 AND chunk_idx = ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         for (memory_id, chunk_idx) in &winners_owned {
             if let Ok(text) = stmt
                 .query_row(rusqlite::params![memory_id, *chunk_idx as i64], |row| {
