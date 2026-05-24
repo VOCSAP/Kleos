@@ -152,3 +152,30 @@ pub(super) struct BackfillEntitiesBody {
 fn default_backfill_batch_size() -> i64 {
     100
 }
+
+/// Request body for the async deprovision endpoint.
+#[derive(Deserialize)]
+pub(super) struct AsyncDeprovisionBody {
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// Query params for the recent deprovisions list.
+#[derive(Deserialize)]
+pub(super) struct RecentDeprovisionQuery {
+    #[serde(default = "default_recent_limit")]
+    pub limit: i64,
+}
+
+/// serde default: number of recent deprovisions to return when the query omits it.
+fn default_recent_limit() -> i64 {
+    20
+}
+
+/// Optional body for the skip-shard endpoint.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub(super) struct SkipShardBody {
+    /// Admin-supplied note explaining why the shard was skipped.
+    pub note: Option<String>,
+}

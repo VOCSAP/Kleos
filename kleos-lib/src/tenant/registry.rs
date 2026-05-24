@@ -165,9 +165,11 @@ impl TenantRegistry {
         Ok(row)
     }
 
-    /// Delete a tenant and all its data.
+    /// Delete a tenant and all its data (legacy non-durable path).
     ///
-    /// This is irreversible! Use with caution.
+    /// **Deprecated:** Use `begin_deprovision` from `tenant::teardown` instead,
+    /// which provides durable two-phase teardown with archiving and audit log.
+    #[deprecated(note = "Use tenant::teardown::begin_deprovision for durable teardown")]
     pub async fn delete(&self, user_id: &str) -> Result<()> {
         let row = self
             .registry_db
@@ -256,6 +258,28 @@ impl TenantRegistry {
     /// Get the configuration.
     pub fn config(&self) -> &TenantConfig {
         &self.config
+    }
+
+    /// Access the underlying registry database for direct queries.
+    ///
+    /// Used by the teardown subsystem for deprovision state queries.
+    pub fn registry_db(&self) -> &RegistryDb {
+        &self.registry_db
+    }
+
+    /// Clone the Arc-wrapped registry database for use in background tasks.
+    ///
+    /// Needed by the deprovision job handler and cluster heartbeat task,
+    /// which must own an Arc to outlive the registry borrow.
+    pub fn registry_db_arc(&self) -> Arc<RegistryDb> {
+        Arc::clone(&self.registry_db)
+    }
+
+    /// Evict a tenant handle from the in-memory cache.
+    ///
+    /// Used by the teardown subsystem to release file handles before removal.
+    pub async fn evict(&self, tenant_id: &str) -> Result<()> {
+        self.loader.evict(tenant_id).await
     }
 
     /// Touch a tenant to update last access time.

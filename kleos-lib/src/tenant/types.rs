@@ -6,32 +6,79 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Status of a tenant in the registry.
+///
+/// State machine: Active | Suspended -> Deleting -> Tombstone | Stuck.
+/// Only `Active` tenants can serve requests (see `is_accessible`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TenantStatus {
     /// Tenant is active and can accept requests.
     Active,
     /// Tenant is suspended (quota exceeded, admin action, etc).
     Suspended,
-    /// Tenant is being deleted.
+    /// Tenant is being deleted (teardown in progress).
     Deleting,
+    /// Teardown completed; username held for re-provision guard.
+    Tombstone,
+    /// Teardown failed after max attempts; needs manual intervention.
+    Stuck,
 }
 
 impl TenantStatus {
+    /// String representation used for storage and API serialization.
     pub fn as_str(&self) -> &'static str {
         match self {
             TenantStatus::Active => "active",
             TenantStatus::Suspended => "suspended",
             TenantStatus::Deleting => "deleting",
+            TenantStatus::Tombstone => "tombstone",
+            TenantStatus::Stuck => "stuck",
         }
     }
 
+    /// Parse a status string back into the enum.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "active" => Some(TenantStatus::Active),
             "suspended" => Some(TenantStatus::Suspended),
             "deleting" => Some(TenantStatus::Deleting),
+            "tombstone" => Some(TenantStatus::Tombstone),
+            "stuck" => Some(TenantStatus::Stuck),
             _ => None,
         }
+    }
+
+    /// Returns true only when the tenant can serve requests.
+    pub fn is_accessible(self) -> bool {
+        matches!(self, TenantStatus::Active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tenant_status_round_trip() {
+        for status in [
+            TenantStatus::Active,
+            TenantStatus::Suspended,
+            TenantStatus::Deleting,
+            TenantStatus::Tombstone,
+            TenantStatus::Stuck,
+        ] {
+            let s = status.as_str();
+            assert_eq!(
+                TenantStatus::parse(s),
+                Some(status),
+                "round-trip failed for {s}"
+            );
+        }
+        assert_eq!(TenantStatus::parse("garbage"), None);
+        assert!(TenantStatus::Active.is_accessible());
+        assert!(!TenantStatus::Suspended.is_accessible());
+        assert!(!TenantStatus::Deleting.is_accessible());
+        assert!(!TenantStatus::Tombstone.is_accessible());
+        assert!(!TenantStatus::Stuck.is_accessible());
     }
 }
 
