@@ -7,12 +7,13 @@ use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{set_session_active, ToolError, ToolResult};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use uuid::Uuid;
 
 /// Input for `log_hypothesis`: bug context, the proposed root-cause explanation,
 /// a confidence score in [0.0, 1.0], and optional linkage to a spec.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct LogHypothesisInput {
     pub bug_description: Option<String>,
     pub hypothesis: Option<String>,
@@ -58,7 +59,7 @@ pub fn log_hypothesis(db: &Database, input: LogHypothesisInput) -> ToolResult {
 
 /// Input for `log_outcome`: which hypothesis to close, the result
 /// ("correct", "incorrect", or "partial"), and optional explanatory notes.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct LogOutcomeInput {
     pub hypothesis_id: Option<String>,
     pub outcome: Option<String>,
@@ -106,7 +107,7 @@ pub fn log_outcome(db: &Database, input: LogOutcomeInput) -> ToolResult {
 }
 
 /// Input for `recall_errors`: a keyword to search past hypotheses and a result cap.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct RecallErrorsInput {
     pub query: Option<String>,
     pub limit: Option<usize>,

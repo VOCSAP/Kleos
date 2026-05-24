@@ -7,6 +7,7 @@ use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::process::Command;
 use std::time::Instant;
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 /// Input for `verify`: a single command or a list of `steps`, plus optional
 /// linkage to a spec criterion or skill execution record.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct VerifyInput {
     pub command: Option<String>,
     pub expected_exit_code: Option<i32>,
@@ -26,7 +27,7 @@ pub struct VerifyInput {
 }
 
 /// One verification step: command line, the exit code that means success, and an optional label.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, JsonSchema)]
 pub struct VerifyStep {
     pub command: String,
     pub expected_exit_code: Option<i32>,
@@ -246,7 +247,7 @@ pub fn verify(db: &Database, input: VerifyInput) -> ToolResult {
 }
 
 /// Input for `challenge_code`: target file plus optional override of the focus list.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ChallengeCodeInput {
     pub file_path: Option<String>,
     pub focus_areas: Option<Vec<String>>,
@@ -315,7 +316,7 @@ pub fn challenge_code(_db: &Database, input: ChallengeCodeInput) -> ToolResult {
 }
 
 /// Input for `session_diff`: optional base ref to diff against (default `HEAD~10`).
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SessionDiffInput {
     pub base: Option<String>,
 }

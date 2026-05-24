@@ -5,11 +5,12 @@
 use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// Input for `think`: the problem to reason about, optional constraints, and
 /// any relevant context the agent already has.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ThinkInput {
     pub problem: Option<String>,
     pub constraints: Option<Vec<String>>,
@@ -51,14 +52,14 @@ pub fn think(_db: &Database, input: ThinkInput) -> ToolResult {
 }
 
 /// Input for `declare_unknowns`: a list of at least one `UnknownItem`.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct DeclareUnknownsInput {
     pub unknowns: Option<Vec<UnknownItem>>,
 }
 
 /// One unknown: a description of what is not yet known, whether it blocks
 /// forward progress, and an optional hint for how to resolve it.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct UnknownItem {
     pub description: String,
     pub blocking: bool,

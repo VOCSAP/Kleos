@@ -8,12 +8,13 @@ use crate::json_io::Output;
 use crate::kleos_client::KleosClient;
 use crate::tools::{set_session_active, ToolError, ToolResult};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use uuid::Uuid;
 
 /// Input for `spec_task`: all fields that define a new task specification.
 /// `acceptance_criteria` requires at least 2 items; `edge_cases` requires at least 3.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SpecTaskInput {
     pub task_description: Option<String>,
     pub task_type: Option<String>,
@@ -113,7 +114,7 @@ pub fn spec_task(db: &Database, input: SpecTaskInput) -> ToolResult {
 }
 
 /// Input for `update_spec`: the spec to update, its new status, and an optional note.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct UpdateSpecInput {
     pub spec_id: Option<String>,
     pub status: Option<String>,
@@ -166,7 +167,7 @@ pub fn update_spec(db: &Database, input: UpdateSpecInput) -> ToolResult {
 }
 
 /// Input for `list_specs`: optional status filter and result cap (default 20).
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ListSpecsInput {
     pub status: Option<String>,
     pub limit: Option<usize>,
@@ -218,7 +219,7 @@ pub fn list_specs(db: &Database, input: ListSpecsInput) -> ToolResult {
 }
 
 /// Input for `get_spec`: the ID of the spec to retrieve.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct GetSpecInput {
     pub spec_id: Option<String>,
 }
