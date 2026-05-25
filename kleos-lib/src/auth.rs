@@ -165,17 +165,6 @@ fn hash_key_v2(raw_key: &str) -> Option<String> {
 ///
 /// Retained as a reference implementation only. `validate_key` does not use
 /// it because its per-row loop needs both hashes precomputed AND the SEC-C5
-/// downgrade-attack guard that rejects v1 rows while pepper is configured.
-/// Wiring this helper back in would drop that guard.
-#[allow(dead_code)]
-fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
-    match version {
-        HASH_VERSION_LEGACY => Some(hash_key_v1(raw_key)),
-        HASH_VERSION_PEPPERED => hash_key_v2(raw_key),
-        _ => None,
-    }
-}
-
 /// Normalise a raw API key to its canonical `kleos_<hex>` form.
 ///
 /// Accepts four prefixes for backwards compatibility:

@@ -309,31 +309,7 @@ pub fn assemble_context_string(
 /// Returns false when no provider or embedding fails.
 ///
 /// Kept as an on-demand variant for callers that have not pre-embedded the
-/// candidate. The hot-path assembler (`assemble`, `assemble_stream`) embeds
-/// upfront and inlines the cosine check via `spawn_blocking` to reuse the
-/// vector, so this helper is not invoked there.
-#[allow(dead_code)]
-async fn is_semantic_duplicate(
-    content: &str,
-    block_embeddings: &[Vec<f32>],
-    provider: &Option<Arc<dyn EmbeddingProvider>>,
-    thresh: f64,
-) -> bool {
-    if block_embeddings.is_empty() {
-        return false;
-    }
-    let p = match provider {
-        Some(p) => p,
-        None => return false,
-    };
-    let emb = match p.embed(content).await {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    block_embeddings
-        .iter()
-        .any(|e| cosine_similarity(&emb, e) as f64 > thresh)
-}
+
 
 /// Build a working-memory block from scratchpad entries.
 /// Returns None when rows is empty.

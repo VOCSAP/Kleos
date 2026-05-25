@@ -325,35 +325,6 @@ async fn fetch_graph_neighbors(
     .await
 }
 
-/// Single-memory fetch retained for targeted lookups (e.g. re-hydrating a
-/// specific id after a graph-walk hop). The hot search path now batches via
-/// `fetch_memories_batch`, so this helper is currently unreferenced.
-#[allow(dead_code)]
-async fn fetch_memory_for_search(
-    db: &Database,
-    id: i64,
-    user_id: i64,
-) -> Result<Option<crate::memory::types::Memory>> {
-    let fetch_sql = format!(
-        "SELECT {} FROM memories \
-         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1",
-        MEMORY_COLUMNS
-    );
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(&fetch_sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
-        if let Some(row) = rows.next()? {
-            Ok(Some(row_to_memory(row, user_id)?))
-        } else {
-            Ok(None)
-        }
-    })
-    .await
-}
-
 /// Batch-fetch multiple memories by ID in a single query. Returns a HashMap
 /// keyed by memory ID for O(1) lookup during result assembly.
 async fn fetch_memories_batch(
@@ -392,51 +363,6 @@ async fn fetch_memories_batch(
             map.insert(mem.id, mem);
         }
         Ok(map)
-    })
-    .await
-}
-
-/// Single-memory link fetch retained for targeted link expansion. The hot
-/// search path uses `fetch_links_batch` to fetch links for all result ids in
-/// one query, so this helper is currently unreferenced.
-#[allow(dead_code)]
-async fn fetch_links_for_search(
-    db: &Database,
-    memory_id: i64,
-    _user_id: i64,
-) -> Result<Vec<LinkedMemory>> {
-    let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
-        m.content, m.category, m.is_forgotten \
-        FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-        WHERE ml.source_id = ?1 \
-        UNION \
-        SELECT ml.source_id, ml.similarity, ml.type, \
-        m.content, m.category, m.is_forgotten \
-        FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-        WHERE ml.target_id = ?1";
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(link_sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![memory_id])
-            ?;
-        // 6.9 capacity hint: typical link fanout.
-        let mut links = Vec::with_capacity(16);
-        while let Some(row) = rows.next()? {
-            if row.get::<_, i32>(5)? != 0 {
-                continue;
-            }
-            links.push(LinkedMemory {
-                id: row.get(0)?,
-                similarity: ((row.get::<_, f64>(1)? * 1000.0)
-                    .round())
-                    / 1000.0,
-                link_type: row.get(2)?,
-                content: row.get(3)?,
-                category: row.get(4)?,
-            });
-        }
-        Ok(links)
     })
     .await
 }
