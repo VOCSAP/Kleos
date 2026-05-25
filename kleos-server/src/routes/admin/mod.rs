@@ -41,6 +41,15 @@ fn to_json<T: serde::Serialize>(v: T) -> Result<Json<Value>, AppError> {
         .map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))
 }
 
+/// Extract the tenant registry or return a 501 error.
+fn require_registry(state: &AppState) -> Result<&kleos_lib::tenant::TenantRegistry, AppError> {
+    state.tenant_registry.as_deref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })
+}
+
 /// Mount the admin router with every operator-only route, gated by `require_admin` at the handler level.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -1268,11 +1277,7 @@ async fn admin_vector_health(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::Internal(
-            "tenant sharding disabled; vector health requires tenant registry".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
 
     let tenants = registry.list().map_err(AppError)?;
 
@@ -1380,11 +1385,7 @@ async fn admin_backfill_chunks(
         ))
     })?;
 
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::Internal(
-            "tenant sharding disabled; backfill requires tenant registry".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
 
     let tenants = registry.list().map_err(AppError)?;
 
@@ -1454,11 +1455,7 @@ async fn admin_vector_chunk_sync(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::Internal(
-            "tenant sharding disabled; chunk-sync requires tenant registry".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
 
     let tenants = registry.list().map_err(AppError)?;
     let mut total = 0usize;
@@ -1916,11 +1913,7 @@ async fn deprovision_tenant_async(
     Json(body): Json<AsyncDeprovisionBody>,
 ) -> Result<impl IntoResponse, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let dep_id = kleos_lib::tenant::teardown::begin_deprovision(
         registry,
         &state.db,
@@ -1946,11 +1939,7 @@ async fn get_deprovision_status(
     Path(dep_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let row = registry
         .registry_db()
         .get_deletion_log(&dep_id)?
@@ -1977,11 +1966,7 @@ async fn list_stuck_deprovisions(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let rows = registry
         .registry_db()
         .list_by_status(kleos_lib::tenant::types::TenantStatus::Stuck)?;
@@ -2008,11 +1993,7 @@ async fn force_retry_deprovision(
     Path(dep_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let log = registry
         .registry_db()
         .get_deletion_log(&dep_id)?
@@ -2056,11 +2037,7 @@ async fn list_recent_deprovisions(
     Query(q): Query<RecentDeprovisionQuery>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let rows = registry.registry_db().list_deletions_recent(q.limit)?;
     let items: Vec<_> = rows
         .iter()
@@ -2091,11 +2068,7 @@ async fn skip_shard_deprovision(
     Json(body): Json<SkipShardBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let log = registry
         .registry_db()
         .get_deletion_log(&dep_id)?
@@ -2133,11 +2106,7 @@ async fn get_quota_status(
     axum::extract::Path(user_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant sharding not enabled".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let row = registry.get_quota_row(&user_id)?;
     to_json(row)
 }
@@ -2153,11 +2122,7 @@ async fn set_quota(
     Json(body): Json<SetQuotaBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant sharding not enabled".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     registry
         .update_quota(
             &user_id,
@@ -2178,11 +2143,7 @@ async fn recompute_quota(
     axum::extract::Path(user_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant sharding not enabled".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let (bytes, count) = registry.recompute_usage(&user_id).await?;
     Ok(Json(
         json!({ "ok": true, "content_bytes": bytes, "memory_count": count }),
