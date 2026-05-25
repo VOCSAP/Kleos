@@ -34,20 +34,6 @@ pub enum Method {
     Patch,
 }
 
-/// HTTP-verb formatting for the canonical envelope.
-impl Method {
-    /// The method as the uppercase HTTP verb string used for signing.
-    pub fn as_verb(&self) -> &'static str {
-        match self {
-            Method::Get => "GET",
-            Method::Post => "POST",
-            Method::Put => "PUT",
-            Method::Delete => "DELETE",
-            Method::Patch => "PATCH",
-        }
-    }
-}
-
 /// Required scope on the server side. Surfaced for documentation; the server
 /// is the authoritative enforcer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
