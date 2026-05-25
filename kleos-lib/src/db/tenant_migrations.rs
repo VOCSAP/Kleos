@@ -332,6 +332,18 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "approvals_gate_id",
         up: apply_schema_v56_approvals_gate_id,
     },
+    // Patch 33 (2026-05-25): adds optional `space_id INTEGER` to
+    // `conversations` so the spaces partitioning convention from
+    // memories/entities extends to multi-turn conversation threads.
+    // Column is nullable: legacy conversations created before the patch
+    // keep `space_id = NULL` (treated as cross-project by the inclusive
+    // search filter `WHERE space_id IN (?cur, ?def) OR space_id IS NULL`).
+    // Idempotent via table_has_column guard.
+    TenantMigration {
+        version: 57,
+        description: "conversations_space_id",
+        up: apply_schema_v57_conversations_space_id,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -1125,6 +1137,28 @@ fn apply_schema_v56_approvals_gate_id(conn: &Connection) -> Result<()> {
         )
         .map_err(|e| {
             EngError::DatabaseMessage(format!("tenant schema v56 (gate_id) failed: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Tenant v57 (Patch 33, 2026-05-25): adds optional `space_id INTEGER` to
+/// `conversations` so the spaces partitioning convention used by
+/// `memories` and `entities` extends to multi-turn agent threads.
+/// Column is nullable; pre-Patch 33 conversations keep `space_id = NULL`
+/// (treated as cross-project/legacy by the inclusive search filter
+/// `WHERE space_id IN (?cur, ?def) OR space_id IS NULL`). New
+/// conversations write the normalized `space_id` via
+/// `kleos_lib::space::normalize_space_input`. Idempotent via
+/// `table_has_column` guard.
+fn apply_schema_v57_conversations_space_id(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "conversations", "space_id")? {
+        conn.execute_batch(
+            "ALTER TABLE conversations ADD COLUMN space_id INTEGER;
+             CREATE INDEX IF NOT EXISTS idx_conv_space ON conversations(space_id);",
+        )
+        .map_err(|e| {
+            EngError::DatabaseMessage(format!("tenant schema v57 (space_id) failed: {e}"))
         })?;
     }
     Ok(())
