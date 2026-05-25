@@ -14,8 +14,8 @@ pub enum RerankFormat {
 }
 
 impl RerankFormat {
-    /// Parse from `KLEOS_RERANKER_FORMAT` / `ENGRAM_RERANKER_FORMAT` env var.
-    pub fn from_str(s: &str) -> Self {
+    /// Parse from `KLEOS_RERANKER_FORMAT` / `ENGRAM_RERANKER_FORMAT` env var value.
+    pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "tei" | "huggingface" | "hf" => RerankFormat::Tei,
             _ => RerankFormat::Cohere,

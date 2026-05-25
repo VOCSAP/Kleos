@@ -214,7 +214,7 @@ impl Reranker for OnnxReranker {
 /// support when a database is supplied via [`HttpReranker::new_with_db`].
 pub struct HttpReranker {
     client: reqwest::Client,
-    pub endpoint: String,
+    endpoint: String,
     api_key: Option<String>,
     model: String,
     top_k: usize,
@@ -247,18 +247,19 @@ impl HttpReranker {
             .build()
             .unwrap_or_default();
 
+        let format = std::env::var("KLEOS_RERANKER_FORMAT")
+            .or_else(|_| std::env::var("ENGRAM_RERANKER_FORMAT"))
+            .map(|s| RerankFormat::parse(&s))
+            .unwrap_or_default();
+
         info!(
             endpoint = %endpoint,
             model = %model,
+            format = ?format,
             top_k = top_k,
             has_guard = db.is_some(),
             "HTTP reranker configured"
         );
-
-        let format = std::env::var("KLEOS_RERANKER_FORMAT")
-            .or_else(|_| std::env::var("ENGRAM_RERANKER_FORMAT"))
-            .map(|s| RerankFormat::from_str(&s))
-            .unwrap_or_default();
 
         let guard = db.map(|database| Arc::new(ServiceGuard::with_defaults("reranker", database)));
 
@@ -296,6 +297,16 @@ impl HttpReranker {
             .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_MODEL"))
             .unwrap_or_else(|_| "rerank-v3.5".to_string());
         Some(Self::new_with_db(endpoint, api_key, model, top_k, db))
+    }
+
+    /// Configured endpoint URL.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// Configured wire format.
+    pub fn format(&self) -> RerankFormat {
+        self.format
     }
 }
 
@@ -534,11 +545,6 @@ pub async fn create_reranker(
                         "KLEOS_RERANKER_URL required for http reranker backend".into(),
                     )
                 })?;
-            info!(
-                endpoint = %reranker.endpoint,
-                format = ?reranker.format,
-                "HTTP reranker configured"
-            );
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
         "none" | "disabled" => Ok(None),
