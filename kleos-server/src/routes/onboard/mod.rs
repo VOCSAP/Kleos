@@ -287,7 +287,7 @@ async fn fetch_url(
             title = cap;
         }
         // Simple HTML to text: strip tags
-        strip_html_tags(&raw)
+        kleos_lib::ingestion::parsers::html::strip_tags(&raw)
     } else {
         raw.trim().to_string()
     };
@@ -348,65 +348,6 @@ async fn fetch_url(
         "length": content_len,
         "cached_id": cached_id,
     })))
-}
-
-/// Minimal HTML tag stripper. Removes script/style blocks, then strips remaining tags.
-fn strip_html_tags(html: &str) -> String {
-    let mut result = String::with_capacity(html.len());
-    let chars = html.chars();
-    let mut in_tag = false;
-    let mut in_script = false;
-    let mut in_style = false;
-    let mut tag_buf = String::new();
-
-    for c in chars {
-        if c == '<' {
-            in_tag = true;
-            tag_buf.clear();
-            continue;
-        }
-        if in_tag {
-            if c == '>' {
-                in_tag = false;
-                let lower = tag_buf.to_lowercase();
-                if lower.starts_with("script") {
-                    in_script = true;
-                } else if lower.starts_with("/script") {
-                    in_script = false;
-                } else if lower.starts_with("style") {
-                    in_style = true;
-                } else if lower.starts_with("/style") {
-                    in_style = false;
-                }
-                tag_buf.clear();
-            } else {
-                tag_buf.push(c);
-            }
-            continue;
-        }
-        if !in_script && !in_style {
-            result.push(c);
-        }
-    }
-
-    // Collapse whitespace
-    let mut collapsed = String::with_capacity(result.len());
-    let mut prev_newline = false;
-    for line in result.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !prev_newline {
-                collapsed.push('\n');
-                prev_newline = true;
-            }
-        } else {
-            collapsed.push_str(trimmed);
-            collapsed.push('\n');
-            prev_newline = false;
-        }
-    }
-
-    collapsed.trim().to_string()
 }
 
 #[cfg(test)]

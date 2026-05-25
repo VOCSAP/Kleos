@@ -1316,21 +1316,7 @@ async fn assemble_context_inner(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Helper: parse a date string to epoch milliseconds
-// ---------------------------------------------------------------------------
-
-fn parse_date_ms(s: &str) -> Option<i64> {
-    let normalized = if s.contains('Z') {
-        s.to_string()
-    } else {
-        format!("{}Z", s.replace(" ", "T"))
-    };
-    normalized
-        .parse::<chrono::DateTime<chrono::Utc>>()
-        .ok()
-        .map(|dt| dt.timestamp_millis())
-}
+use crate::memory::scoring::parse_date_ms;
 
 fn parse_freshness(
     valid_at: Option<&str>,

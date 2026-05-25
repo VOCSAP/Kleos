@@ -718,11 +718,13 @@ pub fn score_signal_match(
     score.min(1.0)
 }
 
-fn parse_date_ms(s: &str) -> Option<i64> {
+/// Parse a date string into epoch milliseconds, handling ISO8601 with or
+/// without timezone, space-separated datetime, and bare dates.
+pub(crate) fn parse_date_ms(s: &str) -> Option<i64> {
     let n = if s.contains('Z') || s.contains('+') {
-        s.to_string()
-    } else if s.contains('T') {
-        format!("{}Z", s)
+        s.replace(' ', "T")
+    } else if s.contains('T') || s.contains(' ') {
+        format!("{}Z", s.replace(' ', "T"))
     } else {
         format!("{}T00:00:00Z", s)
     };

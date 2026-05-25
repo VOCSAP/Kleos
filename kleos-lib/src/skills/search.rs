@@ -110,23 +110,7 @@ impl Score {
     }
 }
 
-/// Strips non-alphanumeric characters and short tokens for safe FTS5 input.
-fn sanitize_fts(query: &str) -> String {
-    let s: String = query
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    s.split_whitespace()
-        .filter(|w| w.len() >= 2)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+use crate::memory::fts::sanitize_fts_query as sanitize_fts;
 
 /// Hybrid skill search combining FTS5, alias, fuzzy, and vector signals.
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
