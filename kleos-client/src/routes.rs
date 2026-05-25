@@ -399,7 +399,6 @@ pub static ROUTES: &[Route] = &[
     route!(Post, Write, "dispatch.create_config", "/dispatch/configs", "Create a dispatch configuration.", r#"{"type":"object","properties":{"name":{"type":"string"},"config":{"type":"object"}},"required":["name","config"]}"#),
     // -- mcp_schema -------------------------------------------------------
     route!(Get, Read, "mcp_schema.get", "/mcp/schema", "Fetch the MCP-flavoured schema descriptor.", r#"{"type":"object"}"#),
-    route!(Post, Write, "mcp_schema.dispatch", "/mcp/dispatch", "Server-side MCP-style dispatch.", r#"{"type":"object","properties":{"tool":{"type":"string"},"arguments":{"type":"object"}},"required":["tool"]}"#),
     // -- schema (discovery) -----------------------------------------------
     route!(Get, Read, "schema.index", "/schema", "Top-level schema index.", r#"{"type":"object"}"#),
     route!(Get, Read, "schema.memory", "/schema/memory", "Memory schema.", r#"{"type":"object"}"#),
@@ -774,6 +773,16 @@ mod tests {
     fn render_path_errors_on_missing_key() {
         let mut args = json!({});
         assert!(render_path("/memory/{id}", &mut args).is_err());
+    }
+
+    /// The route registry must not advertise helper endpoints that the server
+    /// intentionally removed from its mounted HTTP surface.
+    #[test]
+    fn registry_excludes_removed_mcp_dispatch_helper() {
+        assert!(
+            find_by_name("mcp_schema.dispatch").is_none(),
+            "stale mcp_schema.dispatch route should not be advertised"
+        );
     }
 
     /// Every route in the registry must have a template key set and an
