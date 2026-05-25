@@ -32,8 +32,20 @@ pub fn router() -> Router<AppState> {
 async fn create(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
-    Json(body): Json<CreateConversationRequest>,
+    Json(mut body): Json<CreateConversationRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // Patch 33 -- resolve (space_id, space) to a concrete `space_id`
+    // before calling the library so the row is partitioned correctly.
+    let resolved = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+    body.space_id = Some(resolved);
+    body.space = None;
+
     let conv = conversations::create_conversation(&db, body, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(conv))))
 }
@@ -45,10 +57,36 @@ async fn list(
     Query(params): Query<ListConversationsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(100);
+    // Patch 33 -- resolve the space filter (None preserves upstream
+    // behaviour of no filter at all).
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        params.space_id,
+        params.space.as_deref(),
+    )
+    .await?;
+    let include_unscoped = params.include_unscoped;
+
     let convs = if let Some(ref agent) = params.agent {
-        conversations::list_conversations_by_agent(&db, auth.user_id, agent, limit).await?
+        conversations::list_conversations_by_agent(
+            &db,
+            auth.user_id,
+            agent,
+            limit,
+            resolved_space_id,
+            include_unscoped,
+        )
+        .await?
     } else {
-        conversations::list_conversations(&db, auth.user_id, limit).await?
+        conversations::list_conversations(
+            &db,
+            auth.user_id,
+            limit,
+            resolved_space_id,
+            include_unscoped,
+        )
+        .await?
     };
     Ok(Json(json!({ "conversations": convs })))
 }
@@ -68,6 +106,9 @@ async fn get_one(
         "id": conv.id, "agent": conv.agent, "session_id": conv.session_id,
         "title": conv.title, "metadata": conv.metadata,
         "started_at": conv.started_at, "updated_at": conv.updated_at,
+        // Patch 33 -- expose space_id so clients can build a "back to
+        // project view" navigation hint.
+        "space_id": conv.space_id,
         "messages": messages,
     })))
 }
@@ -142,8 +183,19 @@ async fn bulk_insert(
     State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
-    Json(body): Json<BulkInsertRequest>,
+    Json(mut body): Json<BulkInsertRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // Patch 33 -- same space normalization as the single-create path.
+    let resolved = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+    body.space_id = Some(resolved);
+    body.space = None;
+
     let conv =
         conversations::bulk_insert_conversation(&db, &state.credd, body, auth.user_id).await?;
     Ok((StatusCode::CREATED, Json(json!(conv))))
@@ -155,8 +207,23 @@ async fn upsert(
     State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
-    Json(body): Json<UpsertConversationRequest>,
+    Json(mut body): Json<UpsertConversationRequest>,
 ) -> Result<Json<Value>, AppError> {
+    // Patch 33 -- if this upsert creates a new conversation it must
+    // land in the right space. For an UPDATE on an existing conversation
+    // the space_id is not modified (a separate PATCH would be needed),
+    // so the normalize_space_input result is only consumed on the
+    // create path inside `upsert_conversation`.
+    let resolved = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+    body.space_id = Some(resolved);
+    body.space = None;
+
     let conv = conversations::upsert_conversation(&db, &state.credd, body, auth.user_id).await?;
     Ok(Json(json!(conv)))
 }
@@ -165,8 +232,20 @@ async fn upsert(
 async fn search_msgs(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
-    Json(body): Json<SearchMessagesRequest>,
+    Json(mut body): Json<SearchMessagesRequest>,
 ) -> Result<Json<Value>, AppError> {
+    // Patch 33 -- resolve_space_filter returns Option<i64>; None
+    // preserves upstream "no filter" semantics. Server clients can also
+    // pass space_id directly to bypass the name resolution.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        body.space_id,
+        None,
+    )
+    .await?;
+    body.space_id = resolved_space_id;
+
     let results = conversations::search_messages(&db, body, auth.user_id).await?;
     Ok(Json(json!({ "messages": results })))
 }
