@@ -51,7 +51,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
                 let db = handle.database();
                 let counts = db
                     .read(|conn| {
-                        conn.query_row(
+                        Ok(conn.query_row(
                             "SELECT
                                 SUM(CASE WHEN is_forgotten = 0 AND is_archived = 0 THEN 1 ELSE 0 END),
                                 (SELECT COUNT(*) FROM entities),
@@ -71,8 +71,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
                                     row.get::<_, i64>(5)?,
                                 ))
                             },
-                        )
-                        .map_err(kleos_lib::EngError::Database)
+                        )?)
                     })
                     .await
                     .unwrap_or((0, 0, 0, 0, 0, 0));
@@ -142,8 +141,7 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     let db_ok = state
         .db
         .read(|conn| {
-            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                .map_err(kleos_lib::EngError::Database)
+            Ok(conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
         })
         .await
         .is_ok();
@@ -197,12 +195,11 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     let mem_count: i64 = state
         .db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await
         .unwrap_or(0);
@@ -210,12 +207,11 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     let emb_count: i64 = state
         .db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND is_forgotten = 0",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await
         .unwrap_or(0);

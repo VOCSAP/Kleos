@@ -60,7 +60,7 @@ async fn review(
     // dropped from memories in Phase 5.1.
     let row_data = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
                 params![id],
                 |row| {
@@ -77,8 +77,7 @@ async fn review(
                     ))
                 },
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?;
 
@@ -181,7 +180,7 @@ async fn get_state(
 
     let row_data = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
                 params![id],
                 |row| {
@@ -198,8 +197,7 @@ async fn get_state(
                     ))
                 },
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?;
 

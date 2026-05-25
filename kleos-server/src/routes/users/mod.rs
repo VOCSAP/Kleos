@@ -72,7 +72,7 @@ async fn create_user(
             let id = conn.last_insert_rowid();
 
             // Read back the full row so the response reflects server defaults.
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, username, email, role, is_active, created_at
                  FROM users WHERE id = ?1",
                 params![id],
@@ -86,8 +86,7 @@ async fn create_user(
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 },
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await;
 

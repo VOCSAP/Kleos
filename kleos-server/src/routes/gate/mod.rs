@@ -333,13 +333,12 @@ async fn complete_handler(
     let opened_at_filter = opened_at.clone();
     let stored_count: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories
                  WHERE user_id = ?1 AND source = ?2 AND created_at >= ?3",
                 params![user_id, agent_filter, opened_at_filter],
                 |row| row.get::<_, i64>(0),
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await?;
 

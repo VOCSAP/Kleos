@@ -45,12 +45,11 @@ async fn create_key(
         let exists: bool = state
             .db
             .read(move |conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
                     params![uid],
                     |row| row.get(0),
-                )
-                .map_err(kleos_lib::EngError::Database)
+                )?)
             })
             .await?;
         if !exists {
@@ -137,13 +136,12 @@ async fn revoke_key(
         let owner: Option<i64> = state
             .db
             .read(move |conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT user_id FROM api_keys WHERE id = ?1",
                     params![id],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(kleos_lib::EngError::Database)
+                .optional()?)
             })
             .await?;
 
@@ -214,11 +212,10 @@ async fn rotate_key(
     state
         .db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE api_keys SET expires_at = ?1 WHERE id = ?2 AND user_id = ?3",
                 params![grace_expiry_clone, key_id, user_id],
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await?;
 
@@ -256,12 +253,11 @@ async fn create_space(
     let (id, created_at) = state
         .db
         .write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id, created_at",
                 params![user_id, name_clone, description],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await?;
 
@@ -328,13 +324,12 @@ async fn delete_space(
     let row: Option<(i64, String)> = state
         .db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT user_id, name FROM spaces WHERE id = ?1",
                 params![id],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?;
 
@@ -354,8 +349,7 @@ async fn delete_space(
     state
         .db
         .write(move |conn| {
-            conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])
-                .map_err(kleos_lib::EngError::Database)
+            Ok(conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])?)
         })
         .await?;
 

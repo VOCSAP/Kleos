@@ -162,8 +162,7 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
     state
         .db
         .read(move |conn| {
-            conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-                .map_err(kleos_lib::EngError::Database)
+            Ok(conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?)
         })
         .await
         .map_err(AppError)
@@ -295,12 +294,11 @@ async fn bootstrap(
     let changes = state
         .db
         .write(|conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "INSERT OR IGNORE INTO app_state (key, value, updated_at) \
                  VALUES ('bootstrap_claimed', datetime('now'), datetime('now'))",
                 [],
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await
         .map_err(AppError)?;
@@ -330,12 +328,11 @@ async fn bootstrap(
     state
         .db
         .write(|conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
                  VALUES (1, 'operator', 'admin', 1)",
                 [],
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await
         .map_err(AppError)?;
@@ -1005,8 +1002,7 @@ async fn backup_handler(
     state
         .db
         .write(move |conn| {
-            conn.execute(&vacuum_sql, [])
-                .map_err(kleos_lib::EngError::Database)
+            Ok(conn.execute(&vacuum_sql, [])?)
         })
         .await
         .map_err(AppError)?;
@@ -1244,8 +1240,7 @@ async fn reset_user(
         let sql_owned = sql.to_string();
         total += db
             .write(move |conn| {
-                conn.execute(&sql_owned, [])
-                    .map_err(kleos_lib::EngError::Database)
+                Ok(conn.execute(&sql_owned, [])?)
             })
             .await
             .map_err(AppError)? as i64;

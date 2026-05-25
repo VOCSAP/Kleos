@@ -122,15 +122,14 @@ async fn create_entity_handler(
     // entity is owned by the caller so it isolates in single-DB mode.
     let entity = db
         .write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO entities (name, entity_type, description, aliases, space_id, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
                  RETURNING id, name, entity_type, description, aliases, space_id, \
                  confidence, occurrence_count, first_seen_at, last_seen_at, created_at",
                 params![name, entity_type, description, aliases_json, space_id, user_id],
                 |row| row_to_entity_json(row, user_id),
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await?;
 
@@ -161,17 +160,14 @@ async fn list_entities_handler(
                      WHERE user_id = ?3 \
                      ORDER BY occurrence_count DESC \
                      LIMIT ?1 OFFSET ?2",
-                )
-                .map_err(kleos_lib::EngError::Database)?;
+                )?;
 
             let rows = stmt
                 .query_map(params![limit, offset, user_id], |row| {
                     row_to_entity_json(row, user_id)
-                })
-                .map_err(kleos_lib::EngError::Database)?;
+                })?;
 
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(kleos_lib::EngError::Database)
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -192,15 +188,14 @@ async fn get_entity_handler(
 
     let entity = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, name, entity_type, description, aliases, space_id, \
                  confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
                  FROM entities WHERE id = ?1 AND user_id = ?2",
                 params![id, user_id],
                 |row| row_to_entity_json(row, user_id),
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?;
 
@@ -259,8 +254,7 @@ async fn delete_entity_handler(
         conn.execute(
             "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
-        )
-        .map_err(kleos_lib::EngError::Database)?;
+        )?;
         Ok(())
     })
     .await?;
@@ -297,18 +291,15 @@ async fn entity_relationships_handler(
                            AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?4) \
                          ORDER BY er.strength DESC, er.id DESC \
                          LIMIT ?3",
-                    )
-                    .map_err(kleos_lib::EngError::Database)?;
+                    )?;
 
                 let rows = stmt
                     .query_map(
                         params![id, relationship_type, MAX_ENTITY_RELATIONSHIPS as i64, user_id],
                         row_to_relationship_json,
-                    )
-                    .map_err(kleos_lib::EngError::Database)?;
+                    )?;
 
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(kleos_lib::EngError::Database)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             } else {
                 let mut stmt = conn
                     .prepare(
@@ -319,18 +310,15 @@ async fn entity_relationships_handler(
                            AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
                          ORDER BY er.strength DESC, er.id DESC \
                          LIMIT ?2",
-                    )
-                    .map_err(kleos_lib::EngError::Database)?;
+                    )?;
 
                 let rows = stmt
                     .query_map(
                         params![id, MAX_ENTITY_RELATIONSHIPS as i64, user_id],
                         row_to_relationship_json,
-                    )
-                    .map_err(kleos_lib::EngError::Database)?;
+                    )?;
 
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(kleos_lib::EngError::Database)
+                Ok(rows.collect::<Result<Vec<_>, _>>()?)
             }
         })
         .await?;
@@ -387,15 +375,12 @@ async fn entity_memories_handler(
                      JOIN memories m ON m.id = me.memory_id \
                      WHERE me.entity_id = ?1 AND m.user_id = ?2 \
                        AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2)",
-                )
-                .map_err(kleos_lib::EngError::Database)?;
+                )?;
 
             let rows = stmt
-                .query_map(params![id, user_id], |row| row.get::<_, i64>(0))
-                .map_err(kleos_lib::EngError::Database)?;
+                .query_map(params![id, user_id], |row| row.get::<_, i64>(0))?;
 
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(kleos_lib::EngError::Database)
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -484,12 +469,11 @@ async fn create_relationship_handler(
     // only be created between the caller's own entities in single-DB mode.
     let count: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3",
                 params![source_id, target_id, user_id],
                 |row| row.get(0),
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await?;
 
@@ -510,7 +494,7 @@ async fn create_relationship_handler(
     // race that could otherwise leak another tenant's relationship row.
     let relationship = db
         .write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO entity_relationships \
                  (source_entity_id, target_entity_id, relationship_type, strength) \
                  VALUES (?1, ?2, ?3, ?4) \
@@ -518,8 +502,7 @@ async fn create_relationship_handler(
                  strength, evidence_count, created_at",
                 params![source_id, target_id, rel_type, strength],
                 row_to_relationship_json,
-            )
-            .map_err(kleos_lib::EngError::Database)
+            )?)
         })
         .await?;
 
@@ -706,8 +689,7 @@ async fn memory_entities_handler(
                      WHERE me.memory_id = ?1 AND m.user_id = ?3 AND e.user_id = ?3 \
                      ORDER BY me.salience DESC \
                      LIMIT ?2",
-                )
-                .map_err(kleos_lib::EngError::Database)?;
+                )?;
 
             let rows = stmt
                 .query_map(params![id, MAX_MEMORY_ENTITY_FANOUT, user_id], |row| {
@@ -721,11 +703,9 @@ async fn memory_entities_handler(
                         "entity_type": entity_type,
                         "salience": salience,
                     }))
-                })
-                .map_err(kleos_lib::EngError::Database)?;
+                })?;
 
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(kleos_lib::EngError::Database)
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
         .await?;
 

@@ -539,19 +539,17 @@ async fn sentiment_history_handler(
                     "SELECT id, content, created_at FROM memories \
                      WHERE is_forgotten = 0 AND created_at >= ?1 \
                      ORDER BY created_at DESC LIMIT ?2",
-                )
-                .map_err(kleos_lib::EngError::Database)?;
+                )?;
             let rows = stmt
                 .query_map(params![since_owned, limit], |row| {
                     let id: i64 = row.get(0)?;
                     let content: String = row.get(1)?;
                     let created_at: String = row.get(2)?;
                     Ok((id, content, created_at))
-                })
-                .map_err(kleos_lib::EngError::Database)?;
+                })?;
             let mut history = Vec::new();
             for row in rows {
-                let (id, content, created_at) = row.map_err(kleos_lib::EngError::Database)?;
+                let (id, content, created_at) = row?;
                 let score = sentiment::score_text(&content);
                 history.push(serde_json::json!({
                     "memory_id": id,

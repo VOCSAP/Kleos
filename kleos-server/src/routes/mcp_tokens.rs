@@ -103,13 +103,12 @@ async fn register_token(
     let pubkey_pem = state
         .db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT pubkey_pem FROM identity_keys WHERE id = ?1 AND is_active = 1",
                 params![ik_id],
                 |row| row.get::<_, String>(0),
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?
         .ok_or_else(|| {
@@ -225,7 +224,7 @@ async fn get_token(
     let token = state
         .db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT jti, name, scopes, is_active, issued_at, expires_at,
                         last_used_at, kid, revoked_at, revoke_reason
                  FROM mcp_tokens WHERE jti = ?1 AND user_id = ?2",
@@ -245,8 +244,7 @@ async fn get_token(
                     }))
                 },
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?;
 

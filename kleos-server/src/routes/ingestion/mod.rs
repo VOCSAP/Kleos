@@ -170,7 +170,7 @@ async fn load_session(
     let id = upload_id.to_string();
     let row: Option<UploadSession> = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT user_id, status, source, filename, content_type,
                         total_chunks, total_size, expires_at
                    FROM upload_sessions WHERE upload_id = ?1",
@@ -188,8 +188,7 @@ async fn load_session(
                     })
                 },
             )
-            .optional()
-            .map_err(kleos_lib::EngError::Database)
+            .optional()?)
         })
         .await?;
     row.ok_or_else(|| kleos_lib::EngError::NotFound("upload session not found".into()))
