@@ -2,7 +2,6 @@
 //! `skills` table.
 //!
 //! A skill bundles a name, prompt, and metadata; submodules add behavior:
-//! - [`registry`]  CRUD over the `skills` table plus lookup-by-name.
 //! - [`search`]    keyword + semantic search across skills.
 //! - [`analyzer`]  structural analysis passes (size, graph shape).
 //! - [`evolver`]   controlled mutation + evaluation loops.
@@ -25,7 +24,6 @@ pub mod dashboard;
 pub mod evolver;
 pub mod materializations;
 pub mod patch;
-pub mod registry;
 pub mod search;
 pub mod types;
 
