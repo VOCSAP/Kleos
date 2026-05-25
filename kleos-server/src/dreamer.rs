@@ -116,8 +116,7 @@ async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
         let rows = stmt
             .query_map([], |row| row.get::<_, i64>(0))
             ?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(EngError::Database)
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -571,8 +570,7 @@ async fn recent_memory_contents(
         let rows = stmt
             .query_map(rusqlite::params![limit_i64], |row| row.get::<_, String>(0))
             ?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(EngError::Database)
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
