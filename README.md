@@ -24,8 +24,6 @@ One Rust binary. Self-hosted. Your data never leaves your hardware.
 
 ![Kleos CLI demo](tools/cli-demo.gif)
 
-![Kleos memory graph visualization](tools/gui-demo-v3.gif)
-
 ---
 
 ## What Kleos does
@@ -126,7 +124,21 @@ A protocol that controls how agents think, not just what they remember:
 
 <br>
 
-**Build and run:**
+**Install with the interactive installer (recommended):**
+
+Download the latest installer from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
+
+```bash
+# TUI installer (terminal)
+./kleos-install
+
+# GUI installer (desktop)
+./kleos-install-gui
+```
+
+The installer walks you through component selection, server configuration, embedding provider setup, security key generation, and optional systemd/launchd service registration. Choose a profile (Server, Agent Host, Full, Custom) or pick individual components.
+
+**Or build from source:**
 
 ```bash
 git clone https://github.com/Ghost-Frame/Kleos.git && cd Kleos
@@ -192,7 +204,7 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 
 ### What runs inside
 
-16-crate Rust workspace. The server handles:
+20-crate Rust workspace. The server handles:
 
 - **Multi-tenancy** -- each tenant gets its own encrypted SQLite database, connection pools, and quota limits
 - **8 middleware layers** -- auth, per-tenant rate limiting, audit log, IP extraction, JSON depth limits, Prometheus metrics, safe-mode, compression/timeouts
@@ -328,7 +340,7 @@ Four channels run per query:
 
 ### Scope
 
-- 16 Rust crates, ~204K lines of code
+- 20 Rust crates, ~204K lines of code
 - ~6,000 test declarations across 113 test files
 - Single statically linked binary with the mimalloc allocator
 - No Python runtime. No external service dependencies at rest.
@@ -352,6 +364,9 @@ Four channels run per query:
 | `kleos-migrate` | One-shot ETL from encrypted monolith to per-tenant shards. |
 | `kleos-cleanup` | Deduplication and log demotion utility. |
 | `kleos-approval-tui` | Ratatui terminal UI for human-in-the-loop approval workflows. |
+| `kleos-install` | TUI installer. Ratatui-based interactive setup wizard with profile selection, config generation, and service registration. |
+| `kleos-install-gui` | GUI installer. eframe/egui desktop wizard with the same capabilities as the TUI installer. |
+| `kleos-install-core` | Shared installer library. Download, verification, config generation, system integration logic. |
 | `sdk` | Client SDKs: TypeScript, Python, Go. |
 
 ### Design decisions
@@ -365,13 +380,14 @@ Four channels run per query:
 
 ### Install profiles
 
-The `dist/install.sh` script supports three profiles:
+The installer (`kleos-install` or `kleos-install-gui`) supports four profiles:
 
 | Profile | Includes |
 |---------|----------|
-| `server` | kleos-server, kleos-cli, kleos-mcp |
-| `agent-host` | kleos-cli, kleos-sh, kr, kw, ke, agent-forge, eidolon-supervisor, kleos-cred/credd |
-| `full` | Every binary |
+| `Server` | kleos-server, kleos-cli |
+| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, kleos-credd |
+| `Full` | Every binary |
+| `Custom` | Pick individual components |
 
 </details>
 
