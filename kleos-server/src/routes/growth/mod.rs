@@ -35,12 +35,29 @@ async fn reflect_handler(
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 async fn observations_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ObservationsQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(100);
-    let observations: Vec<GrowthObservation> = list_observations(&db, limit).await?;
+    // Patch 33 -- resolve the optional space filter (fix #3028).
+    // None preserves upstream "no filter" semantics so existing API
+    // consumers without the param see the same response as before.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        params.space_id,
+        params.space.as_deref(),
+    )
+    .await?;
+    let observations: Vec<GrowthObservation> = list_observations(
+        &db,
+        limit,
+        resolved_space_id,
+        params.include_unscoped,
+        auth.user_id,
+    )
+    .await?;
     let count = observations.len();
     Ok(Json(
         json!({ "observations": observations, "count": count }),

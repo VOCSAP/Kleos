@@ -57,28 +57,63 @@ fn growth_reject_patterns() -> Vec<String> {
     }
 }
 
-#[tracing::instrument(skip(db), fields(limit))]
-pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
+#[tracing::instrument(skip(db), fields(limit, space_id, include_unscoped))]
+pub async fn list_observations(
+    db: &Database,
+    limit: usize,
+    // Patch 33 -- optional space filter (#3028 fix). None preserves the
+    // upstream behaviour (no filter; observations from all spaces are
+    // returned). Some(N) applies the inclusive partitioning convention:
+    //   include_unscoped = Some(true)  -> space N + default + legacy NULL
+    //   include_unscoped = Some(false) / None -> strict space N only
+    space_id: Option<i64>,
+    include_unscoped: Option<bool>,
+    user_id: i64,
+) -> Result<Vec<GrowthObservation>> {
+    // Patch 33 -- build (extra_clause, params) where positional indices
+    // match the order in `params_vec`. LIMIT is always the last param.
+    let (extra_clause, params_vec): (String, Vec<rusqlite::types::Value>) = match space_id {
+        Some(sid) if matches!(include_unscoped, Some(true)) => (
+            " AND (space_id = ?1 \
+                OR space_id = (SELECT id FROM spaces \
+                               WHERE user_id = ?2 AND name = 'default' LIMIT 1) \
+                OR space_id IS NULL)"
+                .to_string(),
+            vec![
+                rusqlite::types::Value::Integer(sid),
+                rusqlite::types::Value::Integer(user_id),
+            ],
+        ),
+        Some(sid) => (
+            " AND space_id = ?1".to_string(),
+            vec![rusqlite::types::Value::Integer(sid)],
+        ),
+        None => (String::new(), Vec::new()),
+    };
+    let limit_idx = params_vec.len() + 1;
+    let sql = format!(
+        "SELECT id, content, source, importance, created_at \
+         FROM memories \
+         WHERE category = 'growth' AND is_forgotten = 0{extra_clause} \
+         ORDER BY created_at DESC LIMIT ?{limit_idx}"
+    );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, source, importance, created_at \
-                 FROM memories \
-                 WHERE category = 'growth' AND is_forgotten = 0 \
-                 ORDER BY created_at DESC LIMIT ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
-
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut all_params: Vec<rusqlite::types::Value> = params_vec;
+        all_params.push(rusqlite::types::Value::Integer(limit as i64));
         let observations = stmt
-            .query_map(rusqlite::params![limit as i64], |row| {
-                Ok(GrowthObservation {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source: row.get(2)?,
-                    importance: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            })
+            .query_map(
+                rusqlite::params_from_iter(all_params.iter().cloned()),
+                |row| {
+                    Ok(GrowthObservation {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
             .map_err(rusqlite_to_eng_error)?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(rusqlite_to_eng_error)?;
@@ -91,26 +126,36 @@ pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<Growth
 #[tracing::instrument(skip(db))]
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     db.write(move |conn| {
-        let result: Option<(String, String)> = conn
+        // Patch 33 -- also read the source observation's space_id so the
+        // promoted insight stays in the same project bucket (no
+        // cross-project leak when materialize is called from a
+        // tenant-shared dreamer).
+        let result: Option<(String, String, Option<i64>)> = conn
             .query_row(
-                "SELECT content, source FROM memories WHERE id = ?1 AND category = 'growth'",
+                "SELECT content, source, space_id FROM memories \
+                 WHERE id = ?1 AND category = 'growth'",
                 rusqlite::params![observation_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()
             .map_err(rusqlite_to_eng_error)?;
 
-        let (content, source) = result.ok_or_else(|| {
+        let (content, source, source_space_id) = result.ok_or_else(|| {
             EngError::NotFound(format!("growth observation {} not found", observation_id))
         })?;
 
+        // Patch 33 -- propagate space_id of the source observation. NULL
+        // is preserved when the source is a pre-v57 legacy observation;
+        // the user_id arg is reserved for a future enhancement that may
+        // also stamp user_id on the insight.
+        let _ = user_id;
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-             source_count, is_static, is_forgotten, confidence, status, \
+             source_count, is_static, is_forgotten, confidence, status, space_id, \
              created_at, updated_at) \
-             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', \
+             VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
              datetime('now'), datetime('now'))",
-            rusqlite::params![content, source],
+            rusqlite::params![content, source, source_space_id],
         )
         .map_err(rusqlite_to_eng_error)?;
 
@@ -396,16 +441,19 @@ pub async fn reflect(
 
     let trimmed_for_closure = trimmed.clone();
     let source_c = source.clone();
+    // Patch 33 -- stamp space_id so the observation stays in the
+    // project bucket of the context that generated it (#3028 fix).
+    let space_id_for_closure = req.space_id;
     let (memory_id, reflection_id) = db
         .write(move |conn| {
             let trimmed_refl = trimmed_for_closure.clone();
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, is_archived, confidence, status, \
+                 source_count, is_static, is_forgotten, is_archived, confidence, status, space_id, \
                  created_at, updated_at) \
-                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, \
                  datetime('now'), datetime('now'))",
-                rusqlite::params![trimmed_for_closure, source_c],
+                rusqlite::params![trimmed_for_closure, source_c, space_id_for_closure],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -548,6 +596,9 @@ pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectRe
             Some(existing_lines.join("\n"))
         },
         prompt_override: None,
+        // Patch 33 -- self_reflect is currently invoked without space
+        // context; future callers can pre-fill if they want to scope.
+        space_id: None,
     };
 
     reflect(db, &req, user_id).await

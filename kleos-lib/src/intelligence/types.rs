@@ -235,6 +235,14 @@ pub struct GrowthReflectRequest {
     pub context: Vec<String>,
     pub existing_growth: Option<String>,
     pub prompt_override: Option<String>,
+    /// Patch 33 -- restrict this reflection to the context of one space
+    /// and stamp the resulting observation with the same `space_id`. The
+    /// dreamer (`dreamer.rs`) iterates per space to avoid cross-projet
+    /// leakage (bug #3028). `None` keeps the upstream behaviour where
+    /// the observation lands with `space_id = NULL` (treated as legacy
+    /// cross-project by the inclusive search filter).
+    #[serde(default)]
+    pub space_id: Option<i64>,
 }
 
 /// Result of a growth reflection: the generated observation and its storage ids.

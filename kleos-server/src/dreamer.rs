@@ -360,6 +360,11 @@ async fn run_cycle(
                     context: merged_ctx,
                     existing_growth: None,
                     prompt_override: None,
+                    // Patch 33 -- TODO: iterate per space here (cf. plan
+                    // section 4 partie 2). Current `None` keeps upstream
+                    // behaviour: observations get space_id=NULL, treated
+                    // as legacy by the inclusive search filter.
+                    space_id: None,
                 };
                 match growth::reflect(db, &req, *user_id).await {
                     Ok(res) => {
@@ -648,6 +653,9 @@ async fn run_cycle_tenants(
                             context: ctx,
                             existing_growth: None,
                             prompt_override: None,
+                            // Patch 33 -- same TODO as the non-tenant
+                            // branch above.
+                            space_id: None,
                         };
                         if let Err(e) = growth::reflect(&tenant_db, &req, *user_id).await {
                             warn!(

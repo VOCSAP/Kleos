@@ -315,7 +315,14 @@ async fn post_prompt_generate(
 
     // Living prompt: Growth observations
     if include_growth {
-        if let Ok(observations) = list_observations(&db, growth_limit).await {
+        // Patch 33 -- pass None for space filter to preserve upstream
+        // behaviour (prompts compose observations from all spaces of the
+        // tenant; scoping at the prompts layer is left to a follow-up
+        // patch). auth.user_id is required by the new signature for the
+        // default-space subquery (only consulted when space_id is set).
+        if let Ok(observations) =
+            list_observations(&db, growth_limit, None, None, auth.user_id).await
+        {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
                 for obs in &observations {
