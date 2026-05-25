@@ -72,39 +72,6 @@ pub struct QuotaStatus {
 // Admin CRUD -- tenant_quotas table
 // ---------------------------------------------------------------------------
 
-/// Fetch the quota row for a specific user, or None if no row exists.
-#[tracing::instrument(skip(db))]
-pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota>> {
-    db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT user_id, max_memories, max_conversations, max_api_keys, max_spaces, \
-                 max_memory_size_bytes, storage_bytes_limit, rate_limit_override \
-                 FROM tenant_quotas WHERE user_id = ?1",
-            )
-            ?;
-
-        let mut rows = stmt
-            .query(params![user_id])
-            ?;
-
-        match rows.next()? {
-            Some(row) => Ok(Some(TenantQuota {
-                user_id: row.get(0).unwrap_or(0),
-                max_memories: row.get(1).unwrap_or(10000),
-                max_conversations: row.get(2).unwrap_or(1000),
-                max_api_keys: row.get(3).unwrap_or(10),
-                max_spaces: row.get(4).unwrap_or(5),
-                max_memory_size_bytes: row.get(5).unwrap_or(102400),
-                storage_bytes_limit: row.get(6).unwrap_or(DEFAULT_STORAGE_BYTES_LIMIT),
-                rate_limit_override: row.get(7).ok(),
-            })),
-            None => Ok(None),
-        }
-    })
-    .await
-}
-
 /// Insert or update the quota row for a user.
 #[tracing::instrument(skip(db, quota), fields(user_id = quota.user_id))]
 pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {

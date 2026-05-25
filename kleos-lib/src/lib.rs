@@ -23,7 +23,6 @@ pub mod fsrs;
 pub mod gate;
 pub mod graph;
 pub mod grounding;
-pub mod guard;
 pub mod handoffs;
 pub mod inbox;
 pub mod ingestion;
