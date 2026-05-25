@@ -145,6 +145,7 @@ async fn execute_store(
         is_static: body.is_static,
         session_id: body.session_id,
         space_id: body.space_id,
+        space: None,
         user_id: Some(user_id),
         embedding: None,
         parent_memory_id: None,

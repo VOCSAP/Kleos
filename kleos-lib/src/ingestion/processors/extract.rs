@@ -103,6 +103,7 @@ pub async fn process(
                 is_static: None,
                 user_id: Some(options.user_id),
                 space_id: options.space_id,
+                space: None,
                 parent_memory_id: None,
                 chunk_embeddings: None,
             };

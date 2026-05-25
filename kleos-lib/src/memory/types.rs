@@ -275,6 +275,12 @@ pub struct StoreRequest {
     #[serde(alias = "userId")]
     pub user_id: Option<i64>,
     pub space_id: Option<i64>,
+    /// Patch 33: wire-only convenience -- accept a free-form `space` name
+    /// alongside the numeric `space_id`. Server handlers resolve this via
+    /// `space::normalize_space_input` before passing the request to the
+    /// library, so `memory::store` only ever reads `space_id`.
+    #[serde(default)]
+    pub space: Option<String>,
     pub parent_memory_id: Option<i64>,
 }
 fn default_category() -> String {
@@ -305,6 +311,18 @@ pub struct SearchRequest {
     pub threshold: Option<f32>,
     pub user_id: Option<i64>,
     pub space_id: Option<i64>,
+    /// Patch 33: wire-only convenience -- accept `space` name alongside
+    /// numeric `space_id`. Server handlers resolve via
+    /// `space::normalize_space_input` and populate `space_id` before
+    /// invoking the search functions.
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Patch 33: when `space_id` is set, include the user's `default`
+    /// space (and legacy NULL rows) in the result set. Defaults to
+    /// `Some(true)` when unspecified at the server boundary. None at
+    /// the library boundary keeps upstream behaviour (no spaces filter).
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
     pub include_forgotten: Option<bool>,
     pub mode: Option<String>,
     pub question_type: Option<QuestionType>,
@@ -377,6 +395,11 @@ pub struct ListOptions {
     pub source: Option<String>,
     pub user_id: Option<i64>,
     pub space_id: Option<i64>,
+    /// Patch 33: when set with `space_id`, include the user's `default`
+    /// space (and legacy NULL rows) in the result set. `None` keeps
+    /// upstream behaviour (no spaces filter even if space_id is set).
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
     pub include_forgotten: bool,
     pub include_archived: bool,
 }
@@ -389,6 +412,7 @@ impl Default for ListOptions {
             source: None,
             user_id: None,
             space_id: None,
+            include_unscoped: None,
             include_forgotten: false,
             include_archived: false,
         }

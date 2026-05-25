@@ -110,6 +110,21 @@ async fn store_memory(
     }
 
     req.user_id = Some(auth.user_id);
+
+    // Patch 33: resolve any (`space_id`, `space`) pair to a single concrete
+    // `space_id`. Empty / sentinel / alias values collapse to the user's
+    // `default` space; named spaces are auto-created on first reference.
+    // After this step the library never sees the free-form `space` field.
+    let resolved_space_id = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.user_id,
+        req.space_id,
+        req.space.as_deref(),
+    )
+    .await?;
+    req.space_id = Some(resolved_space_id);
+    req.space = None;
+
     let content = req.content.clone();
     let embedder = state.current_embedder().await;
     let pre_embedded = req.embedding.is_some();
@@ -277,6 +292,16 @@ async fn search_memories(
     // Cap limit to prevent DoS via unbounded result sets
     let limit = body.limit.map(|l| l.min(100));
 
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL
+    // filter. None preserves upstream "no spaces filter" semantics.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
     let req = SearchRequest {
         query: body.query,
         embedding,
@@ -286,7 +311,9 @@ async fn search_memories(
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
         user_id: Some(auth.user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        space: None,
+        include_unscoped: body.include_unscoped,
         include_forgotten: body.include_forgotten,
         mode: body.mode,
         question_type: body.question_type,
@@ -395,6 +422,15 @@ async fn explain_search(
     let body_query = body.query.clone();
     let limit = body.limit.map(|l| l.min(100));
 
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL filter.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
     let req = SearchRequest {
         query: body.query,
         embedding,
@@ -404,7 +440,9 @@ async fn explain_search(
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
         user_id: Some(auth.user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        space: None,
+        include_unscoped: body.include_unscoped,
         include_forgotten: body.include_forgotten,
         mode: body.mode.clone(),
         question_type: body.question_type,
@@ -499,13 +537,23 @@ async fn recall(
         .or(body.context)
         .unwrap_or_default();
 
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL filter.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
     let static_opts = ListOptions {
         limit: 10,
         offset: 0,
         category: None,
         source: None,
         user_id: Some(user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        include_unscoped: body.include_unscoped,
         include_forgotten: false,
         include_archived: false,
     };
@@ -535,7 +583,9 @@ async fn recall(
         tags: None,
         threshold: None,
         user_id: Some(user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        space: None,
+        include_unscoped: body.include_unscoped,
         include_forgotten: None,
         mode: None,
         question_type: None,
@@ -554,7 +604,8 @@ async fn recall(
         category: None,
         source: None,
         user_id: Some(user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        include_unscoped: body.include_unscoped,
         include_forgotten: false,
         include_archived: false,
     };
@@ -608,7 +659,8 @@ async fn recall(
         category: None,
         source: None,
         user_id: Some(user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        include_unscoped: body.include_unscoped,
         include_forgotten: false,
         include_archived: false,
     };
@@ -651,13 +703,23 @@ async fn list_memories(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL filter.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        params.space_id,
+        params.space.as_deref(),
+    )
+    .await?;
+
     let opts = ListOptions {
         limit: params.limit.unwrap_or(50).min(1000),
         offset: params.offset.unwrap_or(0),
         category: params.category,
         source: params.source,
         user_id: Some(auth.user_id),
-        space_id: params.space_id,
+        space_id: resolved_space_id,
+        include_unscoped: params.include_unscoped,
         include_forgotten: params.include_forgotten.unwrap_or(false),
         include_archived: params.include_archived.unwrap_or(false),
     };
@@ -829,6 +891,7 @@ async fn synthesize_profile(
             source: None,
             user_id: Some(auth.user_id),
             space_id: None,
+            include_unscoped: None,
             include_forgotten: false,
             include_archived: true,
         },

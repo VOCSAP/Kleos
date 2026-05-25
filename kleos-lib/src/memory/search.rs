@@ -1128,6 +1128,17 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         let filter_space = req.space_id;
         let filter_threshold = req.threshold;
 
+        // Patch 33: resolve the user's default space id once (if needed) so
+        // the inclusive filter `space_id IN (current, default) OR NULL`
+        // can be applied synchronously inside the retain closure.
+        let filter_include_unscoped = req.include_unscoped.unwrap_or(false);
+        let filter_default_space_id: Option<i64> =
+            if filter_space.is_some() && filter_include_unscoped {
+                crate::space::default_space_id(db, user_id).await.ok()
+            } else {
+                None
+            };
+
         final_results.retain(|r| {
             let m = &r.memory;
             if let Some(cat) = filter_category {
@@ -1148,7 +1159,18 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
                 }
             }
             if let Some(sid) = filter_space {
-                if m.space_id != Some(sid) {
+                // Patch 33: inclusive mode = scoped + default + legacy NULL.
+                // Strict mode (default upstream) = exact space match.
+                if filter_include_unscoped {
+                    let matches_current = m.space_id == Some(sid);
+                    let matches_default = filter_default_space_id
+                        .map(|def| m.space_id == Some(def))
+                        .unwrap_or(false);
+                    let matches_legacy_null = m.space_id.is_none();
+                    if !(matches_current || matches_default || matches_legacy_null) {
+                        return false;
+                    }
+                } else if m.space_id != Some(sid) {
                     return false;
                 }
             }
@@ -1381,6 +1403,8 @@ pub async fn faceted_search(
             threshold: None,
             user_id: Some(user_id),
             space_id: req.space_id,
+            space: None,
+            include_unscoped: None,
             include_forgotten: Some(false),
             mode: None,
             question_type: None,

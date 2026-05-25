@@ -10,6 +10,13 @@ pub(super) struct SearchBody {
     pub threshold: Option<f32>,
     pub tag: Option<String>,
     pub space_id: Option<i64>,
+    /// Patch 33: free-form space name (resolved server-side).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Patch 33: include the user's default space (and legacy NULL rows)
+    /// when filtering by a named space. Defaults to `true`.
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
     pub include_forgotten: Option<bool>,
     pub mode: Option<String>,
     pub question_type: Option<kleos_lib::memory::types::QuestionType>,
@@ -25,6 +32,13 @@ pub(super) struct RecallBody {
     pub query: Option<String>,
     pub limit: Option<usize>,
     pub space_id: Option<i64>,
+    /// Patch 33: free-form space name (resolved server-side).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Patch 33: include the user's default space when filtering by a
+    /// named space. Defaults to `true`.
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,6 +48,13 @@ pub(super) struct ListQuery {
     pub category: Option<String>,
     pub source: Option<String>,
     pub space_id: Option<i64>,
+    /// Patch 33: free-form space name (resolved server-side).
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Patch 33: include the user's default space when filtering by a
+    /// named space. Defaults to `true`.
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
     pub include_forgotten: Option<bool>,
     pub include_archived: Option<bool>,
 }
