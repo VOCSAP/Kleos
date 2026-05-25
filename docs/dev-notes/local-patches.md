@@ -3516,6 +3516,101 @@ anti-leak).
 
 ---
 
+## Patch 33 -- iterations post-deploy (2026-05-25)
+
+Apres le deploy LXC 121 + validation du Patch 33 initial (sections 1, 2,
+3 partie 1, 4 partie 1, 6, 7, 8, 9, 10) + Patch 34 (fix /spaces dual-DB),
+les sections suivantes ont ete completees dans la meme branche
+`local/patch-33-spaces-integration`.
+
+### Patch 33 (5/N) -- Section 3 partie 2 : conversations partitioning
+
+**Commit `6818ab00`**.
+
+`kleos-lib/src/conversations.rs` :
+
+- `Conversation` + `ConversationListItem` exposent `pub space_id:
+  Option<i64>`.
+- `CONVERSATION_COLUMNS` / `CONVERSATION_LIST_COLUMNS` etendus avec
+  `space_id` (index 7 ; `message_count` shifte a 8).
+- `CreateConversationRequest`, `BulkInsertRequest`,
+  `UpsertConversationRequest` gagnent `space_id` + `space` (wire-only).
+- `SearchMessagesRequest` gagne `space_id` + `include_unscoped`.
+- `create_conversation` / `bulk_insert_conversation` INSERT colonne
+  `space_id`. `upsert_conversation` propage les fields sur le path
+  create-fallback.
+- `list_conversations` / `list_conversations_by_agent` / `search_messages`
+  gagnent params space + filter via helper `build_space_filter(col,
+  space_id, include_unscoped, user_id)` (clause inclusive `space_id IN
+  (?cur, ?default) OR space_id IS NULL`, ou strict, ou aucun).
+
+`kleos-server/src/routes/conversations/mod.rs` :
+
+- `create` / `bulk_insert` / `upsert` handlers appellent
+  `kleos_lib::space::normalize_space_input` avant la fn lib.
+- `list` / `search_msgs` handlers appellent `resolve_space_filter` et
+  passent (`Option<i64>`, `Option<bool>`) aux fns lib.
+- `get_one` handler expose `space_id` dans le JSON output.
+
+`kleos-server/src/routes/conversations/types.rs` :
+
+- `ListConversationsParams` gagne `space` + `space_id` +
+  `include_unscoped` (`#[serde(default)]`, back-compat HTTP wire).
+
+### Patch 33 (6/N) -- Section 4 partie 2 : growth partitioning (#3028 fix partiel)
+
+**Commit `b1a4a87...`** (a verifier au prochain push).
+
+`kleos-lib/src/intelligence/growth.rs` :
+
+- `list_observations` signature gagne `space_id: Option<i64>`,
+  `include_unscoped: Option<bool>`, `user_id: i64`. SQL filter optionnel
+  (None preserve upstream).
+- `materialize` lit `source.space_id` et le propage a l'INSERT INTO
+  memories (au lieu de NULL hardcoded).
+- `reflect` INSERT INTO memories propage `req.space_id` (NULL si non
+  fourni = comportement upstream legacy).
+
+`kleos-lib/src/intelligence/types.rs` :
+
+- `GrowthReflectRequest` gagne `pub space_id: Option<i64>`
+  (`#[serde(default)]`).
+
+`kleos-server/src/dreamer.rs` :
+
+- 2 sites de construction `GrowthReflectRequest` (lignes 358 et 651)
+  gagnent `space_id: None` avec TODO marker pour le refactor outer-loop
+  par space (defere).
+
+`kleos-server/src/routes/growth/{mod,types}.rs` :
+
+- `ObservationsQuery` gagne `space` / `space_id` / `include_unscoped`.
+- `observations_handler` resout via `resolve_space_filter` et passe le
+  triplet a `list_observations`.
+
+`kleos-server/src/routes/prompts/mod.rs` :
+
+- Call site `list_observations` adapte a la nouvelle signature.
+
+Bug #3028 resolution partielle : les observations existantes restent
+melangees cross-projet (`space_id = NULL` legacy). Les nouvelles
+observations crees avec `req.space_id` rempli iront dans le bon bucket.
+Le filtre `GET /growth/observations?space=X&include_unscoped=true`
+permet de cibler une projection.
+
+### Items deferes a Patch 35 ou plus tard
+
+| Item | Raison de defer | Reference plan |
+|---|---|---|
+| `dreamer.rs` outer-loop par space pour growth::reflect | Refactor architecture moyennement large (helpers list_user_spaces + recent_memory_contents_for_space + boucle). Necessite test E2E sur dreamer cycle. | Plan section 4 partie 2 pattern alpha |
+| `brain_query` post-ranking filter optionnel | Plan explicite "Brain reste GLOBAL". Sur substrat associatif Hopfield, le partitionnement n'est pas aligne avec la semantique du modele. | Plan section 4 paragraphe Brain |
+| `intelligence/contradiction.rs` + `temporal.rs` filter par space | structure fact-based / pattern-based, pas pair-based direct memoire. Refactor non-trivial. | Plan section 4 partie 1 |
+| `causal/feedback/predictive` derives INSERT space_id heritage | Plan section 4 mentionnait des lignes (315/177/454/418) qui sont en realite des helpers de tests. Audit confirme : pas de derives production a corriger. | Plan section 4 partie 1 |
+| Migration NULL legacy -> default (~3500 memoires) | Chantier dedie avec strategie (UPDATE global vs UPDATE selectif via tags vs DUMP+reinjection). | Plan section 11 |
+| KLEOS.md global section 10 "spaces" | Doc operateur, vit dans `claude-config` separe (pas dans ce repo). | Plan section 10 |
+
+---
+
 ## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)
 
 ### Symptome
