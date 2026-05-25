@@ -88,10 +88,61 @@ pub fn registry() -> Vec<Value> {
 
 /// Routes an MCP tool call to the registered HTTP route. The arguments are
 /// passed straight through; path templates extract the relevant fields.
+///
+/// Patch 33: if the args object lacks both `space` and `space_id`, try to
+/// auto-inject the project's space name from the per-session file written
+/// by `session-start-kleos.sh`. This lets MCP tool calls inherit the
+/// session's project scope transparently (matching the convention that
+/// `kleos-cli` enforces via env / cwd resolution).
 #[tracing::instrument(skip(app, args), fields(name = %name))]
 pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value, String> {
     let route = find_by_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
+    let args = maybe_inject_space(args);
     app.client.call_route(route, args).await
+}
+
+/// Read the per-session space file written by `session-start-kleos.sh`
+/// (path: `$HOME/.kleos/sessions/$CLAUDE_SESSION_ID/space_name`). Returns
+/// the trimmed first line on success, `None` otherwise.
+fn read_session_space_name() -> Option<String> {
+    let sid = std::env::var("CLAUDE_SESSION_ID")
+        .or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID"))
+        .ok()?;
+    if sid.trim().is_empty() {
+        return None;
+    }
+    let home = std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())?;
+    let path = std::path::PathBuf::from(home)
+        .join(".kleos")
+        .join("sessions")
+        .join(sid.trim())
+        .join("space_name");
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let first = raw.lines().next()?.trim().to_string();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first)
+    }
+}
+
+/// If `args` is a JSON object and contains neither `space` nor `space_id`,
+/// inject `space = <session_space>` so the server-side
+/// `normalize_space_input` resolves it. Non-object args (numbers, strings,
+/// arrays) and args with an explicit space are returned untouched.
+fn maybe_inject_space(mut args: Value) -> Value {
+    let Some(map) = args.as_object_mut() else {
+        return args;
+    };
+    if map.contains_key("space") || map.contains_key("space_id") {
+        return args;
+    }
+    if let Some(name) = read_session_space_name() {
+        map.insert("space".to_string(), Value::String(name));
+    }
+    args
 }
 
 #[cfg(test)]

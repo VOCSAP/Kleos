@@ -3377,6 +3377,145 @@ agent-forge spec_id : `spec_6ed1cff9` (dogfood, cree et cloture via Patch
 
 ---
 
+## Patch 33 -- Spaces complete integration (2026-05-25)
+
+### Symptome
+
+Le concept `spaces` existait dans Kleos depuis Ghost-Frame mais a moitie cable :
+table `spaces`, colonnes `space_id` indexees sur `memories` et `entities`,
+endpoints `/spaces` (POST / GET / DELETE), space `default` auto-cree a la
+creation user (`auth_keys/mod.rs:278`). MAIS aucun client ne l'utilisait
+jamais.
+
+Sur prod LXC 121 :
+
+- 1 seul space existe (`default` id=2)
+- ~3500 memoires existantes en `space_id = NULL` (legacy)
+- `conversations` n'avait meme pas la colonne `space_id`
+- Aucun endpoint de lecture n'exposait `?space=X`
+- kleos-cli / kleos-mcp / hooks ne propageaient pas le space
+- Pipeline intelligence (dreamer + sweeps) ignorait totalement le space :
+  duplicates / consolidation cross-projet possibles silencieusement
+
+Risque operationnel : lors de l'introduction des `conversations` (skills
+`kleos-session-save/load` prevus), le melange cross-projet etait
+inevitable (bug similaire a #3028 sur growth).
+
+### Approche
+
+Convention centrale : apres Patch 33, `space_id` est **toujours NOT NULL**
+sur tout nouveau write. Le space `default` auto-cree EST la representation
+canonique du "cross-projet / non-scope". Les ~3500 memoires legacy NULL
+restent visibles en lecture inclusive via une clause additionnelle
+transitoire `OR space_id IS NULL`. Naturellement isolees des sweeps par
+paire (NULL != NULL en SQL).
+
+Niveau de delta upstream : **additif majoritairement**, avec un patch
+chirurgical sur 2 SQL existants (filtres list + post-filter search).
+
+Pieces livrees :
+
+1. **Migration tenant v57** -- ajoute `conversations.space_id` (nullable,
+   idempotent, manifest append-only).
+2. **Helpers `kleos_lib::space`** (nouveau module) -- `normalize_space_name`,
+   `default_space_id` (cache HashMap process), `resolve_or_create_space`,
+   `space_belongs_to_user`, `normalize_space_input` (write convention :
+   absent / 0 / alias -> default ; id valide -> N ; id invalide -> 400 ;
+   name -> resolve_or_create), `resolve_space_filter` (read convention :
+   None preserve "no filter" upstream).
+3. **Lib types** -- `StoreRequest`, `SearchRequest`, `ListOptions` gagnent
+   `pub space: Option<String>` (wire-only) ; `SearchRequest` et
+   `ListOptions` gagnent `pub include_unscoped: Option<bool>`.
+4. **Handlers memory** -- `store_memory` appelle `normalize_space_input`
+   avant `memory::store`. `search_memories`, `explain_search`, `recall`,
+   `list_memories` appellent `resolve_space_filter` puis transmettent.
+5. **SQL filters lib** -- `memory::list` et `hybrid_search` post-filter
+   etendus : `include_unscoped = Some(true)` declenche `space_id IN (?cur,
+   ?default) OR space_id IS NULL` ; defaut preserve `= ?cur`.
+6. **Anti-leak dreamer** -- `find_duplicates` et
+   `find_consolidation_candidates` gagnent `AND ms.space_id = mt.space_id`
+   (1 ligne chacun). Empeche dedupe + consolidation cross-projet.
+7. **CLI** -- nouveau module `kleos-cli/src/space.rs` (resolve_project_name
+   marker > git > cwd, normalize_space_name, determine_space_for_request,
+   inject_space_into_body). Flags `--space` / `--space-id` / `--no-space`
+   sur Store ; idem + `--include-unscoped` sur Search / Context / List.
+   Subcommand `Space { Resolve, List, Ensure }`.
+8. **Hook bash** -- nouveau `hooks/full/lib-kleos-space.sh`
+   (normalize_space_name, resolve_project_name, ensure_kleos_space_marker,
+   write_kleos_space_to_settings, write_kleos_space_per_sid). Wire dans
+   `session-start-kleos.sh` : marker `.kleos-space` immuable, env
+   `KLEOS_SPACE` exporte, `.claude/settings.json` env.KLEOS_SPACE
+   merge via jq, per-sid file `~/.kleos/sessions/<sid>/space_name`.
+9. **kleos-mcp** -- `dispatch` lit le per-sid file et injecte `space`
+   dans le payload si absent (matche la convention CLI).
+10. **Test parity** -- `tests/space-resolution-parity.sh` boucle 7
+    scenarios temp et compare `bash resolve_project_name` vs
+    `kleos-cli space resolve`. Tout mismatch est un bug.
+
+### Fichiers touches
+
+| Fichier | Niveau delta | Description |
+|---|---|---|
+| `kleos-lib/src/db/tenant_migrations.rs` + `.manifest` | additif | v57 conversations.space_id |
+| `kleos-lib/src/space.rs` | nouveau | helpers convention + cache |
+| `kleos-lib/src/lib.rs` | additif | declaration module |
+| `kleos-lib/src/memory/types.rs` | additif | champs `space`, `include_unscoped` |
+| `kleos-lib/src/memory/mod.rs` | chirurgical | filtre SQL list inclusif |
+| `kleos-lib/src/memory/search.rs` | chirurgical | post-filter hybrid_search inclusif |
+| `kleos-lib/src/{context,sync,intelligence/correction,ingestion/processors/{raw,extract}}` | additif | `space: None` aux StoreRequest existants |
+| `kleos-lib/src/intelligence/duplicates.rs` | chirurgical | `AND ms.space_id = mt.space_id` |
+| `kleos-lib/src/intelligence/consolidation.rs` | chirurgical | idem |
+| `kleos-server/src/routes/memory/{mod,types}.rs` | chirurgical | normalize + resolve + flags |
+| `kleos-server/src/routes/{batch,fsrs,gui,intelligence,onboard,prompts}/mod.rs` | additif | propagate `space: None` aux StoreRequest/SearchRequest existants |
+| `kleos-cli/src/main.rs` | refactor local | flags + dispatch + Space subcommand |
+| `kleos-cli/src/space.rs` | nouveau | resolve_project_name + helpers |
+| `kleos-mcp/src/tools.rs` | additif | auto-inject space per-sid |
+| `hooks/full/lib-kleos-space.sh` | nouveau | helper bash partage |
+| `hooks/full/session-start-kleos.sh` | additif | wire ensure_kleos_space_marker + exports |
+| `tests/space-resolution-parity.sh` | nouveau | test E2E parity |
+
+### Tests
+
+- `cargo test -p kleos-lib --features bundled-sqlite --lib space::` -> 4 tests pass (normalize_strips_accent_and_spaces, normalize_drops_special_chars, aliases_recognized, cache_invalidation_drops_entry).
+- `cargo test -p kleos-lib --features bundled-sqlite --lib db::tenant_migrations::tests` -> 96 tests pass (dont `tenant_migrations_obey_append_only_manifest` + `fresh_db_lands_at_latest`).
+- `bash tests/space-resolution-parity.sh` -> 7/7 cases OK (test parity bash vs Rust).
+- Deploy LXC 121 verification manuelle (cf. plan section Verification).
+
+### Conditions de retrait
+
+Trois scenarios :
+
+1. **Upstream Ghost-Frame absorbe ce patch via PR** : retirer Patch 33 de
+   la liste locale, code reste tel quel. Candidat PR upstream apres
+   validation prod LXC 121 + observation no cross-space leak sur 7 jours.
+2. **Upstream livre un mecanisme equivalent different** (ex: tenant-level
+   namespacing, autre table de partitionnement) : aligner les helpers
+   et SQL filters sur l'API upstream, supprimer le code redondant.
+3. **Decision de retrait standalone** : retirer le module space.rs,
+   defaire les changements de StoreRequest/SearchRequest/ListOptions
+   (regression upstream-compat possible), retirer les flags CLI et les
+   hooks bash. Tous les sites localisables via `git grep
+   "space::normalize_space_input\|space::resolve_space_filter\|KLEOS_SPACE"`.
+
+Sujets hors scope de Patch 33 (chantiers futurs documentes dans le plan
+`C:\Users\Olivier\.claude\plans\1-pour-viter-le-synchronous-tiger.md`) :
+
+- conversations.rs : helpers + handlers (Section 3 partie 2 reportee)
+- growth.rs / list_observations : fix #3028 cross-projet (Section 4
+  partie 2)
+- brain_query : filtre post-ranking optionnel
+- intelligence/contradiction / temporal : refactor structure (fact-based,
+  pas pair-based)
+- causal / feedback / predictive : audit des INSERT derives en production
+- dreamer.rs : boucle externe par space pour growth_reflect 1->N
+- Migration NULL legacy -> default (section 11 du plan)
+
+agent-forge spec_id : `spec_5dae3d18` (parent), `spec_94f9a5c5` (section
+3 endpoints), `spec_228ecf4f` (wiring), `spec_1ae47040` (section 4
+anti-leak).
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

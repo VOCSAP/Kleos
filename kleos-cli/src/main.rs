@@ -1,5 +1,6 @@
 mod hook;
 mod import_plugins;
+mod space;
 use hook::{run_hook, HookCommands};
 use kleos_client::{truncate, Client};
 use std::time::Duration;
@@ -48,6 +49,18 @@ enum Commands {
         /// Source identifier
         #[arg(short, long)]
         source: Option<String>,
+        /// Patch 33: scope this memory to a named space (resolved or created on
+        /// the server). Defaults to $KLEOS_SPACE env var or the cwd-detected
+        /// project name. Use `--no-space` to force the cross-project bucket.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: bypass name resolution and use an explicit numeric id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket regardless
+        /// of the marker, env var or cwd-detected name.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
     },
     /// Search memories
     Search {
@@ -56,6 +69,19 @@ enum Commands {
         /// Maximum results
         #[arg(short, long, default_value = "10")]
         limit: usize,
+        /// Patch 33: limit the search to a named space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: limit the search to an explicit numeric space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
+        /// Patch 33: include the user's `default` space and legacy NULL rows
+        /// when filtering by a named space (defaults to server-side `true`).
+        #[arg(long)]
+        include_unscoped: Option<bool>,
     },
     /// Get context for a query (richer output than search)
     Context {
@@ -64,12 +90,29 @@ enum Commands {
         /// Maximum memories to return
         #[arg(short, long, default_value = "5")]
         limit: usize,
+        /// Patch 33: limit the context to a named space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: limit the context to an explicit numeric space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
+        /// Patch 33: include the user's `default` space and legacy NULL rows
+        /// when filtering by a named space (defaults to server-side `true`).
+        #[arg(long)]
+        include_unscoped: Option<bool>,
     },
     /// Recall a specific memory by ID
     Recall {
         /// Memory ID
         id: String,
     },
+    /// Patch 33: spaces management subcommands (resolve current space,
+    /// list, ensure-by-name).
+    #[command(subcommand)]
+    Space(SpaceCommands),
     /// Evaluate content through the guard system
     Guard {
         /// Content to evaluate
@@ -83,6 +126,19 @@ enum Commands {
         /// Offset
         #[arg(short, long, default_value = "0")]
         offset: usize,
+        /// Patch 33: limit the listing to a named space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: limit the listing to an explicit numeric space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
+        /// Patch 33: include the user's `default` space and legacy NULL rows
+        /// when filtering by a named space (defaults to server-side `true`).
+        #[arg(long)]
+        include_unscoped: Option<bool>,
     },
     /// Delete a memory
     Delete {
@@ -177,6 +233,23 @@ enum Commands {
     /// Admin operations (require admin role, signed request, long timeouts)
     #[command(subcommand)]
     Admin(AdminCommands),
+}
+
+/// Patch 33 -- subcommands for `kleos-cli space`.
+#[derive(Subcommand)]
+enum SpaceCommands {
+    /// Print the project's resolved space name (marker > git > cwd
+    /// basename, normalized). Stdout-only, no network call. Used by
+    /// the parity test that compares Rust vs bash resolution.
+    Resolve,
+    /// List spaces owned by the authenticated user.
+    List,
+    /// Ensure a space with the given name exists, creating it if needed,
+    /// then print its numeric id on stdout.
+    Ensure {
+        /// Space name (will be normalized server-side).
+        name: String,
+    },
 }
 
 /// Subcommands for `kleos-cli admin` -- long-running admin operations.
@@ -898,6 +971,9 @@ async fn main() {
             importance,
             tags,
             source,
+            space,
+            space_id,
+            no_space,
         } => {
             let tags_list: Vec<String> = tags
                 .as_deref()
@@ -922,6 +998,14 @@ async fn main() {
                 body["source"] = json!(src);
             }
 
+            // Patch 33 -- inject the resolved space (or none if no signal).
+            let (sid, sname) = space::determine_space_for_request(
+                no_space,
+                space.as_deref(),
+                space_id,
+            );
+            space::inject_space_into_body(&mut body, sid, sname);
+
             match client.post("/store", body).await {
                 Ok(v) => {
                     if let Some(existing_id) = value_as_string(v.get("existing_id")) {
@@ -936,8 +1020,24 @@ async fn main() {
             }
         }
 
-        Commands::Search { query, limit } => {
-            let body = json!({ "query": query, "limit": limit });
+        Commands::Search {
+            query,
+            limit,
+            space,
+            space_id,
+            no_space,
+            include_unscoped,
+        } => {
+            let mut body = json!({ "query": query, "limit": limit });
+            let (sid, sname) = space::determine_space_for_request(
+                no_space,
+                space.as_deref(),
+                space_id,
+            );
+            space::inject_space_into_body(&mut body, sid, sname);
+            if let Some(iu) = include_unscoped {
+                body["include_unscoped"] = json!(iu);
+            }
             match client.post("/search", body).await {
                 Ok(v) => {
                     let results = v.as_array().cloned().unwrap_or_else(|| {
@@ -985,8 +1085,24 @@ async fn main() {
             }
         }
 
-        Commands::Context { query, limit } => {
-            let body = json!({ "query": query, "context": query, "limit": limit });
+        Commands::Context {
+            query,
+            limit,
+            space,
+            space_id,
+            no_space,
+            include_unscoped,
+        } => {
+            let mut body = json!({ "query": query, "context": query, "limit": limit });
+            let (sid, sname) = space::determine_space_for_request(
+                no_space,
+                space.as_deref(),
+                space_id,
+            );
+            space::inject_space_into_body(&mut body, sid, sname);
+            if let Some(iu) = include_unscoped {
+                body["include_unscoped"] = json!(iu);
+            }
             match client.post("/recall", body).await {
                 Ok(v) => {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -1080,11 +1196,36 @@ async fn main() {
             }
         }
 
-        Commands::List { limit, offset } => {
-            match client
-                .get(&format!("/list?limit={}&offset={}", limit, offset))
-                .await
-            {
+        Commands::List {
+            limit,
+            offset,
+            space,
+            space_id,
+            no_space,
+            include_unscoped,
+        } => {
+            // Patch 33 -- resolve the space, percent-encode the name into the
+            // query string. Numeric `space_id` and `include_unscoped` are
+            // appended likewise. None of these get appended when unresolved.
+            let (sid, sname) = space::determine_space_for_request(
+                no_space,
+                space.as_deref(),
+                space_id,
+            );
+            let mut url = format!("/list?limit={}&offset={}", limit, offset);
+            if let Some(id) = sid {
+                url.push_str(&format!("&space_id={}", id));
+            }
+            if let Some(name) = sname {
+                url.push_str(&format!(
+                    "&space={}",
+                    utf8_percent_encode(&name, NON_ALPHANUMERIC)
+                ));
+            }
+            if let Some(iu) = include_unscoped {
+                url.push_str(&format!("&include_unscoped={}", iu));
+            }
+            match client.get(&url).await {
                 Ok(v) => {
                     let items = v.as_array().cloned().unwrap_or_else(|| {
                         v.get("results")
@@ -1353,6 +1494,66 @@ async fn main() {
 
         Commands::Admin(admin_cmd) => {
             handle_admin_command(&client, admin_cmd).await;
+        }
+
+        // Patch 33 -- spaces management subcommands.
+        Commands::Space(space_cmd) => {
+            handle_space_command(&client, space_cmd).await;
+        }
+    }
+}
+
+/// Patch 33 -- dispatcher for `kleos-cli space <subcommand>`.
+async fn handle_space_command(client: &Client, cmd: &SpaceCommands) {
+    match cmd {
+        SpaceCommands::Resolve => {
+            // No network. Mirror the bash helper: print the resolved
+            // project name to stdout. Used by the parity test.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            match space::resolve_project_name(&cwd) {
+                Some(name) => println!("{}", name),
+                None => println!(),
+            }
+        }
+        SpaceCommands::List => match client.get("/spaces").await {
+            Ok(v) => {
+                let items = v.as_array().cloned().unwrap_or_else(|| {
+                    v.get("spaces")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                });
+                if items.is_empty() {
+                    println!("No spaces.");
+                }
+                for item in &items {
+                    let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
+                    let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                    let desc = item
+                        .get("description")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    if desc.is_empty() {
+                        println!("#{} {}", id, name);
+                    } else {
+                        println!("#{} {} -- {}", id, name, desc);
+                    }
+                }
+            }
+            Err(e) => eprintln!("Error: {}", e),
+        },
+        SpaceCommands::Ensure { name } => {
+            let body = json!({ "name": name });
+            match client.post("/spaces", body).await {
+                Ok(v) => {
+                    if let Some(id) = value_as_string(v.get("id")) {
+                        println!("{}", id);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
         }
     }
 }
