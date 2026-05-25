@@ -1,7 +1,10 @@
 pub mod pool;
 mod types;
 
-use self::types::{HttpRerankRequest, HttpRerankResponse};
+use self::types::{
+    CohereRerankRequest, CohereRerankResponse, RerankFormat, RerankResult, TeiRerankRequest,
+    TeiRerankResponse,
+};
 use crate::config::Config;
 use crate::db::Database;
 use crate::embeddings::download::ensure_reranker_model;
@@ -215,6 +218,7 @@ pub struct HttpReranker {
     api_key: Option<String>,
     model: String,
     top_k: usize,
+    format: RerankFormat,
     /// Unified resilience guard (circuit breaker + retry + dead-letter).
     /// `None` when constructed without a database (legacy path, no dead-lettering).
     guard: Option<Arc<ServiceGuard>>,
@@ -243,9 +247,15 @@ impl HttpReranker {
             .build()
             .unwrap_or_default();
 
+        let format = std::env::var("KLEOS_RERANKER_FORMAT")
+            .or_else(|_| std::env::var("ENGRAM_RERANKER_FORMAT"))
+            .map(|s| RerankFormat::parse(&s))
+            .unwrap_or_default();
+
         info!(
             endpoint = %endpoint,
             model = %model,
+            format = ?format,
             top_k = top_k,
             has_guard = db.is_some(),
             "HTTP reranker configured"
@@ -259,10 +269,45 @@ impl HttpReranker {
             api_key,
             model,
             top_k,
+            format,
             guard,
         }
     }
 
+    /// Construct from environment variables.
+    ///
+    /// Returns `None` when `KLEOS_RERANKER_URL` (or legacy `ENGRAM_RERANKER_HTTP_ENDPOINT`)
+    /// is not set.
+    ///
+    /// Reads:
+    ///   `KLEOS_RERANKER_URL`       — endpoint URL (required)
+    ///   `KLEOS_RERANKER_API_KEY`   — Bearer token (optional)
+    ///   `KLEOS_RERANKER_MODEL`     — model name (default: "rerank-v3.5", omitted for TEI)
+    ///   `KLEOS_RERANKER_FORMAT`    — wire format: `cohere` (default) or `tei`
+    ///   Legacy: `ENGRAM_RERANKER_HTTP_ENDPOINT`, `ENGRAM_RERANKER_HTTP_API_KEY`,
+    ///           `ENGRAM_RERANKER_HTTP_MODEL`, `ENGRAM_RERANKER_FORMAT`
+    pub fn from_env(top_k: usize, db: Option<Arc<Database>>) -> Option<Self> {
+        let endpoint = std::env::var("KLEOS_RERANKER_URL")
+            .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_ENDPOINT"))
+            .ok()?;
+        let api_key = std::env::var("KLEOS_RERANKER_API_KEY")
+            .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_API_KEY"))
+            .ok();
+        let model = std::env::var("KLEOS_RERANKER_MODEL")
+            .or_else(|_| std::env::var("ENGRAM_RERANKER_HTTP_MODEL"))
+            .unwrap_or_else(|_| "rerank-v3.5".to_string());
+        Some(Self::new_with_db(endpoint, api_key, model, top_k, db))
+    }
+
+    /// Configured endpoint URL.
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+
+    /// Configured wire format.
+    pub fn format(&self) -> RerankFormat {
+        self.format
+    }
 }
 
 #[async_trait]
@@ -299,6 +344,8 @@ impl Reranker for HttpReranker {
             .map(|r| r.memory.content.clone())
             .collect();
 
+        let format = self.format;
+
         let http_call = {
             let client = client.clone();
             let endpoint = endpoint.clone();
@@ -317,13 +364,25 @@ impl Reranker for HttpReranker {
 
                 async move {
                     let doc_refs: Vec<&str> = documents.iter().map(|s| s.as_str()).collect();
-                    let body = HttpRerankRequest {
-                        model: &model,
-                        query: &query_s,
-                        documents: doc_refs,
-                        top_n: documents.len(),
+                    let mut req = match format {
+                        RerankFormat::Tei => {
+                            let body = TeiRerankRequest {
+                                query: &query_s,
+                                texts: doc_refs,
+                                truncate: true,
+                            };
+                            client.post(&endpoint).json(&body)
+                        }
+                        RerankFormat::Cohere => {
+                            let body = CohereRerankRequest {
+                                model: &model,
+                                query: &query_s,
+                                documents: doc_refs,
+                                top_n: documents.len(),
+                            };
+                            client.post(&endpoint).json(&body)
+                        }
                     };
-                    let mut req = client.post(&endpoint).json(&body);
                     if let Some(ref key) = api_key {
                         req = req.header("Authorization", format!("Bearer {}", key));
                     }
@@ -338,9 +397,34 @@ impl Reranker for HttpReranker {
                             status, body_text
                         )));
                     }
-                    resp.json::<HttpRerankResponse>().await.map_err(|e| {
-                        EngError::Internal(format!("HTTP reranker response parse error: {}", e))
-                    })
+                    let results: Vec<RerankResult> = match format {
+                        RerankFormat::Tei => resp
+                            .json::<TeiRerankResponse>()
+                            .await
+                            .map_err(|e| {
+                                EngError::Internal(format!(
+                                    "HTTP reranker (TEI) response parse error: {}",
+                                    e
+                                ))
+                            })?
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                        RerankFormat::Cohere => resp
+                            .json::<CohereRerankResponse>()
+                            .await
+                            .map_err(|e| {
+                                EngError::Internal(format!(
+                                    "HTTP reranker (Cohere) response parse error: {}",
+                                    e
+                                ))
+                            })?
+                            .results
+                            .into_iter()
+                            .map(Into::into)
+                            .collect(),
+                    };
+                    Ok(results)
                 }
             }
         };
@@ -348,7 +432,7 @@ impl Reranker for HttpReranker {
         // When a ServiceGuard is available, route through it for full
         // circuit-breaker + retry + dead-letter coverage. Otherwise use a
         // simple inline retry loop (no dead-lettering).
-        let rerank_resp: HttpRerankResponse = if let Some(ref guard) = self.guard {
+        let rerank_resp: Vec<RerankResult> = if let Some(ref guard) = self.guard {
             let payload = serde_json::json!({
                 "query": query_s,
                 "document_count": documents.len(),
@@ -366,7 +450,7 @@ impl Reranker for HttpReranker {
         } else {
             // Legacy inline retry: 3 attempts, 200 ms base, no dead-letter.
             let mut last_err: Option<EngError> = None;
-            let mut resp_result: Option<HttpRerankResponse> = None;
+            let mut resp_result: Option<Vec<RerankResult>> = None;
             for attempt in 0..3u32 {
                 if attempt > 0 {
                     let delay_ms = 200u64.saturating_mul(1u64 << (attempt - 1));
@@ -395,10 +479,9 @@ impl Reranker for HttpReranker {
         };
 
         // Apply scores: blend 70% remote score, 30% original
-        for item in &rerank_resp.results {
+        for item in &rerank_resp {
             if item.index < results.len() {
-                results[item.index].score =
-                    item.relevance_score * 0.7 + results[item.index].score * 0.3;
+                results[item.index].score = item.score * 0.7 + results[item.index].score * 0.3;
             }
         }
 
@@ -412,7 +495,10 @@ impl Reranker for HttpReranker {
     }
 
     fn backend_name(&self) -> &str {
-        "http"
+        match self.format {
+            RerankFormat::Tei => "http-tei",
+            RerankFormat::Cohere => "http-cohere",
+        }
     }
 }
 
@@ -420,15 +506,16 @@ impl Reranker for HttpReranker {
 
 /// Create the appropriate reranker backend based on config.
 ///
-/// Backend selection:
-/// - `ENGRAM_RERANKER_BACKEND=onnx` (default): local ONNX cross-encoder
-/// - `ENGRAM_RERANKER_BACKEND=http`: remote Cohere/Jina API
-/// - `ENGRAM_RERANKER_BACKEND=none` or `reranker_enabled=false`: returns None
+/// Backend selection (canonical `KLEOS_*` vars; legacy `ENGRAM_*` accepted as fallback):
+/// - `KLEOS_RERANKER_BACKEND=onnx` (default): local ONNX cross-encoder (IBM Granite)
+/// - `KLEOS_RERANKER_BACKEND=http`: remote HTTP API (Cohere/Jina or TEI)
+/// - `KLEOS_RERANKER_BACKEND=none` or `reranker_enabled=false`: disabled
 ///
 /// For HTTP backend, set:
-/// - `ENGRAM_RERANKER_HTTP_ENDPOINT` (required, e.g. https://api.cohere.ai/v1/rerank)
-/// - `ENGRAM_RERANKER_HTTP_API_KEY` (optional, for authenticated APIs)
-/// - `ENGRAM_RERANKER_HTTP_MODEL` (default: "rerank-v3.5")
+/// - `KLEOS_RERANKER_URL`      (required; legacy: `ENGRAM_RERANKER_HTTP_ENDPOINT`)
+/// - `KLEOS_RERANKER_API_KEY`  (optional; legacy: `ENGRAM_RERANKER_HTTP_API_KEY`)
+/// - `KLEOS_RERANKER_MODEL`    (default: "rerank-v3.5"; legacy: `ENGRAM_RERANKER_HTTP_MODEL`)
+/// - `KLEOS_RERANKER_FORMAT`   (`cohere` (default) or `tei`; legacy: `ENGRAM_RERANKER_FORMAT`)
 ///
 /// Pass `db` to enable dead-letter recording for the HTTP backend. When `None`
 /// the HTTP backend uses the inline retry path without dead-lettering.
@@ -441,7 +528,8 @@ pub async fn create_reranker(
         return Ok(None);
     }
 
-    let backend = std::env::var("ENGRAM_RERANKER_BACKEND")
+    let backend = std::env::var("KLEOS_RERANKER_BACKEND")
+        .or_else(|_| std::env::var("ENGRAM_RERANKER_BACKEND"))
         .unwrap_or_else(|_| "onnx".to_string())
         .to_lowercase();
 
@@ -450,22 +538,18 @@ pub async fn create_reranker(
             let reranker = OnnxReranker::new(config).await?;
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
-        "http" | "remote" | "cohere" | "jina" => {
-            let endpoint = std::env::var("ENGRAM_RERANKER_HTTP_ENDPOINT").map_err(|_| {
-                EngError::InvalidInput(
-                    "ENGRAM_RERANKER_HTTP_ENDPOINT required for http reranker backend".into(),
-                )
-            })?;
-            let api_key = std::env::var("ENGRAM_RERANKER_HTTP_API_KEY").ok();
-            let model = std::env::var("ENGRAM_RERANKER_HTTP_MODEL")
-                .unwrap_or_else(|_| "rerank-v3.5".to_string());
+        "http" | "remote" | "cohere" | "jina" | "tei" => {
             let reranker =
-                HttpReranker::new_with_db(endpoint, api_key, model, config.reranker_top_k, db);
+                HttpReranker::from_env(config.reranker_top_k, db).ok_or_else(|| {
+                    EngError::InvalidInput(
+                        "KLEOS_RERANKER_URL required for http reranker backend".into(),
+                    )
+                })?;
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
         "none" | "disabled" => Ok(None),
         other => Err(EngError::InvalidInput(format!(
-            "unknown reranker backend '{}'; expected onnx, http, or none",
+            "unknown reranker backend '{}'; expected onnx, http, tei, or none",
             other
         ))),
     }
