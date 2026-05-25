@@ -29,6 +29,7 @@ pub async fn find_duplicates(
                    AND ml.type = 'similarity' \
                    AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                    AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
+                   AND ms.space_id = mt.space_id \
                  ORDER BY ml.similarity DESC \
                  LIMIT ?2",
             )

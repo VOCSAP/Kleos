@@ -211,6 +211,11 @@ pub async fn find_consolidation_candidates(
                     // multi-level capability: a fresh consolidation output starts
                     // with `is_consolidated = 0` and remains eligible until a
                     // higher-level sweep consumes it (sets the flag to 1).
+                    // Patch 33 -- anti-leak filter: never consolidate across
+                    // spaces. `ms.space_id = mt.space_id` naturally isolates
+                    // legacy NULL rows from each other (NULL != NULL in SQL)
+                    // and keeps the default-space cross-projet bucket as a
+                    // self-consistent partition.
                     "SELECT ml.source_id, ml.target_id \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
@@ -221,6 +226,7 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_latest = 1 AND mt.is_latest = 1 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
                        AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
+                       AND ms.space_id = mt.space_id \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
                 )
