@@ -60,6 +60,25 @@ fi
 # Source shared Eidolon helper
 . "$HOME_DIR/.claude/hooks/lib-eidolon.sh"
 
+# Patch 33 -- source the spaces helper and export KLEOS_SPACE for the
+# rest of the session. Marker file is written once and never overwritten.
+# settings.json is updated each session so a future Claude restart in
+# the same project picks the same space without re-running the hook.
+# The per-sid file is consumed by kleos-mcp to auto-inject the space
+# into tool calls that omit it.
+if [ -f "$HOME_DIR/.claude/hooks/lib-kleos-space.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME_DIR/.claude/hooks/lib-kleos-space.sh"
+  KLEOS_SPACE="$(ensure_kleos_space_marker "$PWD")"
+  if [ -n "$KLEOS_SPACE" ]; then
+    export KLEOS_SPACE
+    KLEOS_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+    write_kleos_space_to_settings "$KLEOS_PROJECT_ROOT" "$KLEOS_SPACE"
+    write_kleos_space_per_sid "$KLEOS_SPACE"
+    log "Resolved KLEOS_SPACE=$KLEOS_SPACE (project_root=$KLEOS_PROJECT_ROOT)"
+  fi
+fi
+
 # --- Clear engram-search enforcement stamp from previous session ---
 rm -f "$STATE_DIR/engram-searched" 2>/dev/null || true
 log "Cleared engram-searched stamp"
