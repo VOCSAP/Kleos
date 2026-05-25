@@ -484,7 +484,10 @@ impl Reranker for HttpReranker {
     }
 
     fn backend_name(&self) -> &str {
-        "http"
+        match self.format {
+            RerankFormat::Tei => "http-tei",
+            RerankFormat::Cohere => "http-cohere",
+        }
     }
 }
 
