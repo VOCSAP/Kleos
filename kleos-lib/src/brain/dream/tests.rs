@@ -273,7 +273,7 @@ async fn test_dream_run_persisted() {
     // Verify the run was written to the DB
     let (db_id, db_user, finished_at) = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, user_id, finished_at FROM brain_dream_runs WHERE id = ?1",
                 rusqlite::params![result.run_id],
                 |row| {
@@ -282,7 +282,7 @@ async fn test_dream_run_persisted() {
                     let finished: Option<String> = row.get(2)?;
                     Ok((id, user, finished))
                 },
-            )
+            )?)
         })
         .await
         .expect("run row should exist");

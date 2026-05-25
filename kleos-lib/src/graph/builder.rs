@@ -188,7 +188,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                     continue;
                 }
 
-                let link_type = parse_link_type(&link_type_str);
+                let link_type = LinkType::parse(&link_type_str);
 
                 edges.push(GraphEdge {
                     source: format!("m{}", source_id),
@@ -283,22 +283,6 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     Ok(GraphBuildResult { nodes, edges })
 }
 
-fn parse_link_type(s: &str) -> LinkType {
-    match s {
-        "cite" | "similarity" | "related" => LinkType::Cite,
-        "mentions" | "about" => LinkType::Mentions,
-        "association" | "Association" => LinkType::Association,
-        "temporal" | "Temporal" => LinkType::Temporal,
-        "contradicts" | "contradiction" | "Contradiction" => LinkType::Contradicts,
-        "causal" | "causes" | "caused_by" | "Causal" => LinkType::Causal,
-        "resolves" | "Resolves" => LinkType::Resolves,
-        "refines" | "updates" | "corrects" => LinkType::Refines,
-        "generalizes" | "consolidates" => LinkType::Generalizes,
-        "has_fact" => LinkType::HasFact,
-        _ => LinkType::Cite,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,13 +324,13 @@ mod tests {
 
     #[test]
     fn test_parse_link_type() {
-        assert_eq!(parse_link_type("cite"), LinkType::Cite);
-        assert_eq!(parse_link_type("similarity"), LinkType::Cite);
-        assert_eq!(parse_link_type("contradicts"), LinkType::Contradicts);
-        assert_eq!(parse_link_type("has_fact"), LinkType::HasFact);
-        assert_eq!(parse_link_type("updates"), LinkType::Refines);
-        assert_eq!(parse_link_type("consolidates"), LinkType::Generalizes);
-        assert_eq!(parse_link_type("unknown_type"), LinkType::Cite);
+        assert_eq!(LinkType::parse("cite"), LinkType::Cite);
+        assert_eq!(LinkType::parse("similarity"), LinkType::Cite);
+        assert_eq!(LinkType::parse("contradicts"), LinkType::Contradicts);
+        assert_eq!(LinkType::parse("has_fact"), LinkType::HasFact);
+        assert_eq!(LinkType::parse("updates"), LinkType::Refines);
+        assert_eq!(LinkType::parse("consolidates"), LinkType::Generalizes);
+        assert_eq!(LinkType::parse("unknown_type"), LinkType::Cite);
     }
 
     #[test]

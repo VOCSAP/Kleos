@@ -171,23 +171,7 @@ fn row_to_message_search_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mes
     })
 }
 
-fn sanitize_fts_query(query: &str) -> String {
-    let sanitized: String = query
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    sanitized
-        .split_whitespace()
-        .filter(|w| w.len() >= 2)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+use crate::memory::fts::sanitize_fts_query;
 
 fn metadata_to_string(meta: &Option<serde_json::Value>) -> Option<String> {
     meta.as_ref().map(|v| v.to_string())

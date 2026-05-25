@@ -477,9 +477,9 @@ mod tests {
 
         let count = db
             .read(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM pool_test_rollback", [], |row| {
+                Ok(conn.query_row("SELECT COUNT(*) FROM pool_test_rollback", [], |row| {
                     row.get::<_, i64>(0)
-                })
+                })?)
             })
             .await?;
 

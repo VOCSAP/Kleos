@@ -345,7 +345,7 @@ pub async fn neighborhood_filtered(
             all_edges.push(GraphEdge {
                 source: format!("m{}", source_id),
                 target: format!("m{}", target_id),
-                link_type: parse_link_type(&link_type_str),
+                link_type: LinkType::parse(&link_type_str),
                 weight: similarity as f32,
             });
 
@@ -496,22 +496,6 @@ async fn batch_fetch_memory_nodes(
     Ok(nodes)
 }
 
-fn parse_link_type(s: &str) -> LinkType {
-    match s {
-        "cite" | "similarity" | "related" => LinkType::Cite,
-        "mentions" | "about" => LinkType::Mentions,
-        "association" | "Association" => LinkType::Association,
-        "temporal" | "Temporal" => LinkType::Temporal,
-        "contradicts" | "contradiction" | "Contradiction" => LinkType::Contradicts,
-        "causal" | "causes" | "caused_by" | "Causal" => LinkType::Causal,
-        "resolves" | "Resolves" => LinkType::Resolves,
-        "refines" | "updates" | "corrects" => LinkType::Refines,
-        "generalizes" | "consolidates" => LinkType::Generalizes,
-        "has_fact" => LinkType::HasFact,
-        _ => LinkType::Cite,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,8 +524,8 @@ mod tests {
 
     #[test]
     fn test_parse_link_type_variants() {
-        assert_eq!(parse_link_type("contradicts"), LinkType::Contradicts);
-        assert_eq!(parse_link_type("has_fact"), LinkType::HasFact);
-        assert_eq!(parse_link_type("random"), LinkType::Cite);
+        assert_eq!(LinkType::parse("contradicts"), LinkType::Contradicts);
+        assert_eq!(LinkType::parse("has_fact"), LinkType::HasFact);
+        assert_eq!(LinkType::parse("random"), LinkType::Cite);
     }
 }

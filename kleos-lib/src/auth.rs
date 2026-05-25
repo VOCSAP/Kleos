@@ -712,11 +712,11 @@ mod tests {
     async fn make_user(db: &Database, username: &str) -> i64 {
         let username = username.to_string();
         db.write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO users (username, role, is_admin) VALUES (?1, 'admin', 1) RETURNING id",
                 rusqlite::params![username],
                 |row| row.get::<_, i64>(0),
-            )
+            )?)
         })
         .await
         .unwrap()

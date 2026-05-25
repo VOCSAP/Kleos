@@ -1997,11 +1997,11 @@ mod tests {
 
     async fn read_valence(db: &Database, id: i64) -> (Option<f64>, Option<String>) {
         db.read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT valence, dominant_emotion FROM memories WHERE id = ?1",
                 rusqlite::params![id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            )?)
         })
         .await
         .expect("read valence")

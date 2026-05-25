@@ -506,6 +506,7 @@ mod tests {
 
     // -- LLM-backed pipeline ------------------------------------------------
 
+    use crate::EngError;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CannedReflector {

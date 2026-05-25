@@ -936,11 +936,11 @@ mod tests {
 
     async fn dirty_state(db: &Database, _user_id: i64) -> (i64, i64) {
         db.read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT dirty_count, last_refresh FROM pagerank_dirty WHERE id = 1",
                 [],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
-            )
+            )?)
         })
         .await
         .expect("query pagerank_dirty")
@@ -948,7 +948,7 @@ mod tests {
 
     async fn pagerank_count(db: &Database, _user_id: i64) -> i64 {
         db.read(move |conn| {
-            conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
+            Ok(conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))?)
         })
         .await
         .expect("query memory_pagerank count")
@@ -956,11 +956,11 @@ mod tests {
 
     async fn pagerank_row(db: &Database, memory_id: i64) -> (f64, i64) {
         db.read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT score, computed_at FROM memory_pagerank WHERE memory_id = ?1",
                 rusqlite::params![memory_id],
                 |row| Ok((row.get::<_, f64>(0)?, row.get::<_, i64>(1)?)),
-            )
+            )?)
         })
         .await
         .expect("query pagerank row")
