@@ -1,8 +1,5 @@
 use super::cooccurrence::record_cooccurrence;
-use super::types::{
-    CreateEntityRequest, CreateRelationshipRequest, Entity, EntityMemorySearchResult,
-    EntityRelationship,
-};
+use super::types::{CreateEntityRequest, Entity, EntityMemorySearchResult};
 use crate::db::Database;
 use crate::memory::fts::sanitize_fts_query;
 use crate::{EngError, Result};
@@ -163,31 +160,6 @@ pub async fn list_entities(
     .await
 }
 
-/// Find an entity by name (case-sensitive) owned by `user_id`.
-#[tracing::instrument(skip(db, name))]
-pub async fn find_entity_by_name(
-    db: &Database,
-    name: &str,
-    user_id: i64,
-) -> Result<Option<Entity>> {
-    let name = name.to_string();
-    let query = format!(
-        "SELECT {} FROM entities WHERE name = ?1 AND user_id = ?2 LIMIT 1",
-        ENTITY_COLUMNS
-    );
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(&query)?;
-        let mut rows = stmt
-            .query(rusqlite::params![name, user_id])
-            ?;
-        match rows.next()? {
-            Some(row) => Ok(Some(row_to_entity(row, user_id)?)),
-            None => Ok(None),
-        }
-    })
-    .await
-}
 
 #[tracing::instrument(skip(db))]
 pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
@@ -272,133 +244,6 @@ pub async fn update_entity(
 
 // -- Entity Relationships --
 
-/// Upsert a relationship between two entities. On conflict, increments
-/// evidence_count and keeps the higher strength value. Both source and target
-/// must belong to `user_id`, otherwise returns NotFound.
-#[tracing::instrument(skip(db, req))]
-pub async fn create_relationship(
-    db: &Database,
-    user_id: i64,
-    req: CreateRelationshipRequest,
-) -> Result<EntityRelationship> {
-    // SECURITY: verify both endpoints belong to the caller before writing so a
-    // malicious tenant cannot attach a target they don't own. Using a single
-    // COUNT-of-two check prevents a TOCTOU gap between two separate lookups.
-    // The user_id predicate makes "belong to the caller" real in single-DB mode.
-    let source_id = req.source_entity_id;
-    let target_id = req.target_entity_id;
-
-    let owned: i64 = db
-        .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT COUNT(*) FROM entities WHERE id IN (?1, ?2) AND user_id = ?3")
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![source_id, target_id, user_id])
-                ?;
-            match rows.next()? {
-                Some(row) => Ok(row.get(0)?),
-                None => Ok(0i64),
-            }
-        })
-        .await?;
-
-    // When source == target the same row is counted once, so accept >= 1 in
-    // that case and >= 2 otherwise.
-    let required = if req.source_entity_id == req.target_entity_id {
-        1
-    } else {
-        2
-    };
-    if owned < required {
-        return Err(EngError::NotFound(
-            "one or both entities not found for this user".into(),
-        ));
-    }
-
-    let relationship_type = req
-        .relationship_type
-        .unwrap_or_else(|| "related".to_string());
-    let strength = req.strength.unwrap_or(0.5);
-
-    // INSERT ... ON CONFLICT ... RETURNING avoids the cross-connection
-    // last_insert_rowid() race inherent to a follow-up SELECT.
-    db.write(move |conn| {
-        Ok(conn.query_row(
-            "INSERT INTO entity_relationships \
-             (source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at) \
-             VALUES (?1, ?2, ?3, ?4, 1, datetime('now')) \
-             ON CONFLICT(source_entity_id, target_entity_id, relationship_type) DO UPDATE SET \
-               evidence_count = evidence_count + 1, \
-               strength = max(strength, excluded.strength) \
-             RETURNING id, source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at",
-            rusqlite::params![
-                req.source_entity_id,
-                req.target_entity_id,
-                relationship_type,
-                strength,
-            ],
-            |row| {
-                Ok(EntityRelationship {
-                    id: row.get(0)?,
-                    source_entity_id: row.get(1)?,
-                    target_entity_id: row.get(2)?,
-                    relationship_type: row.get(3)?,
-                    strength: row.get(4)?,
-                    evidence_count: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
-            },
-        )?)
-    })
-    .await
-}
-
-pub use crate::validation::MAX_ENTITY_RELATIONSHIPS;
-
-/// Return relationships where the entity appears as source or target,
-/// ordered by strength, capped at [`MAX_ENTITY_RELATIONSHIPS`].
-#[tracing::instrument(skip(db))]
-pub async fn get_entity_relationships(
-    db: &Database,
-    entity_id: i64,
-    user_id: i64,
-) -> Result<Vec<EntityRelationship>> {
-    db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, source_entity_id, target_entity_id, relationship_type, strength, evidence_count, created_at \
-                 FROM entity_relationships \
-                 WHERE (source_entity_id = ?1 OR target_entity_id = ?1) \
-                   AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
-                 ORDER BY strength DESC \
-                 LIMIT ?2",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![
-                entity_id,
-                MAX_ENTITY_RELATIONSHIPS as i64,
-                user_id
-            ])
-            ?;
-        let mut rels = Vec::new();
-        while let Some(row) = rows.next()? {
-            rels.push(EntityRelationship {
-                id: row.get(0)?,
-                source_entity_id: row.get(1)?,
-                target_entity_id: row.get(2)?,
-                relationship_type: row.get(3)?,
-                strength: row.get(4)?,
-                evidence_count: row.get(5)?,
-                created_at: row.get(6)?,
-            });
-        }
-        Ok(rels)
-    })
-    .await
-}
-
 // -- Memory-Entity linking --
 
 /// Link a memory to an entity with a salience score. Silently ignores duplicates.
@@ -479,66 +324,6 @@ pub async fn unlink_memory_entity(
     .await
 }
 
-/// Return all entities owned by `user_id` linked to the given memory.
-#[tracing::instrument(skip(db))]
-pub async fn get_memory_entities(
-    db: &Database,
-    memory_id: i64,
-    user_id: i64,
-) -> Result<Vec<Entity>> {
-    let query = format!(
-        "SELECT e.{cols} \
-         FROM entities e \
-         JOIN memory_entities me ON me.entity_id = e.id \
-         JOIN memories m ON m.id = me.memory_id \
-         WHERE me.memory_id = ?1 AND e.user_id = ?2 AND m.user_id = ?2 \
-         ORDER BY me.salience DESC",
-        cols = ENTITY_COLUMNS
-            .split(", ")
-            .map(|c| c.to_string())
-            .collect::<Vec<_>>()
-            .join(", e.")
-    );
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(&query)?;
-        let mut rows = stmt
-            .query(rusqlite::params![memory_id, user_id])
-            ?;
-        let mut entities = Vec::new();
-        while let Some(row) = rows.next()? {
-            entities.push(row_to_entity(row, user_id)?);
-        }
-        Ok(entities)
-    })
-    .await
-}
-
-/// Return the IDs of memories owned by `user_id` linked to the given entity.
-#[tracing::instrument(skip(db))]
-pub async fn get_entity_memories(db: &Database, entity_id: i64, user_id: i64) -> Result<Vec<i64>> {
-    db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT me.memory_id \
-                 FROM memory_entities me \
-                 JOIN memories m ON m.id = me.memory_id \
-                 JOIN entities e ON e.id = me.entity_id \
-                 WHERE me.entity_id = ?1 AND e.user_id = ?2 AND m.user_id = ?2",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![entity_id, user_id])
-            ?;
-        let mut memory_ids = Vec::new();
-        while let Some(row) = rows.next()? {
-            let id: i64 = row.get(0)?;
-            memory_ids.push(id);
-        }
-        Ok(memory_ids)
-    })
-    .await
-}
 
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
 pub async fn search_entity_memories(
