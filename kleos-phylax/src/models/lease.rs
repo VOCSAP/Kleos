@@ -51,6 +51,7 @@ impl Lease {
 }
 
 /// Mint a new lease tied to an approved approval.
+#[allow(clippy::too_many_arguments)]
 pub async fn mint_lease(
     db: &Database,
     user_id: i64,

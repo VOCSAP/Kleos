@@ -87,6 +87,7 @@ impl Approval {
 }
 
 /// Create a pending approval request.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_approval(
     db: &Database,
     user_id: i64,
@@ -247,7 +248,7 @@ pub async fn expire_stale_approvals(db: &Database) -> Result<usize> {
             "UPDATE phylax_approvals SET status = 3
              WHERE status = 0 AND expires_at < ?1",
             params![now],
-        )? as usize)
+        )?)
     })
     .await
     .map_err(|e| CredError::Database(e.to_string()))

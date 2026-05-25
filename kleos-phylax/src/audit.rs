@@ -12,6 +12,7 @@ use rusqlite::params;
 /// Uses the same table as credd's existing audit system but with
 /// Phylax-specific action strings. The correlation_id field is stored
 /// in the access_tier column for linkage.
+#[allow(clippy::too_many_arguments)]
 pub async fn log_phylax_audit(
     db: &Database,
     user_id: i64,
