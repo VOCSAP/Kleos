@@ -1778,9 +1778,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TUI
-// ---------------------------------------------------------------------------
+// --- TUI ---
 
 /// A secret loaded for TUI display (decrypted).
 struct TuiSecret {
@@ -2355,9 +2353,7 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
     f.render_widget(detail, modal_area);
 }
 
-// ---------------------------------------------------------------------------
-// credd fallback for secret resolution
-// ---------------------------------------------------------------------------
+// --- credd fallback for secret resolution ---
 
 async fn resolve_via_credd(
     master_key: &[u8; KEY_SIZE],
@@ -2406,9 +2402,7 @@ async fn resolve_via_credd(
     Ok((row, data))
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap blob (CBv1) wrap / unwrap
-// ---------------------------------------------------------------------------
+// --- Bootstrap blob (CBv1) wrap / unwrap ---
 
 /// On-disk magic for the credd bootstrap blob.
 const BOOTSTRAP_MAGIC: &[u8; 4] = b"CBv1";
@@ -2546,9 +2540,7 @@ async fn cmd_bootstrap_unwrap(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// cred piv subcommand
-// ---------------------------------------------------------------------------
+// --- cred piv subcommand ---
 
 async fn cmd_piv(cmd: PivCmd) -> Result<()> {
     use kleos_cred::piv::{
@@ -2714,9 +2706,7 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// cred ssh-ca subcommand
-// ---------------------------------------------------------------------------
+// --- cred ssh-ca subcommand ---
 
 const PKCS11_LIB_PATHS: &[&str] = &[
     "/usr/lib/libykcs11.so",
