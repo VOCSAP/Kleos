@@ -19,6 +19,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
             "memory_ids must not be empty".to_string(),
         ));
     }
+    if memory_ids.len() > MAX_CLUSTER_SIZE {
+        return Err(EngError::InvalidInput(format!(
+            "refusing to consolidate {} memories (max {})",
+            memory_ids.len(),
+            MAX_CLUSTER_SIZE
+        )));
+    }
 
     // Parse all IDs upfront before any async work.
     let ids: Vec<i64> = memory_ids
@@ -278,22 +285,59 @@ pub async fn find_consolidation_candidates(
     Ok(result)
 }
 
+/// Maximum number of memories allowed in a single consolidation group.
+/// Larger clusters produce unreadable merged content and destroy source recall.
+const MAX_CLUSTER_SIZE: usize = 5;
+
+/// Maximum consolidations performed per sweep run to limit blast radius.
+const MAX_CONSOLIDATIONS_PER_SWEEP: i64 = 10;
+
+/// Minimum acceptable similarity threshold -- rejects sweeps that would merge
+/// loosely related memories.
+const MIN_SIMILARITY_THRESHOLD: f64 = 0.80;
+
 /// Run an automatic consolidation sweep: find candidate groups above the
 /// given similarity threshold and consolidate each group.
+///
+/// Safety guardrails:
+/// - Rejects thresholds below 0.80 to prevent loose matches
+/// - Skips clusters larger than 5 memories
+/// - Stops after 10 consolidations per sweep
 #[tracing::instrument(skip(db))]
 pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepResult> {
+    if threshold < MIN_SIMILARITY_THRESHOLD {
+        return Err(EngError::InvalidInput(format!(
+            "similarity threshold {threshold} is below minimum {MIN_SIMILARITY_THRESHOLD}"
+        )));
+    }
+
     let groups = find_consolidation_candidates(db, threshold as f32, user_id).await?;
     let pairs_found = groups.len() as i64;
     let mut consolidated = 0i64;
+    let mut skipped = 0i64;
 
     for group in &groups {
+        if consolidated >= MAX_CONSOLIDATIONS_PER_SWEEP {
+            skipped += 1;
+            continue;
+        }
         if group.len() < 2 {
+            continue;
+        }
+        if group.len() > MAX_CLUSTER_SIZE {
+            tracing::warn!(
+                cluster_size = group.len(),
+                user_id,
+                "skipping oversized consolidation cluster"
+            );
+            skipped += 1;
             continue;
         }
         match consolidate(db, group, user_id).await {
             Ok(_) => consolidated += 1,
             Err(e) => {
                 tracing::warn!(error = %e, "sweep_consolidation_failed");
+                skipped += 1;
             }
         }
     }
@@ -301,6 +345,7 @@ pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepR
     Ok(SweepResult {
         pairs_found,
         consolidated,
+        skipped,
     })
 }
 
