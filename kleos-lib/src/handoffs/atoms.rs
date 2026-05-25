@@ -12,9 +12,7 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use tracing::warn;
 
-// ---------------------------------------------------------------------------
-// AtomType
-// ---------------------------------------------------------------------------
+// --- AtomType ---
 
 /// The semantic category of an extracted atom.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,9 +72,7 @@ impl AtomType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AtomStatus
-// ---------------------------------------------------------------------------
+// --- AtomStatus ---
 
 /// Lifecycle status of an atom.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,9 +101,7 @@ impl AtomStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Atom
-// ---------------------------------------------------------------------------
+// --- Atom ---
 
 /// A single persisted semantic unit extracted from one or more handoffs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,9 +142,7 @@ pub struct Atom {
     pub metadata: Option<serde_json::Value>,
 }
 
-// ---------------------------------------------------------------------------
-// ExtractedAtom
-// ---------------------------------------------------------------------------
+// --- ExtractedAtom ---
 
 /// An atom produced by the extraction pipeline, before it is persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,9 +157,7 @@ pub struct ExtractedAtom {
     pub confidence: f64,
 }
 
-// ---------------------------------------------------------------------------
-// make_atom_id
-// ---------------------------------------------------------------------------
+// --- make_atom_id ---
 
 /// Derives a stable 16-character hex ID from an atom type and its canonical
 /// form.
@@ -181,9 +171,7 @@ pub fn make_atom_id(atom_type: AtomType, canonical_form: &str) -> String {
     hex::encode(hash)[..16].to_string()
 }
 
-// ---------------------------------------------------------------------------
-// Compiled regexes (lazy)
-// ---------------------------------------------------------------------------
+// --- Compiled regexes (lazy) ---
 
 static RE_DECISION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(we\s+will|we\s+should|decided\s+to|chose\s+to|went\s+with|using)\b.{1,120}")
@@ -220,9 +208,7 @@ static RE_ENTITY_LABEL: LazyLock<Regex> = LazyLock::new(|| {
         .expect("RE_ENTITY_LABEL is a valid regex")
 });
 
-// ---------------------------------------------------------------------------
-// Heuristic extraction
-// ---------------------------------------------------------------------------
+// --- Heuristic extraction ---
 
 /// Extracts atoms from `text` using fast regex heuristics.
 ///
@@ -295,9 +281,7 @@ pub fn extract_heuristic(text: &str) -> Vec<ExtractedAtom> {
     results
 }
 
-// ---------------------------------------------------------------------------
-// LLM extraction
-// ---------------------------------------------------------------------------
+// --- LLM extraction ---
 
 /// Response shape expected from an Ollama-compatible chat completion endpoint.
 #[derive(Debug, Deserialize)]
@@ -423,9 +407,7 @@ pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
     results
 }
 
-// ---------------------------------------------------------------------------
-// Combined extraction entry point
-// ---------------------------------------------------------------------------
+// --- Combined extraction entry point ---
 
 /// Extracts atoms from `text`.
 ///
@@ -442,9 +424,7 @@ pub async fn extract(text: &str, sidecar_url: Option<&str>) -> Vec<ExtractedAtom
     extract_heuristic(text)
 }
 
-// ---------------------------------------------------------------------------
-// BudgetPacker
-// ---------------------------------------------------------------------------
+// --- BudgetPacker ---
 
 /// Packs atoms into a context window budget.
 ///
@@ -581,9 +561,7 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Decay
-// ---------------------------------------------------------------------------
+// --- Decay ---
 
 /// Applies exponential salience decay to non-immune atoms.
 ///
@@ -605,9 +583,7 @@ pub fn apply_decay(atoms: &mut [Atom], sessions_elapsed: u32) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

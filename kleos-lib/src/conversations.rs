@@ -15,9 +15,7 @@ const CONVERSATION_LIST_COLUMNS: &str =
 
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, metadata, created_at";
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// --- Types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -116,9 +114,7 @@ pub struct SearchMessagesRequest {
     pub limit: Option<usize>,
 }
 
-// ---------------------------------------------------------------------------
-// Row mappers
-// ---------------------------------------------------------------------------
+// --- Row mappers ---
 
 fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     Ok(Conversation {
@@ -177,9 +173,7 @@ fn metadata_to_string(meta: &Option<serde_json::Value>) -> Option<String> {
     meta.as_ref().map(|v| v.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Conversation CRUD
-// ---------------------------------------------------------------------------
+// --- Conversation CRUD ---
 
 #[tracing::instrument(skip(db, req), fields(agent = %req.agent, session_id = ?req.session_id, user_id))]
 pub async fn create_conversation(
@@ -350,9 +344,7 @@ pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Message operations
-// ---------------------------------------------------------------------------
+// --- Message operations ---
 
 #[tracing::instrument(skip(db, credd, req), fields(conversation_id, user_id, role = %req.role))]
 pub async fn add_message(
@@ -487,9 +479,7 @@ pub async fn search_messages(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Bulk and Upsert
-// ---------------------------------------------------------------------------
+// --- Bulk and Upsert ---
 
 #[tracing::instrument(skip(db, credd, req), fields(agent = %req.agent, message_count = req.messages.len(), user_id))]
 pub async fn bulk_insert_conversation(
@@ -592,9 +582,7 @@ pub async fn upsert_conversation(
     get_conversation_for_user(db, conv.id, user_id).await
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

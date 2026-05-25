@@ -43,9 +43,7 @@ use modes::*;
 use scoring::cosine_similarity;
 pub use types::*;
 
-// ---------------------------------------------------------------------------
-// Attribution helper
-// ---------------------------------------------------------------------------
+// --- Attribution helper ---
 
 /// Build an attribution tag string for a context block.
 fn build_attribution(block: &ContextBlock) -> String {
@@ -67,9 +65,7 @@ fn build_attribution(block: &ContextBlock) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Context string assembly from blocks
-// ---------------------------------------------------------------------------
+// --- Context string assembly from blocks ---
 
 /// Assembles the final context string from layers of blocks plus supplementary
 /// sections (working memory, current state, personality, preferences, facts).
@@ -300,9 +296,7 @@ pub fn assemble_context_string(
     parts.join("\n\n")
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
 /// Check whether content is semantically duplicate against already-added blocks.
 /// Computes the candidate embedding on-demand using the provider.
@@ -380,9 +374,7 @@ fn format_scratch_age(updated_at: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Core context assembly -- progressive disclosure algorithm
-// ---------------------------------------------------------------------------
+// --- Core context assembly -- progressive disclosure algorithm ---
 
 #[tracing::instrument(
     name = "assemble_context",

@@ -8,9 +8,7 @@ use crate::{EngError, Result};
 use std::sync::Arc;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// RetryPolicy
-// ---------------------------------------------------------------------------
+// --- RetryPolicy ---
 
 /// Policy controlling retry behaviour for a fallible async operation.
 #[derive(Clone)]
@@ -69,9 +67,7 @@ pub fn is_transient_error(e: &EngError) -> bool {
     )
 }
 
-// ---------------------------------------------------------------------------
-// with_retry
-// ---------------------------------------------------------------------------
+// --- with_retry ---
 
 /// Execute `op` with exponential backoff retry according to `policy`.
 ///
@@ -137,9 +133,7 @@ fn pseudo_rand_percent(attempt: u32) -> u64 {
     (v % 101) as u64
 }
 
-// ---------------------------------------------------------------------------
-// Legacy adapter (re-exported as retry_with_backoff from resilience::)
-// ---------------------------------------------------------------------------
+// --- Legacy adapter (re-exported as retry_with_backoff from resilience::) ---
 
 /// Backwards-compatible retry helper. Retries on every error (no predicate).
 /// New code should use [`with_retry`] with an explicit [`RetryPolicy`].
@@ -174,9 +168,7 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

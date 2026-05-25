@@ -3,9 +3,7 @@ use crate::services::axon::publish_internal;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Rubric types
-// ---------------------------------------------------------------------------
+// --- Rubric types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rubric {
@@ -35,9 +33,7 @@ pub struct UpdateRubricRequest {
     pub criteria: Option<serde_json::Value>,
 }
 
-// ---------------------------------------------------------------------------
-// Evaluation types
-// ---------------------------------------------------------------------------
+// --- Evaluation types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Evaluation {
@@ -69,9 +65,7 @@ pub struct EvaluateRequest {
     pub user_id: Option<i64>,
 }
 
-// ---------------------------------------------------------------------------
-// Metric types
-// ---------------------------------------------------------------------------
+// --- Metric types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QualityMetric {
@@ -94,9 +88,7 @@ pub struct RecordMetricRequest {
     pub user_id: Option<i64>,
 }
 
-// ---------------------------------------------------------------------------
-// Session quality
-// ---------------------------------------------------------------------------
+// --- Session quality ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionQuality {
@@ -125,9 +117,7 @@ pub struct RecordSessionQualityRequest {
     pub user_id: Option<i64>,
 }
 
-// ---------------------------------------------------------------------------
-// Drift events
-// ---------------------------------------------------------------------------
+// --- Drift events ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftEvent {
@@ -152,9 +142,7 @@ pub struct RecordDriftEventRequest {
     pub user_id: Option<i64>,
 }
 
-// ---------------------------------------------------------------------------
-// Agent scores summary
-// ---------------------------------------------------------------------------
+// --- Agent scores summary ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentScores {
@@ -164,9 +152,7 @@ pub struct AgentScores {
     pub by_criterion: serde_json::Value,
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 /// Per-rubric evaluation summary returned inside [`ThymusStats`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,9 +173,7 @@ pub struct ThymusStats {
     pub by_rubric: Vec<RubricStat>,
 }
 
-// ---------------------------------------------------------------------------
-// Drift summary
-// ---------------------------------------------------------------------------
+// --- Drift summary ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DriftSummaryEntry {
@@ -198,14 +182,10 @@ pub struct DriftSummaryEntry {
     pub count: i64,
 }
 
-// ---------------------------------------------------------------------------
-// Error helper
-// ---------------------------------------------------------------------------
+// --- Error helper ---
 
 
-// ---------------------------------------------------------------------------
-// Row helpers
-// ---------------------------------------------------------------------------
+// --- Row helpers ---
 
 /// Map a SQLite row to a Rubric struct.
 /// Column order: id, name, description, criteria, user_id, created_at, updated_at.
@@ -314,9 +294,7 @@ fn row_to_drift_event(row: &rusqlite::Row<'_>) -> Result<DriftEvent> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Rubric functions
-// ---------------------------------------------------------------------------
+// --- Rubric functions ---
 
 /// Create a new evaluation rubric from the provided request fields.
 /// Writes user_id so the rubric is scoped to that user in single-DB mode.
@@ -455,9 +433,7 @@ pub async fn delete_rubric(db: &Database, id: i64, user_id: i64) -> Result<bool>
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Evaluation functions
-// ---------------------------------------------------------------------------
+// --- Evaluation functions ---
 
 /// Compute weighted overall score from rubric criteria and provided scores.
 /// Each criterion: { name, weight, scale_min, scale_max }
@@ -760,9 +736,7 @@ pub async fn get_agent_scores(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Metric functions
-// ---------------------------------------------------------------------------
+// --- Metric functions ---
 
 /// Record a quality metric data point for the given agent.
 /// Writes user_id so the metric is scoped to that user in single-DB mode.
@@ -911,9 +885,7 @@ pub async fn get_metric_summary(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Session quality functions
-// ---------------------------------------------------------------------------
+// --- Session quality functions ---
 
 /// Record a session quality snapshot for an agent.
 /// Writes user_id so the record is scoped to that user in single-DB mode.
@@ -1005,9 +977,7 @@ pub async fn get_session_quality(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Drift event functions
-// ---------------------------------------------------------------------------
+// --- Drift event functions ---
 
 const VALID_DRIFT_TYPES: &[&str] = &[
     "priority",
@@ -1138,9 +1108,7 @@ pub async fn get_drift_summary(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 /// Return aggregate thymus statistics scoped to the given user.
 #[tracing::instrument(skip(db))]

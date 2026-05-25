@@ -22,9 +22,7 @@ fn scopes_for_role(role: &str) -> Vec<crate::auth::Scope> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Compact (VACUUM + ANALYZE)
-// ---------------------------------------------------------------------------
+// --- Compact (VACUUM + ANALYZE) ---
 
 #[tracing::instrument(skip(db))]
 pub async fn compact(db: &Database) -> Result<CompactResult> {
@@ -60,9 +58,7 @@ pub async fn compact(db: &Database) -> Result<CompactResult> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// GC -- garbage collection of forgotten/expired data
-// ---------------------------------------------------------------------------
+// --- GC -- garbage collection of forgotten/expired data ---
 
 #[tracing::instrument(skip(db))]
 pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
@@ -127,9 +123,7 @@ pub async fn gc(db: &Database, user_id: Option<i64>) -> Result<GcResult> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Schema inspection
-// ---------------------------------------------------------------------------
+// --- Schema inspection ---
 
 #[tracing::instrument(skip(db))]
 pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
@@ -171,9 +165,7 @@ pub async fn get_schema(db: &Database) -> Result<SchemaResult> {
     Ok(SchemaResult { tables, indexes })
 }
 
-// ---------------------------------------------------------------------------
-// Maintenance mode
-// ---------------------------------------------------------------------------
+// --- Maintenance mode ---
 
 #[tracing::instrument(skip(db))]
 pub async fn get_maintenance(db: &Database) -> Result<MaintenanceStatus> {
@@ -242,9 +234,7 @@ pub async fn set_maintenance(
     get_maintenance(db).await
 }
 
-// ---------------------------------------------------------------------------
-// SLA
-// ---------------------------------------------------------------------------
+// --- SLA ---
 
 #[tracing::instrument(skip(db))]
 pub async fn get_sla(db: &Database) -> Result<SlaResult> {
@@ -281,9 +271,7 @@ pub async fn get_sla(db: &Database) -> Result<SlaResult> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Usage / Tenants
-// ---------------------------------------------------------------------------
+// --- Usage / Tenants ---
 
 #[tracing::instrument(skip(db))]
 pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
@@ -346,9 +334,7 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Provision / Deprovision
-// ---------------------------------------------------------------------------
+// --- Provision / Deprovision ---
 
 #[tracing::instrument(skip(db, username, email, role), fields(username = %username, role = %role))]
 pub async fn provision_tenant(
@@ -423,9 +409,7 @@ pub async fn deprovision_tenant(db: &Database, user_id: i64) -> Result<bool> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Checkpoint / Backup
-// ---------------------------------------------------------------------------
+// --- Checkpoint / Backup ---
 
 #[tracing::instrument(skip(db))]
 pub async fn checkpoint(db: &Database) -> Result<serde_json::Value> {
@@ -449,9 +433,7 @@ pub async fn verify_backup(db: &Database) -> Result<BackupVerifyResult> {
     Ok(BackupVerifyResult { integrity, ok })
 }
 
-// ---------------------------------------------------------------------------
-// State key-value store
-// ---------------------------------------------------------------------------
+// --- State key-value store ---
 
 #[tracing::instrument(skip(db), fields(key = %key))]
 pub async fn get_state(db: &Database, key: &str) -> Result<Option<StateRow>> {
@@ -529,9 +511,7 @@ pub async fn list_state(db: &Database) -> Result<Vec<StateRow>> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
+// --- Export ---
 
 #[tracing::instrument(skip(db))]
 pub async fn export_user_data(db: &Database, user_id: i64) -> Result<UserExport> {
@@ -670,9 +650,7 @@ async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Re-embed: clear embeddings so they get regenerated
-// ---------------------------------------------------------------------------
+// --- Re-embed: clear embeddings so they get regenerated ---
 
 /// Clear embeddings on every live memory so ingestion regenerates them on
 /// next access. Both the legacy `embedding` BLOB column and the active
@@ -702,9 +680,7 @@ pub async fn reembed_all(db: &Database, user_id: Option<i64>) -> Result<i64> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Backfill: fetch memories without structured facts
-// ---------------------------------------------------------------------------
+// --- Backfill: fetch memories without structured facts ---
 
 #[allow(clippy::type_complexity)]
 #[tracing::instrument(skip(db))]
@@ -733,9 +709,7 @@ pub async fn get_memories_without_facts(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Backfill: fetch memories without entity links
-// ---------------------------------------------------------------------------
+// --- Backfill: fetch memories without entity links ---
 
 /// Retrieve up to `limit` memory ids and content for memories that have no
 /// rows in `memory_entities`. Used by the entity backfill admin endpoint to
@@ -769,9 +743,7 @@ pub async fn get_memories_without_entity_links(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Rebuild FTS index
-// ---------------------------------------------------------------------------
+// --- Rebuild FTS index ---
 
 #[tracing::instrument(skip(db))]
 pub async fn rebuild_fts(db: &Database) -> Result<i64> {
@@ -791,9 +763,7 @@ pub async fn rebuild_fts(db: &Database) -> Result<i64> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Scale report
-// ---------------------------------------------------------------------------
+// --- Scale report ---
 
 #[tracing::instrument(skip(db))]
 pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
@@ -845,9 +815,7 @@ pub async fn scale_report(db: &Database) -> Result<serde_json::Value> {
     Ok(serde_json::json!({ "table_counts": counts, "database_size_bytes": db_size }))
 }
 
-// ---------------------------------------------------------------------------
-// Cold storage stats
-// ---------------------------------------------------------------------------
+// --- Cold storage stats ---
 
 #[tracing::instrument(skip(db))]
 pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::Value> {
@@ -866,9 +834,7 @@ pub async fn cold_storage_stats(db: &Database, days: i64) -> Result<serde_json::
     Ok(serde_json::json!({ "eligible_count": eligible, "threshold_days": days }))
 }
 
-// ---------------------------------------------------------------------------
-// Crash-loop detection
-// ---------------------------------------------------------------------------
+// --- Crash-loop detection ---
 
 const CRASH_WINDOW_KEY: &str = "crash_window";
 const CRASH_WINDOW_SECONDS: i64 = 300; // 5 minutes
@@ -933,9 +899,7 @@ pub async fn clear_crash_window(db: &Database) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 #[tracing::instrument(skip(db))]
 pub async fn get_stats(db: &Database) -> Result<serde_json::Value> {

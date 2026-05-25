@@ -15,9 +15,7 @@ use tracing::info;
 // only if the same logical change applies to per-tenant data.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Migration descriptor
-// ---------------------------------------------------------------------------
+// --- Migration descriptor ---
 
 /// A single schema migration with an optional inverse.
 ///
@@ -36,9 +34,7 @@ pub struct Migration {
     pub transactional: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Migration plan (returned by dry_run and migrate_down)
-// ---------------------------------------------------------------------------
+// --- Migration plan (returned by dry_run and migrate_down) ---
 
 /// A single step in a computed migration plan (used by dry-run and down paths).
 #[derive(Debug, Clone, Serialize)]
@@ -48,9 +44,7 @@ pub struct MigrationPlan {
     pub direction: String,
 }
 
-// ---------------------------------------------------------------------------
-// Migration status
-// ---------------------------------------------------------------------------
+// --- Migration status ---
 
 /// Current migration state of the database, including pending and revertible steps.
 #[derive(Debug, Serialize)]
@@ -70,9 +64,7 @@ pub struct MigrationInfo {
     pub has_down: bool,
 }
 
-// ---------------------------------------------------------------------------
-// The canonical migration list
-// ---------------------------------------------------------------------------
+// --- The canonical migration list ---
 
 /// Shorthand for Migration entries in the registry.
 macro_rules! migration {
@@ -240,9 +232,7 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(81, "mcp_tokens", run_migration_mcp_tokens, tx),
 ];
 
-// ---------------------------------------------------------------------------
-// Legacy version constants (kept for compatibility with existing call sites)
-// ---------------------------------------------------------------------------
+// --- Legacy version constants (kept for compatibility with existing call sites) ---
 
 /// Version number for the initial schema creation migration.
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
@@ -423,9 +413,7 @@ const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
 /// Version number for the MCP direct-auth token revocation table.
 const MIGRATION_MCP_TOKENS: i64 = 81;
 
-// ---------------------------------------------------------------------------
-// Up path (unchanged behavior)
-// ---------------------------------------------------------------------------
+// --- Up path (unchanged behavior) ---
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
@@ -1113,9 +1101,7 @@ fn remove_migration_record(conn: &rusqlite::Connection, version: u32) -> Result<
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Down path
-// ---------------------------------------------------------------------------
+// --- Down path ---
 
 /// Walk the migration list down from `current_version` to `target_version`
 /// (exclusive), building a plan of what would be reverted.
@@ -1256,9 +1242,7 @@ pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Up migration implementations
-// ---------------------------------------------------------------------------
+// --- Up migration implementations ---
 
 /// Migration 2: adds missing secondary indexes to all core tables.
 fn run_migration_add_missing_indexes(conn: &rusqlite::Connection) -> Result<()> {
@@ -1818,9 +1802,7 @@ fn down_migration_memories_list_covering_index(conn: &rusqlite::Connection) -> R
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 24: commerce tables
-// ---------------------------------------------------------------------------
+// --- Migration 24: commerce tables ---
 
 /// Migration 24: creates the commerce tables for payment quotes, settlements, and pricing.
 fn run_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
@@ -1924,9 +1906,7 @@ fn down_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 25: drop user_id from memory core tables
-// ---------------------------------------------------------------------------
+// --- Migration 25: drop user_id from memory core tables ---
 
 /// Migration 25: drop user_id from memories, artifacts, vector_sync_pending,
 /// and structured_facts on the monolith. Idempotent: each ALTER TABLE and DROP
@@ -2017,9 +1997,7 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 64: re-add user_id to memory core tables (reverses migration 25)
-// ---------------------------------------------------------------------------
+// --- Migration 64: re-add user_id to memory core tables (reverses migration 25) ---
 
 /// Migration 64: re-add `user_id` to `memories`, `artifacts`,
 /// `vector_sync_pending`, and `structured_facts` on the monolith, recreate the
@@ -2687,9 +2665,7 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
         )?;
     }
 
-    // -----------------------------------------------------------------------
-    // reconsolidations: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- reconsolidations: ADD COLUMN user_id + index ---
     let recons_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('reconsolidations') WHERE name = 'user_id'",
@@ -2707,9 +2683,7 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
         "CREATE INDEX IF NOT EXISTS idx_reconsolidations_user ON reconsolidations(user_id);",
     )?;
 
-    // -----------------------------------------------------------------------
-    // temporal_patterns: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- temporal_patterns: ADD COLUMN user_id + index ---
     let tp_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('temporal_patterns') WHERE name = 'user_id'",
@@ -2727,9 +2701,7 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
         "CREATE INDEX IF NOT EXISTS idx_temporal_patterns_user ON temporal_patterns(user_id);",
     )?;
 
-    // -----------------------------------------------------------------------
-    // digests: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- digests: ADD COLUMN user_id + index ---
     let dig_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('digests') WHERE name = 'user_id'",
@@ -2745,9 +2717,7 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
     }
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_digests_user ON digests(user_id);")?;
 
-    // -----------------------------------------------------------------------
-    // memory_feedback: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- memory_feedback: ADD COLUMN user_id + index ---
     let mf_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('memory_feedback') WHERE name = 'user_id'",
@@ -2832,9 +2802,7 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
         )?;
     }
 
-    // -----------------------------------------------------------------------
-    // evaluations: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- evaluations: ADD COLUMN user_id + index ---
     let eval_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
@@ -2850,9 +2818,7 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     }
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);")?;
 
-    // -----------------------------------------------------------------------
-    // quality_metrics: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- quality_metrics: ADD COLUMN user_id + index ---
     let qm_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
@@ -2870,9 +2836,7 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
         "CREATE INDEX IF NOT EXISTS idx_quality_metrics_user ON quality_metrics(user_id);",
     )?;
 
-    // -----------------------------------------------------------------------
-    // session_quality: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- session_quality: ADD COLUMN user_id + index ---
     let sq_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
@@ -2890,9 +2854,7 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
         "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);",
     )?;
 
-    // -----------------------------------------------------------------------
-    // behavioral_drift_events: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- behavioral_drift_events: ADD COLUMN user_id + index ---
     let bde_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
@@ -3174,9 +3136,7 @@ fn down_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 26: drop user_id from scratchpad (12-step UNIQUE rebuild)
-// ---------------------------------------------------------------------------
+// --- Migration 26: drop user_id from scratchpad (12-step UNIQUE rebuild) ---
 
 /// Migration 26: drop user_id from scratchpad via the 12-step rebuild path.
 /// scratchpad carried UNIQUE(user_id, session, entry_key), which blocks
@@ -3235,9 +3195,7 @@ fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 27: drop user_id from sessions (simple DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 27: drop user_id from sessions (simple DROP INDEX + DROP COLUMN) ---
 
 /// Migration 27: drop user_id shim from sessions. No UNIQUE or FK references
 /// the column, so ALTER TABLE DROP COLUMN is safe. session_output never had
@@ -3262,9 +3220,7 @@ fn run_migration_drop_user_id_sessions(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 28: drop user_id from chiasm_tasks + chiasm_task_updates
-// ---------------------------------------------------------------------------
+// --- Migration 28: drop user_id from chiasm_tasks + chiasm_task_updates ---
 
 /// Migration 28: drop user_id shim from chiasm_tasks and chiasm_task_updates.
 /// No UNIQUE or FK references the column on either table, so ALTER TABLE
@@ -3296,9 +3252,7 @@ fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 29: drop user_id from approvals (simple DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 29: drop user_id from approvals (simple DROP INDEX + DROP COLUMN) ---
 
 /// Migration 29: drop user_id shim from approvals. Both the simple
 /// idx_approvals_user and the composite idx_approvals_user_status
@@ -3327,9 +3281,7 @@ fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 30: drop user_id from broca_actions (simple DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 30: drop user_id from broca_actions (simple DROP INDEX + DROP COLUMN) ---
 
 /// Migration 30: drop user_id shim from broca_actions. No UNIQUE or FK
 /// references the column. Idempotent: skips if user_id already absent.
@@ -3353,9 +3305,7 @@ fn run_migration_drop_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 31: drop user_id from projects (12-step UNIQUE rebuild)
-// ---------------------------------------------------------------------------
+// --- Migration 31: drop user_id from projects (12-step UNIQUE rebuild) ---
 
 /// Migration 31: drop user_id from projects via the 12-step rebuild path.
 /// projects carried UNIQUE(name, user_id), which blocks ALTER TABLE DROP
@@ -3412,9 +3362,7 @@ fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 32: drop user_id from axon_events + soma_agents
-// ---------------------------------------------------------------------------
+// --- Migration 32: drop user_id from axon_events + soma_agents ---
 
 /// Migration 32: drop user_id shim from axon_events and soma_agents. No UNIQUE
 /// or FK references the column on either table. Idempotent: each table is
@@ -3452,9 +3400,7 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 33: drop user_id from webhooks (DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 33: drop user_id from webhooks (DROP INDEX + DROP COLUMN) ---
 
 /// Migration 33: drop user_id shim from webhooks. No UNIQUE references the
 /// column (the tenant shard dropped the FK in v9). Idempotent: skips if
@@ -3479,9 +3425,7 @@ fn run_migration_drop_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 34: drop user_id from axon_subscriptions + axon_cursors
-// ---------------------------------------------------------------------------
+// --- Migration 34: drop user_id from axon_subscriptions + axon_cursors ---
 
 /// Migration 34: drop user_id shim from axon_subscriptions and axon_cursors.
 /// UNIQUE(agent, channel) on axon_subscriptions and PRIMARY KEY(agent, channel)
@@ -3519,9 +3463,7 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 35: drop user_id from reflections (DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 35: drop user_id from reflections (DROP INDEX + DROP COLUMN) ---
 
 /// Migration 35: drop user_id shim from reflections. No UNIQUE or FK
 /// references the column. idx_reflections_user must drop first;
@@ -3546,9 +3488,7 @@ fn run_migration_drop_user_id_growth(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 36: drop user_id from ingestion_hashes (PK rebuild)
-// ---------------------------------------------------------------------------
+// --- Migration 36: drop user_id from ingestion_hashes (PK rebuild) ---
 
 /// Migration 36: drop user_id from ingestion_hashes via the 12-step rebuild
 /// path. ingestion_hashes carried PRIMARY KEY (sha256, user_id), which blocks
@@ -4199,9 +4139,7 @@ fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Post-import validation (unchanged)
-// ---------------------------------------------------------------------------
+// --- Post-import validation (unchanged) ---
 
 /// Run a set of read-only integrity queries the migrate tool can surface in a
 /// pre-flight report. Every query is tolerant of missing tables so operators
@@ -4293,9 +4231,7 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 44: re-add user_id to projects (C-R3-004)
-// ---------------------------------------------------------------------------
+// --- Migration 44: re-add user_id to projects (C-R3-004) ---
 
 /// Migration 44: re-add user_id to monolith projects so single-DB deployments
 /// are safe even when tenant sharding is disabled. Phase 5 dropped user_id
@@ -4358,9 +4294,7 @@ fn run_migration_readd_user_id_projects(conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 45: re-add user_id to broca_actions (C-R3-004 / H-R3-006)
-// ---------------------------------------------------------------------------
+// --- Migration 45: re-add user_id to broca_actions (C-R3-004 / H-R3-006) ---
 
 /// Migration 45: re-add user_id to monolith broca_actions. broca_actions has
 /// no UNIQUE/FK on the column, so the simpler ALTER TABLE ADD COLUMN path
@@ -4490,9 +4424,7 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 46: identity_keys + identities tables
-// ---------------------------------------------------------------------------
+// --- Migration 46: identity_keys + identities tables ---
 
 /// Migration 46: creates the identity_keys and identities tables for PIV-Everywhere auth.
 fn run_migration_identity_tables(conn: &rusqlite::Connection) -> Result<()> {
@@ -4538,9 +4470,7 @@ fn run_migration_identity_tables(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 47: audit_log identity columns
-// ---------------------------------------------------------------------------
+// --- Migration 47: audit_log identity columns ---
 
 /// Migration 47: adds identity_id and identity_tier columns to the audit_log table.
 fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<()> {
@@ -4801,9 +4731,7 @@ fn run_migration_identity_keys_scopes_json_to_csv(conn: &rusqlite::Connection) -
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// v54: tool_manifests
-// ---------------------------------------------------------------------------
+// --- v54: tool_manifests ---
 
 /// Migration 54: creates the tool_manifests table for signed agent tool declarations.
 fn run_migration_tool_manifests(conn: &rusqlite::Connection) -> Result<()> {
@@ -4887,9 +4815,7 @@ fn down_migration_handoffs_global(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 56: is_active on users + enrollment_invites table
-// ---------------------------------------------------------------------------
+// --- Migration 56: is_active on users + enrollment_invites table ---
 
 /// Adds a soft-delete flag to the users table so deactivated accounts can be
 /// excluded from queries without losing audit history. Also creates the
@@ -4996,9 +4922,7 @@ fn run_migration_api_key_hash_version_fixup(conn: &rusqlite::Connection) -> Resu
     )
 }
 
-// ---------------------------------------------------------------------------
-// Migration 59: add narrative and axon_event_id to broca_actions
-// ---------------------------------------------------------------------------
+// --- Migration 59: add narrative and axon_event_id to broca_actions ---
 
 /// Migration 59: add `narrative TEXT` and `axon_event_id INTEGER` to the
 /// `broca_actions` table for existing databases.
@@ -5256,9 +5180,7 @@ fn run_migration_mcp_tokens(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 /// Unit and integration tests for the migration chain.
 #[cfg(test)]

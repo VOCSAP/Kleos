@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-// ---------------------------------------------------------------------------
-// Step definition (stored in workflow.steps JSON array)
-// ---------------------------------------------------------------------------
+// --- Step definition (stored in workflow.steps JSON array) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepDef {
@@ -31,9 +29,7 @@ const VALID_STEP_TYPES: &[&str] = &[
     "transform",
 ];
 
-// ---------------------------------------------------------------------------
-// Workflow
-// ---------------------------------------------------------------------------
+// --- Workflow ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workflow {
@@ -63,9 +59,7 @@ pub struct UpdateWorkflowRequest {
     pub steps: Option<Vec<StepDef>>,
 }
 
-// ---------------------------------------------------------------------------
-// Run
-// ---------------------------------------------------------------------------
+// --- Run ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
@@ -91,9 +85,7 @@ pub struct CreateRunRequest {
     pub user_id: Option<i64>,
 }
 
-// ---------------------------------------------------------------------------
-// Step
-// ---------------------------------------------------------------------------
+// --- Step ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Step {
@@ -116,9 +108,7 @@ pub struct Step {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Log entry
-// ---------------------------------------------------------------------------
+// --- Log entry ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogEntry {
@@ -131,9 +121,7 @@ pub struct LogEntry {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 /// Per-category count breakdown used inside stats responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,14 +141,10 @@ pub struct LoomStats {
     pub runs_by_status: Vec<StatBreakdown>,
 }
 
-// ---------------------------------------------------------------------------
-// Error helper
-// ---------------------------------------------------------------------------
+// --- Error helper ---
 
 
-// ---------------------------------------------------------------------------
-// Row mapping helpers
-// ---------------------------------------------------------------------------
+// --- Row mapping helpers ---
 
 fn row_to_workflow(row: &rusqlite::Row<'_>) -> Result<Workflow> {
     let steps_str: String = row.get(3)?;
@@ -242,9 +226,7 @@ fn row_to_log_entry(row: &rusqlite::Row<'_>) -> Result<LogEntry> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Utility functions
-// ---------------------------------------------------------------------------
+// --- Utility functions ---
 
 /// Resolve a dot-path like "foo.bar.baz" into a nested JSON value.
 pub fn resolve_dot_path(obj: &serde_json::Value, path: &str) -> serde_json::Value {
@@ -309,9 +291,7 @@ pub fn interpolate(template: &str, vars: &serde_json::Value) -> String {
     result
 }
 
-// ---------------------------------------------------------------------------
-// Logging
-// ---------------------------------------------------------------------------
+// --- Logging ---
 
 #[tracing::instrument(skip(db, message, data), fields(level = %level))]
 pub async fn add_log(
@@ -418,9 +398,7 @@ pub async fn get_logs(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Workflow CRUD
-// ---------------------------------------------------------------------------
+// --- Workflow CRUD ---
 
 #[tracing::instrument(skip(db, req), fields(name = %req.name))]
 pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Result<Workflow> {
@@ -636,9 +614,7 @@ pub async fn delete_workflow(db: &Database, id: i64) -> Result<bool> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Run management
-// ---------------------------------------------------------------------------
+// --- Run management ---
 
 #[tracing::instrument(skip(db, req), fields(workflow_id = req.workflow_id))]
 pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
@@ -929,9 +905,7 @@ pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
     Ok(true)
 }
 
-// ---------------------------------------------------------------------------
-// Step management
-// ---------------------------------------------------------------------------
+// --- Step management ---
 
 #[tracing::instrument(skip(db), fields(run_id, user_id))]
 pub async fn get_steps(db: &Database, run_id: i64, _user_id: i64) -> Result<Vec<Step>> {
@@ -1138,9 +1112,7 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
     get_step(db, step_id).await
 }
 
-// ---------------------------------------------------------------------------
-// Core orchestration
-// ---------------------------------------------------------------------------
+// --- Core orchestration ---
 
 #[tracing::instrument(skip(db), fields(run_id))]
 pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
@@ -1379,9 +1351,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Transform executor
-// ---------------------------------------------------------------------------
+// --- Transform executor ---
 
 #[tracing::instrument(skip(db, config, input), fields(step_id, user_id))]
 pub async fn execute_transform_step(
@@ -1448,9 +1418,7 @@ pub async fn execute_transform_step(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 #[tracing::instrument(skip(db), fields(user_id = ?user_id))]
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats> {
@@ -1547,9 +1515,7 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
     })
 }
 
-// ---------------------------------------------------------------------------
-// Webhook + LLM executors (ports of the standalone loom advance_run executors)
-// ---------------------------------------------------------------------------
+// --- Webhook + LLM executors (ports of the standalone loom advance_run executors) ---
 
 /// Shared HTTP client for webhook + LLM step execution. Allocated once per
 /// process; each call layers its own per-step timeout via `RequestBuilder::timeout`.

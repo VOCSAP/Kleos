@@ -46,9 +46,7 @@ fn get_pepper() -> Option<[u8; 32]> {
 }
 
 
-// ---------------------------------------------------------------------------
-// Scope
-// ---------------------------------------------------------------------------
+// --- Scope ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -84,9 +82,7 @@ impl std::str::FromStr for Scope {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ApiKey
-// ---------------------------------------------------------------------------
+// --- ApiKey ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -110,9 +106,7 @@ fn default_hash_version() -> i32 {
     HASH_VERSION_LEGACY
 }
 
-// ---------------------------------------------------------------------------
-// AuthContext
-// ---------------------------------------------------------------------------
+// --- AuthContext ---
 
 #[derive(Debug, Clone)]
 pub struct IdentityCtx {
@@ -139,9 +133,7 @@ impl AuthContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// --- Internal helpers ---
 
 /// Hash a raw key with SHA-256 (v1 legacy, no pepper).
 fn hash_key_v1(raw_key: &str) -> String {
@@ -285,9 +277,7 @@ pub fn scopes_to_string(scopes: &[Scope]) -> String {
         .join(",")
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+// --- Public API ---
 
 /// Create a new API key for a user and store it in the database.
 /// Returns (ApiKey, raw_key). The raw_key is shown once and never stored.
@@ -609,9 +599,7 @@ pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Row mapping
-// ---------------------------------------------------------------------------
+// --- Row mapping ---
 
 /// Standard row mapping: expects columns 0-11 in order:
 /// id, user_id, key_prefix, name, scopes, rate_limit, is_active,

@@ -9,9 +9,7 @@ use crate::db::Database;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// --- Types ---
 
 /// A dead-letter entry for a service call that failed after all retries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,9 +28,7 @@ pub struct ServiceDeadLetter {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Write
-// ---------------------------------------------------------------------------
+// --- Write ---
 
 /// Record a dead-letter entry for a service call that exhausted all retries.
 ///
@@ -66,9 +62,7 @@ pub async fn record_dead_letter(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Read (for operators / admin UI)
-// ---------------------------------------------------------------------------
+// --- Read (for operators / admin UI) ---
 
 /// List dead-letter entries, most recent first.
 ///
@@ -124,9 +118,7 @@ pub async fn list_dead_letters(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

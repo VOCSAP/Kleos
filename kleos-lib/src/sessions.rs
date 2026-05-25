@@ -11,9 +11,7 @@ use uuid::Uuid;
 
 use crate::validation::MAX_SHELL_OUTPUT_LINES as MAX_OUTPUT_LINES;
 
-// ---------------------------------------------------------------------------
-// SessionStatus -- lifecycle status for agent sessions.
-// ---------------------------------------------------------------------------
+// --- SessionStatus -- lifecycle status for agent sessions. ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -71,9 +69,7 @@ impl SessionStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ManagedSession -- in-memory session with output buffering + counters.
-// ---------------------------------------------------------------------------
+// --- ManagedSession -- in-memory session with output buffering + counters. ---
 
 pub struct ManagedSession {
     pub id: String,
@@ -153,9 +149,7 @@ impl ManagedSession {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Platform-specific process kill helper.
-// ---------------------------------------------------------------------------
+// --- Platform-specific process kill helper. ---
 
 fn kill_process(pid: u32) {
     #[cfg(unix)]
@@ -176,9 +170,7 @@ fn kill_process(pid: u32) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SessionManager -- in-memory registry with optional SQLite persistence.
-// ---------------------------------------------------------------------------
+// --- SessionManager -- in-memory registry with optional SQLite persistence. ---
 
 pub struct SessionManager {
     sessions: HashMap<String, ManagedSession>,

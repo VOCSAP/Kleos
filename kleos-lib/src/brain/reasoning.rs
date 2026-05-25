@@ -11,9 +11,7 @@ use crate::brain::hopfield::edges::{BrainEdge, EdgeType};
 use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::pattern::BrainPattern;
 
-// ---------------------------------------------------------------------------
-// Adjacency helpers (replaces ConnectionGraph)
-// ---------------------------------------------------------------------------
+// --- Adjacency helpers (replaces ConnectionGraph) ---
 
 /// Build a forward adjacency map (source -> [(target, weight, edge_type)])
 /// from a flat edge slice. Scoped to one edge type for directional traversal.
@@ -55,9 +53,7 @@ fn build_full_adj(edges: &[BrainEdge]) -> HashMap<i64, Vec<(i64, f32, String)>> 
     adj
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// --- Internal helpers ---
 
 fn content_preview(content: &str, max_len: usize) -> String {
     if content.len() <= max_len {
@@ -173,9 +169,7 @@ fn cosine_sim(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-// ---------------------------------------------------------------------------
-// Mode 1: Abductive Reasoning (Backward Causal)
-// ---------------------------------------------------------------------------
+// --- Mode 1: Abductive Reasoning (Backward Causal) ---
 
 /// "Why did X happen?" -- traverse Causal edges backward.
 ///
@@ -278,9 +272,7 @@ pub fn abductive_reason(
     inferences
 }
 
-// ---------------------------------------------------------------------------
-// Mode 2: Predictive Reasoning (Forward Causal)
-// ---------------------------------------------------------------------------
+// --- Mode 2: Predictive Reasoning (Forward Causal) ---
 
 /// "What will X cause?" -- traverse Causal edges forward.
 ///
@@ -365,9 +357,7 @@ pub fn predictive_reason(
     inferences
 }
 
-// ---------------------------------------------------------------------------
-// Mode 3: Contradiction Synthesis
-// ---------------------------------------------------------------------------
+// --- Mode 3: Contradiction Synthesis ---
 
 /// Produce temporal understanding from contradiction pairs.
 ///
@@ -438,9 +428,7 @@ pub fn synthesize_contradictions(
     inferences
 }
 
-// ---------------------------------------------------------------------------
-// Mode 4: Rule Extraction (Dream-Phase)
-// ---------------------------------------------------------------------------
+// --- Mode 4: Rule Extraction (Dream-Phase) ---
 
 /// Extract implicit rules from strongly co-activated memory clusters.
 ///
@@ -580,9 +568,7 @@ pub fn filter_cached_rules(
     relevant
 }
 
-// ---------------------------------------------------------------------------
-// Mode 5: Analogical Reasoning (Structural Pattern Matching)
-// ---------------------------------------------------------------------------
+// --- Mode 5: Analogical Reasoning (Structural Pattern Matching) ---
 
 /// Find structural parallels between memory clusters.
 ///

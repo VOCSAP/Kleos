@@ -17,9 +17,7 @@ use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
 
-// ---------------------------------------------------------------------------
-// BrainBackend trait -- unifies subprocess and in-process Hopfield
-// ---------------------------------------------------------------------------
+// --- BrainBackend trait -- unifies subprocess and in-process Hopfield ---
 
 /// Trait that abstracts over different brain implementations. The server
 /// routes call these methods without knowing whether the brain is a
@@ -73,9 +71,7 @@ pub trait BrainBackend: Send + Sync {
         self.stop().await;
     }
 }
-// ---------------------------------------------------------------------------
-// Types (from types.ts)
-// ---------------------------------------------------------------------------
+// --- Types (from types.ts) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrainMemory {
@@ -186,9 +182,7 @@ pub enum BrainCommand {
         seq: Option<i64>,
     },
 }
-// ---------------------------------------------------------------------------
-// Oracle types
-// ---------------------------------------------------------------------------
+// --- Oracle types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleResult {
@@ -232,9 +226,7 @@ pub struct DecayRequest {
 fn default_ticks() -> u32 {
     1
 }
-// ---------------------------------------------------------------------------
-// Brain query state (from state.ts)
-// ---------------------------------------------------------------------------
+// --- Brain query state (from state.ts) ---
 
 pub struct BrainQueryState {
     last_query_time: AtomicU64,
@@ -270,9 +262,7 @@ impl Default for BrainQueryState {
         Self::new()
     }
 }
-// ---------------------------------------------------------------------------
-// Brain Manager (from manager.ts)
-// ---------------------------------------------------------------------------
+// --- Brain Manager (from manager.ts) ---
 
 const REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MAX_RESTART_ATTEMPTS: u32 = 3;
@@ -793,9 +783,7 @@ impl BrainBackend for BrainManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HopfieldBrainManager -- in-process Hopfield network backend
-// ---------------------------------------------------------------------------
+// --- HopfieldBrainManager -- in-process Hopfield network backend ---
 
 #[cfg(feature = "brain_hopfield")]
 pub struct HopfieldBrainManager {
@@ -1388,9 +1376,7 @@ pub async fn verify_memory_ownership(
     })
     .await
 }
-// ---------------------------------------------------------------------------
-// Oracle (from oracle.ts)
-// ---------------------------------------------------------------------------
+// --- Oracle (from oracle.ts) ---
 
 
 pub fn build_user_prompt(query: &str, result: &BrainQueryResult, context: Option<&str>) -> String {
@@ -1559,9 +1545,7 @@ pub fn format_fallback(result: &BrainQueryResult) -> OracleResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
