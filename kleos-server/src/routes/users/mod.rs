@@ -65,7 +65,7 @@ async fn create_user(
                         username
                     ))
                 } else {
-                    kleos_lib::EngError::DatabaseMessage(e.to_string())
+                    kleos_lib::EngError::Database(e)
                 }
             })?;
 
@@ -87,7 +87,7 @@ async fn create_user(
                     }))
                 },
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await;
 
@@ -129,7 +129,7 @@ async fn list_users(
 
             let mut stmt = conn
                 .prepare(sql)
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -142,9 +142,9 @@ async fn list_users(
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })
@@ -182,7 +182,7 @@ async fn deactivate_user(
                     "UPDATE users SET is_active = 0 WHERE id = ?1 AND is_active = 1",
                     params![user_id],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(affected > 0)
         })
         .await?;

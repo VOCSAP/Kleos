@@ -163,7 +163,7 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
         .db
         .read(move |conn| {
             conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
         })
         .await
         .map_err(AppError)
@@ -300,7 +300,7 @@ async fn bootstrap(
                  VALUES ('bootstrap_claimed', datetime('now'), datetime('now'))",
                 [],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await
         .map_err(AppError)?;
@@ -335,7 +335,7 @@ async fn bootstrap(
                  VALUES (1, 'operator', 'admin', 1)",
                 [],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await
         .map_err(AppError)?;
@@ -1006,7 +1006,7 @@ async fn backup_handler(
         .db
         .write(move |conn| {
             conn.execute(&vacuum_sql, [])
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
         })
         .await
         .map_err(AppError)?;
@@ -1245,7 +1245,7 @@ async fn reset_user(
         total += db
             .write(move |conn| {
                 conn.execute(&sql_owned, [])
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                    .map_err(kleos_lib::EngError::Database)
             })
             .await
             .map_err(AppError)? as i64;
@@ -1715,7 +1715,7 @@ async fn admin_monolith_status(
                             SUM(CASE WHEN is_forgotten = 0 THEN 1 ELSE 0 END) AS active \
                      FROM memories GROUP BY user_id ORDER BY user_id",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -1724,7 +1724,7 @@ async fn admin_monolith_status(
                         row.get::<_, i64>(2)?,
                     ))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1787,10 +1787,10 @@ async fn admin_monolith_drain(
         .read(|conn| {
             let mut stmt = conn
                 .prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let rows: Vec<i64> = stmt
                 .query_map([], |row| row.get(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1847,12 +1847,12 @@ async fn admin_monolith_drain(
                         "SELECT content, created_at FROM memories \
                          WHERE is_forgotten = 0 AND is_latest = 1",
                     )
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 let keys: std::collections::HashSet<_> = stmt
                     .query_map([], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                    ?
                     .filter_map(|r| r.ok())
                     .collect();
                 Ok(keys)
@@ -1866,7 +1866,7 @@ async fn admin_monolith_drain(
             .read(move |conn| {
                 let mut stmt = conn
                     .prepare(&col_select_owned)
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 let rows: Vec<Vec<rusqlite::types::Value>> = stmt
                     .query_map(rusqlite::params![uid_val], |row| {
                         let mut vals = Vec::with_capacity(col_count);
@@ -1875,7 +1875,7 @@ async fn admin_monolith_drain(
                         }
                         Ok(vals)
                     })
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                    ?
                     .filter_map(|r| r.ok())
                     .collect();
                 Ok(rows)
@@ -1892,7 +1892,7 @@ async fn admin_monolith_drain(
             .write(move |conn| {
                 let tx = conn
                     .savepoint()
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 for row_vals in &rows {
                     let content = match &row_vals[0] {
                         rusqlite::types::Value::Text(s) => s.clone(),
@@ -1921,7 +1921,7 @@ async fn admin_monolith_drain(
                     }
                 }
                 tx.commit()
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 Ok((inserted, skipped))
             })
             .await;
@@ -1952,7 +1952,7 @@ async fn admin_monolith_drain(
                          WHERE user_id = ?1 AND is_forgotten = 0",
                         rusqlite::params![uid_val],
                     )
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                     Ok(())
                 })
                 .await;

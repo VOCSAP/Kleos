@@ -397,7 +397,7 @@ async fn verify_tool_manifest(
             ) {
                 Ok(id) => Some(id),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(kleos_lib::EngError::DatabaseMessage(e.to_string())),
+                Err(e) => return Err(kleos_lib::EngError::Database(e)),
             };
 
             let Some(identity_id) = identity_id else {
@@ -413,7 +413,7 @@ async fn verify_tool_manifest(
                      VALUES (?1, ?2, ?3)",
                     rusqlite::params![identity_id, hash, tools_json],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows > 0)
         })

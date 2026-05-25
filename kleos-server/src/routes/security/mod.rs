@@ -173,7 +173,7 @@ async fn record_usage_handler(
                     rusqlite::params![agent_id, auth.user_id],
                     |row| row.get::<_, i64>(0),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
             })
             .await?;
         if owned == 0 {

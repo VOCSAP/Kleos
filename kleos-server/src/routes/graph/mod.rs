@@ -756,7 +756,7 @@ async fn communities_handler(
                        AND user_id = ?1 \
                      ORDER BY community_id, importance DESC",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(rusqlite::params![user_id], |row| {
@@ -764,13 +764,13 @@ async fn communities_handler(
                     let mid: i64 = row.get(1)?;
                     Ok((cid, mid))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let mut comm_map: std::collections::BTreeMap<i64, Vec<i64>> =
                 std::collections::BTreeMap::new();
             for row in rows {
                 let (cid, mid) =
-                    row.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    row?;
                 comm_map.entry(cid).or_default().push(mid);
             }
 

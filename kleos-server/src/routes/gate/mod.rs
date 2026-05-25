@@ -339,7 +339,7 @@ async fn complete_handler(
                 params![user_id, agent_filter, opened_at_filter],
                 |row| row.get::<_, i64>(0),
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?;
 
@@ -580,7 +580,7 @@ async fn agent_model_enrichment(db: &kleos_lib::db::Database) -> Option<String> 
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             let mut out = Vec::new();
             for r in rows {
-                out.push(r.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?);
+                out.push(r?);
             }
             Ok(out)
         })

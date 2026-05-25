@@ -64,7 +64,7 @@ async fn list_for_memory(
             |_| Ok(()),
         )
         .optional()
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        .map_err(kleos_lib::EngError::Database)
     })
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;
@@ -346,7 +346,7 @@ async fn download_artifact(
             |_| Ok(()),
         )
         .optional()
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        .map_err(kleos_lib::EngError::Database)
     })
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;

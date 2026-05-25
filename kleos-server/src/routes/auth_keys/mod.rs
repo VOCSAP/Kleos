@@ -50,7 +50,7 @@ async fn create_key(
                     params![uid],
                     |row| row.get(0),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
             })
             .await?;
         if !exists {
@@ -143,7 +143,7 @@ async fn revoke_key(
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
             })
             .await?;
 
@@ -218,7 +218,7 @@ async fn rotate_key(
                 "UPDATE api_keys SET expires_at = ?1 WHERE id = ?2 AND user_id = ?3",
                 params![grace_expiry_clone, key_id, user_id],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?;
 
@@ -261,7 +261,7 @@ async fn create_space(
                 params![user_id, name_clone, description],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?;
 
@@ -288,7 +288,7 @@ async fn list_spaces(
                 .prepare(
                     "SELECT id, name, description, created_at FROM spaces WHERE user_id = ?1 ORDER BY id",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params![user_id], |r| {
@@ -299,12 +299,12 @@ async fn list_spaces(
                         r.get::<_, String>(3)?,
                     ))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let mut result = Vec::new();
             for row in rows {
                 let (id, name, description, created_at) =
-                    row.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    row?;
                 result.push(json!({
                     "id": id,
                     "name": name,
@@ -334,7 +334,7 @@ async fn delete_space(
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?;
 
@@ -355,7 +355,7 @@ async fn delete_space(
         .db
         .write(move |conn| {
             conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
         })
         .await?;
 

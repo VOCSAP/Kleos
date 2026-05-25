@@ -203,7 +203,7 @@ async fn validate_mcp_token(
                      FROM identity_keys
                      WHERE pubkey_fingerprint = ?1 AND is_active = 1",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let row = stmt
                 .query_row(rusqlite::params![kid], |row| {
                     Ok((
@@ -214,7 +214,7 @@ async fn validate_mcp_token(
                     ))
                 })
                 .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(row)
         })
         .await
@@ -264,7 +264,7 @@ async fn validate_mcp_token(
                 },
             )
             .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await
         .map_err(|e| format!("revocation check failed (fail closed): {}", e))?;
@@ -320,7 +320,7 @@ async fn validate_mcp_token(
                     "UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE jti = ?1",
                     rusqlite::params![jti_w],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
                 Ok(())
             })
             .await;
@@ -618,7 +618,7 @@ pub async fn auth_middleware(
                     },
                 )
                 .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
             })
             .await;
 
@@ -638,7 +638,7 @@ pub async fn auth_middleware(
                              request_count = request_count + 1 WHERE identity_hash = ?1",
                             params![hash],
                         )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                        ?;
                         Ok(())
                     })
                     .await;
@@ -695,7 +695,7 @@ pub async fn auth_middleware(
                              VALUES (?1, ?2, ?3, ?4, ?5)",
                             params![ik_id, hash_for_insert, host_ins, agent_ins, model_ins],
                         )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                        ?;
                         let id = conn
                             .query_row(
                                 "SELECT id FROM identities WHERE identity_hash = ?1",
@@ -703,7 +703,7 @@ pub async fn auth_middleware(
                                 |row| row.get::<_, i64>(0),
                             )
                             .map_err(|e| {
-                                kleos_lib::EngError::DatabaseMessage(e.to_string())
+                                kleos_lib::EngError::Database(e)
                             })?;
                         Ok(id)
                     })
@@ -753,7 +753,7 @@ pub async fn auth_middleware(
                     "UPDATE identity_keys SET last_seen_at = datetime('now') WHERE id = ?1",
                     params![ik_id],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
                 Ok(())
             })
             .await;
@@ -917,7 +917,7 @@ pub async fn auth_middleware(
             .db
             .read(|conn| {
                 conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                    .map_err(kleos_lib::EngError::Database)
             })
             .await
         {
@@ -1037,7 +1037,7 @@ async fn resolve_identity_by_id(
                     ))
                 },
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await
         .map_err(|e| e.to_string())?;

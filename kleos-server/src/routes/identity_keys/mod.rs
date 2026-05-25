@@ -76,7 +76,7 @@ async fn enroll_handler(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![user_id, tier, algo_str, pubkey_pem, fpr, host, label, serial, scopes_csv],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             Ok(conn.last_insert_rowid())
         })
@@ -121,7 +121,7 @@ async fn list_handler(
                      FROM identity_keys ORDER BY enrolled_at DESC",
                 )
             }
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -139,9 +139,9 @@ async fn list_handler(
                         "is_active": row.get::<_, bool>(10)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })
@@ -164,7 +164,7 @@ async fn list_mine_handler(
                     "SELECT id, tier, algo, pubkey_fingerprint, host_label, label, serial, enrolled_at, last_seen_at, is_active
                      FROM identity_keys WHERE user_id = ?1 ORDER BY enrolled_at DESC",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params![user_id], |row| {
@@ -181,9 +181,9 @@ async fn list_mine_handler(
                         "is_active": row.get::<_, bool>(9)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })
@@ -219,7 +219,7 @@ async fn revoke_handler(
                     params![key_id, user_id, reason],
                 )
             }
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             Ok(affected > 0)
         })
@@ -291,7 +291,7 @@ async fn create_invite_handler(
                  VALUES (?1, ?2, ?3, datetime('now', 'utc', '+24 hours'))",
                 params![user_id, hash_clone, method_clone],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             let id = conn.last_insert_rowid();
 
@@ -302,7 +302,7 @@ async fn create_invite_handler(
                     params![id],
                     |row| row.get(0),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok((id, exp))
         })

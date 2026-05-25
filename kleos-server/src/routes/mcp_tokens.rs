@@ -109,7 +109,7 @@ async fn register_token(
                 |row| row.get::<_, String>(0),
             )
             .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?
         .ok_or_else(|| {
@@ -159,7 +159,7 @@ async fn register_token(
                         );
                     }
                 }
-                kleos_lib::EngError::DatabaseMessage(e.to_string())
+                kleos_lib::EngError::Database(e)
             })?;
             Ok(())
         })
@@ -192,7 +192,7 @@ async fn list_tokens(
                      FROM mcp_tokens WHERE user_id = ?1
                      ORDER BY created_at DESC",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let rows = stmt
                 .query_map(params![uid], |row| {
                     Ok(json!({
@@ -205,9 +205,9 @@ async fn list_tokens(
                         "last_used_at": row.get::<_, Option<String>>(6)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(rows)
         })
         .await?;
@@ -246,7 +246,7 @@ async fn get_token(
                 },
             )
             .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?;
 
@@ -275,7 +275,7 @@ async fn revoke_token(
                      WHERE jti = ?1 AND user_id = ?2 AND is_active = 1",
                     params![jti, uid],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(n)
         })
         .await?;
@@ -304,7 +304,7 @@ async fn revoke_all(
                      WHERE user_id = ?1 AND is_active = 1",
                     params![uid],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(n)
         })
         .await?;

@@ -145,7 +145,7 @@ async fn upload_init(
                 expires_at_db
             ],
         )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        ?;
         Ok(())
     })
     .await?;
@@ -189,7 +189,7 @@ async fn load_session(
                 },
             )
             .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await?;
     row.ok_or_else(|| kleos_lib::EngError::NotFound("upload session not found".into()))
@@ -281,7 +281,7 @@ async fn upload_chunk(
                     |row| row.get(0),
                 )
                 .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let projected_total: i64 = conn
                 .query_row(
@@ -289,7 +289,7 @@ async fn upload_chunk(
                     params![upload_id],
                     |row| row.get(0),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let adjusted = projected_total - existing_size.unwrap_or(0) + size;
             if adjusted > MAX_UPLOAD_TOTAL_BYTES {
                 return Err(kleos_lib::EngError::InvalidInput(format!(
@@ -308,7 +308,7 @@ async fn upload_chunk(
                      created_at = datetime('now')",
                 params![upload_id, chunk_index, chunk_hash, size, raw_for_db],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             let (count, bytes): (i64, i64) = conn
                 .query_row(
@@ -316,7 +316,7 @@ async fn upload_chunk(
                     params![upload_id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok((count, bytes))
         })
         .await?;
@@ -348,7 +348,7 @@ async fn upload_complete(
                     "SELECT chunk_index, chunk_hash, data FROM upload_chunks
                        WHERE upload_id = ?1 ORDER BY chunk_index ASC",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let rows = stmt
                 .query_map(params![upload_id], |row| {
                     Ok((
@@ -357,10 +357,10 @@ async fn upload_complete(
                         row.get::<_, Vec<u8>>(2)?,
                     ))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let mut out = Vec::new();
             for row in rows {
-                out.push(row.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?);
+                out.push(row?);
             }
             Ok(out)
         })
@@ -503,12 +503,12 @@ async fn upload_complete(
                WHERE upload_id = ?2",
             params![final_hash_db, upload_id_db],
         )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        ?;
         conn.execute(
             "DELETE FROM upload_chunks WHERE upload_id = ?1",
             params![upload_id_db],
         )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        ?;
         Ok(())
     })
     .await?;
@@ -544,12 +544,12 @@ async fn upload_abort(
                completed_at = datetime('now') WHERE upload_id = ?1",
             params![upload_id],
         )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        ?;
         conn.execute(
             "DELETE FROM upload_chunks WHERE upload_id = ?1",
             params![upload_id],
         )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+        ?;
         Ok(())
     })
     .await?;
@@ -580,15 +580,15 @@ async fn upload_status(
                     params![id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let mut stmt = conn
                 .prepare(
                     "SELECT chunk_index FROM upload_chunks WHERE upload_id = ?1 ORDER BY chunk_index",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let indices: Vec<i64> = stmt
                 .query_map(params![id], |row| row.get::<_, i64>(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok((count, bytes, indices))
@@ -746,7 +746,7 @@ async fn import_json(
             conn.execute(
                 "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![content, category, source, session_id, importance, tags_str, confidence, is_static, sync_id, created_at, updated_at],
-            ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         }).await {
             Ok(()) => imported += 1,
@@ -822,7 +822,7 @@ async fn import_mem0(
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
                 params![content, category_s, source_s, importance, tags_str, sync_id],
-            ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         }).await.is_ok() {
             imported += 1;
@@ -944,7 +944,7 @@ async fn import_supermemory(
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
                 params![content, category_s, source_s, importance, tags_str, sync_id],
-            ).map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         }).await {
             Ok(()) => imported += 1,

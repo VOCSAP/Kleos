@@ -163,7 +163,7 @@ async fn onboard(
                     params![uid],
                     |row| row.get::<_, i64>(0),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(count)
         })
         .await

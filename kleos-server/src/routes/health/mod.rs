@@ -72,7 +72,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
                                 ))
                             },
                         )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                        .map_err(kleos_lib::EngError::Database)
                     })
                     .await
                     .unwrap_or((0, 0, 0, 0, 0, 0));
@@ -143,7 +143,7 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         .db
         .read(|conn| {
             conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .map_err(kleos_lib::EngError::Database)
         })
         .await
         .is_ok();
@@ -202,7 +202,7 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await
         .unwrap_or(0);
@@ -215,7 +215,7 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
                 [],
                 |row| row.get(0),
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .map_err(kleos_lib::EngError::Database)
         })
         .await
         .unwrap_or(0);
