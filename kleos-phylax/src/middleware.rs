@@ -1,1 +1,213 @@
 //! Policy-check middleware for resolve endpoint interception.
+//!
+//! Intercepts requests to /resolve/* endpoints and checks if any
+//! access policy requires approval before the request reaches credd's
+//! handlers. If approval is required, returns 202 Accepted with a
+//! poll URL instead of the resolved secret.
+
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::{Request, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde_json::json;
+
+use kleos_credd::auth::AuthInfo;
+
+use crate::audit::{actions, log_phylax_audit};
+use crate::models::{approval, policy};
+use crate::state::{PhylaxState, DEFAULT_APPROVAL_TTL_SECS};
+
+/// Paths that are subject to policy-check interception.
+const RESOLVE_PATHS: &[&str] = &["/resolve/text", "/resolve/proxy", "/resolve/raw"];
+
+/// Policy-check middleware. Runs after auth but before credd's resolve handlers.
+///
+/// If the request targets a resolve endpoint and a matching policy requires
+/// approval, creates an approval request and returns 202 instead of forwarding
+/// to the handler.
+pub async fn policy_check_middleware(
+    State(state): State<PhylaxState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+
+    // Only intercept resolve endpoints.
+    if !RESOLVE_PATHS.iter().any(|p| path == *p) {
+        return next.run(request).await;
+    }
+
+    // Extract auth info (inserted by auth_middleware).
+    let auth = match request.extensions().get::<AuthInfo>().cloned() {
+        Some(auth) => auth,
+        None => return next.run(request).await,
+    };
+
+    // Only apply policies to agent requests. Master bypasses policies.
+    if auth.is_master() {
+        return next.run(request).await;
+    }
+
+    let agent_name = match auth.agent_name() {
+        Some(name) => name.to_string(),
+        None => return next.run(request).await,
+    };
+
+    // Determine resolve mode from the path.
+    let resolve_mode = match path.as_str() {
+        "/resolve/text" => "text",
+        "/resolve/proxy" => "proxy",
+        "/resolve/raw" => "raw",
+        _ => return next.run(request).await,
+    };
+
+    // We need to read the body to extract the secret reference, but the
+    // downstream handler also needs it. Buffer the body.
+    let (parts, body) = request.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, 1024 * 64).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({"error": "request body too large"})))
+                .into_response();
+        }
+    };
+
+    // Try to parse the body to extract category/secret_name.
+    // For /resolve/text: look for {{secret:category/name}} patterns.
+    // For /resolve/proxy and /resolve/raw: extract from JSON body.
+    let (category, secret_name) = match extract_secret_ref(resolve_mode, &body_bytes) {
+        Some(pair) => pair,
+        None => {
+            // Can't determine the secret -- pass through to credd.
+            let request = Request::from_parts(parts, Body::from(body_bytes));
+            return next.run(request).await;
+        }
+    };
+
+    // Check for a matching policy. Use the "default" namespace for now.
+    let namespace = "default";
+    let matching_policy = match policy::find_matching_policy(
+        &state.inner.db,
+        auth.user_id(),
+        namespace,
+        &category,
+        &secret_name,
+    )
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            // No policy -- pass through to credd.
+            let request = Request::from_parts(parts, Body::from(body_bytes));
+            return next.run(request).await;
+        }
+        Err(_) => {
+            // DB error -- pass through to credd (fail open for now).
+            let request = Request::from_parts(parts, Body::from(body_bytes));
+            return next.run(request).await;
+        }
+    };
+
+    // Policy found and requires approval.
+    if !matching_policy.require_approval {
+        // Policy exists but doesn't require approval -- pass through.
+        let request = Request::from_parts(parts, Body::from(body_bytes));
+        return next.run(request).await;
+    }
+
+    // Check if the resolve mode is allowed.
+    if !matching_policy.allowed_modes.iter().any(|m| m == resolve_mode) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": format!("resolve mode '{}' not allowed by policy", resolve_mode)})),
+        )
+            .into_response();
+    }
+
+    // Create an approval request.
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    let expires_at = (chrono::Utc::now()
+        + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let approval_result = approval::create_approval(
+        &state.inner.db,
+        auth.user_id(),
+        &agent_name,
+        &category,
+        &secret_name,
+        resolve_mode,
+        Some(&correlation_id),
+        &expires_at,
+    )
+    .await;
+
+    match approval_result {
+        Ok(a) => {
+            let _ = log_phylax_audit(
+                &state.inner.db,
+                auth.user_id(),
+                Some(&agent_name),
+                actions::APPROVAL_REQUESTED,
+                &category,
+                &secret_name,
+                true,
+                Some(&correlation_id),
+            )
+            .await;
+
+            (
+                StatusCode::ACCEPTED,
+                Json(json!({
+                    "approval_required": true,
+                    "approval_id": a.id,
+                    "poll_url": format!("/phylax/approvals/{}/wait", a.id),
+                    "correlation_id": correlation_id,
+                    "expires_at": expires_at,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!("failed to create approval: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "failed to create approval"})),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Extract the secret category and name from a resolve request body.
+///
+/// Returns None if the secret reference cannot be determined.
+fn extract_secret_ref(mode: &str, body: &[u8]) -> Option<(String, String)> {
+    let text = std::str::from_utf8(body).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(text).ok()?;
+
+    match mode {
+        "text" => {
+            // Text mode: look for {{secret:category/name}} in the "text" field.
+            let text_field = parsed.get("text")?.as_str()?;
+            let start = text_field.find("{{secret:")?;
+            let inner_start = start + "{{secret:".len();
+            let end = text_field[inner_start..].find("}}")?;
+            let inner = &text_field[inner_start..inner_start + end];
+            // Strip field accessor (e.g., category/name.field -> category/name)
+            let inner = inner.split('.').next().unwrap_or(inner);
+            let slash = inner.find('/')?;
+            Some((inner[..slash].to_string(), inner[slash + 1..].to_string()))
+        }
+        "proxy" | "raw" => {
+            // Proxy/raw: extract from "category" and "name" fields.
+            let category = parsed.get("category")?.as_str()?.to_string();
+            let name = parsed.get("name")?.as_str()?.to_string();
+            Some((category, name))
+        }
+        _ => None,
+    }
+}
