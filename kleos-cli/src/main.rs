@@ -1000,9 +1000,9 @@ async fn main() {
 
             // Patch 33 -- inject the resolved space (or none if no signal).
             let (sid, sname) = space::determine_space_for_request(
-                no_space,
+                *no_space,
                 space.as_deref(),
-                space_id,
+                *space_id,
             );
             space::inject_space_into_body(&mut body, sid, sname);
 
@@ -1030,9 +1030,9 @@ async fn main() {
         } => {
             let mut body = json!({ "query": query, "limit": limit });
             let (sid, sname) = space::determine_space_for_request(
-                no_space,
+                *no_space,
                 space.as_deref(),
-                space_id,
+                *space_id,
             );
             space::inject_space_into_body(&mut body, sid, sname);
             if let Some(iu) = include_unscoped {
@@ -1095,9 +1095,9 @@ async fn main() {
         } => {
             let mut body = json!({ "query": query, "context": query, "limit": limit });
             let (sid, sname) = space::determine_space_for_request(
-                no_space,
+                *no_space,
                 space.as_deref(),
-                space_id,
+                *space_id,
             );
             space::inject_space_into_body(&mut body, sid, sname);
             if let Some(iu) = include_unscoped {
@@ -1208,9 +1208,9 @@ async fn main() {
             // query string. Numeric `space_id` and `include_unscoped` are
             // appended likewise. None of these get appended when unresolved.
             let (sid, sname) = space::determine_space_for_request(
-                no_space,
+                *no_space,
                 space.as_deref(),
-                space_id,
+                *space_id,
             );
             let mut url = format!("/list?limit={}&offset={}", limit, offset);
             if let Some(id) = sid {
