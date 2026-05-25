@@ -3516,6 +3516,101 @@ anti-leak).
 
 ---
 
+## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)
+
+### Symptome
+
+Decouvert lors de la validation de Patch 33 (memoire Kleos #4222). Sur LXC
+121 post-deploy Patch 33 :
+
+- POST /memory avec `"space": "kleos"` -> normalize_space_input cree la
+  row spaces dans le **tenant DB** (`tenants/2/kleos.db`), correct.
+- GET /spaces -> retourne uniquement `id=2 name=default` (la row creee
+  par `auth_keys/mod.rs:278` au INSERT INTO users).
+- sqlcipher de `tenants/2/kleos.db` confirme : 4 spaces presentes
+  (`claude-config`, `kleos`, `default`, `smoke-test-bravo`), invisibles
+  via l'API.
+
+Cause racine : les 3 handlers `create_space` (l. 355), `list_spaces`
+(l. 393), `delete_space` (l. 437) dans `routes/auth_keys/mod.rs`
+utilisent l'extractor `State<AppState>` puis `state.db.write(...)` /
+`state.db.read(...)`. Mais `state.db` est le **main monolith DB**
+(reserve aux tables system-scoped : users, api_keys, audit_log, agents,
+app_state). La table `spaces` vit dans le **tenant schema**
+(`schema_v44_parity.sql:89-97`), accessible via `ResolvedDb`.
+
+Bug pre-existant upstream Ghost-Frame, rendu visible par Patch 33 quand
+les memory handlers ont commence a creer des spaces dans le tenant DB
+via `normalize_space_input`.
+
+### Approche
+
+Fix chirurgical : les 3 handlers prennent `ResolvedDb(db): ResolvedDb`
+au lieu de `State(state): State<AppState>`, et `state.db` devient `db`
+dans les bodies. Niveau **chirurgical** (3 handlers, ~6 lignes
+substitutives + 3 commentaires).
+
+Ne touche pas :
+
+- L'auto-creation du space `default` au INSERT INTO users
+  (`auth_keys/mod.rs:278`) reste sur `state.db`. C'est un no-op
+  effectif post-Patch 33 puisque `kleos_lib::space::default_space_id`
+  cree a la demande cote tenant si manquant (INSERT OR IGNORE), donc
+  la row main DB orpheline ne bloque rien.
+- Le routeur `Router::new().route("/spaces", ...)` reste identique
+  (l'extractor est resolu via le type, pas via le mounting).
+- Aucune migration de donnees : les spaces orphelines deja creees
+  dans le main DB pre-Patch 34 (typiquement `default id=2`) restent
+  inertes, pas consultees par le code post-fix.
+
+### Fichiers touches
+
+| Fichier | Niveau delta | Description |
+|---|---|---|
+| `kleos-server/src/routes/auth_keys/mod.rs` | chirurgical | 3 handlers + 1 import. State<AppState> -> ResolvedDb. state.db -> db. |
+
+### Tests
+
+Build cote operateur via WSL. Verification E2E manuelle post-deploy :
+
+```bash
+# Avant : GET /spaces ne montre que id=2 default
+curl -sf http://192.168.10.21:4200/spaces -H "Authorization: Bearer $KLEOS_API_KEY"
+# Apres deploy Patch 34, doit montrer claude-config + kleos + default + smoke-test-bravo + foo
+curl -sf -X POST http://192.168.10.21:4200/spaces \
+  -H "Authorization: Bearer $KLEOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"foo"}'
+curl -sf http://192.168.10.21:4200/spaces -H "Authorization: Bearer $KLEOS_API_KEY"
+```
+
+### Conditions de retrait
+
+1. **Upstream Ghost-Frame absorbe ce patch via PR** : retirer Patch 34
+   de la liste locale, code reste tel quel. Candidat PR upstream
+   immediat (bug objectif, fix minimal, zero impact comportemental
+   negatif).
+2. **Upstream choisit une autre approche** (ex: deplacer la table
+   spaces vers le main DB, garder les handlers cote state.db) : aligner
+   le code local sur l'API upstream apres analyse.
+
+Cleanup optionnel post-deploy : la row `default id=2` dans le main DB
+(creee par `auth_keys/mod.rs:278` au INSERT INTO users) devient
+orpheline. Pas de cleanup automatique dans ce patch ; un script ops
+manuel peut faire :
+
+```sql
+DELETE FROM spaces WHERE user_id = 1 AND name = 'default';
+```
+
+Apres confirmation qu'aucun code legacy ne lit cette row directement
+(grep sur `FROM spaces WHERE ... AND name = 'default'` cote main DB :
+aucun hit hors auto-creation l. 278).
+
+agent-forge spec_id : `spec_e46b8918` + `hyp_5ed03a1e`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

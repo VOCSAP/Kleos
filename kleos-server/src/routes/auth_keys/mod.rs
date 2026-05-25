@@ -8,7 +8,11 @@ use kleos_lib::auth;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
-use crate::{error::AppError, extractors::Auth, state::AppState};
+use crate::{
+    error::AppError,
+    extractors::{Auth, ResolvedDb},
+    state::AppState,
+};
 
 mod types;
 use types::{CreateKeyBody, CreateSpaceBody, CreateUserBody, RotateKeyBody};
@@ -353,10 +357,14 @@ async fn list_users(
 // ---- Space Management ----
 
 async fn create_space(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth_ctx): Auth,
     Json(body): Json<CreateSpaceBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    // Patch 34: the `spaces` table lives in the tenant schema
+    // (schema_v44_parity.sql), not the main monolith. We must write into
+    // the resolved tenant DB so that rows are visible to the memory
+    // pipeline (memories.space_id FK) and to GET /spaces below.
     let name = body.name.trim().to_string();
     if name.is_empty() {
         return Err(AppError(kleos_lib::EngError::InvalidInput(
@@ -368,8 +376,7 @@ async fn create_space(
     let description = body.description.clone();
     let name_clone = name.clone();
 
-    let (id, created_at) = state
-        .db
+    let (id, created_at) = db
         .write(move |conn| {
             conn.query_row(
                 "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id, created_at",
@@ -391,13 +398,15 @@ async fn create_space(
 }
 
 async fn list_spaces(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth_ctx): Auth,
 ) -> Result<Json<Value>, AppError> {
+    // Patch 34: read from the tenant DB where the `spaces` table lives.
+    // Previously this hit the main monolith and missed every row created
+    // by normalize_space_input via the memory pipeline.
     let user_id = auth_ctx.user_id;
 
-    let spaces: Vec<Value> = state
-        .db
+    let spaces: Vec<Value> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
@@ -435,13 +444,14 @@ async fn list_spaces(
 }
 
 async fn delete_space(
-    State(state): State<AppState>,
+    ResolvedDb(db): ResolvedDb,
     Auth(auth_ctx): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
+    // Patch 34: target the tenant DB (the `spaces` table lives in the
+    // tenant schema, not the main monolith).
     // Verify ownership
-    let row: Option<(i64, String)> = state
-        .db
+    let row: Option<(i64, String)> = db
         .read(move |conn| {
             conn.query_row(
                 "SELECT user_id, name FROM spaces WHERE id = ?1",
@@ -466,13 +476,11 @@ async fn delete_space(
         )));
     }
 
-    state
-        .db
-        .write(move |conn| {
-            conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await?;
+    db.write(move |conn| {
+        conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])
+            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+    })
+    .await?;
 
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
