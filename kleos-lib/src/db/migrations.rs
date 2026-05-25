@@ -74,656 +74,170 @@ pub struct MigrationInfo {
 // The canonical migration list
 // ---------------------------------------------------------------------------
 
+/// Shorthand for Migration entries in the registry.
+macro_rules! migration {
+    // No down, not transactional (most common)
+    ($ver:expr, $desc:expr, $up:expr) => {
+        Migration { version: $ver, description: $desc, up: $up, down: None, transactional: false }
+    };
+    // No down, transactional
+    ($ver:expr, $desc:expr, $up:expr, tx) => {
+        Migration { version: $ver, description: $desc, up: $up, down: None, transactional: true }
+    };
+    // With down, not transactional
+    ($ver:expr, $desc:expr, $up:expr, down: $down:expr) => {
+        Migration { version: $ver, description: $desc, up: $up, down: Some($down), transactional: false }
+    };
+    // With down, transactional
+    ($ver:expr, $desc:expr, $up:expr, down: $down:expr, tx) => {
+        Migration { version: $ver, description: $desc, up: $up, down: Some($down), transactional: true }
+    };
+}
+
 pub static MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        description: "create_tables",
-        up: |conn| super::schema::create_tables(conn),
-        // Dropping the initial schema would destroy all data; no inverse.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 2,
-        description: "add_missing_indexes",
-        up: run_migration_add_missing_indexes,
-        // Indexes are covered by CREATE INDEX IF NOT EXISTS; dropping them
-        // individually is safe, but the sheer number makes the inverse
-        // fragile and the original DB lacked them, so no inverse needed.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 3,
-        description: "add_pagerank_tables",
-        up: run_migration_pagerank_tables,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 4,
-        description: "thymus_tenant_scope",
-        up: run_migration_thymus_tenant_scope,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 5,
-        description: "app_state_table",
-        up: run_migration_app_state_table,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 6,
-        description: "backfill_thymus_user_id",
-        up: run_migration_backfill_thymus_user_id,
-        // Data update; original values cannot be recovered.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 7,
-        description: "vector_sync_pending",
-        up: run_migration_vector_sync_pending,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 8,
-        description: "add_community_id",
-        up: run_migration_add_community_id,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 9,
-        description: "drop_is_inference",
-        up: run_migration_drop_is_inference,
-        // DROP COLUMN is destructive; there is no way to recover the
-        // original data without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 10,
-        description: "syntheos_services",
-        up: run_migration_syntheos_services,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 11,
-        description: "brain_patterns",
-        up: run_migration_brain_patterns,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 12,
-        description: "approvals",
-        up: run_migration_approvals,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 13,
-        description: "error_events",
-        up: run_migration_error_events,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 14,
-        description: "brain_meta",
-        up: run_migration_brain_meta,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 15,
-        description: "brain_pca_models",
-        up: run_migration_pca_models,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 16,
-        description: "brain_dream_runs",
-        up: run_migration_brain_dream_runs,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 17,
-        description: "cred_tables",
-        up: run_migration_cred_tables,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 18,
-        description: "api_key_hash_unique",
-        up: run_migration_api_key_hash_unique,
-        // The UNIQUE index was added conditionally; dropping it is safe,
-        // but we leave it None because we cannot know which DBs skipped it.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 19,
-        description: "api_key_hash_version",
-        up: run_migration_api_key_hash_version,
-        // Purely additive ALTER TABLE ADD COLUMN. SQLite 3.35+ DROP COLUMN
-        // is the safe inverse because the column has no constraints that
-        // would require a full table rebuild.
-        down: Some(down_migration_api_key_hash_version),
-        transactional: true,
-    },
-    Migration {
-        version: 20,
-        description: "link_covering_indexes",
-        up: run_migration_link_covering_indexes,
-        // Two covering indexes; DROP INDEX is the clean inverse.
-        down: Some(down_migration_link_covering_indexes),
-        transactional: true,
-    },
-    Migration {
-        version: 21,
-        description: "upload_sessions",
-        up: run_migration_upload_sessions,
-        // Two new tables with no FK references from other tables; DROP TABLE
-        // is the clean inverse.
-        down: Some(down_migration_upload_sessions),
-        transactional: true,
-    },
-    Migration {
-        version: 22,
-        description: "service_dead_letters",
-        up: run_migration_service_dead_letters,
-        // New table with no FK references; DROP TABLE is the clean inverse.
-        down: Some(down_migration_service_dead_letters),
-        transactional: true,
-    },
-    Migration {
-        version: 23,
-        description: "memories_list_covering_index",
-        up: run_migration_memories_list_covering_index,
-        down: Some(down_migration_memories_list_covering_index),
-        transactional: true,
-    },
-    Migration {
-        version: 24,
-        description: "commerce_tables",
-        up: run_migration_commerce_tables,
-        down: Some(down_migration_commerce_tables),
-        transactional: true,
-    },
-    Migration {
-        version: 25,
-        description: "drop_user_id_memory_core",
-        up: run_migration_drop_user_id_memory_core,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 26,
-        description: "drop_user_id_scratchpad",
-        up: run_migration_drop_user_id_scratchpad,
-        // 12-step table rebuild; no safe inverse.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 27,
-        description: "drop_user_id_sessions",
-        up: run_migration_drop_user_id_sessions,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 28,
-        description: "drop_user_id_chiasm",
-        up: run_migration_drop_user_id_chiasm,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 29,
-        description: "drop_user_id_approvals",
-        up: run_migration_drop_user_id_approvals,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 30,
-        description: "drop_user_id_broca",
-        up: run_migration_drop_user_id_broca,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 31,
-        description: "drop_user_id_projects",
-        up: run_migration_drop_user_id_projects,
-        // 12-step table rebuild; no safe inverse.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 32,
-        description: "drop_user_id_activity",
-        up: run_migration_drop_user_id_activity,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 33,
-        description: "drop_user_id_webhooks",
-        up: run_migration_drop_user_id_webhooks,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 34,
-        description: "drop_user_id_axon",
-        up: run_migration_drop_user_id_axon,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 35,
-        description: "drop_user_id_growth",
-        up: run_migration_drop_user_id_growth,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 36,
-        description: "drop_user_id_ingestion_hashes",
-        up: run_migration_drop_user_id_ingestion_hashes,
-        // DROP COLUMN / PK rebuild is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 37,
-        description: "drop_user_id_loom",
-        up: run_migration_drop_user_id_loom,
-        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 38,
-        description: "drop_user_id_graph",
-        up: run_migration_drop_user_id_graph,
-        // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 39,
-        description: "drop_user_id_thymus",
-        up: run_migration_drop_user_id_thymus,
-        // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 40,
-        description: "drop_user_id_portability",
-        up: run_migration_drop_user_id_portability,
-        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 41,
-        description: "drop_user_id_intelligence",
-        up: run_migration_drop_user_id_intelligence,
-        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 42,
-        description: "drop_user_id_skills",
-        up: run_migration_drop_user_id_skills,
-        // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 43,
-        description: "drop_user_id_episodes",
-        up: run_migration_drop_user_id_episodes,
-        // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
+    // Dropping the initial schema would destroy all data; no inverse.
+    migration!(1, "create_tables", |conn| super::schema::create_tables(conn)),
+    migration!(2, "add_missing_indexes", run_migration_add_missing_indexes),
+    migration!(3, "add_pagerank_tables", run_migration_pagerank_tables),
+    migration!(4, "thymus_tenant_scope", run_migration_thymus_tenant_scope),
+    migration!(5, "app_state_table", run_migration_app_state_table),
+    // Data update; original values cannot be recovered.
+    migration!(6, "backfill_thymus_user_id", run_migration_backfill_thymus_user_id),
+    migration!(7, "vector_sync_pending", run_migration_vector_sync_pending),
+    migration!(8, "add_community_id", run_migration_add_community_id),
+    // DROP COLUMN is destructive; there is no way to recover the original data without a backup.
+    migration!(9, "drop_is_inference", run_migration_drop_is_inference),
+    migration!(10, "syntheos_services", run_migration_syntheos_services),
+    migration!(11, "brain_patterns", run_migration_brain_patterns),
+    migration!(12, "approvals", run_migration_approvals),
+    migration!(13, "error_events", run_migration_error_events),
+    migration!(14, "brain_meta", run_migration_brain_meta),
+    migration!(15, "brain_pca_models", run_migration_pca_models),
+    migration!(16, "brain_dream_runs", run_migration_brain_dream_runs),
+    migration!(17, "cred_tables", run_migration_cred_tables),
+    // The UNIQUE index was added conditionally; we cannot know which DBs skipped it.
+    migration!(18, "api_key_hash_unique", run_migration_api_key_hash_unique),
+    migration!(19, "api_key_hash_version", run_migration_api_key_hash_version, down: down_migration_api_key_hash_version, tx),
+    migration!(20, "link_covering_indexes", run_migration_link_covering_indexes, down: down_migration_link_covering_indexes, tx),
+    migration!(21, "upload_sessions", run_migration_upload_sessions, down: down_migration_upload_sessions, tx),
+    migration!(22, "service_dead_letters", run_migration_service_dead_letters, down: down_migration_service_dead_letters, tx),
+    migration!(23, "memories_list_covering_index", run_migration_memories_list_covering_index, down: down_migration_memories_list_covering_index, tx),
+    migration!(24, "commerce_tables", run_migration_commerce_tables, down: down_migration_commerce_tables, tx),
+    // DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(25, "drop_user_id_memory_core", run_migration_drop_user_id_memory_core),
+    // 12-step table rebuild; no safe inverse.
+    migration!(26, "drop_user_id_scratchpad", run_migration_drop_user_id_scratchpad),
+    // DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(27, "drop_user_id_sessions", run_migration_drop_user_id_sessions),
+    migration!(28, "drop_user_id_chiasm", run_migration_drop_user_id_chiasm),
+    migration!(29, "drop_user_id_approvals", run_migration_drop_user_id_approvals),
+    migration!(30, "drop_user_id_broca", run_migration_drop_user_id_broca),
+    // 12-step table rebuild; no safe inverse.
+    migration!(31, "drop_user_id_projects", run_migration_drop_user_id_projects),
+    // DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(32, "drop_user_id_activity", run_migration_drop_user_id_activity),
+    migration!(33, "drop_user_id_webhooks", run_migration_drop_user_id_webhooks),
+    migration!(34, "drop_user_id_axon", run_migration_drop_user_id_axon),
+    migration!(35, "drop_user_id_growth", run_migration_drop_user_id_growth),
+    // DROP COLUMN / PK rebuild is destructive; no safe inverse without a backup.
+    migration!(36, "drop_user_id_ingestion_hashes", run_migration_drop_user_id_ingestion_hashes),
+    // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(37, "drop_user_id_loom", run_migration_drop_user_id_loom),
+    // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(38, "drop_user_id_graph", run_migration_drop_user_id_graph),
+    // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
+    migration!(39, "drop_user_id_thymus", run_migration_drop_user_id_thymus),
+    // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(40, "drop_user_id_portability", run_migration_drop_user_id_portability),
+    migration!(41, "drop_user_id_intelligence", run_migration_drop_user_id_intelligence),
+    // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
+    migration!(42, "drop_user_id_skills", run_migration_drop_user_id_skills),
+    // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(43, "drop_user_id_episodes", run_migration_drop_user_id_episodes),
     // C-R3-004: re-add user_id to monolith projects + broca_actions so
     // single-DB deployments are safe even when tenant sharding is disabled.
     // Tenant shards remain user_id-free; only the monolith carries these.
-    Migration {
-        version: 44,
-        description: "readd_user_id_projects",
-        up: run_migration_readd_user_id_projects,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 45,
-        description: "readd_user_id_broca",
-        up: run_migration_readd_user_id_broca,
-        down: None,
-        transactional: false,
-    },
+    migration!(44, "readd_user_id_projects", run_migration_readd_user_id_projects),
+    migration!(45, "readd_user_id_broca", run_migration_readd_user_id_broca),
     // Sparkling Fairy Stage 1: identity tables for PIV-Everywhere auth.
-    Migration {
-        version: 46,
-        description: "identity_keys_and_identities",
-        up: run_migration_identity_tables,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 47,
-        description: "audit_log_identity_columns",
-        up: run_migration_audit_identity_columns,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 48,
-        description: "drop_api_keys_agent_fk",
-        up: run_migration_drop_api_keys_agent_fk,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 49,
-        description: "supervisor_injections",
-        up: run_migration_supervisor_injections,
-        down: Some(down_migration_supervisor_injections),
-        transactional: true,
-    },
-    Migration {
-        version: 50,
-        description: "gate_requests_session_id",
-        up: run_migration_gate_requests_session_id,
-        down: Some(down_migration_gate_requests_session_id),
-        transactional: true,
-    },
-    Migration {
-        version: 51,
-        description: "memory_chunks",
-        up: run_migration_memory_chunks,
-        down: Some(down_migration_memory_chunks),
-        transactional: true,
-    },
-    Migration {
-        version: 52,
-        description: "activity_log_table",
-        up: run_migration_activity_log_table,
-        down: Some(down_migration_activity_log_table),
-        transactional: true,
-    },
-    Migration {
-        version: 53,
-        description: "identity_keys_scopes",
-        up: run_migration_identity_keys_scopes,
-        down: Some(down_migration_identity_keys_scopes),
-        transactional: true,
-    },
-    Migration {
-        version: 54,
-        description: "tool_manifests",
-        up: run_migration_tool_manifests,
-        down: Some(down_migration_tool_manifests),
-        transactional: true,
-    },
-    Migration {
-        version: 55,
-        description: "handoffs_global",
-        up: run_migration_handoffs_global,
-        down: Some(down_migration_handoffs_global),
-        transactional: true,
-    },
+    migration!(46, "identity_keys_and_identities", run_migration_identity_tables, tx),
+    migration!(47, "audit_log_identity_columns", run_migration_audit_identity_columns),
+    migration!(48, "drop_api_keys_agent_fk", run_migration_drop_api_keys_agent_fk),
+    migration!(49, "supervisor_injections", run_migration_supervisor_injections, down: down_migration_supervisor_injections, tx),
+    migration!(50, "gate_requests_session_id", run_migration_gate_requests_session_id, down: down_migration_gate_requests_session_id, tx),
+    migration!(51, "memory_chunks", run_migration_memory_chunks, down: down_migration_memory_chunks, tx),
+    migration!(52, "activity_log_table", run_migration_activity_log_table, down: down_migration_activity_log_table, tx),
+    migration!(53, "identity_keys_scopes", run_migration_identity_keys_scopes, down: down_migration_identity_keys_scopes, tx),
+    migration!(54, "tool_manifests", run_migration_tool_manifests, down: down_migration_tool_manifests, tx),
+    migration!(55, "handoffs_global", run_migration_handoffs_global, down: down_migration_handoffs_global, tx),
     // Adds soft-delete support to users and a one-time invite token table
     // for controlled FIDO2 enrollment of new coworkers.
-    Migration {
-        version: 56,
-        description: "user_active_and_enrollment_invites",
-        up: run_migration_user_active_and_invites,
-        down: Some(down_migration_user_active_and_invites),
-        transactional: true,
-    },
-    Migration {
-        version: 57,
-        description: "skill_dispatch_configs",
-        up: run_migration_skill_dispatch_configs,
-        down: Some(down_migration_skill_dispatch_configs),
-        transactional: true,
-    },
-    Migration {
-        version: 58,
-        description: "api_key_hash_version_fixup",
-        up: run_migration_api_key_hash_version_fixup,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 59,
-        description: "broca_narrative_columns",
-        up: run_migration_broca_narrative_columns,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 60,
-        description: "chiasm_extended_fields",
-        up: run_migration_chiasm_extended_fields,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 61,
-        description: "chiasm_path_claims",
-        up: run_migration_chiasm_path_claims,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 62,
-        description: "chiasm_agent_keys",
-        up: run_migration_chiasm_agent_keys,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 63,
-        description: "handoff_atoms",
-        up: run_migration_handoff_atoms,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 64,
-        description: "readd_user_id_memory_core",
-        up: run_migration_readd_user_id_memory_core,
-        down: Some(down_migration_readd_user_id_memory_core),
-        transactional: true,
-    },
-    Migration {
-        version: 65,
-        description: "readd_user_id_webhooks",
-        up: run_migration_readd_user_id_webhooks,
-        down: Some(down_migration_readd_user_id_webhooks),
-        transactional: true,
-    },
-    Migration {
-        version: 66,
-        description: "readd_user_id_approvals",
-        up: run_migration_readd_user_id_approvals,
-        down: Some(down_migration_readd_user_id_approvals),
-        transactional: true,
-    },
+    migration!(56, "user_active_and_enrollment_invites", run_migration_user_active_and_invites, down: down_migration_user_active_and_invites, tx),
+    migration!(57, "skill_dispatch_configs", run_migration_skill_dispatch_configs, down: down_migration_skill_dispatch_configs, tx),
+    migration!(58, "api_key_hash_version_fixup", run_migration_api_key_hash_version_fixup, tx),
+    migration!(59, "broca_narrative_columns", run_migration_broca_narrative_columns, tx),
+    migration!(60, "chiasm_extended_fields", run_migration_chiasm_extended_fields, tx),
+    migration!(61, "chiasm_path_claims", run_migration_chiasm_path_claims, tx),
+    migration!(62, "chiasm_agent_keys", run_migration_chiasm_agent_keys, tx),
+    migration!(63, "handoff_atoms", run_migration_handoff_atoms, tx),
+    migration!(64, "readd_user_id_memory_core", run_migration_readd_user_id_memory_core, down: down_migration_readd_user_id_memory_core, tx),
+    migration!(65, "readd_user_id_webhooks", run_migration_readd_user_id_webhooks, down: down_migration_readd_user_id_webhooks, tx),
+    migration!(66, "readd_user_id_approvals", run_migration_readd_user_id_approvals, down: down_migration_readd_user_id_approvals, tx),
     // soma_agents carries UNIQUE(name); proper per-user isolation needs
     // UNIQUE(name, user_id), which requires the 12-step rebuild (migration 44
     // pattern). transactional:false because the rebuild toggles
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
-    Migration {
-        version: 67,
-        description: "readd_user_id_soma_agents",
-        up: run_migration_readd_user_id_soma_agents,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 68,
-        description: "readd_user_id_axon_events",
-        up: run_migration_readd_user_id_axon_events,
-        down: Some(down_migration_readd_user_id_axon_events),
-        transactional: true,
-    },
-    Migration {
-        version: 69,
-        description: "readd_user_id_chiasm_tasks",
-        up: run_migration_readd_user_id_chiasm_tasks,
-        down: Some(down_migration_readd_user_id_chiasm_tasks),
-        transactional: true,
-    },
-    Migration {
-        version: 70,
-        description: "readd_user_id_conversations",
-        up: run_migration_readd_user_id_conversations,
-        down: Some(down_migration_readd_user_id_conversations),
-        transactional: true,
-    },
-    Migration {
-        version: 71,
-        description: "readd_user_id_intelligence",
-        up: run_migration_readd_user_id_intelligence,
-        down: Some(down_migration_readd_user_id_intelligence),
-        transactional: true,
-    },
+    migration!(67, "readd_user_id_soma_agents", run_migration_readd_user_id_soma_agents),
+    migration!(68, "readd_user_id_axon_events", run_migration_readd_user_id_axon_events, down: down_migration_readd_user_id_axon_events, tx),
+    migration!(69, "readd_user_id_chiasm_tasks", run_migration_readd_user_id_chiasm_tasks, down: down_migration_readd_user_id_chiasm_tasks, tx),
+    migration!(70, "readd_user_id_conversations", run_migration_readd_user_id_conversations, down: down_migration_readd_user_id_conversations, tx),
+    migration!(71, "readd_user_id_intelligence", run_migration_readd_user_id_intelligence, down: down_migration_readd_user_id_intelligence, tx),
     // entities carries UNIQUE(name, entity_type); proper per-user isolation needs
     // UNIQUE(name, entity_type, user_id), which requires a table rebuild (the
     // reverse of migration 38). transactional:false because the rebuild toggles
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
-    Migration {
-        version: 72,
-        description: "readd_user_id_graph_entities",
-        up: run_migration_readd_user_id_graph_entities,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 73,
-        description: "readd_user_id_episodes",
-        up: run_migration_readd_user_id_episodes,
-        down: Some(down_migration_readd_user_id_episodes),
-        transactional: true,
-    },
+    migration!(72, "readd_user_id_graph_entities", run_migration_readd_user_id_graph_entities),
+    migration!(73, "readd_user_id_episodes", run_migration_readd_user_id_episodes, down: down_migration_readd_user_id_episodes, tx),
     // Re-adds user_id to the remaining 5 intelligence tables that v71 skipped:
     // current_state (UNIQUE rebuild), reconsolidations, temporal_patterns,
     // digests, and memory_feedback. transactional:false because the
     // current_state rebuild toggles PRAGMA foreign_keys, which SQLite forbids
     // inside a SAVEPOINT.
-    Migration {
-        version: 74,
-        description: "readd_user_id_intelligence_remainder",
-        up: run_migration_readd_user_id_intelligence_remainder,
-        down: None,
-        transactional: false,
-    },
+    migration!(74, "readd_user_id_intelligence_remainder", run_migration_readd_user_id_intelligence_remainder),
     // Re-adds user_id to the 5 thymus tables that migration 39 dropped:
     // rubrics (UNIQUE rebuild -- index changes from name to (user_id, name)),
     // evaluations, quality_metrics, session_quality, behavioral_drift_events.
     // transactional:false because the rubrics rebuild toggles PRAGMA
     // foreign_keys (evaluations holds a FK to rubrics.id) and SQLite forbids
     // that inside a SAVEPOINT.
-    Migration {
-        version: 75,
-        description: "readd_user_id_thymus",
-        up: run_migration_readd_user_id_thymus,
-        down: None,
-        transactional: false,
-    },
+    migration!(75, "readd_user_id_thymus", run_migration_readd_user_id_thymus),
     // Re-adds user_id to entity_cooccurrences that v38 dropped.
     // structured_facts already got user_id from v64 (memory-core).
     // Simple ADD COLUMN -- UNIQUE(entity_a_id, entity_b_id) does not need
     // user_id since co-occurrence pairs are global but queried per-user via
     // entity joins.
-    Migration {
-        version: 76,
-        description: "readd_user_id_graph_remainder",
-        up: run_migration_readd_user_id_graph_remainder,
-        down: None,
-        transactional: false,
-    },
+    migration!(76, "readd_user_id_graph_remainder", run_migration_readd_user_id_graph_remainder),
     // Re-adds user_id to user_preferences that v40 dropped via REBUILD.
     // UNIQUE constraint changes from (key) back to (user_id, key).
     // Also re-adds the domain+preference+user_id UNIQUE INDEX that v40 dropped.
     // transactional:false because the rebuild toggles PRAGMA foreign_keys.
-    Migration {
-        version: 77,
-        description: "readd_user_id_user_preferences",
-        up: run_migration_readd_user_id_user_preferences,
-        down: None,
-        transactional: false,
-    },
+    migration!(77, "readd_user_id_user_preferences", run_migration_readd_user_id_user_preferences),
     // Re-adds user_id to skill_records that v42 dropped via REBUILD.
     // UNIQUE changes from (name, agent, version) to (name, agent, version, user_id).
     // FTS triggers must be dropped before the rename and recreated after.
     // transactional:false because the rebuild toggles PRAGMA foreign_keys.
-    Migration {
-        version: 78,
-        description: "readd_user_id_skills",
-        up: run_migration_readd_user_id_skills,
-        down: None,
-        transactional: false,
-    },
+    migration!(78, "readd_user_id_skills", run_migration_readd_user_id_skills),
     // Re-adds user_id to brain_edges that v38 dropped.
-    // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not
-    // include user_id.
-    Migration {
-        version: 79,
-        description: "readd_user_id_brain_edges",
-        up: run_migration_readd_user_id_brain_edges,
-        down: None,
-        transactional: false,
-    },
+    // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not include user_id.
+    migration!(79, "readd_user_id_brain_edges", run_migration_readd_user_id_brain_edges),
     // C3: convert legacy JSON-array scopes in identity_keys.scopes to the
     // canonical CSV format used by api_keys.scopes. Rows whose value is
     // already CSV (or empty) are left alone -- the migration is idempotent.
     // No table rebuild: the column remains TEXT NOT NULL and the v53
     // default lingers on disk for any column never explicitly inserted,
     // but production paths always pass a value via enroll_handler.
-    Migration {
-        version: 80,
-        description: "identity_keys_scopes_json_to_csv",
-        up: run_migration_identity_keys_scopes_json_to_csv,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 81,
-        description: "mcp_tokens",
-        up: run_migration_mcp_tokens,
-        down: None,
-        transactional: true,
-    },
+    migration!(80, "identity_keys_scopes_json_to_csv", run_migration_identity_keys_scopes_json_to_csv, tx),
+    migration!(81, "mcp_tokens", run_migration_mcp_tokens, tx),
 ];
 
 // ---------------------------------------------------------------------------
