@@ -413,6 +413,8 @@ const MIGRATION_READD_USER_ID_BRAIN: i64 = 79;
 const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
 /// Version number for the MCP direct-auth token revocation table.
 const MIGRATION_MCP_TOKENS: i64 = 81;
+/// Version number for the Phylax agent-native credential tables migration.
+const MIGRATION_PHYLAX_TABLES: i64 = 82;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1079,6 +1081,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         info!("Running migration 81: mcp_tokens");
         run_migration_mcp_tokens(conn)?;
         record_migration(conn, MIGRATION_MCP_TOKENS, "mcp_tokens")?;
+    }
+
+    if current_version < MIGRATION_PHYLAX_TABLES {
+        info!("Running migration 82: phylax_tables");
+        run_migration_phylax_tables(conn)?;
+        record_migration(conn, MIGRATION_PHYLAX_TABLES, "phylax_tables")?;
     }
 
     Ok(())
