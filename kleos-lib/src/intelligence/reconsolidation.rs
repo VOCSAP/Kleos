@@ -298,44 +298,6 @@ pub async fn run_reconsolidation_sweep(
     Ok(results)
 }
 
-/// Record whether a recalled memory was useful.
-/// Called by search/recall endpoints when results are used or discarded.
-#[tracing::instrument(skip(db))]
-pub async fn record_recall_outcome(
-    db: &Database,
-    memory_id: i64,
-    user_id: i64,
-    useful: bool,
-) -> Result<()> {
-    let affected = db
-        .write(move |conn| {
-            let n = if useful {
-                conn.execute(
-                    "UPDATE memories SET recall_hits = recall_hits + 1 WHERE id = ?1",
-                    rusqlite::params![memory_id],
-                )
-                ?
-            } else {
-                conn.execute(
-                    "UPDATE memories SET recall_misses = recall_misses + 1 WHERE id = ?1",
-                    rusqlite::params![memory_id],
-                )
-                ?
-            };
-            Ok(n)
-        })
-        .await?;
-
-    if affected == 0 {
-        return Err(crate::EngError::NotFound(format!(
-            "memory {} not found or not owned by user",
-            memory_id
-        )));
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

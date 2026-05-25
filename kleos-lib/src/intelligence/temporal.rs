@@ -5,10 +5,10 @@
 // same subject+verb.
 // ============================================================================
 
-use super::types::{FactContradiction, TemporalPattern, TimeTravelResult};
+use super::types::{TemporalPattern, TimeTravelResult};
 use crate::db::Database;
 use crate::{EngError, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use tracing::{info, warn};
 
 

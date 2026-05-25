@@ -8,7 +8,7 @@ use rusqlite::params;
 use std::sync::LazyLock;
 
 use super::types::{
-    EmotionMatch, EmotionMemory, EmotionStat, EmotionalProfile, OverallEmotionStats, ValenceResult,
+    EmotionMatch, EmotionStat, EmotionalProfile, OverallEmotionStats, ValenceResult,
 };
 
 struct EmotionPattern {
@@ -192,42 +192,6 @@ pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Resu
         .await?;
     }
     Ok(result)
-}
-
-#[tracing::instrument(skip(db), fields(emotion = %emotion, user_id, limit))]
-pub async fn query_by_emotion(
-    db: &Database,
-    emotion: &str,
-    user_id: i64,
-    limit: i64,
-) -> Result<Vec<EmotionMemory>> {
-    let emotion_owned = emotion.to_string();
-    db.read(move |conn| {
-        // The owner predicate (?3) keeps single-DB (shared) mode from returning
-        // another user's affect-tagged memories; a no-op in a single-owner shard.
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, importance, valence, arousal, dominant_emotion, created_at \
-                 FROM memories \
-                 WHERE dominant_emotion = ?1 AND user_id = ?3 AND is_forgotten = 0 AND is_archived = 0 \
-                 ORDER BY ABS(valence) DESC, created_at DESC LIMIT ?2",
-            )?;
-        let rows = stmt
-            .query_map(params![emotion_owned, limit, user_id], |row| {
-                Ok(EmotionMemory {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    category: row.get(2)?,
-                    importance: row.get(3)?,
-                    valence: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
-                    arousal: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
-                    dominant_emotion: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                    created_at: row.get(7)?,
-                })
-            })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    })
-    .await
 }
 
 #[tracing::instrument(skip(db))]

@@ -15,34 +15,6 @@ use tracing::info;
 
 /// Track that a memory category was accessed at this time, scoped to the
 /// given user. Builds the temporal pattern database over time.
-/// user_id is written to temporal_patterns to isolate access tracking per user
-/// in single-DB mode.
-#[tracing::instrument(skip(db), fields(user_id, category = %category, project_id = ?project_id))]
-pub async fn track_temporal_access(
-    db: &Database,
-    user_id: i64,
-    category: &str,
-    project_id: Option<i64>,
-) -> Result<()> {
-    let now = chrono::Utc::now();
-    let dow = now.format("%w").to_string().parse::<i32>().unwrap_or(0); // 0=Sun, 6=Sat
-    let hour = now.format("%H").to_string().parse::<i32>().unwrap_or(0);
-    let description = format!("dow:{},hour:{},category:{}", dow, hour, category);
-    let project_str = project_id.map(|p| p.to_string()).unwrap_or_default();
-
-    db.write(move |conn| {
-        conn.execute(
-            "INSERT INTO temporal_patterns \
-             (pattern_type, description, memory_ids, confidence, user_id, created_at) \
-             VALUES ('access', ?1, ?2, 1.0, ?3, datetime('now'))",
-            params![description, project_str, user_id],
-        )
-        ?;
-        Ok(())
-    })
-    .await
-}
-
 /// Generate proactive context for the current moment.
 /// Called at session start or periodically.
 #[tracing::instrument(skip(db))]
