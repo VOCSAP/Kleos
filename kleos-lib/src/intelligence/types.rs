@@ -251,6 +251,8 @@ pub struct ConsolidationRecord {
 pub struct SweepResult {
     pub pairs_found: i64,
     pub consolidated: i64,
+    /// Groups skipped due to safety guardrails (cluster too large, cap hit).
+    pub skipped: i64,
 }
 
 // --- Duplicates ---
