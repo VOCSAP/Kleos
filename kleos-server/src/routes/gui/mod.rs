@@ -782,6 +782,7 @@ async fn gui_create_memory(
             is_static: body.is_static,
             user_id: Some(user_id),
             space_id: None,
+            space: None,
             parent_memory_id: None,
             chunk_embeddings: None,
         },

@@ -721,9 +721,31 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
         param_idx += 1;
     }
     if let Some(sid) = opts.space_id {
-        conditions.push(format!("space_id = ?{}", param_idx));
-        param_values.push(rusqlite::types::Value::Integer(sid));
-        param_idx += 1;
+        // Patch 33: convention space=NOT NULL with `default` as canonical
+        // cross-project bucket.
+        //   include_unscoped = Some(true)  -> scoped + default + legacy NULL
+        //   include_unscoped = Some(false) -> strict to the named space
+        //   include_unscoped = None        -> upstream behaviour (strict)
+        match opts.include_unscoped {
+            Some(true) => {
+                conditions.push(format!(
+                    "(space_id = ?{idx} \
+                      OR space_id = (SELECT id FROM spaces \
+                                     WHERE user_id = ?{user_idx} AND name = 'default' LIMIT 1) \
+                      OR space_id IS NULL)",
+                    idx = param_idx,
+                    user_idx = param_idx + 1,
+                ));
+                param_values.push(rusqlite::types::Value::Integer(sid));
+                param_values.push(rusqlite::types::Value::Integer(owner_user_id));
+                param_idx += 2;
+            }
+            _ => {
+                conditions.push(format!("space_id = ?{}", param_idx));
+                param_values.push(rusqlite::types::Value::Integer(sid));
+                param_idx += 1;
+            }
+        }
     }
 
     // Add limit and offset as parameters

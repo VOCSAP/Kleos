@@ -584,6 +584,8 @@ async fn assemble_context_inner(
         threshold: None,
         user_id: Some(user_id),
         space_id: None,
+        space: None,
+        include_unscoped: None,
         include_forgotten: Some(false),
         mode: None,
         question_type: None,

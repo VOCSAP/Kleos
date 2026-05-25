@@ -194,6 +194,42 @@ pub async fn space_belongs_to_user(
     .await
 }
 
+/// Resolve a `(space_id?, space?)` pair for **read** paths (search /
+/// list / recall). Unlike [`normalize_space_input`], this returns `None`
+/// when both inputs are absent, preserving upstream "no filter" semantics
+/// instead of forcing the default space.
+///
+/// Returns:
+/// * `Ok(Some(id))` when `space_id` or `space` resolves to a concrete id.
+/// * `Ok(None)`     when both are absent.
+/// * `Err(InvalidInput)` when `space_id` is set but does not belong to user.
+pub async fn resolve_space_filter(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+    space: Option<&str>,
+) -> Result<Option<i64>> {
+    if let Some(id) = space_id {
+        if id > 0 {
+            if space_belongs_to_user(db, user_id, id).await? {
+                return Ok(Some(id));
+            }
+            return Err(EngError::InvalidInput(format!(
+                "space_id {id} does not belong to user {user_id}"
+            )));
+        }
+    }
+    if let Some(name) = space {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        let id = resolve_or_create_space(db, user_id, trimmed).await?;
+        return Ok(Some(id));
+    }
+    Ok(None)
+}
+
 /// Apply the Patch 33 input routing table on a `(space_id?, space?)`
 /// payload pair and return the final `space_id` to persist. Returns
 /// [`EngError::InvalidInput`] if `space_id` is set but does not belong

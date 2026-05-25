@@ -695,6 +695,7 @@ async fn extract_handler(
                 is_static: None,
                 user_id: Some(auth.user_id),
                 space_id: None,
+                space: None,
                 parent_memory_id: None,
                 chunk_embeddings: None,
             },

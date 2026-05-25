@@ -39,6 +39,7 @@ pub async fn correct_memory(
             is_static: Some(original.is_static),
             user_id: Some(user_id),
             space_id: original.space_id,
+            space: None,
             parent_memory_id: None,
             chunk_embeddings: None,
         },
