@@ -230,6 +230,7 @@ pub static MIGRATIONS: &[Migration] = &[
     // but production paths always pass a value via enroll_handler.
     migration!(80, "identity_keys_scopes_json_to_csv", run_migration_identity_keys_scopes_json_to_csv, tx),
     migration!(81, "mcp_tokens", run_migration_mcp_tokens, tx),
+    migration!(82, "phylax_tables", run_migration_phylax_tables, tx),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -5177,6 +5178,89 @@ fn run_migration_mcp_tokens(conn: &rusqlite::Connection) -> Result<()> {
     )
     .map_err(|e| EngError::DatabaseMessage(format!("migration 81 mcp_tokens: {e}")))?;
     info!("Migration 81 complete: mcp_tokens table created");
+    Ok(())
+}
+
+/// Migration 82: Phylax agent-native credential tables.
+///
+/// Creates tables for approval workflows, single-use leases, access policies,
+/// PIV public key enrollment, and SSH key settings.
+fn run_migration_phylax_tables(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS phylax_approvals (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            agent_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            secret_name TEXT NOT NULL,
+            resolve_mode TEXT NOT NULL,
+            status INTEGER NOT NULL DEFAULT 0,
+            decided_by TEXT,
+            reason TEXT,
+            lease_id INTEGER,
+            correlation_id TEXT,
+            created_at TEXT NOT NULL,
+            decided_at TEXT,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_phylax_approvals_pending
+            ON phylax_approvals(status) WHERE status = 0;
+        CREATE INDEX IF NOT EXISTS idx_phylax_approvals_agent
+            ON phylax_approvals(agent_name, status);
+
+        CREATE TABLE IF NOT EXISTS phylax_leases (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            approval_id INTEGER NOT NULL,
+            agent_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            secret_name TEXT NOT NULL,
+            jti TEXT NOT NULL UNIQUE,
+            correlation_id TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            used_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_phylax_leases_active
+            ON phylax_leases(agent_name) WHERE used_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS phylax_access_policies (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            namespace TEXT NOT NULL,
+            category TEXT,
+            secret_name TEXT,
+            require_approval INTEGER NOT NULL DEFAULT 1,
+            allowed_modes TEXT NOT NULL DEFAULT '[\"text\",\"proxy\",\"raw\"]',
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, namespace, category, secret_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS phylax_piv_pubkeys (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            agent_name TEXT NOT NULL,
+            public_key_pem TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_phylax_piv_active
+            ON phylax_piv_pubkeys(agent_name) WHERE revoked_at IS NULL;
+
+        CREATE TABLE IF NOT EXISTS phylax_ssh_settings (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            secret_name TEXT NOT NULL,
+            auto_sign INTEGER NOT NULL DEFAULT 0,
+            auto_load INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, category, secret_name)
+        );",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 82 phylax_tables: {e}")))?;
+    info!("Migration 82 complete: phylax tables created");
     Ok(())
 }
 
