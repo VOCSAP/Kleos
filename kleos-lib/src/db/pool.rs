@@ -473,7 +473,7 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result, Err(EngError::DatabaseMessage(_))));
+        assert!(matches!(result, Err(EngError::Database(_))));
 
         let count = db
             .read(|conn| {
