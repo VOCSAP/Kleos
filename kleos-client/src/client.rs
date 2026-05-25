@@ -357,10 +357,43 @@ impl Client {
     }
 
     /// Forwards a raw JSON-RPC envelope to the server-side POST /mcp
-    /// endpoint, signing the request with PIV credentials.
-    /// Returns the parsed JSON-RPC response, or None for notifications
-    /// (server returns 202 Accepted or 204 No Content).
+    /// endpoint. On 401, clears any stale cached session and retries once
+    /// so the request falls through to PIV signing or bearer auth.
     pub async fn post_mcp(&self, body: &Value) -> Result<Option<Value>, String> {
+        let (status, val) = self.post_mcp_once(body).await?;
+
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            if let Some(signer) = &self.signer {
+                signer.clear_session();
+            }
+            let (retry_status, retry_val) = self.post_mcp_once(body).await?;
+            if retry_status.is_success() || retry_status.as_u16() == 202 || retry_status.as_u16() == 204 {
+                return Ok(retry_val);
+            }
+            if let Some(v) = retry_val {
+                if let Some(err) = v.get("_mcp_error").and_then(|e| e.as_str()) {
+                    return Err(err.to_string());
+                }
+            }
+            return Err(format!("POST /mcp (HTTP {retry_status}): auth failed after retry"));
+        }
+
+        if status.as_u16() == 202 || status.as_u16() == 204 {
+            return Ok(None);
+        }
+        if status.is_success() {
+            return Ok(val);
+        }
+        if let Some(v) = val {
+            if let Some(err) = v.get("_mcp_error").and_then(|e| e.as_str()) {
+                return Err(err.to_string());
+            }
+        }
+        Err(format!("POST /mcp (HTTP {status}): unexpected error"))
+    }
+
+    /// Sends a single POST /mcp request and interprets the response.
+    async fn post_mcp_once(&self, body: &Value) -> Result<(reqwest::StatusCode, Option<Value>), String> {
         let body_bytes = serde_json::to_vec(body).unwrap_or_default();
         let resp = self
             .execute(
@@ -373,8 +406,9 @@ impl Client {
             .await?;
         self.capture_session(&resp);
         let status = resp.status();
+
         if status.as_u16() == 202 || status.as_u16() == 204 {
-            return Ok(None);
+            return Ok((status, None));
         }
         let bytes = resp
             .bytes()
@@ -383,7 +417,7 @@ impl Client {
         if status.is_success() {
             let parsed: Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("POST /mcp: invalid JSON: {e}"))?;
-            Ok(Some(parsed))
+            Ok((status, Some(parsed)))
         } else {
             let msg = serde_json::from_slice::<Value>(&bytes)
                 .ok()
@@ -394,7 +428,7 @@ impl Client {
                         .map(ToOwned::to_owned)
                 })
                 .unwrap_or_else(|| body_excerpt(&bytes));
-            Err(format!("POST /mcp (HTTP {}): {msg}", status))
+            Ok((status, Some(serde_json::json!({"_mcp_error": format!("POST /mcp (HTTP {status}): {msg}")}))))
         }
     }
 
