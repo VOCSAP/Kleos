@@ -320,8 +320,7 @@ impl TenantRegistry {
 
     /// Recompute tenant_state counters from the live shard and return (bytes, count).
     ///
-    /// Overwrites content_bytes and memory_count in tenant_state. Marks dirty
-    /// so the next quota_sync cycle flushes the new values to the registry.
+    /// Overwrites content_bytes and memory_count in tenant_state.
     pub async fn recompute_usage(&self, user_id: &str) -> Result<(i64, i64)> {
         let handle = self
             .get(user_id)
@@ -359,15 +358,6 @@ impl TenantRegistry {
         self.registry_db.get_quota_row(user_id)
     }
 
-    /// Batch-update usage counters in the registry for a list of tenants.
-    ///
-    /// Delegates to RegistryDb::bulk_set_usage.
-    pub async fn bulk_set_usage(
-        &self,
-        updates: Vec<crate::jobs::quota_sync::TenantUsageUpdate>,
-    ) -> Result<()> {
-        self.registry_db.bulk_set_usage(updates)
-    }
 }
 
 impl std::fmt::Debug for TenantRegistry {

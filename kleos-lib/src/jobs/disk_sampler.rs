@@ -131,7 +131,6 @@ pub async fn sample_active_tenants(registry: &Arc<TenantRegistry>) -> Result<()>
             }
         }
 
-        // Mark dirty so quota_sync flushes the new disk estimate to the registry.
         handle.mark_dirty();
     }
 
