@@ -36,9 +36,7 @@ use types::{
     NeighborhoodQuery, RelationshipQuery, UpdateEntityBody,
 };
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -97,9 +95,7 @@ pub fn router() -> Router<AppState> {
         .route("/facts", get(facts_handler))
 }
 
-// ---------------------------------------------------------------------------
-// POST /entities
-// ---------------------------------------------------------------------------
+// --- POST /entities ---
 
 #[tracing::instrument(skip_all)]
 async fn create_entity_handler(
@@ -136,9 +132,7 @@ async fn create_entity_handler(
     Ok((StatusCode::CREATED, Json(entity)))
 }
 
-// ---------------------------------------------------------------------------
-// GET /entities
-// ---------------------------------------------------------------------------
+// --- GET /entities ---
 
 #[tracing::instrument(skip_all)]
 async fn list_entities_handler(
@@ -174,9 +168,7 @@ async fn list_entities_handler(
     Ok(Json(json!({ "entities": results })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /entities/{id}
-// ---------------------------------------------------------------------------
+// --- GET /entities/{id} ---
 
 #[tracing::instrument(skip_all)]
 async fn get_entity_handler(
@@ -208,9 +200,7 @@ async fn get_entity_handler(
     }
 }
 
-// ---------------------------------------------------------------------------
-// PUT /entities/{id}
-// ---------------------------------------------------------------------------
+// --- PUT /entities/{id} ---
 
 #[tracing::instrument(skip_all)]
 async fn update_entity_handler(
@@ -238,9 +228,7 @@ async fn update_entity_handler(
     Ok(Json(json!(entity)))
 }
 
-// ---------------------------------------------------------------------------
-// DELETE /entities/{id}
-// ---------------------------------------------------------------------------
+// --- DELETE /entities/{id} ---
 
 #[tracing::instrument(skip_all)]
 async fn delete_entity_handler(
@@ -262,9 +250,7 @@ async fn delete_entity_handler(
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /entities/{id}/relationships
-// ---------------------------------------------------------------------------
+// --- GET /entities/{id}/relationships ---
 
 #[tracing::instrument(skip_all)]
 async fn entity_relationships_handler(
@@ -326,9 +312,7 @@ async fn entity_relationships_handler(
     Ok(Json(json!({ "relationships": relationships })))
 }
 
-// ---------------------------------------------------------------------------
-// DELETE /entities/{id}/relationships
-// ---------------------------------------------------------------------------
+// --- DELETE /entities/{id}/relationships ---
 
 #[tracing::instrument(skip_all)]
 async fn delete_relationship_handler(
@@ -355,9 +339,7 @@ async fn delete_relationship_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /entities/{id}/memories
-// ---------------------------------------------------------------------------
+// --- GET /entities/{id}/memories ---
 
 #[tracing::instrument(skip_all)]
 async fn entity_memories_handler(
@@ -387,9 +369,7 @@ async fn entity_memories_handler(
     Ok(Json(json!({ "memory_ids": memory_ids })))
 }
 
-// ---------------------------------------------------------------------------
-// POST /entities/{id}/search
-// ---------------------------------------------------------------------------
+// --- POST /entities/{id}/search ---
 
 #[tracing::instrument(skip_all)]
 async fn entity_search_handler(
@@ -411,9 +391,7 @@ async fn entity_search_handler(
     Ok(Json(json!({ "memories": memories })))
 }
 
-// ---------------------------------------------------------------------------
-// PUT /entities/{id}/memories/{mid}
-// ---------------------------------------------------------------------------
+// --- PUT /entities/{id}/memories/{mid} ---
 
 #[tracing::instrument(skip_all)]
 async fn link_entity_memory_handler(
@@ -431,9 +409,7 @@ async fn link_entity_memory_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// DELETE /entities/{id}/memories/{mid}
-// ---------------------------------------------------------------------------
+// --- DELETE /entities/{id}/memories/{mid} ---
 
 #[tracing::instrument(skip_all)]
 async fn unlink_entity_memory_handler(
@@ -451,9 +427,7 @@ async fn unlink_entity_memory_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// POST /entity-relationships
-// ---------------------------------------------------------------------------
+// --- POST /entity-relationships ---
 
 #[tracing::instrument(skip_all)]
 async fn create_relationship_handler(
@@ -509,9 +483,7 @@ async fn create_relationship_handler(
     Ok((StatusCode::CREATED, Json(relationship)))
 }
 
-// ---------------------------------------------------------------------------
-// GET /graph  (accepts ?limit=N or ?max=N for GUI compat, ?depth= is accepted but unused)
-// ---------------------------------------------------------------------------
+// --- GET /graph  (accepts ?limit=N or ?max=N for GUI compat, ?depth= is accepted but unused) ---
 
 #[tracing::instrument(skip_all)]
 async fn graph_handler(
@@ -539,9 +511,7 @@ async fn graph_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /graph/raw
-// ---------------------------------------------------------------------------
+// --- GET /graph/raw ---
 
 #[tracing::instrument(skip_all)]
 async fn graph_raw_handler(
@@ -565,9 +535,7 @@ async fn graph_raw_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /graph/view
-// ---------------------------------------------------------------------------
+// --- GET /graph/view ---
 
 #[tracing::instrument(skip_all)]
 async fn graph_view_handler(
@@ -591,9 +559,7 @@ async fn graph_view_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// POST /graph/build
-// ---------------------------------------------------------------------------
+// --- POST /graph/build ---
 
 #[tracing::instrument(skip_all)]
 async fn build_graph_handler(
@@ -617,9 +583,7 @@ async fn build_graph_handler(
     Ok(Json(json!(result)))
 }
 
-// ---------------------------------------------------------------------------
-// POST /graph/search
-// ---------------------------------------------------------------------------
+// --- POST /graph/search ---
 
 #[tracing::instrument(skip_all)]
 async fn graph_search_handler(
@@ -632,9 +596,7 @@ async fn graph_search_handler(
     Ok(Json(json!({ "nodes": nodes })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /graph/neighborhood/{id}
-// ---------------------------------------------------------------------------
+// --- GET /graph/neighborhood/{id} ---
 
 #[tracing::instrument(skip_all)]
 async fn neighborhood_handler(
@@ -665,9 +627,7 @@ async fn neighborhood_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// GET /memory/{id}/entities
-// ---------------------------------------------------------------------------
+// --- GET /memory/{id}/entities ---
 
 #[tracing::instrument(skip_all)]
 async fn memory_entities_handler(
@@ -712,9 +672,7 @@ async fn memory_entities_handler(
     Ok(Json(json!({ "entities": entities })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /communities
-// ---------------------------------------------------------------------------
+// --- GET /communities ---
 
 #[tracing::instrument(skip_all)]
 async fn communities_handler(
@@ -767,9 +725,7 @@ async fn communities_handler(
     Ok(Json(json!({ "communities": communities, "count": count })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /communities/{id}
-// ---------------------------------------------------------------------------
+// --- GET /communities/{id} ---
 
 #[tracing::instrument(skip_all)]
 async fn community_detail_handler(
@@ -796,9 +752,7 @@ async fn community_detail_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// POST /graph/communities
-// ---------------------------------------------------------------------------
+// --- POST /graph/communities ---
 
 #[tracing::instrument(skip_all)]
 async fn detect_communities_handler(
@@ -811,9 +765,7 @@ async fn detect_communities_handler(
     Ok(Json(json!(result)))
 }
 
-// ---------------------------------------------------------------------------
-// GET /graph/communities/{id}/members
-// ---------------------------------------------------------------------------
+// --- GET /graph/communities/{id}/members ---
 
 #[tracing::instrument(skip_all)]
 async fn community_members_handler(
@@ -829,9 +781,7 @@ async fn community_members_handler(
     Ok(Json(json!({ "members": members })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /graph/communities/stats
-// ---------------------------------------------------------------------------
+// --- GET /graph/communities/stats ---
 
 #[tracing::instrument(skip_all)]
 async fn community_stats_handler(
@@ -844,9 +794,7 @@ async fn community_stats_handler(
     Ok(Json(json!({ "stats": stats })))
 }
 
-// ---------------------------------------------------------------------------
-// POST /graph/pagerank
-// ---------------------------------------------------------------------------
+// --- POST /graph/pagerank ---
 
 #[tracing::instrument(skip_all)]
 async fn pagerank_handler(
@@ -859,9 +807,7 @@ async fn pagerank_handler(
     Ok(Json(json!(result)))
 }
 
-// ---------------------------------------------------------------------------
-// POST /graph/cooccurrences/rebuild
-// ---------------------------------------------------------------------------
+// --- POST /graph/cooccurrences/rebuild ---
 
 #[tracing::instrument(skip_all)]
 async fn rebuild_cooccurrences_handler(
@@ -874,9 +820,7 @@ async fn rebuild_cooccurrences_handler(
     Ok(Json(json!({ "rebuilt": count })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /entities/{id}/cooccurrences
-// ---------------------------------------------------------------------------
+// --- GET /entities/{id}/cooccurrences ---
 
 #[tracing::instrument(skip_all)]
 async fn entity_cooccurrences_handler(
@@ -892,9 +836,7 @@ async fn entity_cooccurrences_handler(
     Ok(Json(json!({ "cooccurrences": entities })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /facts
-// ---------------------------------------------------------------------------
+// --- GET /facts ---
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 #[tracing::instrument(skip_all)]
@@ -914,9 +856,7 @@ async fn facts_handler(
     Ok(Json(json!({ "facts": facts })))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers -- row mapping
-// ---------------------------------------------------------------------------
+// --- Helpers -- row mapping ---
 
 fn row_to_entity_json(row: &rusqlite::Row<'_>, owner_user_id: i64) -> rusqlite::Result<Value> {
     let id: i64 = row.get(0)?;

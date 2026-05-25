@@ -153,9 +153,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/quota/{user_id}/recompute", post(recompute_quota))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
 async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
     let sql = sql.to_string();
@@ -168,9 +166,7 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
         .map_err(AppError)
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap
-// ---------------------------------------------------------------------------
+// --- Bootstrap ---
 
 /// SECURITY (SEC-HIGH-6): bootstrap has no upstream rate limiter because
 /// it bypasses auth entirely. Without a cooldown an attacker can brute-
@@ -353,9 +349,7 @@ async fn bootstrap(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 #[tracing::instrument(skip_all)]
 async fn get_stats(
@@ -374,9 +368,7 @@ async fn get_stats(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Settings (app_state key-value)
-// ---------------------------------------------------------------------------
+// --- Settings (app_state key-value) ---
 
 #[tracing::instrument(skip_all)]
 async fn get_settings(
@@ -412,9 +404,7 @@ async fn put_settings(
     Ok(Json(json!({ "updated": updated })))
 }
 
-// ---------------------------------------------------------------------------
-// GC
-// ---------------------------------------------------------------------------
+// --- GC ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_gc(
@@ -428,9 +418,7 @@ async fn admin_gc(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Compact
-// ---------------------------------------------------------------------------
+// --- Compact ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_compact(
@@ -442,9 +430,7 @@ async fn admin_compact(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Re-embed
-// ---------------------------------------------------------------------------
+// --- Re-embed ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_reembed(
@@ -458,9 +444,7 @@ async fn admin_reembed(
     Ok(Json(json!({ "cleared": cleared })))
 }
 
-// ---------------------------------------------------------------------------
-// Rebuild FTS
-// ---------------------------------------------------------------------------
+// --- Rebuild FTS ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_rebuild_fts(
@@ -472,9 +456,7 @@ async fn admin_rebuild_fts(
     Ok(Json(json!({ "indexed": indexed })))
 }
 
-// ---------------------------------------------------------------------------
-// Refresh cache (no-op signal)
-// ---------------------------------------------------------------------------
+// --- Refresh cache (no-op signal) ---
 
 #[tracing::instrument(skip_all)]
 async fn refresh_cache(
@@ -487,9 +469,7 @@ async fn refresh_cache(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Backfill facts
-// ---------------------------------------------------------------------------
+// --- Backfill facts ---
 
 #[tracing::instrument(skip_all)]
 async fn backfill_facts(
@@ -514,9 +494,7 @@ async fn backfill_facts(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Backfill entities
-// ---------------------------------------------------------------------------
+// --- Backfill entities ---
 
 /// One-shot admin handler to backfill entity extraction for historic memories.
 ///
@@ -575,9 +553,7 @@ async fn backfill_entities(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
+// --- Schema ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_schema(
@@ -589,9 +565,7 @@ async fn admin_schema(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Embedding info
-// ---------------------------------------------------------------------------
+// --- Embedding info ---
 
 #[tracing::instrument(skip_all)]
 async fn embedding_info(
@@ -606,9 +580,7 @@ async fn embedding_info(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Scale report
-// ---------------------------------------------------------------------------
+// --- Scale report ---
 
 #[tracing::instrument(skip_all)]
 async fn scale_report_handler(
@@ -620,9 +592,7 @@ async fn scale_report_handler(
     Ok(Json(result))
 }
 
-// ---------------------------------------------------------------------------
-// Cold storage stats
-// ---------------------------------------------------------------------------
+// --- Cold storage stats ---
 
 #[tracing::instrument(skip_all)]
 async fn cold_storage_handler(
@@ -635,9 +605,7 @@ async fn cold_storage_handler(
     Ok(Json(result))
 }
 
-// ---------------------------------------------------------------------------
-// Providers
-// ---------------------------------------------------------------------------
+// --- Providers ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_providers(
@@ -662,9 +630,7 @@ async fn admin_providers(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Tasks (job queue stats)
-// ---------------------------------------------------------------------------
+// --- Tasks (job queue stats) ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_tasks(
@@ -751,9 +717,7 @@ async fn admin_cred_proxy(
     Ok(Json(response))
 }
 
-// ---------------------------------------------------------------------------
-// Maintenance
-// ---------------------------------------------------------------------------
+// --- Maintenance ---
 
 #[tracing::instrument(skip_all)]
 async fn get_maintenance_handler(
@@ -778,9 +742,7 @@ async fn post_maintenance_handler(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// SLA
-// ---------------------------------------------------------------------------
+// --- SLA ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_sla(
@@ -804,9 +766,7 @@ async fn admin_sla_reset(
     Ok(Json(json!({ "status": "ok", "reset_at": ts })))
 }
 
-// ---------------------------------------------------------------------------
-// Quotas
-// ---------------------------------------------------------------------------
+// --- Quotas ---
 
 #[tracing::instrument(skip_all)]
 async fn get_quotas(
@@ -845,9 +805,7 @@ async fn put_quotas(
     Ok(Json(json!({ "status": "ok", "user_id": body.user_id })))
 }
 
-// ---------------------------------------------------------------------------
-// Usage + Tenants
-// ---------------------------------------------------------------------------
+// --- Usage + Tenants ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_usage(
@@ -876,9 +834,7 @@ async fn admin_tenants(
     Ok(Json(json!({ "items": items, "count": count })))
 }
 
-// ---------------------------------------------------------------------------
-// Provision / Deprovision
-// ---------------------------------------------------------------------------
+// --- Provision / Deprovision ---
 
 #[tracing::instrument(skip_all)]
 async fn provision_tenant(
@@ -946,9 +902,7 @@ async fn deprovision_tenant(
     Ok(Json(json!({ "removed": removed, "user_id": body.user_id })))
 }
 
-// ---------------------------------------------------------------------------
-// Checkpoint / Backup verify
-// ---------------------------------------------------------------------------
+// --- Checkpoint / Backup verify ---
 
 #[tracing::instrument(skip_all)]
 async fn checkpoint_handler(
@@ -971,9 +925,7 @@ async fn backup_verify_handler(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Backup download
-// ---------------------------------------------------------------------------
+// --- Backup download ---
 
 #[tracing::instrument(skip_all)]
 async fn backup_handler(
@@ -1046,9 +998,7 @@ async fn backup_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Point-in-time recovery
-// ---------------------------------------------------------------------------
+// --- Point-in-time recovery ---
 
 /// Name of the jailed restore directory under `data_dir`. PITR prepared files
 /// land here and nowhere else.
@@ -1182,9 +1132,7 @@ async fn admin_pitr_prepare(
     Ok(Json(json!(prepared)))
 }
 
-// ---------------------------------------------------------------------------
-// Export (user-scoped, any authenticated user)
-// ---------------------------------------------------------------------------
+// --- Export (user-scoped, any authenticated user) ---
 
 #[tracing::instrument(skip_all)]
 async fn export_handler(
@@ -1198,9 +1146,7 @@ async fn export_handler(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Reset (user's own data only)
-// ---------------------------------------------------------------------------
+// --- Reset (user's own data only) ---
 
 // C-R3-002 / H-R3-005: scope to ResolvedDb so the unfiltered DELETEs only
 // hit the caller's shard, not the monolith. Each shard contains exactly one
@@ -1248,9 +1194,7 @@ async fn reset_user(
     Ok(Json(json!({ "deleted_rows": total, "user_id": uid })))
 }
 
-// ---------------------------------------------------------------------------
-// Communities + Cooccurrences
-// ---------------------------------------------------------------------------
+// --- Communities + Cooccurrences ---
 
 #[tracing::instrument(skip_all)]
 async fn detect_communities_handler(
@@ -1273,9 +1217,7 @@ async fn rebuild_cooccurrences_handler(
     Ok(Json(json!({ "rebuilt_pairs": pairs })))
 }
 
-// ---------------------------------------------------------------------------
-// PageRank rebuild
-// ---------------------------------------------------------------------------
+// --- PageRank rebuild ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_sync_replay(
@@ -1289,9 +1231,7 @@ async fn admin_vector_sync_replay(
     to_json(report)
 }
 
-// ---------------------------------------------------------------------------
-// Rebuild ANN index (IVF_HNSW_PQ)
-// ---------------------------------------------------------------------------
+// --- Rebuild ANN index (IVF_HNSW_PQ) ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_rebuild_index(
@@ -1319,9 +1259,7 @@ async fn admin_vector_rebuild_index(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Vector health diagnostic
-// ---------------------------------------------------------------------------
+// --- Vector health diagnostic ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_health(
@@ -1427,9 +1365,7 @@ async fn admin_vector_health(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Chunk + embedding backfill
-// ---------------------------------------------------------------------------
+// --- Chunk + embedding backfill ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_backfill_chunks(
@@ -1509,9 +1445,7 @@ async fn admin_backfill_chunks(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Per-chunk LanceDB vector index rebuild from existing SQLite rows
-// ---------------------------------------------------------------------------
+// --- Per-chunk LanceDB vector index rebuild from existing SQLite rows ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_chunk_sync(
@@ -1569,9 +1503,7 @@ async fn admin_vector_chunk_sync(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Safe mode exit
-// ---------------------------------------------------------------------------
+// --- Safe mode exit ---
 
 #[tracing::instrument(skip_all)]
 async fn post_safe_mode_exit(
@@ -1617,9 +1549,7 @@ async fn admin_pagerank_rebuild(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Migrations
-// ---------------------------------------------------------------------------
+// --- Migrations ---
 
 /// GET /admin/migrations -- return current migration status (version, pending, revertible).
 #[tracing::instrument(skip_all)]
@@ -1666,9 +1596,7 @@ async fn admin_reapply_instincts(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Monolith drain -- move data from system DB to tenant shards
-// ---------------------------------------------------------------------------
+// --- Monolith drain -- move data from system DB to tenant shards ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_monolith_status(
@@ -1977,9 +1905,7 @@ async fn admin_monolith_drain(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// E1 Async Deprovision (cross-store teardown)
-// ---------------------------------------------------------------------------
+// --- E1 Async Deprovision (cross-store teardown) ---
 
 /// POST /admin/deprovision/{user_id} -- initiate async two-phase teardown.
 #[tracing::instrument(skip_all)]
@@ -2198,9 +2124,7 @@ async fn skip_shard_deprovision(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// E2 shard quota management
-// ---------------------------------------------------------------------------
+// --- E2 shard quota management ---
 
 /// GET /admin/quota/{user_id} -- return current quota limits and shadow usage.
 async fn get_quota_status(
