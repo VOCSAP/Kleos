@@ -12,8 +12,6 @@ use kleos_lib::services::brain::{
     FeedbackRequest,
 };
 
-#[allow(dead_code)]
-mod types;
 
 // H-R3-001: dream / decay / evolution_train mutate the global brain. Any
 // auth+write user could pin CPU or corrupt the shared model. Gating these

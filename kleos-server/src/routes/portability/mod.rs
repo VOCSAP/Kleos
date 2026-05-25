@@ -20,8 +20,6 @@ use crate::{
 };
 use kleos_lib::db::Database;
 
-#[allow(dead_code)]
-mod types;
 
 pub fn router() -> Router<AppState> {
     Router::new()
