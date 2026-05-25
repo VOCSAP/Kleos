@@ -140,7 +140,7 @@ impl InstallProgress for PrintProgress {
 
     /// Print download progress as a percentage.
     fn on_download_progress(&self, component: &str, bytes: u64, total: u64) {
-        let pct = if total > 0 { bytes * 100 / total } else { 0 };
+        let pct = (bytes * 100).checked_div(total).unwrap_or(0);
         print!("\r  {component}: {pct}%    ");
         use std::io::Write;
         let _ = std::io::stdout().flush();

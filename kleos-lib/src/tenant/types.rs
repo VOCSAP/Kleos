@@ -291,11 +291,11 @@ pub struct TenantQuotaRow {
     pub quota_memory_count: Option<i64>,
     /// Configured disk bytes limit (None = unlimited).
     pub quota_disk_bytes: Option<i64>,
-    /// Last-synced content bytes usage from quota_sync.
+    /// Last-synced content bytes usage.
     pub content_bytes_used: i64,
-    /// Last-synced memory count usage from quota_sync.
+    /// Last-synced memory count usage.
     pub memory_count_used: i64,
-    /// Last-synced disk bytes usage from quota_sync.
+    /// Last-synced disk bytes usage.
     pub disk_bytes_used: i64,
     /// When the usage was last synced (ISO 8601 datetime).
     pub last_synced_at: Option<String>,

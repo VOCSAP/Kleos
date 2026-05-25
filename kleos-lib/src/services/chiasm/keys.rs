@@ -33,9 +33,6 @@ pub struct CreatedKey {
     pub warning: String,
 }
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Hash a bearer key into the lookup form used by the table.
 pub fn hash_key(key: &str) -> String {
@@ -85,7 +82,7 @@ pub async fn create_key(db: &Database, agent: &str) -> Result<CreatedKey> {
                  VALUES (?1, ?2, ?3)",
                 rusqlite::params![agent_owned, hash_for_insert, prefix_for_insert],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             let id = conn.last_insert_rowid();
             let created_at: String = conn
                 .query_row(
@@ -93,7 +90,7 @@ pub async fn create_key(db: &Database, agent: &str) -> Result<CreatedKey> {
                     rusqlite::params![id],
                     |row| row.get(0),
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok((id, created_at))
         })
         .await?;
@@ -117,7 +114,7 @@ pub async fn list_keys(db: &Database) -> Result<Vec<AgentKey>> {
                 "SELECT id, agent, key_prefix, created_at, last_used_at, revoked \
                  FROM chiasm_agent_keys ORDER BY id ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(AgentKey {
@@ -129,10 +126,10 @@ pub async fn list_keys(db: &Database) -> Result<Vec<AgentKey>> {
                     revoked: row.get::<_, i64>(5)? != 0,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(rusqlite_to_eng_error)?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -144,11 +141,10 @@ pub async fn list_keys(db: &Database) -> Result<Vec<AgentKey>> {
 pub async fn revoke_key(db: &Database, id: i64) -> Result<bool> {
     let changed = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE chiasm_agent_keys SET revoked = 1 WHERE id = ?1 AND revoked = 0",
                 rusqlite::params![id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     Ok(changed > 0)
@@ -169,18 +165,18 @@ pub async fn verify_bearer(db: &Database, token: &str) -> Result<Option<AgentKey
                      FROM chiasm_agent_keys \
                      WHERE key_hash = ?1 AND revoked = 0",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![lookup_hash])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            if let Some(row) = rows.next()? {
                 Ok(Some(AgentKey {
-                    id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                    agent: row.get(1).map_err(rusqlite_to_eng_error)?,
-                    key_prefix: row.get(2).map_err(rusqlite_to_eng_error)?,
-                    created_at: row.get(3).map_err(rusqlite_to_eng_error)?,
-                    last_used_at: row.get(4).map_err(rusqlite_to_eng_error)?,
-                    revoked: row.get::<_, i64>(5).map_err(rusqlite_to_eng_error)? != 0,
+                    id: row.get(0)?,
+                    agent: row.get(1)?,
+                    key_prefix: row.get(2)?,
+                    created_at: row.get(3)?,
+                    last_used_at: row.get(4)?,
+                    revoked: row.get::<_, i64>(5)? != 0,
                 }))
             } else {
                 Ok(None)
@@ -192,11 +188,10 @@ pub async fn verify_bearer(db: &Database, token: &str) -> Result<Option<AgentKey
         let id = key.id;
         let _ = db
             .write(move |conn| {
-                conn.execute(
+                Ok(conn.execute(
                     "UPDATE chiasm_agent_keys SET last_used_at = datetime('now') WHERE id = ?1",
                     rusqlite::params![id],
-                )
-                .map_err(rusqlite_to_eng_error)
+                )?)
             })
             .await;
     }

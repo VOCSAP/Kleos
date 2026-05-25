@@ -555,8 +555,7 @@ impl kleos_install_core::InstallProgress for ChannelProgress {
     }
 
     fn on_download_progress(&self, component: &str, bytes: u64, total: u64) {
-        if total > 0 {
-            let pct = (bytes * 100) / total;
+        if let Some(pct) = (bytes * 100).checked_div(total) {
             if let Ok(mut ch) = self.channel.lock() {
                 ch.push(format!("  {component}: {pct}%"));
             }

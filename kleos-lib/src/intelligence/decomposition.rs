@@ -13,7 +13,7 @@ use crate::intelligence::types::{
 use crate::validation::{
     MAX_DECOMPOSITION_FACTS as MAX_FACTS, MIN_DECOMPOSITION_LENGTH as MIN_LENGTH,
 };
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use rusqlite::OptionalExtension;
 use serde::Deserialize;
@@ -73,9 +73,6 @@ struct LlmDecompositionResponse {
     skip: Option<bool>,
 }
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
@@ -84,7 +81,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
     // Fetch the memory content - MUST belong to caller
     let row_opt = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT content, category, source, importance, space_id, \
                         episode_id, tags, session_id \
                  FROM memories WHERE id = ?1 AND is_forgotten = 0",
@@ -102,8 +99,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                     ))
                 },
             )
-            .optional()
-            .map_err(rusqlite_to_eng_error)
+            .optional()?)
         })
         .await?;
 
@@ -120,7 +116,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                 "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
                 params![memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await?;
@@ -146,7 +142,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                     "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
                     params![memory_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 Ok(())
             })
             .await?;
@@ -182,7 +178,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                         tags_clone
                     ],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
                 let inserted_id = conn.last_insert_rowid();
 
@@ -192,7 +188,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                      VALUES (?1, ?2, 1.0, 'has_fact')",
                     params![memory_id, inserted_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
                 Ok(inserted_id)
             })
@@ -208,7 +204,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                 "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
                 params![memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await?;

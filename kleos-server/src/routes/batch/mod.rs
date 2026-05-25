@@ -28,9 +28,7 @@ use kleos_lib::validation::MAX_BATCH_OPS;
 mod types;
 use types::{BatchOp, BatchRequest, BatchResult, LinkBody, StoreBody, UpdateBody};
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -38,9 +36,7 @@ pub fn router() -> Router<AppState> {
         .layer(DefaultBodyLimit::max(16_384)) // 16 KB for batch payloads
 }
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
+// --- Handler ---
 
 // M-R3-007: routes/batch wrote to state.db, so on a sharded deployment a
 // /batch caller's writes landed in the monolith while /memory writes went
@@ -101,9 +97,7 @@ async fn batch_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Per-op dispatch
-// ---------------------------------------------------------------------------
+// --- Per-op dispatch ---
 
 async fn execute_op(
     state: &AppState,
@@ -146,11 +140,7 @@ async fn execute_store(
         session_id: body.session_id,
         space_id: body.space_id,
         user_id: Some(user_id),
-        embedding: None,
-        parent_memory_id: None,
-        chunk_embeddings: None,
-        sync_id: None,
-        artifacts: None,
+        ..Default::default()
     };
 
     let store_outcome = if let Some(embedder) = state.current_embedder().await {

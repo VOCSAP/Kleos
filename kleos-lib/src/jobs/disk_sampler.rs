@@ -9,7 +9,7 @@
 //! with backoff, (c) not durable.
 
 use crate::tenant::registry::TenantRegistry;
-use crate::{EngError, Result};
+use crate::Result;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -88,14 +88,12 @@ pub async fn sample_active_tenants(registry: &Arc<TenantRegistry>) -> Result<()>
                     "UPDATE tenant_state SET value = ?1, updated_at = datetime('now') \
                      WHERE key = 'disk_bytes_estimate'",
                     rusqlite::params![disk_bytes],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 conn.execute(
                     "UPDATE tenant_state SET value = strftime('%s', 'now'), \
                      updated_at = datetime('now') WHERE key = 'disk_sampled_at'",
                     [],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 Ok(())
             })
             .await;
@@ -133,7 +131,6 @@ pub async fn sample_active_tenants(registry: &Arc<TenantRegistry>) -> Result<()>
             }
         }
 
-        // Mark dirty so quota_sync flushes the new disk estimate to the registry.
         handle.mark_dirty();
     }
 

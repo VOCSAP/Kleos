@@ -52,17 +52,8 @@ async fn onboard(
             content: "Kleos onboarding test memory -- safe to delete".into(),
             category: "system".into(),
             source: "onboarding".into(),
-            importance: 5,
             user_id: Some(auth.user_id),
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         },
         None,
         false,
@@ -100,21 +91,7 @@ async fn onboard(
                 embedding,
                 limit: Some(1),
                 user_id: Some(auth.user_id),
-                latest_only: true,
-                category: None,
-                source: None,
-                tags: None,
-                threshold: None,
-                space_id: None,
-                include_forgotten: None,
-                mode: None,
-                question_type: None,
-                expand_relationships: false,
-                include_links: false,
-                source_filter: None,
-                include_archived: None,
-                include_noise: None,
-                exclude_consolidated: None,
+                ..Default::default()
             },
         )
         .await;
@@ -163,7 +140,7 @@ async fn onboard(
                     params![uid],
                     |row| row.get::<_, i64>(0),
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(count)
         })
         .await
@@ -287,7 +264,7 @@ async fn fetch_url(
             title = cap;
         }
         // Simple HTML to text: strip tags
-        strip_html_tags(&raw)
+        kleos_lib::ingestion::parsers::html::strip_tags(&raw)
     } else {
         raw.trim().to_string()
     };
@@ -314,14 +291,7 @@ async fn fetch_url(
                 "url:{}",
                 kleos_lib::validation::truncate_on_char_boundary(&body.url, 200)
             )]),
-            embedding: None,
-            session_id: None,
-            is_static: None,
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         };
 
         if let Some(embedder) = state.current_embedder().await {
@@ -348,65 +318,6 @@ async fn fetch_url(
         "length": content_len,
         "cached_id": cached_id,
     })))
-}
-
-/// Minimal HTML tag stripper. Removes script/style blocks, then strips remaining tags.
-fn strip_html_tags(html: &str) -> String {
-    let mut result = String::with_capacity(html.len());
-    let chars = html.chars();
-    let mut in_tag = false;
-    let mut in_script = false;
-    let mut in_style = false;
-    let mut tag_buf = String::new();
-
-    for c in chars {
-        if c == '<' {
-            in_tag = true;
-            tag_buf.clear();
-            continue;
-        }
-        if in_tag {
-            if c == '>' {
-                in_tag = false;
-                let lower = tag_buf.to_lowercase();
-                if lower.starts_with("script") {
-                    in_script = true;
-                } else if lower.starts_with("/script") {
-                    in_script = false;
-                } else if lower.starts_with("style") {
-                    in_style = true;
-                } else if lower.starts_with("/style") {
-                    in_style = false;
-                }
-                tag_buf.clear();
-            } else {
-                tag_buf.push(c);
-            }
-            continue;
-        }
-        if !in_script && !in_style {
-            result.push(c);
-        }
-    }
-
-    // Collapse whitespace
-    let mut collapsed = String::with_capacity(result.len());
-    let mut prev_newline = false;
-    for line in result.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !prev_newline {
-                collapsed.push('\n');
-                prev_newline = true;
-            }
-        } else {
-            collapsed.push_str(trimmed);
-            collapsed.push('\n');
-            prev_newline = false;
-        }
-    }
-
-    collapsed.trim().to_string()
 }
 
 #[cfg(test)]

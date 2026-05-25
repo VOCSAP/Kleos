@@ -6,12 +6,10 @@
 //! Pattern mirrors `webhook_dead_letters` from `kleos_lib::webhooks`.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+// --- Types ---
 
 /// A dead-letter entry for a service call that failed after all retries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,13 +28,7 @@ pub struct ServiceDeadLetter {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Write
-// ---------------------------------------------------------------------------
-
-fn rusqlite_to_eng(e: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(e.to_string())
-}
+// --- Write ---
 
 /// Record a dead-letter entry for a service call that exhausted all retries.
 ///
@@ -64,15 +56,13 @@ pub async fn record_dead_letter(
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![svc, op, payload_s, err_s, retries],
         )
-        .map_err(rusqlite_to_eng)?;
+        ?;
         Ok(())
     })
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Read (for operators / admin UI)
-// ---------------------------------------------------------------------------
+// --- Read (for operators / admin UI) ---
 
 /// List dead-letter entries, most recent first.
 ///
@@ -104,23 +94,23 @@ pub async fn list_dead_letters(
             )
         };
 
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(
                 params_vec.iter().map(|b| b.as_ref()),
             ))
-            .map_err(rusqlite_to_eng)?;
+            ?;
 
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng)? {
+        while let Some(row) = rows.next()? {
             result.push(ServiceDeadLetter {
-                id: row.get(0).map_err(rusqlite_to_eng)?,
-                service: row.get(1).map_err(rusqlite_to_eng)?,
-                operation: row.get(2).map_err(rusqlite_to_eng)?,
+                id: row.get(0)?,
+                service: row.get(1)?,
+                operation: row.get(2)?,
                 payload_json: row.get(3).unwrap_or(None),
                 error: row.get(4).unwrap_or(None),
-                retry_count: row.get(5).map_err(rusqlite_to_eng)?,
-                created_at: row.get(6).map_err(rusqlite_to_eng)?,
+                retry_count: row.get(5)?,
+                created_at: row.get(6)?,
             });
         }
         Ok(result)
@@ -128,9 +118,7 @@ pub async fn list_dead_letters(
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

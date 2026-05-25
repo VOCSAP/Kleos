@@ -15,9 +15,7 @@ use std::time::Duration;
 use tokenizers::Tokenizer;
 use tracing::{info, warn};
 
-// ---------------------------------------------------------------------------
-// 3.13: Reranker trait -- swappable backends
-// ---------------------------------------------------------------------------
+// --- 3.13: Reranker trait -- swappable backends ---
 
 /// Trait for reranking search results. Backends implement this to provide
 /// different reranking strategies (local ONNX, remote HTTP API, noop).
@@ -36,9 +34,7 @@ pub trait Reranker: Send + Sync {
     fn backend_name(&self) -> &str;
 }
 
-// ---------------------------------------------------------------------------
-// ONNX cross-encoder backend (IBM Granite)
-// ---------------------------------------------------------------------------
+// --- ONNX cross-encoder backend (IBM Granite) ---
 
 /// Cross-encoder reranker using IBM Granite model via ONNX Runtime.
 pub struct OnnxReranker {
@@ -201,9 +197,7 @@ impl Reranker for OnnxReranker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HTTP reranker backend (Cohere / Jina compatible)
-// ---------------------------------------------------------------------------
+// --- HTTP reranker backend (Cohere / Jina compatible) ---
 
 /// Remote HTTP reranker that calls a Cohere-compatible /v1/rerank API.
 /// Also works with Jina Reranker (same API shape).
@@ -269,16 +263,6 @@ impl HttpReranker {
         }
     }
 
-    /// Current circuit state string for metrics/health checks.
-    /// Returns "closed", "open", or "half_open". Returns "closed" when no
-    /// guard is present (constructed without a database).
-    pub fn breaker_state(&self) -> &'static str {
-        match self.guard.as_ref().map(|g| g.circuit_state()) {
-            Some(crate::resilience::CircuitState::Open) => "open",
-            Some(crate::resilience::CircuitState::HalfOpen) => "half_open",
-            _ => "closed",
-        }
-    }
 }
 
 #[async_trait]
@@ -432,9 +416,7 @@ impl Reranker for HttpReranker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Factory: create reranker from config
-// ---------------------------------------------------------------------------
+// --- Factory: create reranker from config ---
 
 /// Create the appropriate reranker backend based on config.
 ///

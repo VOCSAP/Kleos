@@ -9,7 +9,6 @@ use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -66,9 +65,6 @@ pub struct SyncChange {
     pub updated_at: String,
 }
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // SSRF deny-list helpers
@@ -355,7 +351,7 @@ pub async fn create_webhook(
     let secret_s = secret.map(|s| s.to_string());
 
     db.write(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "INSERT INTO webhooks (url, events, secret, user_id) VALUES (?1, ?2, ?3, ?4) RETURNING id, created_at",
             rusqlite::params![url_s, events_json, secret_s, user_id],
             |row| {
@@ -363,8 +359,7 @@ pub async fn create_webhook(
                 let created_at: String = row.get(1)?;
                 Ok((id, created_at))
             },
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -377,12 +372,12 @@ pub async fn list_webhooks(db: &Database, user_id: i64) -> Result<Vec<Webhook>> 
                 "SELECT id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
                  FROM webhooks WHERE user_id = ?1 ORDER BY created_at DESC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             let events_str: String = row
                 .get::<_, String>(2)
                 .unwrap_or_else(|_| "[\"*\"]".to_string());
@@ -393,16 +388,16 @@ pub async fn list_webhooks(db: &Database, user_id: i64) -> Result<Vec<Webhook>> 
             let stored_secret: Option<String> = row.get(3).unwrap_or(None);
             let has_secret = stored_secret.as_deref().is_some_and(|s| !s.is_empty());
             result.push(Webhook {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
                 user_id,
-                url: row.get(1).map_err(rusqlite_to_eng_error)?,
+                url: row.get(1)?,
                 events,
                 secret: None,
                 has_secret,
                 is_active: row.get::<_, i64>(4).unwrap_or(1) != 0,
                 failure_count: row.get(5).unwrap_or(0),
                 last_triggered_at: row.get(6).unwrap_or(None),
-                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(7)?,
             });
         }
         Ok(result)
@@ -415,8 +410,7 @@ pub async fn list_webhooks(db: &Database, user_id: i64) -> Result<Vec<Webhook>> 
 /// row's mere existence implies the user owns it. Returns `None` when no
 /// webhook with that id exists in this tenant.
 ///
-/// Used by [`emit_test_to_webhook`] to ensure single-target delivery without
-/// re-using the fan-out [`list_webhooks_with_secrets`] path.
+/// Used by [`emit_test_to_webhook`] for single-target delivery.
 async fn get_webhook_with_secret(
     db: &Database,
     hook_id: i64,
@@ -428,11 +422,11 @@ async fn get_webhook_with_secret(
                 "SELECT id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
                  FROM webhooks WHERE id = ?1 AND user_id = ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![hook_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        if let Some(row) = rows.next()? {
             let events_str: String = row
                 .get::<_, String>(2)
                 .unwrap_or_else(|_| "[\"*\"]".to_string());
@@ -441,61 +435,20 @@ async fn get_webhook_with_secret(
             let secret: Option<String> = row.get(3).unwrap_or(None);
             let has_secret = secret.as_deref().is_some_and(|s| !s.is_empty());
             Ok(Some(Webhook {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
                 user_id,
-                url: row.get(1).map_err(rusqlite_to_eng_error)?,
+                url: row.get(1)?,
                 events,
                 secret,
                 has_secret,
                 is_active: row.get::<_, i64>(4).unwrap_or(1) != 0,
                 failure_count: row.get(5).unwrap_or(0),
                 last_triggered_at: row.get(6).unwrap_or(None),
-                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(7)?,
             }))
         } else {
             Ok(None)
         }
-    })
-    .await
-}
-
-/// Internal-only: returns webhooks WITH secrets loaded, for delivery paths that
-/// need to sign outgoing payloads. Never expose the returned `secret` field to
-/// API callers.
-async fn list_webhooks_with_secrets(db: &Database, user_id: i64) -> Result<Vec<Webhook>> {
-    db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, url, events, secret, is_active, failure_count, last_triggered_at, created_at \
-                 FROM webhooks WHERE user_id = ?1 ORDER BY created_at DESC",
-            )
-            .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let events_str: String = row
-                .get::<_, String>(2)
-                .unwrap_or_else(|_| "[\"*\"]".to_string());
-            let events: Vec<String> =
-                serde_json::from_str(&events_str).unwrap_or_else(|_| vec!["*".to_string()]);
-            let secret: Option<String> = row.get(3).unwrap_or(None);
-            let has_secret = secret.as_deref().is_some_and(|s| !s.is_empty());
-            result.push(Webhook {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                user_id,
-                url: row.get(1).map_err(rusqlite_to_eng_error)?,
-                events,
-                secret,
-                has_secret,
-                is_active: row.get::<_, i64>(4).unwrap_or(1) != 0,
-                failure_count: row.get(5).unwrap_or(0),
-                last_triggered_at: row.get(6).unwrap_or(None),
-                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
-            });
-        }
-        Ok(result)
     })
     .await
 }
@@ -507,17 +460,12 @@ pub async fn delete_webhook(db: &Database, id: i64, user_id: i64) -> Result<()> 
             "DELETE FROM webhooks WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
 }
 
-/// Maximum delivery attempts before dead-lettering.
-const MAX_DELIVERY_ATTEMPTS: u32 = 3;
-
-/// Base backoff duration for retry (doubles each attempt).
-const RETRY_BASE_MS: u64 = 500;
 
 /// Dead-letter entry produced when all delivery retries are exhausted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -562,7 +510,7 @@ async fn record_delivery_failure(db: &Database, hook_id: i64) -> Result<i64> {
              WHERE id = ?2",
             rusqlite::params![threshold, hook_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         let count: i64 = conn
             .query_row(
                 "SELECT failure_count FROM webhooks WHERE id = ?1",
@@ -582,33 +530,7 @@ async fn record_delivery_success(db: &Database, hook_id: i64) -> Result<()> {
             "UPDATE webhooks SET failure_count = 0, last_triggered_at = datetime('now') WHERE id = ?1",
             rusqlite::params![hook_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
-        Ok(())
-    })
-    .await
-}
-
-/// Insert a dead-letter record for a webhook that exhausted all retries.
-async fn insert_dead_letter(
-    db: &Database,
-    hook_id: i64,
-    event: &str,
-    payload: &str,
-    attempts: u32,
-    last_error: Option<&str>,
-    last_status_code: Option<u16>,
-) -> Result<()> {
-    let event_s = event.to_string();
-    let payload_s = payload.to_string();
-    let last_err_s = last_error.map(|s| s.to_string());
-    let status = last_status_code.map(|c| c as i64);
-    db.write(move |conn| {
-        conn.execute(
-            "INSERT INTO webhook_dead_letters (webhook_id, event, payload, attempts, last_error, last_status_code) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![hook_id, event_s, payload_s, attempts as i64, last_err_s, status],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -637,21 +559,21 @@ pub async fn list_dead_letters(
                  AND webhook_id IN (SELECT id FROM webhooks WHERE user_id = ?2) \
                  ORDER BY created_at DESC LIMIT ?3",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![webhook_id, user_id, limit])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             result.push(WebhookDeadLetter {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                webhook_id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                event: row.get(2).map_err(rusqlite_to_eng_error)?,
-                payload: row.get(3).map_err(rusqlite_to_eng_error)?,
-                attempts: row.get(4).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                webhook_id: row.get(1)?,
+                event: row.get(2)?,
+                payload: row.get(3)?,
+                attempts: row.get(4)?,
                 last_error: row.get(5).unwrap_or(None),
                 last_status_code: row.get(6).unwrap_or(None),
-                created_at: row.get(7).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(7)?,
             });
         }
         Ok(result)
@@ -659,208 +581,8 @@ pub async fn list_dead_letters(
     .await
 }
 
-/// Deliver a single webhook with retry (exponential backoff, max 3 attempts).
-/// On exhaustion, writes to the dead-letter table and bumps failure_count.
-/// On success, resets failure_count and updates last_triggered_at.
-///
-/// `pinned_url` is the delivery target with the hostname replaced by the
-/// pre-validated IP (from `resolve_and_validate_url`), eliminating the TOCTOU
-/// DNS rebinding window. `pinned_host_header` carries the original hostname
-/// for the `Host` header so the server can route the request correctly.
-async fn deliver_with_retry(
-    db: std::sync::Arc<Database>,
-    hook: Webhook,
-    event: String,
-    body_str: String,
-    headers: Vec<(String, String)>,
-    pinned_url: String,
-    pinned_host_header: Option<String>,
-) {
-    let hook_id = hook.id;
-
-    let mut last_error: Option<String> = None;
-    let mut last_status: Option<u16> = None;
-
-    for attempt in 0..MAX_DELIVERY_ATTEMPTS {
-        if attempt > 0 {
-            let backoff = RETRY_BASE_MS * 2u64.pow(attempt - 1);
-            tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
-        }
-
-        let mut req = WEBHOOK_CLIENT
-            .post(&pinned_url)
-            .body(body_str.clone())
-            .timeout(std::time::Duration::from_secs(10));
-        // Set the Host header to the original hostname when connecting via
-        // a pinned IP so the receiver's virtual-hosting can route correctly.
-        if let Some(ref host) = pinned_host_header {
-            req = req.header("Host", host.as_str());
-        }
-        for (k, v) in &headers {
-            req = req.header(k.as_str(), v.as_str());
-        }
-
-        match req.send().await {
-            Ok(resp) if resp.status().is_success() => {
-                tracing::debug!(hook_id, attempt, "webhook delivered");
-                if let Err(e) = record_delivery_success(&db, hook_id).await {
-                    tracing::warn!(error = %e, hook_id, "failed to record delivery success");
-                }
-                return;
-            }
-            Ok(resp) => {
-                let status = resp.status().as_u16();
-                last_status = Some(status);
-                last_error = Some(format!("HTTP {}", status));
-                tracing::warn!(hook_id, attempt, status, "webhook delivery got non-2xx");
-            }
-            Err(e) => {
-                last_error = Some(e.to_string());
-                last_status = None;
-                tracing::warn!(hook_id, attempt, error = %e, "webhook delivery error");
-            }
-        }
-    }
-
-    // All retries exhausted -- dead-letter it.
-    tracing::error!(
-        hook_id,
-        attempts = MAX_DELIVERY_ATTEMPTS,
-        "webhook delivery failed after all retries, dead-lettering"
-    );
-    let failure_count = record_delivery_failure(&db, hook_id).await.unwrap_or(0);
-    if failure_count >= WEBHOOK_FAILURE_THRESHOLD {
-        tracing::warn!(
-            hook_id,
-            failure_count,
-            "webhook auto-disabled after threshold"
-        );
-    }
-    if let Err(e) = insert_dead_letter(
-        &db,
-        hook_id,
-        &event,
-        &body_str,
-        MAX_DELIVERY_ATTEMPTS,
-        last_error.as_deref(),
-        last_status,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, hook_id, "failed to insert dead letter");
-    }
-}
-
-/// Emit a webhook event to all matching active webhooks for a user.
-///
-/// Delivery runs in background tasks with 3x exponential-backoff retry.
-/// Failed deliveries are written to the `webhook_dead_letters` table and
-/// the webhook's `failure_count` is incremented (auto-disabled at threshold).
-///
-/// Accepts `&Arc<Database>` so spawned tasks can hold a cheap reference-counted
-/// handle without requiring `Database: Clone`.
-#[tracing::instrument(skip(db, payload), fields(event = %event))]
-pub async fn emit_webhook_event(
-    db: &Arc<Database>,
-    event: &str,
-    payload: &serde_json::Value,
-    user_id: i64,
-) {
-    // R8 R-011: log the DB read failure before bailing -- previously a
-    // query error meant every emit was silently a no-op and ops had no
-    // signal until the dead-letter tray stayed empty.
-    let hooks = match list_webhooks_with_secrets(db, user_id).await {
-        Ok(h) => h,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                user_id,
-                event,
-                "emit_webhook_event: list_webhooks_with_secrets failed; dropping dispatch"
-            );
-            return;
-        }
-    };
-    for hook in hooks {
-        if !hook.is_active {
-            continue;
-        }
-        if !hook.events.contains(&"*".to_string()) && !hook.events.contains(&event.to_string()) {
-            continue;
-        }
-        // SECURITY (SSRF-DNS): re-validate at delivery time with DNS
-        // resolution. A row could have been migrated from an older build, or
-        // the domain's DNS records could have changed to point at private IPs.
-        // The returned IP is pinned so the HTTP request connects to the exact
-        // address we validated, closing the TOCTOU DNS rebinding window.
-        let pinned_ip = match resolve_and_validate_url(&hook.url).await {
-            Ok(ip) => ip,
-            Err(_) => {
-                tracing::warn!(hook_id = hook.id, "skipping webhook with disallowed URL");
-                continue;
-            }
-        };
-        let (pinned_url, pinned_host_header) = pin_url_to_ip(&hook.url, pinned_ip);
-
-        let body = serde_json::json!({
-            "event": event,
-            "timestamp": Utc::now().to_rfc3339(),
-            "data": payload,
-        });
-        let body_str = serde_json::to_string(&body).unwrap_or_default();
-
-        let mut headers = vec![("Content-Type".to_string(), "application/json".to_string())];
-        if let Some(secret) = hook.secret.as_deref() {
-            if !secret.is_empty() {
-                let signature = sign_body(secret, body_str.as_bytes());
-                headers.push(("X-Kleos-Signature".to_string(), signature));
-            }
-        }
-
-        let db_clone = Arc::clone(db);
-        let event_s = event.to_string();
-        let hook_id = hook.id;
-        let event_label = event.to_string();
-        // R8 R-003: wrap the fire-and-forget task so panics and final
-        // failures surface in metrics/logs instead of silently disappearing
-        // into a detached JoinHandle.
-        metrics::counter!("kleos_webhooks_deliver_spawned_total").increment(1);
-        tokio::spawn(async move {
-            let fut = deliver_with_retry(
-                db_clone,
-                hook,
-                event_s,
-                body_str,
-                headers,
-                pinned_url,
-                pinned_host_header,
-            );
-            match tokio::task::spawn(fut).await {
-                Ok(()) => {}
-                Err(join_err) if join_err.is_panic() => {
-                    metrics::counter!("kleos_webhooks_deliver_panicked_total").increment(1);
-                    tracing::error!(
-                        hook_id,
-                        event = %event_label,
-                        "webhook deliver_with_retry panicked"
-                    );
-                }
-                Err(join_err) => {
-                    metrics::counter!("kleos_webhooks_deliver_aborted_total").increment(1);
-                    tracing::warn!(
-                        hook_id,
-                        event = %event_label,
-                        error = %join_err,
-                        "webhook deliver_with_retry aborted"
-                    );
-                }
-            }
-        });
-    }
-}
-
 /// Single-shot delivery to one specific webhook for the `/webhooks/test/{id}`
-/// route. Unlike [`emit_webhook_event`], which fans out to every active
+/// route. Unlike the fan-out path, which dispatches to every active
 /// webhook for the user, this targets exactly the row identified by
 /// `hook_id` and returns a [`WebhookTestReceipt`] describing the actual HTTP
 /// outcome.
@@ -1019,18 +741,18 @@ pub async fn get_changes_since(
                  is_static, is_forgotten, is_archived, version, created_at, updated_at \
                  FROM memories WHERE updated_at > ?1 ORDER BY updated_at ASC LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![since_s, limit])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             result.push(SyncChange {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                content: row.get(1).map_err(rusqlite_to_eng_error)?,
-                category: row.get(2).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                content: row.get(1)?,
+                category: row.get(2)?,
                 source: row.get(3).unwrap_or(None),
-                importance: row.get(4).map_err(rusqlite_to_eng_error)?,
+                importance: row.get(4)?,
                 tags: row.get(5).unwrap_or(None),
                 confidence: row.get(6).unwrap_or(None),
                 sync_id: row.get(7).unwrap_or(None),
@@ -1038,8 +760,8 @@ pub async fn get_changes_since(
                 is_forgotten: row.get::<_, i64>(9).unwrap_or(0) != 0,
                 is_archived: row.get::<_, i64>(10).unwrap_or(0) != 0,
                 version: row.get(11).unwrap_or(1),
-                created_at: row.get(12).map_err(rusqlite_to_eng_error)?,
-                updated_at: row.get(13).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
             });
         }
         Ok(result)
@@ -1276,63 +998,6 @@ mod tests {
         let hooks = list_webhooks(&db, 1).await.unwrap();
         assert!(!hooks[0].is_active, "webhook should be auto-disabled");
         assert_eq!(hooks[0].failure_count, WEBHOOK_FAILURE_THRESHOLD);
-    }
-
-    #[tokio::test]
-    async fn dead_letter_crud() {
-        let db = Database::connect_memory().await.unwrap();
-        db.write(|conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO users (id, username) VALUES (1, 'test')",
-                [],
-            )
-            .unwrap();
-            Ok(())
-        })
-        .await
-        .unwrap();
-        create_webhook(&db, "https://example.com/hook", &["*".into()], None, 1)
-            .await
-            .unwrap();
-        // Insert dead letter
-        insert_dead_letter(
-            &db,
-            1,
-            "memory.stored",
-            r#"{"test":1}"#,
-            3,
-            Some("HTTP 500"),
-            Some(500),
-        )
-        .await
-        .unwrap();
-        insert_dead_letter(
-            &db,
-            1,
-            "memory.forgotten",
-            r#"{"test":2}"#,
-            3,
-            Some("timeout"),
-            None,
-        )
-        .await
-        .unwrap();
-        // List them
-        let letters = list_dead_letters(&db, 1, 1, 50).await.unwrap();
-        assert_eq!(letters.len(), 2);
-        assert_eq!(letters[0].event, "memory.forgotten"); // most recent first
-        assert_eq!(letters[1].event, "memory.stored");
-        assert_eq!(letters[1].last_status_code, Some(500));
-        assert_eq!(letters[0].last_status_code, None);
-    }
-
-    // -- constants --
-
-    #[test]
-    fn retry_constants_sensible() {
-        assert_eq!(MAX_DELIVERY_ATTEMPTS, 3);
-        const _: () = assert!(RETRY_BASE_MS >= 100);
-        const _: () = assert!(WEBHOOK_FAILURE_THRESHOLD >= 5);
     }
 
     // -- emit_test_to_webhook (single-target delivery) tests --

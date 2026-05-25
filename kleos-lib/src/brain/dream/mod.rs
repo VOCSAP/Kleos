@@ -28,11 +28,8 @@ mod tests;
 
 use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // Driver
@@ -141,7 +138,7 @@ async fn insert_dream_run(db: &Database, user_id: i64) -> Result<i64> {
              VALUES (?1, datetime('now'), 0, 0, 0, 0, 0, 0)",
             rusqlite::params![user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -184,7 +181,7 @@ async fn finish_dream_run(
                 user_id
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(())
     })

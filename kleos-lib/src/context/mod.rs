@@ -43,9 +43,7 @@ use modes::*;
 use scoring::cosine_similarity;
 pub use types::*;
 
-// ---------------------------------------------------------------------------
-// Attribution helper
-// ---------------------------------------------------------------------------
+// --- Attribution helper ---
 
 /// Build an attribution tag string for a context block.
 fn build_attribution(block: &ContextBlock) -> String {
@@ -67,9 +65,7 @@ fn build_attribution(block: &ContextBlock) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Context string assembly from blocks
-// ---------------------------------------------------------------------------
+// --- Context string assembly from blocks ---
 
 /// Assembles the final context string from layers of blocks plus supplementary
 /// sections (working memory, current state, personality, preferences, facts).
@@ -300,40 +296,7 @@ pub fn assemble_context_string(
     parts.join("\n\n")
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Check whether content is semantically duplicate against already-added blocks.
-/// Computes the candidate embedding on-demand using the provider.
-/// Returns false when no provider or embedding fails.
-///
-/// Kept as an on-demand variant for callers that have not pre-embedded the
-/// candidate. The hot-path assembler (`assemble`, `assemble_stream`) embeds
-/// upfront and inlines the cosine check via `spawn_blocking` to reuse the
-/// vector, so this helper is not invoked there.
-#[allow(dead_code)]
-async fn is_semantic_duplicate(
-    content: &str,
-    block_embeddings: &[Vec<f32>],
-    provider: &Option<Arc<dyn EmbeddingProvider>>,
-    thresh: f64,
-) -> bool {
-    if block_embeddings.is_empty() {
-        return false;
-    }
-    let p = match provider {
-        Some(p) => p,
-        None => return false,
-    };
-    let emb = match p.embed(content).await {
-        Ok(e) => e,
-        Err(_) => return false,
-    };
-    block_embeddings
-        .iter()
-        .any(|e| cosine_similarity(&emb, e) as f64 > thresh)
-}
+// --- Helpers ---
 
 /// Build a working-memory block from scratchpad entries.
 /// Returns None when rows is empty.
@@ -404,9 +367,7 @@ fn format_scratch_age(updated_at: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Core context assembly -- progressive disclosure algorithm
-// ---------------------------------------------------------------------------
+// --- Core context assembly -- progressive disclosure algorithm ---
 
 #[tracing::instrument(
     name = "assemble_context",
@@ -600,22 +561,11 @@ async fn assemble_context_inner(
         query: opts.query.clone(),
         embedding: query_emb,
         limit: Some(semantic_limit),
-        category: None,
         source: source_filter.clone(),
-        tags: None,
-        threshold: None,
         user_id: Some(user_id),
-        space_id: None,
         include_forgotten: Some(false),
-        mode: None,
-        question_type: None,
-        expand_relationships: false,
-        include_links: false,
-        latest_only: true,
-        source_filter: None,
-        include_archived: None,
-        include_noise: None,
         exclude_consolidated: Some(true),
+        ..Default::default()
     };
     let semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);
@@ -1316,21 +1266,7 @@ async fn assemble_context_inner(
     })
 }
 
-// ---------------------------------------------------------------------------
-// Helper: parse a date string to epoch milliseconds
-// ---------------------------------------------------------------------------
-
-fn parse_date_ms(s: &str) -> Option<i64> {
-    let normalized = if s.contains('Z') {
-        s.to_string()
-    } else {
-        format!("{}Z", s.replace(" ", "T"))
-    };
-    normalized
-        .parse::<chrono::DateTime<chrono::Utc>>()
-        .ok()
-        .map(|dt| dt.timestamp_millis())
-}
+use crate::memory::scoring::parse_date_ms;
 
 fn parse_freshness(
     valid_at: Option<&str>,

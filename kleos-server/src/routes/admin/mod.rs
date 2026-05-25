@@ -41,6 +41,15 @@ fn to_json<T: serde::Serialize>(v: T) -> Result<Json<Value>, AppError> {
         .map_err(|e| AppError(kleos_lib::EngError::Serialization(e)))
 }
 
+/// Extract the tenant registry or return a 501 error.
+fn require_registry(state: &AppState) -> Result<&kleos_lib::tenant::TenantRegistry, AppError> {
+    state.tenant_registry.as_deref().ok_or_else(|| {
+        AppError(kleos_lib::EngError::NotImplemented(
+            "tenant registry not configured".into(),
+        ))
+    })
+}
+
 /// Mount the admin router with every operator-only route, gated by `require_admin` at the handler level.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -153,25 +162,20 @@ pub fn router() -> Router<AppState> {
         .route("/admin/quota/{user_id}/recompute", post(recompute_quota))
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
 async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
     let sql = sql.to_string();
     state
         .db
         .read(move |conn| {
-            conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            Ok(conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?)
         })
         .await
         .map_err(AppError)
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap
-// ---------------------------------------------------------------------------
+// --- Bootstrap ---
 
 /// SECURITY (SEC-HIGH-6): bootstrap has no upstream rate limiter because
 /// it bypasses auth entirely. Without a cooldown an attacker can brute-
@@ -295,12 +299,11 @@ async fn bootstrap(
     let changes = state
         .db
         .write(|conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "INSERT OR IGNORE INTO app_state (key, value, updated_at) \
                  VALUES ('bootstrap_claimed', datetime('now'), datetime('now'))",
                 [],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .map_err(AppError)?;
@@ -330,12 +333,11 @@ async fn bootstrap(
     state
         .db
         .write(|conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
                  VALUES (1, 'operator', 'admin', 1)",
                 [],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .map_err(AppError)?;
@@ -356,9 +358,7 @@ async fn bootstrap(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 #[tracing::instrument(skip_all)]
 async fn get_stats(
@@ -377,9 +377,7 @@ async fn get_stats(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Settings (app_state key-value)
-// ---------------------------------------------------------------------------
+// --- Settings (app_state key-value) ---
 
 #[tracing::instrument(skip_all)]
 async fn get_settings(
@@ -415,9 +413,7 @@ async fn put_settings(
     Ok(Json(json!({ "updated": updated })))
 }
 
-// ---------------------------------------------------------------------------
-// GC
-// ---------------------------------------------------------------------------
+// --- GC ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_gc(
@@ -431,9 +427,7 @@ async fn admin_gc(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Compact
-// ---------------------------------------------------------------------------
+// --- Compact ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_compact(
@@ -445,9 +439,7 @@ async fn admin_compact(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Re-embed
-// ---------------------------------------------------------------------------
+// --- Re-embed ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_reembed(
@@ -461,9 +453,7 @@ async fn admin_reembed(
     Ok(Json(json!({ "cleared": cleared })))
 }
 
-// ---------------------------------------------------------------------------
-// Rebuild FTS
-// ---------------------------------------------------------------------------
+// --- Rebuild FTS ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_rebuild_fts(
@@ -475,9 +465,7 @@ async fn admin_rebuild_fts(
     Ok(Json(json!({ "indexed": indexed })))
 }
 
-// ---------------------------------------------------------------------------
-// Refresh cache (no-op signal)
-// ---------------------------------------------------------------------------
+// --- Refresh cache (no-op signal) ---
 
 #[tracing::instrument(skip_all)]
 async fn refresh_cache(
@@ -490,9 +478,7 @@ async fn refresh_cache(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Backfill facts
-// ---------------------------------------------------------------------------
+// --- Backfill facts ---
 
 #[tracing::instrument(skip_all)]
 async fn backfill_facts(
@@ -517,9 +503,7 @@ async fn backfill_facts(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Backfill entities
-// ---------------------------------------------------------------------------
+// --- Backfill entities ---
 
 /// One-shot admin handler to backfill entity extraction for historic memories.
 ///
@@ -578,9 +562,7 @@ async fn backfill_entities(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Schema
-// ---------------------------------------------------------------------------
+// --- Schema ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_schema(
@@ -592,9 +574,7 @@ async fn admin_schema(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Embedding info
-// ---------------------------------------------------------------------------
+// --- Embedding info ---
 
 #[tracing::instrument(skip_all)]
 async fn embedding_info(
@@ -609,9 +589,7 @@ async fn embedding_info(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Scale report
-// ---------------------------------------------------------------------------
+// --- Scale report ---
 
 #[tracing::instrument(skip_all)]
 async fn scale_report_handler(
@@ -623,9 +601,7 @@ async fn scale_report_handler(
     Ok(Json(result))
 }
 
-// ---------------------------------------------------------------------------
-// Cold storage stats
-// ---------------------------------------------------------------------------
+// --- Cold storage stats ---
 
 #[tracing::instrument(skip_all)]
 async fn cold_storage_handler(
@@ -638,9 +614,7 @@ async fn cold_storage_handler(
     Ok(Json(result))
 }
 
-// ---------------------------------------------------------------------------
-// Providers
-// ---------------------------------------------------------------------------
+// --- Providers ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_providers(
@@ -665,9 +639,7 @@ async fn admin_providers(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Tasks (job queue stats)
-// ---------------------------------------------------------------------------
+// --- Tasks (job queue stats) ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_tasks(
@@ -710,7 +682,7 @@ async fn admin_cred_resolve(
         .ok_or_else(|| AppError(kleos_lib::EngError::InvalidInput("key is required".into())))?;
 
     let value = if body.raw {
-        state.credd.get_raw(&state.db, agent, service, key).await?
+        state.credd.get_raw(&state.db, auth.user_id, agent, service, key).await?
     } else {
         state
             .credd
@@ -754,9 +726,7 @@ async fn admin_cred_proxy(
     Ok(Json(response))
 }
 
-// ---------------------------------------------------------------------------
-// Maintenance
-// ---------------------------------------------------------------------------
+// --- Maintenance ---
 
 #[tracing::instrument(skip_all)]
 async fn get_maintenance_handler(
@@ -781,9 +751,7 @@ async fn post_maintenance_handler(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// SLA
-// ---------------------------------------------------------------------------
+// --- SLA ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_sla(
@@ -807,9 +775,7 @@ async fn admin_sla_reset(
     Ok(Json(json!({ "status": "ok", "reset_at": ts })))
 }
 
-// ---------------------------------------------------------------------------
-// Quotas
-// ---------------------------------------------------------------------------
+// --- Quotas ---
 
 #[tracing::instrument(skip_all)]
 async fn get_quotas(
@@ -848,9 +814,7 @@ async fn put_quotas(
     Ok(Json(json!({ "status": "ok", "user_id": body.user_id })))
 }
 
-// ---------------------------------------------------------------------------
-// Usage + Tenants
-// ---------------------------------------------------------------------------
+// --- Usage + Tenants ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_usage(
@@ -879,9 +843,7 @@ async fn admin_tenants(
     Ok(Json(json!({ "items": items, "count": count })))
 }
 
-// ---------------------------------------------------------------------------
-// Provision / Deprovision
-// ---------------------------------------------------------------------------
+// --- Provision / Deprovision ---
 
 #[tracing::instrument(skip_all)]
 async fn provision_tenant(
@@ -949,9 +911,7 @@ async fn deprovision_tenant(
     Ok(Json(json!({ "removed": removed, "user_id": body.user_id })))
 }
 
-// ---------------------------------------------------------------------------
-// Checkpoint / Backup verify
-// ---------------------------------------------------------------------------
+// --- Checkpoint / Backup verify ---
 
 #[tracing::instrument(skip_all)]
 async fn checkpoint_handler(
@@ -974,9 +934,7 @@ async fn backup_verify_handler(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Backup download
-// ---------------------------------------------------------------------------
+// --- Backup download ---
 
 #[tracing::instrument(skip_all)]
 async fn backup_handler(
@@ -1005,8 +963,7 @@ async fn backup_handler(
     state
         .db
         .write(move |conn| {
-            conn.execute(&vacuum_sql, [])
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            Ok(conn.execute(&vacuum_sql, [])?)
         })
         .await
         .map_err(AppError)?;
@@ -1050,9 +1007,7 @@ async fn backup_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Point-in-time recovery
-// ---------------------------------------------------------------------------
+// --- Point-in-time recovery ---
 
 /// Name of the jailed restore directory under `data_dir`. PITR prepared files
 /// land here and nowhere else.
@@ -1186,9 +1141,7 @@ async fn admin_pitr_prepare(
     Ok(Json(json!(prepared)))
 }
 
-// ---------------------------------------------------------------------------
-// Export (user-scoped, any authenticated user)
-// ---------------------------------------------------------------------------
+// --- Export (user-scoped, any authenticated user) ---
 
 #[tracing::instrument(skip_all)]
 async fn export_handler(
@@ -1202,9 +1155,7 @@ async fn export_handler(
     to_json(result)
 }
 
-// ---------------------------------------------------------------------------
-// Reset (user's own data only)
-// ---------------------------------------------------------------------------
+// --- Reset (user's own data only) ---
 
 // C-R3-002 / H-R3-005: scope to ResolvedDb so the unfiltered DELETEs only
 // hit the caller's shard, not the monolith. Each shard contains exactly one
@@ -1244,8 +1195,7 @@ async fn reset_user(
         let sql_owned = sql.to_string();
         total += db
             .write(move |conn| {
-                conn.execute(&sql_owned, [])
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                Ok(conn.execute(&sql_owned, [])?)
             })
             .await
             .map_err(AppError)? as i64;
@@ -1253,9 +1203,7 @@ async fn reset_user(
     Ok(Json(json!({ "deleted_rows": total, "user_id": uid })))
 }
 
-// ---------------------------------------------------------------------------
-// Communities + Cooccurrences
-// ---------------------------------------------------------------------------
+// --- Communities + Cooccurrences ---
 
 #[tracing::instrument(skip_all)]
 async fn detect_communities_handler(
@@ -1278,9 +1226,7 @@ async fn rebuild_cooccurrences_handler(
     Ok(Json(json!({ "rebuilt_pairs": pairs })))
 }
 
-// ---------------------------------------------------------------------------
-// PageRank rebuild
-// ---------------------------------------------------------------------------
+// --- PageRank rebuild ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_sync_replay(
@@ -1294,9 +1240,7 @@ async fn admin_vector_sync_replay(
     to_json(report)
 }
 
-// ---------------------------------------------------------------------------
-// Rebuild ANN index (IVF_HNSW_PQ)
-// ---------------------------------------------------------------------------
+// --- Rebuild ANN index (IVF_HNSW_PQ) ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_rebuild_index(
@@ -1324,9 +1268,7 @@ async fn admin_vector_rebuild_index(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Vector health diagnostic
-// ---------------------------------------------------------------------------
+// --- Vector health diagnostic ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_health(
@@ -1335,11 +1277,7 @@ async fn admin_vector_health(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::Internal(
-            "tenant sharding disabled; vector health requires tenant registry".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
 
     let tenants = registry.list().map_err(AppError)?;
 
@@ -1432,9 +1370,7 @@ async fn admin_vector_health(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Chunk + embedding backfill
-// ---------------------------------------------------------------------------
+// --- Chunk + embedding backfill ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_backfill_chunks(
@@ -1449,11 +1385,7 @@ async fn admin_backfill_chunks(
         ))
     })?;
 
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::Internal(
-            "tenant sharding disabled; backfill requires tenant registry".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
 
     let tenants = registry.list().map_err(AppError)?;
 
@@ -1514,9 +1446,7 @@ async fn admin_backfill_chunks(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Per-chunk LanceDB vector index rebuild from existing SQLite rows
-// ---------------------------------------------------------------------------
+// --- Per-chunk LanceDB vector index rebuild from existing SQLite rows ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_vector_chunk_sync(
@@ -1525,11 +1455,7 @@ async fn admin_vector_chunk_sync(
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::Internal(
-            "tenant sharding disabled; chunk-sync requires tenant registry".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
 
     let tenants = registry.list().map_err(AppError)?;
     let mut total = 0usize;
@@ -1574,9 +1500,7 @@ async fn admin_vector_chunk_sync(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Safe mode exit
-// ---------------------------------------------------------------------------
+// --- Safe mode exit ---
 
 #[tracing::instrument(skip_all)]
 async fn post_safe_mode_exit(
@@ -1622,9 +1546,7 @@ async fn admin_pagerank_rebuild(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Migrations
-// ---------------------------------------------------------------------------
+// --- Migrations ---
 
 /// GET /admin/migrations -- return current migration status (version, pending, revertible).
 #[tracing::instrument(skip_all)]
@@ -1671,9 +1593,7 @@ async fn admin_reapply_instincts(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Monolith drain -- move data from system DB to tenant shards
-// ---------------------------------------------------------------------------
+// --- Monolith drain -- move data from system DB to tenant shards ---
 
 #[tracing::instrument(skip_all)]
 async fn admin_monolith_status(
@@ -1715,7 +1635,7 @@ async fn admin_monolith_status(
                             SUM(CASE WHEN is_forgotten = 0 THEN 1 ELSE 0 END) AS active \
                      FROM memories GROUP BY user_id ORDER BY user_id",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -1724,7 +1644,7 @@ async fn admin_monolith_status(
                         row.get::<_, i64>(2)?,
                     ))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1787,10 +1707,10 @@ async fn admin_monolith_drain(
         .read(|conn| {
             let mut stmt = conn
                 .prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let rows: Vec<i64> = stmt
                 .query_map([], |row| row.get(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1847,12 +1767,12 @@ async fn admin_monolith_drain(
                         "SELECT content, created_at FROM memories \
                          WHERE is_forgotten = 0 AND is_latest = 1",
                     )
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 let keys: std::collections::HashSet<_> = stmt
                     .query_map([], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                     })
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                    ?
                     .filter_map(|r| r.ok())
                     .collect();
                 Ok(keys)
@@ -1866,7 +1786,7 @@ async fn admin_monolith_drain(
             .read(move |conn| {
                 let mut stmt = conn
                     .prepare(&col_select_owned)
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 let rows: Vec<Vec<rusqlite::types::Value>> = stmt
                     .query_map(rusqlite::params![uid_val], |row| {
                         let mut vals = Vec::with_capacity(col_count);
@@ -1875,7 +1795,7 @@ async fn admin_monolith_drain(
                         }
                         Ok(vals)
                     })
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                    ?
                     .filter_map(|r| r.ok())
                     .collect();
                 Ok(rows)
@@ -1892,7 +1812,7 @@ async fn admin_monolith_drain(
             .write(move |conn| {
                 let tx = conn
                     .savepoint()
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 for row_vals in &rows {
                     let content = match &row_vals[0] {
                         rusqlite::types::Value::Text(s) => s.clone(),
@@ -1921,7 +1841,7 @@ async fn admin_monolith_drain(
                     }
                 }
                 tx.commit()
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 Ok((inserted, skipped))
             })
             .await;
@@ -1952,7 +1872,7 @@ async fn admin_monolith_drain(
                          WHERE user_id = ?1 AND is_forgotten = 0",
                         rusqlite::params![uid_val],
                     )
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                     Ok(())
                 })
                 .await;
@@ -1982,9 +1902,7 @@ async fn admin_monolith_drain(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// E1 Async Deprovision (cross-store teardown)
-// ---------------------------------------------------------------------------
+// --- E1 Async Deprovision (cross-store teardown) ---
 
 /// POST /admin/deprovision/{user_id} -- initiate async two-phase teardown.
 #[tracing::instrument(skip_all)]
@@ -1995,11 +1913,7 @@ async fn deprovision_tenant_async(
     Json(body): Json<AsyncDeprovisionBody>,
 ) -> Result<impl IntoResponse, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let dep_id = kleos_lib::tenant::teardown::begin_deprovision(
         registry,
         &state.db,
@@ -2025,11 +1939,7 @@ async fn get_deprovision_status(
     Path(dep_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let row = registry
         .registry_db()
         .get_deletion_log(&dep_id)?
@@ -2056,11 +1966,7 @@ async fn list_stuck_deprovisions(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let rows = registry
         .registry_db()
         .list_by_status(kleos_lib::tenant::types::TenantStatus::Stuck)?;
@@ -2087,11 +1993,7 @@ async fn force_retry_deprovision(
     Path(dep_id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let log = registry
         .registry_db()
         .get_deletion_log(&dep_id)?
@@ -2135,11 +2037,7 @@ async fn list_recent_deprovisions(
     Query(q): Query<RecentDeprovisionQuery>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let rows = registry.registry_db().list_deletions_recent(q.limit)?;
     let items: Vec<_> = rows
         .iter()
@@ -2170,11 +2068,7 @@ async fn skip_shard_deprovision(
     Json(body): Json<SkipShardBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant registry not configured".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let log = registry
         .registry_db()
         .get_deletion_log(&dep_id)?
@@ -2203,9 +2097,7 @@ async fn skip_shard_deprovision(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// E2 shard quota management
-// ---------------------------------------------------------------------------
+// --- E2 shard quota management ---
 
 /// GET /admin/quota/{user_id} -- return current quota limits and shadow usage.
 async fn get_quota_status(
@@ -2214,11 +2106,7 @@ async fn get_quota_status(
     axum::extract::Path(user_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant sharding not enabled".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let row = registry.get_quota_row(&user_id)?;
     to_json(row)
 }
@@ -2234,11 +2122,7 @@ async fn set_quota(
     Json(body): Json<SetQuotaBody>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant sharding not enabled".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     registry
         .update_quota(
             &user_id,
@@ -2259,11 +2143,7 @@ async fn recompute_quota(
     axum::extract::Path(user_id): axum::extract::Path<String>,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
-    let registry = state.tenant_registry.as_ref().ok_or_else(|| {
-        AppError(kleos_lib::EngError::NotImplemented(
-            "tenant sharding not enabled".into(),
-        ))
-    })?;
+    let registry = require_registry(&state)?;
     let (bytes, count) = registry.recompute_usage(&user_id).await?;
     Ok(Json(
         json!({ "ok": true, "content_bytes": bytes, "memory_count": count }),

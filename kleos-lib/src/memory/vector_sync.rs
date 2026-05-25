@@ -6,7 +6,6 @@
 //! sites (`kleos_lib::memory::replay_vector_sync_pending`, etc.) continue
 //! to resolve unchanged.
 
-use super::rusqlite_to_eng_error;
 use super::types::VectorSyncReplayReport;
 use crate::db::Database;
 use crate::Result;
@@ -39,7 +38,7 @@ async fn fetch_embeddings_batch(
         }
         sql.push(')');
 
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(owned.len());
         for mid in &owned {
             params.push(Box::new(*mid));
@@ -49,11 +48,11 @@ async fn fetch_embeddings_batch(
 
         let mut rows = stmt
             .query(param_refs.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(owned.len());
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let blob: Vec<u8> = row.get(1).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
             map.insert(id, blob);
         }
         Ok(map)
@@ -69,13 +68,13 @@ async fn delete_pending_batch(db: &Database, ledger_ids: Vec<i64>) -> Result<()>
     db.write(move |conn| {
         let placeholders = ledger_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!("DELETE FROM vector_sync_pending WHERE id IN ({placeholders})");
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let params: Vec<Box<dyn rusqlite::types::ToSql>> =
             ledger_ids.iter().map(|id| Box::new(*id) as _).collect();
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
         stmt.execute(param_refs.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(())
     })
     .await
@@ -107,12 +106,12 @@ pub async fn build_lance_index_from_existing(db: &Database, _owner_user_id: i64)
                        AND is_forgotten = 0
                        AND is_latest = 1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -158,7 +157,7 @@ pub async fn replay_vector_sync_pending(
                     "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map(params![limit as i64], |row| {
                     Ok((
@@ -167,7 +166,7 @@ pub async fn replay_vector_sync_pending(
                         row.get::<_, String>(2)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -239,7 +238,7 @@ async fn process_pending_batch(
                          WHERE id = ?2",
                         params![e_clone, ledger_id],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                     Ok(())
                 })
                 .await?;
@@ -263,10 +262,9 @@ async fn process_pending_batch(
 pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
     let count: i64 = db
         .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
                 row.get(0)
-            })
-            .map_err(rusqlite_to_eng_error)
+            })?)
         })
         .await?;
     // Return a single synthetic entry so the background round-robin fires.
@@ -300,7 +298,7 @@ pub async fn replay_vector_sync_pending_for_user(
                     "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map(params![limit as i64], |row| {
                     Ok((
@@ -309,7 +307,7 @@ pub async fn replay_vector_sync_pending_for_user(
                         row.get::<_, String>(2)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -377,7 +375,7 @@ pub async fn backfill_missing_embeddings_limited(
                      ORDER BY m.id DESC \
                      LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map(params![sql_limit], |row| {
                     Ok((
@@ -387,7 +385,7 @@ pub async fn backfill_missing_embeddings_limited(
                         row.get::<_, i64>(3)? != 0,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -480,7 +478,7 @@ async fn persist_primary_db_only(db: &Database, memory_id: i64, emb: &[f32]) -> 
             "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
             params![blob, memory_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -504,7 +502,7 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
                        AND m.is_forgotten = 0
                        AND m.is_latest = 1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -513,7 +511,7 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
                         row.get::<_, Vec<u8>>(2)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)

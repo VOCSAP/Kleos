@@ -309,7 +309,7 @@ impl InstallProgress for CollectingProgress {
     /// Append a download progress line.
     fn on_download_progress(&self, component: &str, bytes: u64, total: u64) {
         if let Ok(mut v) = self.lines.lock() {
-            let pct = if total > 0 { bytes * 100 / total } else { 0 };
+            let pct = (bytes * 100).checked_div(total).unwrap_or(0);
             // Update the last line rather than spamming.
             let line = format!("  downloading {component}: {pct}%");
             if let Some(last) = v.last_mut() {

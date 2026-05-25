@@ -203,7 +203,7 @@ async fn validate_mcp_token(
                      FROM identity_keys
                      WHERE pubkey_fingerprint = ?1 AND is_active = 1",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let row = stmt
                 .query_row(rusqlite::params![kid], |row| {
                     Ok((
@@ -214,7 +214,7 @@ async fn validate_mcp_token(
                     ))
                 })
                 .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             Ok(row)
         })
         .await
@@ -251,7 +251,7 @@ async fn validate_mcp_token(
     let revocation_row = state
         .db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, is_active, name FROM mcp_tokens
                  WHERE jti = ?1 AND user_id = ?2",
                 rusqlite::params![jti, uid],
@@ -263,8 +263,7 @@ async fn validate_mcp_token(
                     ))
                 },
             )
-            .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .optional()?)
         })
         .await
         .map_err(|e| format!("revocation check failed (fail closed): {}", e))?;
@@ -320,7 +319,7 @@ async fn validate_mcp_token(
                     "UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE jti = ?1",
                     rusqlite::params![jti_w],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
                 Ok(())
             })
             .await;
@@ -604,7 +603,7 @@ pub async fn auth_middleware(
         let identity_result = state
             .db
             .read(move |conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT id, host_label, agent_label, model_label
                      FROM identities WHERE identity_hash = ?1",
                     params![identity_hash_for_lookup],
@@ -617,8 +616,7 @@ pub async fn auth_middleware(
                         ))
                     },
                 )
-                .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                .optional()?)
             })
             .await;
 
@@ -638,7 +636,7 @@ pub async fn auth_middleware(
                              request_count = request_count + 1 WHERE identity_hash = ?1",
                             params![hash],
                         )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                        ?;
                         Ok(())
                     })
                     .await;
@@ -695,16 +693,13 @@ pub async fn auth_middleware(
                              VALUES (?1, ?2, ?3, ?4, ?5)",
                             params![ik_id, hash_for_insert, host_ins, agent_ins, model_ins],
                         )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                        ?;
                         let id = conn
                             .query_row(
                                 "SELECT id FROM identities WHERE identity_hash = ?1",
                                 params![hash_for_select],
                                 |row| row.get::<_, i64>(0),
-                            )
-                            .map_err(|e| {
-                                kleos_lib::EngError::DatabaseMessage(e.to_string())
-                            })?;
+                            )?;
                         Ok(id)
                     })
                     .await;
@@ -753,7 +748,7 @@ pub async fn auth_middleware(
                     "UPDATE identity_keys SET last_seen_at = datetime('now') WHERE id = ?1",
                     params![ik_id],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
                 Ok(())
             })
             .await;
@@ -916,8 +911,7 @@ pub async fn auth_middleware(
         let key_count: i64 = match state
             .db
             .read(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                Ok(conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))?)
             })
             .await
         {
@@ -1017,7 +1011,7 @@ async fn resolve_identity_by_id(
     let row = state
         .db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT i.identity_key_id, i.identity_hash, i.host_label, i.agent_label,
                         i.model_label, ik.user_id, ik.tier, ik.scopes
                  FROM identities i
@@ -1036,8 +1030,7 @@ async fn resolve_identity_by_id(
                         row.get::<_, Option<String>>(7)?,
                     ))
                 },
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .map_err(|e| e.to_string())?;

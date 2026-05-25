@@ -10,9 +10,7 @@ use crate::{EngError, Result};
 
 type HmacSha256 = Hmac<Sha256>;
 
-// ---------------------------------------------------------------------------
-// Signature algorithm enum
-// ---------------------------------------------------------------------------
+// --- Signature algorithm enum ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureAlgo {
@@ -39,9 +37,7 @@ impl SignatureAlgo {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Auth tier
-// ---------------------------------------------------------------------------
+// --- Auth tier ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthTier {
@@ -62,9 +58,7 @@ impl AuthTier {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Canonical envelope
-// ---------------------------------------------------------------------------
+// --- Canonical envelope ---
 
 pub struct CanonicalEnvelope {
     method: String,
@@ -130,9 +124,7 @@ impl CanonicalEnvelope {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signature verification
-// ---------------------------------------------------------------------------
+// --- Signature verification ---
 
 pub fn verify_signature(
     algo: SignatureAlgo,
@@ -231,9 +223,7 @@ fn decode_pem_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
         .map_err(|e| EngError::InvalidInput(format!("PEM base64 decode failed: {e}")))
 }
 
-// ---------------------------------------------------------------------------
-// HKDF identity derivation
-// ---------------------------------------------------------------------------
+// --- HKDF identity derivation ---
 
 pub fn derive_identity_hash(pubkey_der: &[u8], host: &str, agent: &str, model: &str) -> [u8; 16] {
     use hkdf::Hkdf;
@@ -249,9 +239,7 @@ pub fn identity_hash_hex(pubkey_der: &[u8], host: &str, agent: &str, model: &str
     hex::encode(derive_identity_hash(pubkey_der, host, agent, model))
 }
 
-// ---------------------------------------------------------------------------
-// Replay guard
-// ---------------------------------------------------------------------------
+// --- Replay guard ---
 
 const REPLAY_WINDOW_MS: u64 = 60_000;
 const NONCE_TTL: Duration = Duration::from_secs(90);
@@ -327,9 +315,7 @@ impl Default for ReplayGuard {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Session tokens
-// ---------------------------------------------------------------------------
+// --- Session tokens ---
 
 /// Default sliding-window TTL: each verified session call extends the token
 /// expiry by this much. Overridable via KLEOS_SESSION_TTL_SECS.
@@ -557,9 +543,7 @@ fn parse_positive_secs_env(var: &str, default_secs: u64) -> Duration {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Timestamp check (shared between replay guard and standalone use)
-// ---------------------------------------------------------------------------
+// --- Timestamp check (shared between replay guard and standalone use) ---
 
 pub fn check_timestamp(ts_ms: u64) -> Result<()> {
     let now_ms = SystemTime::now()
@@ -576,9 +560,7 @@ pub fn check_timestamp(ts_ms: u64) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Nonce generation
-// ---------------------------------------------------------------------------
+// --- Nonce generation ---
 
 pub fn generate_nonce() -> String {
     let mut buf = [0u8; 12];
@@ -587,9 +569,7 @@ pub fn generate_nonce() -> String {
     hex::encode(buf)
 }
 
-// ---------------------------------------------------------------------------
-// Client-side request signing
-// ---------------------------------------------------------------------------
+// --- Client-side request signing ---
 
 enum SigningBackend {
     Ed25519(ed25519_dalek::SigningKey),
@@ -1098,9 +1078,7 @@ fn dirs_for_key_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

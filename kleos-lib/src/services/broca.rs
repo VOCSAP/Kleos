@@ -219,26 +219,22 @@ pub fn narrate_from_template(action: &str, payload: &serde_json::Value) -> Optio
 const ACTION_COLUMNS: &str =
     "id, agent, service, action, payload, narrative, axon_event_id, user_id, created_at";
 
-/// Converts a `rusqlite::Error` into the crate-level `EngError`.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Map a sqlite `Row` returned by an `ACTION_COLUMNS` SELECT into an
 /// [`ActionEntry`]. Column offsets must match `ACTION_COLUMNS` exactly.
 fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
-    let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
+    let payload_str: String = row.get(4)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
     Ok(ActionEntry {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        agent: row.get(1).map_err(rusqlite_to_eng_error)?,
-        service: row.get(2).map_err(rusqlite_to_eng_error)?,
-        action: row.get(3).map_err(rusqlite_to_eng_error)?,
+        id: row.get(0)?,
+        agent: row.get(1)?,
+        service: row.get(2)?,
+        action: row.get(3)?,
         payload,
-        narrative: row.get(5).map_err(rusqlite_to_eng_error)?,
-        axon_event_id: row.get(6).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(7).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(8).map_err(rusqlite_to_eng_error)?,
+        narrative: row.get(5)?,
+        axon_event_id: row.get(6)?,
+        user_id: row.get(7)?,
+        created_at: row.get(8)?,
     })
 }
 
@@ -288,7 +284,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
                     user_id,
                 ],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -315,7 +311,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
                     "UPDATE broca_actions SET axon_event_id = ?1 WHERE id = ?2",
                     rusqlite::params![axon_id, action_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 Ok(())
             })
             .await;
@@ -384,11 +380,11 @@ pub async fn query_actions(
     params_vec.push(rusqlite::types::Value::Integer(offset as i64));
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let params = rusqlite::params_from_iter(params_vec.iter().cloned());
-        let mut rows = stmt.query(params).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(params)?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             results.push(row_to_action_entry(row)?);
         }
         Ok(results)
@@ -405,13 +401,13 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
     let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("action {}", id)))?;
         row_to_action_entry(row)
     })
@@ -439,7 +435,7 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                     ))
                 },
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         // by_service
         let mut by_service = Vec::new();
@@ -448,14 +444,14 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                 "SELECT service, COUNT(*) as cnt FROM broca_actions \
                  WHERE user_id = ?1 GROUP BY service ORDER BY cnt DESC LIMIT 20",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        while let Some(row) = rows.next()? {
             by_service.push(StatBreakdown {
-                name: row.get(0).map_err(rusqlite_to_eng_error)?,
-                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+                name: row.get(0)?,
+                count: row.get(1)?,
             });
         }
 
@@ -466,14 +462,14 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                 "SELECT agent, COUNT(*) as cnt FROM broca_actions \
                  WHERE user_id = ?1 GROUP BY agent ORDER BY cnt DESC LIMIT 20",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        while let Some(row) = rows.next()? {
             by_agent.push(StatBreakdown {
-                name: row.get(0).map_err(rusqlite_to_eng_error)?,
-                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+                name: row.get(0)?,
+                count: row.get(1)?,
             });
         }
 
@@ -484,14 +480,14 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
                 "SELECT action, COUNT(*) as cnt FROM broca_actions \
                  WHERE user_id = ?1 GROUP BY action ORDER BY cnt DESC LIMIT 20",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        while let Some(row) = rows.next()? {
             by_action.push(StatBreakdown {
-                name: row.get(0).map_err(rusqlite_to_eng_error)?,
-                count: row.get(1).map_err(rusqlite_to_eng_error)?,
+                name: row.get(0)?,
+                count: row.get(1)?,
             });
         }
 
@@ -811,7 +807,7 @@ pub async fn get_or_narrate_action(
             "UPDATE broca_actions SET narrative = ?1 WHERE id = ?2",
             rusqlite::params![narrative_clone, action_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -834,11 +830,11 @@ async fn get_action_for_narrate(
     let sql = format!("SELECT {ACTION_COLUMNS} FROM broca_actions WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![action_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        match rows.next()? {
             Some(row) => row_to_action_entry(row).map(Some),
             None => Ok(None),
         }

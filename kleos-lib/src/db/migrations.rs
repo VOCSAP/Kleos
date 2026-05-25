@@ -15,9 +15,7 @@ use tracing::info;
 // only if the same logical change applies to per-tenant data.
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Migration descriptor
-// ---------------------------------------------------------------------------
+// --- Migration descriptor ---
 
 /// A single schema migration with an optional inverse.
 ///
@@ -36,9 +34,7 @@ pub struct Migration {
     pub transactional: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Migration plan (returned by dry_run and migrate_down)
-// ---------------------------------------------------------------------------
+// --- Migration plan (returned by dry_run and migrate_down) ---
 
 /// A single step in a computed migration plan (used by dry-run and down paths).
 #[derive(Debug, Clone, Serialize)]
@@ -48,9 +44,7 @@ pub struct MigrationPlan {
     pub direction: String,
 }
 
-// ---------------------------------------------------------------------------
-// Migration status
-// ---------------------------------------------------------------------------
+// --- Migration status ---
 
 /// Current migration state of the database, including pending and revertible steps.
 #[derive(Debug, Serialize)]
@@ -70,665 +64,175 @@ pub struct MigrationInfo {
     pub has_down: bool,
 }
 
-// ---------------------------------------------------------------------------
-// The canonical migration list
-// ---------------------------------------------------------------------------
+// --- The canonical migration list ---
+
+/// Shorthand for Migration entries in the registry.
+macro_rules! migration {
+    // No down, not transactional (most common)
+    ($ver:expr, $desc:expr, $up:expr) => {
+        Migration { version: $ver, description: $desc, up: $up, down: None, transactional: false }
+    };
+    // No down, transactional
+    ($ver:expr, $desc:expr, $up:expr, tx) => {
+        Migration { version: $ver, description: $desc, up: $up, down: None, transactional: true }
+    };
+    // With down, not transactional
+    ($ver:expr, $desc:expr, $up:expr, down: $down:expr) => {
+        Migration { version: $ver, description: $desc, up: $up, down: Some($down), transactional: false }
+    };
+    // With down, transactional
+    ($ver:expr, $desc:expr, $up:expr, down: $down:expr, tx) => {
+        Migration { version: $ver, description: $desc, up: $up, down: Some($down), transactional: true }
+    };
+}
 
 pub static MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        description: "create_tables",
-        up: |conn| super::schema::create_tables(conn),
-        // Dropping the initial schema would destroy all data; no inverse.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 2,
-        description: "add_missing_indexes",
-        up: run_migration_add_missing_indexes,
-        // Indexes are covered by CREATE INDEX IF NOT EXISTS; dropping them
-        // individually is safe, but the sheer number makes the inverse
-        // fragile and the original DB lacked them, so no inverse needed.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 3,
-        description: "add_pagerank_tables",
-        up: run_migration_pagerank_tables,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 4,
-        description: "thymus_tenant_scope",
-        up: run_migration_thymus_tenant_scope,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 5,
-        description: "app_state_table",
-        up: run_migration_app_state_table,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 6,
-        description: "backfill_thymus_user_id",
-        up: run_migration_backfill_thymus_user_id,
-        // Data update; original values cannot be recovered.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 7,
-        description: "vector_sync_pending",
-        up: run_migration_vector_sync_pending,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 8,
-        description: "add_community_id",
-        up: run_migration_add_community_id,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 9,
-        description: "drop_is_inference",
-        up: run_migration_drop_is_inference,
-        // DROP COLUMN is destructive; there is no way to recover the
-        // original data without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 10,
-        description: "syntheos_services",
-        up: run_migration_syntheos_services,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 11,
-        description: "brain_patterns",
-        up: run_migration_brain_patterns,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 12,
-        description: "approvals",
-        up: run_migration_approvals,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 13,
-        description: "error_events",
-        up: run_migration_error_events,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 14,
-        description: "brain_meta",
-        up: run_migration_brain_meta,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 15,
-        description: "brain_pca_models",
-        up: run_migration_pca_models,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 16,
-        description: "brain_dream_runs",
-        up: run_migration_brain_dream_runs,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 17,
-        description: "cred_tables",
-        up: run_migration_cred_tables,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 18,
-        description: "api_key_hash_unique",
-        up: run_migration_api_key_hash_unique,
-        // The UNIQUE index was added conditionally; dropping it is safe,
-        // but we leave it None because we cannot know which DBs skipped it.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 19,
-        description: "api_key_hash_version",
-        up: run_migration_api_key_hash_version,
-        // Purely additive ALTER TABLE ADD COLUMN. SQLite 3.35+ DROP COLUMN
-        // is the safe inverse because the column has no constraints that
-        // would require a full table rebuild.
-        down: Some(down_migration_api_key_hash_version),
-        transactional: true,
-    },
-    Migration {
-        version: 20,
-        description: "link_covering_indexes",
-        up: run_migration_link_covering_indexes,
-        // Two covering indexes; DROP INDEX is the clean inverse.
-        down: Some(down_migration_link_covering_indexes),
-        transactional: true,
-    },
-    Migration {
-        version: 21,
-        description: "upload_sessions",
-        up: run_migration_upload_sessions,
-        // Two new tables with no FK references from other tables; DROP TABLE
-        // is the clean inverse.
-        down: Some(down_migration_upload_sessions),
-        transactional: true,
-    },
-    Migration {
-        version: 22,
-        description: "service_dead_letters",
-        up: run_migration_service_dead_letters,
-        // New table with no FK references; DROP TABLE is the clean inverse.
-        down: Some(down_migration_service_dead_letters),
-        transactional: true,
-    },
-    Migration {
-        version: 23,
-        description: "memories_list_covering_index",
-        up: run_migration_memories_list_covering_index,
-        down: Some(down_migration_memories_list_covering_index),
-        transactional: true,
-    },
-    Migration {
-        version: 24,
-        description: "commerce_tables",
-        up: run_migration_commerce_tables,
-        down: Some(down_migration_commerce_tables),
-        transactional: true,
-    },
-    Migration {
-        version: 25,
-        description: "drop_user_id_memory_core",
-        up: run_migration_drop_user_id_memory_core,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 26,
-        description: "drop_user_id_scratchpad",
-        up: run_migration_drop_user_id_scratchpad,
-        // 12-step table rebuild; no safe inverse.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 27,
-        description: "drop_user_id_sessions",
-        up: run_migration_drop_user_id_sessions,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 28,
-        description: "drop_user_id_chiasm",
-        up: run_migration_drop_user_id_chiasm,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 29,
-        description: "drop_user_id_approvals",
-        up: run_migration_drop_user_id_approvals,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 30,
-        description: "drop_user_id_broca",
-        up: run_migration_drop_user_id_broca,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 31,
-        description: "drop_user_id_projects",
-        up: run_migration_drop_user_id_projects,
-        // 12-step table rebuild; no safe inverse.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 32,
-        description: "drop_user_id_activity",
-        up: run_migration_drop_user_id_activity,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 33,
-        description: "drop_user_id_webhooks",
-        up: run_migration_drop_user_id_webhooks,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 34,
-        description: "drop_user_id_axon",
-        up: run_migration_drop_user_id_axon,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 35,
-        description: "drop_user_id_growth",
-        up: run_migration_drop_user_id_growth,
-        // DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 36,
-        description: "drop_user_id_ingestion_hashes",
-        up: run_migration_drop_user_id_ingestion_hashes,
-        // DROP COLUMN / PK rebuild is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 37,
-        description: "drop_user_id_loom",
-        up: run_migration_drop_user_id_loom,
-        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 38,
-        description: "drop_user_id_graph",
-        up: run_migration_drop_user_id_graph,
-        // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 39,
-        description: "drop_user_id_thymus",
-        up: run_migration_drop_user_id_thymus,
-        // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 40,
-        description: "drop_user_id_portability",
-        up: run_migration_drop_user_id_portability,
-        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 41,
-        description: "drop_user_id_intelligence",
-        up: run_migration_drop_user_id_intelligence,
-        // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 42,
-        description: "drop_user_id_skills",
-        up: run_migration_drop_user_id_skills,
-        // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 43,
-        description: "drop_user_id_episodes",
-        up: run_migration_drop_user_id_episodes,
-        // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
-        down: None,
-        transactional: false,
-    },
+    // Dropping the initial schema would destroy all data; no inverse.
+    migration!(1, "create_tables", |conn| super::schema::create_tables(conn)),
+    migration!(2, "add_missing_indexes", run_migration_add_missing_indexes),
+    migration!(3, "add_pagerank_tables", run_migration_pagerank_tables),
+    migration!(4, "thymus_tenant_scope", run_migration_thymus_tenant_scope),
+    migration!(5, "app_state_table", run_migration_app_state_table),
+    // Data update; original values cannot be recovered.
+    migration!(6, "backfill_thymus_user_id", run_migration_backfill_thymus_user_id),
+    migration!(7, "vector_sync_pending", run_migration_vector_sync_pending),
+    migration!(8, "add_community_id", run_migration_add_community_id),
+    // DROP COLUMN is destructive; there is no way to recover the original data without a backup.
+    migration!(9, "drop_is_inference", run_migration_drop_is_inference),
+    migration!(10, "syntheos_services", run_migration_syntheos_services),
+    migration!(11, "brain_patterns", run_migration_brain_patterns),
+    migration!(12, "approvals", run_migration_approvals),
+    migration!(13, "error_events", run_migration_error_events),
+    migration!(14, "brain_meta", run_migration_brain_meta),
+    migration!(15, "brain_pca_models", run_migration_pca_models),
+    migration!(16, "brain_dream_runs", run_migration_brain_dream_runs),
+    migration!(17, "cred_tables", run_migration_cred_tables),
+    // The UNIQUE index was added conditionally; we cannot know which DBs skipped it.
+    migration!(18, "api_key_hash_unique", run_migration_api_key_hash_unique),
+    migration!(19, "api_key_hash_version", run_migration_api_key_hash_version, down: down_migration_api_key_hash_version, tx),
+    migration!(20, "link_covering_indexes", run_migration_link_covering_indexes, down: down_migration_link_covering_indexes, tx),
+    migration!(21, "upload_sessions", run_migration_upload_sessions, down: down_migration_upload_sessions, tx),
+    migration!(22, "service_dead_letters", run_migration_service_dead_letters, down: down_migration_service_dead_letters, tx),
+    migration!(23, "memories_list_covering_index", run_migration_memories_list_covering_index, down: down_migration_memories_list_covering_index, tx),
+    migration!(24, "commerce_tables", run_migration_commerce_tables, down: down_migration_commerce_tables, tx),
+    // DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(25, "drop_user_id_memory_core", run_migration_drop_user_id_memory_core),
+    // 12-step table rebuild; no safe inverse.
+    migration!(26, "drop_user_id_scratchpad", run_migration_drop_user_id_scratchpad),
+    // DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(27, "drop_user_id_sessions", run_migration_drop_user_id_sessions),
+    migration!(28, "drop_user_id_chiasm", run_migration_drop_user_id_chiasm),
+    migration!(29, "drop_user_id_approvals", run_migration_drop_user_id_approvals),
+    migration!(30, "drop_user_id_broca", run_migration_drop_user_id_broca),
+    // 12-step table rebuild; no safe inverse.
+    migration!(31, "drop_user_id_projects", run_migration_drop_user_id_projects),
+    // DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(32, "drop_user_id_activity", run_migration_drop_user_id_activity),
+    migration!(33, "drop_user_id_webhooks", run_migration_drop_user_id_webhooks),
+    migration!(34, "drop_user_id_axon", run_migration_drop_user_id_axon),
+    migration!(35, "drop_user_id_growth", run_migration_drop_user_id_growth),
+    // DROP COLUMN / PK rebuild is destructive; no safe inverse without a backup.
+    migration!(36, "drop_user_id_ingestion_hashes", run_migration_drop_user_id_ingestion_hashes),
+    // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(37, "drop_user_id_loom", run_migration_drop_user_id_loom),
+    // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(38, "drop_user_id_graph", run_migration_drop_user_id_graph),
+    // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
+    migration!(39, "drop_user_id_thymus", run_migration_drop_user_id_thymus),
+    // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(40, "drop_user_id_portability", run_migration_drop_user_id_portability),
+    migration!(41, "drop_user_id_intelligence", run_migration_drop_user_id_intelligence),
+    // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
+    migration!(42, "drop_user_id_skills", run_migration_drop_user_id_skills),
+    // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
+    migration!(43, "drop_user_id_episodes", run_migration_drop_user_id_episodes),
     // C-R3-004: re-add user_id to monolith projects + broca_actions so
     // single-DB deployments are safe even when tenant sharding is disabled.
     // Tenant shards remain user_id-free; only the monolith carries these.
-    Migration {
-        version: 44,
-        description: "readd_user_id_projects",
-        up: run_migration_readd_user_id_projects,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 45,
-        description: "readd_user_id_broca",
-        up: run_migration_readd_user_id_broca,
-        down: None,
-        transactional: false,
-    },
+    migration!(44, "readd_user_id_projects", run_migration_readd_user_id_projects),
+    migration!(45, "readd_user_id_broca", run_migration_readd_user_id_broca),
     // Sparkling Fairy Stage 1: identity tables for PIV-Everywhere auth.
-    Migration {
-        version: 46,
-        description: "identity_keys_and_identities",
-        up: run_migration_identity_tables,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 47,
-        description: "audit_log_identity_columns",
-        up: run_migration_audit_identity_columns,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 48,
-        description: "drop_api_keys_agent_fk",
-        up: run_migration_drop_api_keys_agent_fk,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 49,
-        description: "supervisor_injections",
-        up: run_migration_supervisor_injections,
-        down: Some(down_migration_supervisor_injections),
-        transactional: true,
-    },
-    Migration {
-        version: 50,
-        description: "gate_requests_session_id",
-        up: run_migration_gate_requests_session_id,
-        down: Some(down_migration_gate_requests_session_id),
-        transactional: true,
-    },
-    Migration {
-        version: 51,
-        description: "memory_chunks",
-        up: run_migration_memory_chunks,
-        down: Some(down_migration_memory_chunks),
-        transactional: true,
-    },
-    Migration {
-        version: 52,
-        description: "activity_log_table",
-        up: run_migration_activity_log_table,
-        down: Some(down_migration_activity_log_table),
-        transactional: true,
-    },
-    Migration {
-        version: 53,
-        description: "identity_keys_scopes",
-        up: run_migration_identity_keys_scopes,
-        down: Some(down_migration_identity_keys_scopes),
-        transactional: true,
-    },
-    Migration {
-        version: 54,
-        description: "tool_manifests",
-        up: run_migration_tool_manifests,
-        down: Some(down_migration_tool_manifests),
-        transactional: true,
-    },
-    Migration {
-        version: 55,
-        description: "handoffs_global",
-        up: run_migration_handoffs_global,
-        down: Some(down_migration_handoffs_global),
-        transactional: true,
-    },
+    migration!(46, "identity_keys_and_identities", run_migration_identity_tables, tx),
+    migration!(47, "audit_log_identity_columns", run_migration_audit_identity_columns),
+    migration!(48, "drop_api_keys_agent_fk", run_migration_drop_api_keys_agent_fk),
+    migration!(49, "supervisor_injections", run_migration_supervisor_injections, down: down_migration_supervisor_injections, tx),
+    migration!(50, "gate_requests_session_id", run_migration_gate_requests_session_id, down: down_migration_gate_requests_session_id, tx),
+    migration!(51, "memory_chunks", run_migration_memory_chunks, down: down_migration_memory_chunks, tx),
+    migration!(52, "activity_log_table", run_migration_activity_log_table, down: down_migration_activity_log_table, tx),
+    migration!(53, "identity_keys_scopes", run_migration_identity_keys_scopes, down: down_migration_identity_keys_scopes, tx),
+    migration!(54, "tool_manifests", run_migration_tool_manifests, down: down_migration_tool_manifests, tx),
+    migration!(55, "handoffs_global", run_migration_handoffs_global, down: down_migration_handoffs_global, tx),
     // Adds soft-delete support to users and a one-time invite token table
     // for controlled FIDO2 enrollment of new coworkers.
-    Migration {
-        version: 56,
-        description: "user_active_and_enrollment_invites",
-        up: run_migration_user_active_and_invites,
-        down: Some(down_migration_user_active_and_invites),
-        transactional: true,
-    },
-    Migration {
-        version: 57,
-        description: "skill_dispatch_configs",
-        up: run_migration_skill_dispatch_configs,
-        down: Some(down_migration_skill_dispatch_configs),
-        transactional: true,
-    },
-    Migration {
-        version: 58,
-        description: "api_key_hash_version_fixup",
-        up: run_migration_api_key_hash_version_fixup,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 59,
-        description: "broca_narrative_columns",
-        up: run_migration_broca_narrative_columns,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 60,
-        description: "chiasm_extended_fields",
-        up: run_migration_chiasm_extended_fields,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 61,
-        description: "chiasm_path_claims",
-        up: run_migration_chiasm_path_claims,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 62,
-        description: "chiasm_agent_keys",
-        up: run_migration_chiasm_agent_keys,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 63,
-        description: "handoff_atoms",
-        up: run_migration_handoff_atoms,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 64,
-        description: "readd_user_id_memory_core",
-        up: run_migration_readd_user_id_memory_core,
-        down: Some(down_migration_readd_user_id_memory_core),
-        transactional: true,
-    },
-    Migration {
-        version: 65,
-        description: "readd_user_id_webhooks",
-        up: run_migration_readd_user_id_webhooks,
-        down: Some(down_migration_readd_user_id_webhooks),
-        transactional: true,
-    },
-    Migration {
-        version: 66,
-        description: "readd_user_id_approvals",
-        up: run_migration_readd_user_id_approvals,
-        down: Some(down_migration_readd_user_id_approvals),
-        transactional: true,
-    },
+    migration!(56, "user_active_and_enrollment_invites", run_migration_user_active_and_invites, down: down_migration_user_active_and_invites, tx),
+    migration!(57, "skill_dispatch_configs", run_migration_skill_dispatch_configs, down: down_migration_skill_dispatch_configs, tx),
+    migration!(58, "api_key_hash_version_fixup", run_migration_api_key_hash_version_fixup, tx),
+    migration!(59, "broca_narrative_columns", run_migration_broca_narrative_columns, tx),
+    migration!(60, "chiasm_extended_fields", run_migration_chiasm_extended_fields, tx),
+    migration!(61, "chiasm_path_claims", run_migration_chiasm_path_claims, tx),
+    migration!(62, "chiasm_agent_keys", run_migration_chiasm_agent_keys, tx),
+    migration!(63, "handoff_atoms", run_migration_handoff_atoms, tx),
+    migration!(64, "readd_user_id_memory_core", run_migration_readd_user_id_memory_core, down: down_migration_readd_user_id_memory_core, tx),
+    migration!(65, "readd_user_id_webhooks", run_migration_readd_user_id_webhooks, down: down_migration_readd_user_id_webhooks, tx),
+    migration!(66, "readd_user_id_approvals", run_migration_readd_user_id_approvals, down: down_migration_readd_user_id_approvals, tx),
     // soma_agents carries UNIQUE(name); proper per-user isolation needs
     // UNIQUE(name, user_id), which requires the 12-step rebuild (migration 44
     // pattern). transactional:false because the rebuild toggles
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
-    Migration {
-        version: 67,
-        description: "readd_user_id_soma_agents",
-        up: run_migration_readd_user_id_soma_agents,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 68,
-        description: "readd_user_id_axon_events",
-        up: run_migration_readd_user_id_axon_events,
-        down: Some(down_migration_readd_user_id_axon_events),
-        transactional: true,
-    },
-    Migration {
-        version: 69,
-        description: "readd_user_id_chiasm_tasks",
-        up: run_migration_readd_user_id_chiasm_tasks,
-        down: Some(down_migration_readd_user_id_chiasm_tasks),
-        transactional: true,
-    },
-    Migration {
-        version: 70,
-        description: "readd_user_id_conversations",
-        up: run_migration_readd_user_id_conversations,
-        down: Some(down_migration_readd_user_id_conversations),
-        transactional: true,
-    },
-    Migration {
-        version: 71,
-        description: "readd_user_id_intelligence",
-        up: run_migration_readd_user_id_intelligence,
-        down: Some(down_migration_readd_user_id_intelligence),
-        transactional: true,
-    },
+    migration!(67, "readd_user_id_soma_agents", run_migration_readd_user_id_soma_agents),
+    migration!(68, "readd_user_id_axon_events", run_migration_readd_user_id_axon_events, down: down_migration_readd_user_id_axon_events, tx),
+    migration!(69, "readd_user_id_chiasm_tasks", run_migration_readd_user_id_chiasm_tasks, down: down_migration_readd_user_id_chiasm_tasks, tx),
+    migration!(70, "readd_user_id_conversations", run_migration_readd_user_id_conversations, down: down_migration_readd_user_id_conversations, tx),
+    migration!(71, "readd_user_id_intelligence", run_migration_readd_user_id_intelligence, down: down_migration_readd_user_id_intelligence, tx),
     // entities carries UNIQUE(name, entity_type); proper per-user isolation needs
     // UNIQUE(name, entity_type, user_id), which requires a table rebuild (the
     // reverse of migration 38). transactional:false because the rebuild toggles
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
-    Migration {
-        version: 72,
-        description: "readd_user_id_graph_entities",
-        up: run_migration_readd_user_id_graph_entities,
-        down: None,
-        transactional: false,
-    },
-    Migration {
-        version: 73,
-        description: "readd_user_id_episodes",
-        up: run_migration_readd_user_id_episodes,
-        down: Some(down_migration_readd_user_id_episodes),
-        transactional: true,
-    },
+    migration!(72, "readd_user_id_graph_entities", run_migration_readd_user_id_graph_entities),
+    migration!(73, "readd_user_id_episodes", run_migration_readd_user_id_episodes, down: down_migration_readd_user_id_episodes, tx),
     // Re-adds user_id to the remaining 5 intelligence tables that v71 skipped:
     // current_state (UNIQUE rebuild), reconsolidations, temporal_patterns,
     // digests, and memory_feedback. transactional:false because the
     // current_state rebuild toggles PRAGMA foreign_keys, which SQLite forbids
     // inside a SAVEPOINT.
-    Migration {
-        version: 74,
-        description: "readd_user_id_intelligence_remainder",
-        up: run_migration_readd_user_id_intelligence_remainder,
-        down: None,
-        transactional: false,
-    },
+    migration!(74, "readd_user_id_intelligence_remainder", run_migration_readd_user_id_intelligence_remainder),
     // Re-adds user_id to the 5 thymus tables that migration 39 dropped:
     // rubrics (UNIQUE rebuild -- index changes from name to (user_id, name)),
     // evaluations, quality_metrics, session_quality, behavioral_drift_events.
     // transactional:false because the rubrics rebuild toggles PRAGMA
     // foreign_keys (evaluations holds a FK to rubrics.id) and SQLite forbids
     // that inside a SAVEPOINT.
-    Migration {
-        version: 75,
-        description: "readd_user_id_thymus",
-        up: run_migration_readd_user_id_thymus,
-        down: None,
-        transactional: false,
-    },
+    migration!(75, "readd_user_id_thymus", run_migration_readd_user_id_thymus),
     // Re-adds user_id to entity_cooccurrences that v38 dropped.
     // structured_facts already got user_id from v64 (memory-core).
     // Simple ADD COLUMN -- UNIQUE(entity_a_id, entity_b_id) does not need
     // user_id since co-occurrence pairs are global but queried per-user via
     // entity joins.
-    Migration {
-        version: 76,
-        description: "readd_user_id_graph_remainder",
-        up: run_migration_readd_user_id_graph_remainder,
-        down: None,
-        transactional: false,
-    },
+    migration!(76, "readd_user_id_graph_remainder", run_migration_readd_user_id_graph_remainder),
     // Re-adds user_id to user_preferences that v40 dropped via REBUILD.
     // UNIQUE constraint changes from (key) back to (user_id, key).
     // Also re-adds the domain+preference+user_id UNIQUE INDEX that v40 dropped.
     // transactional:false because the rebuild toggles PRAGMA foreign_keys.
-    Migration {
-        version: 77,
-        description: "readd_user_id_user_preferences",
-        up: run_migration_readd_user_id_user_preferences,
-        down: None,
-        transactional: false,
-    },
+    migration!(77, "readd_user_id_user_preferences", run_migration_readd_user_id_user_preferences),
     // Re-adds user_id to skill_records that v42 dropped via REBUILD.
     // UNIQUE changes from (name, agent, version) to (name, agent, version, user_id).
     // FTS triggers must be dropped before the rename and recreated after.
     // transactional:false because the rebuild toggles PRAGMA foreign_keys.
-    Migration {
-        version: 78,
-        description: "readd_user_id_skills",
-        up: run_migration_readd_user_id_skills,
-        down: None,
-        transactional: false,
-    },
+    migration!(78, "readd_user_id_skills", run_migration_readd_user_id_skills),
     // Re-adds user_id to brain_edges that v38 dropped.
-    // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not
-    // include user_id.
-    Migration {
-        version: 79,
-        description: "readd_user_id_brain_edges",
-        up: run_migration_readd_user_id_brain_edges,
-        down: None,
-        transactional: false,
-    },
+    // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not include user_id.
+    migration!(79, "readd_user_id_brain_edges", run_migration_readd_user_id_brain_edges),
     // C3: convert legacy JSON-array scopes in identity_keys.scopes to the
     // canonical CSV format used by api_keys.scopes. Rows whose value is
     // already CSV (or empty) are left alone -- the migration is idempotent.
     // No table rebuild: the column remains TEXT NOT NULL and the v53
     // default lingers on disk for any column never explicitly inserted,
     // but production paths always pass a value via enroll_handler.
-    Migration {
-        version: 80,
-        description: "identity_keys_scopes_json_to_csv",
-        up: run_migration_identity_keys_scopes_json_to_csv,
-        down: None,
-        transactional: true,
-    },
-    Migration {
-        version: 81,
-        description: "mcp_tokens",
-        up: run_migration_mcp_tokens,
-        down: None,
-        transactional: true,
-    },
+    migration!(80, "identity_keys_scopes_json_to_csv", run_migration_identity_keys_scopes_json_to_csv, tx),
+    migration!(81, "mcp_tokens", run_migration_mcp_tokens, tx),
 ];
 
-// ---------------------------------------------------------------------------
-// Legacy version constants (kept for compatibility with existing call sites)
-// ---------------------------------------------------------------------------
+// --- Legacy version constants (kept for compatibility with existing call sites) ---
 
 /// Version number for the initial schema creation migration.
 const MIGRATION_CREATE_SCHEMA: i64 = 1;
@@ -909,9 +413,7 @@ const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
 /// Version number for the MCP direct-auth token revocation table.
 const MIGRATION_MCP_TOKENS: i64 = 81;
 
-// ---------------------------------------------------------------------------
-// Up path (unchanged behavior)
-// ---------------------------------------------------------------------------
+// --- Up path (unchanged behavior) ---
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
@@ -923,16 +425,14 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         ",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     let current_version: i64 = conn
         .query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_version",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if current_version < MIGRATION_CREATE_SCHEMA {
         info!("Running migration 1: create_tables");
@@ -1588,8 +1088,7 @@ fn record_migration(conn: &rusqlite::Connection, version: i64, name: &str) -> Re
     conn.execute(
         "INSERT INTO schema_version (version, name) VALUES (?1, ?2)",
         rusqlite::params![version, name],
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1598,14 +1097,11 @@ fn remove_migration_record(conn: &rusqlite::Connection, version: u32) -> Result<
     conn.execute(
         "DELETE FROM schema_version WHERE version = ?1",
         rusqlite::params![version],
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Down path
-// ---------------------------------------------------------------------------
+// --- Down path ---
 
 /// Walk the migration list down from `current_version` to `target_version`
 /// (exclusive), building a plan of what would be reverted.
@@ -1650,13 +1146,12 @@ pub async fn migrate_down(
     // Read current version.
     let current_version: u32 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .map(|v| v as u32)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            .map(|v| v as u32)?)
         })
         .await?;
 
@@ -1682,12 +1177,10 @@ pub async fn migrate_down(
         db.write(move |conn| {
             if transactional {
                 let sp_name = format!("sp_down_{version}");
-                conn.execute_batch(&format!("SAVEPOINT {sp_name}"))
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                conn.execute_batch(&format!("SAVEPOINT {sp_name}"))?;
                 match down_fn(conn) {
                     Ok(()) => {
-                        conn.execute_batch(&format!("RELEASE {sp_name}"))
-                            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                        conn.execute_batch(&format!("RELEASE {sp_name}"))?;
                     }
                     Err(e) => {
                         let _ = conn.execute_batch(&format!("ROLLBACK TO {sp_name}"));
@@ -1713,13 +1206,12 @@ pub async fn migrate_down(
 pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
     let current_version: u32 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_version",
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .map(|v| v as u32)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            .map(|v| v as u32)?)
         })
         .await?;
 
@@ -1750,9 +1242,7 @@ pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Up migration implementations
-// ---------------------------------------------------------------------------
+// --- Up migration implementations ---
 
 /// Migration 2: adds missing secondary indexes to all core tables.
 fn run_migration_add_missing_indexes(conn: &rusqlite::Connection) -> Result<()> {
@@ -1783,8 +1273,7 @@ fn run_migration_add_missing_indexes(conn: &rusqlite::Connection) -> Result<()> 
         -- Composite indexes for common query patterns
         CREATE INDEX IF NOT EXISTS idx_memories_search_composite ON memories(user_id, is_forgotten, is_latest, category);
         ",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1808,8 +1297,7 @@ fn run_migration_pagerank_tables(conn: &rusqlite::Connection) -> Result<()> {
             last_refresh INTEGER NOT NULL DEFAULT 0
         );
         ",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1830,8 +1318,7 @@ fn run_migration_thymus_tenant_scope(conn: &rusqlite::Connection) -> Result<()> 
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);
          CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1843,8 +1330,7 @@ fn run_migration_app_state_table(conn: &rusqlite::Connection) -> Result<()> {
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1853,13 +1339,11 @@ fn run_migration_backfill_thymus_user_id(conn: &rusqlite::Connection) -> Result<
     conn.execute(
         "UPDATE session_quality SET user_id = 1 WHERE user_id = 0",
         [],
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     conn.execute(
         "UPDATE behavioral_drift_events SET user_id = 1 WHERE user_id = 0",
         [],
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1882,8 +1366,7 @@ fn run_migration_vector_sync_pending(conn: &rusqlite::Connection) -> Result<()> 
         CREATE INDEX IF NOT EXISTS idx_vector_sync_user
             ON vector_sync_pending(user_id);
         ",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1893,8 +1376,7 @@ fn run_migration_add_community_id(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_memories_community \
             ON memories(community_id) WHERE community_id IS NOT NULL;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1907,11 +1389,9 @@ fn run_migration_drop_is_inference(conn: &rusqlite::Connection) -> Result<()> {
             "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
             rusqlite::params!["is_inference"],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if exists > 0 {
-        conn.execute("ALTER TABLE memories DROP COLUMN is_inference", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE memories DROP COLUMN is_inference", [])?;
         info!("Dropped memories.is_inference column");
     }
     Ok(())
@@ -1921,8 +1401,7 @@ fn run_migration_drop_is_inference(conn: &rusqlite::Connection) -> Result<()> {
 /// the async variant exactly by running the shared SYNTHEOS_SERVICES_SQL
 /// const through execute_batch.
 fn run_migration_syntheos_services(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch(crate::db::schema_sql::SYNTHEOS_SERVICES_SQL)
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch(crate::db::schema_sql::SYNTHEOS_SERVICES_SQL)?;
     Ok(())
 }
 
@@ -1957,8 +1436,7 @@ fn run_migration_brain_patterns(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_brain_edges_target ON brain_edges(target_id);
         CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);
         ",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -1984,8 +1462,7 @@ fn run_migration_approvals(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_id);
         CREATE INDEX IF NOT EXISTS idx_approvals_user_status ON approvals(user_id, status);
         ",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2001,12 +1478,10 @@ fn add_column_if_not_exists(
         table
     );
     let exists: i64 = conn
-        .query_row(&check_sql, rusqlite::params![column], |row| row.get(0))
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .query_row(&check_sql, rusqlite::params![column], |row| row.get(0))?;
     if exists == 0 {
         let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
-        conn.execute(&alter_sql, [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(&alter_sql, [])?;
         info!("Added column {}.{}", table, column);
     }
     Ok(())
@@ -2027,8 +1502,7 @@ fn run_migration_error_events(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_error_events_level ON error_events(level);
         CREATE INDEX IF NOT EXISTS idx_error_events_source ON error_events(source);
         CREATE INDEX IF NOT EXISTS idx_error_events_created_at ON error_events(created_at);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2039,8 +1513,7 @@ fn run_migration_brain_meta(conn: &rusqlite::Connection) -> Result<()> {
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2056,8 +1529,7 @@ fn run_migration_pca_models(conn: &rusqlite::Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_pca_models_dims
             ON brain_pca_models(source_dim, target_dim);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2080,8 +1552,7 @@ fn run_migration_brain_dream_runs(conn: &rusqlite::Connection) -> Result<()> {
             ON brain_dream_runs(user_id);
         CREATE INDEX IF NOT EXISTS idx_brain_dream_runs_started
             ON brain_dream_runs(started_at);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2139,8 +1610,7 @@ fn run_migration_cred_tables(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_cred_secrets_user ON cred_secrets(user_id);
         CREATE INDEX IF NOT EXISTS idx_cred_audit_user ON cred_audit(user_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_cred_agent_keys_user ON cred_agent_keys(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2167,8 +1637,7 @@ fn run_migration_api_key_hash_unique(conn: &rusqlite::Connection) -> Result<()> 
 
     conn.execute_batch(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2193,11 +1662,9 @@ fn down_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'hash_version'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if exists > 0 {
-        conn.execute_batch("ALTER TABLE api_keys DROP COLUMN hash_version;")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute_batch("ALTER TABLE api_keys DROP COLUMN hash_version;")?;
         info!("Dropped api_keys.hash_version column (migration 19 down)");
     }
     Ok(())
@@ -2214,8 +1681,7 @@ fn run_migration_link_covering_indexes(conn: &rusqlite::Connection) -> Result<()
              ON memory_links(source_id, target_id, similarity, type);
          CREATE INDEX IF NOT EXISTS idx_links_target_covering \
              ON memory_links(target_id, source_id, similarity, type);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2224,8 +1690,7 @@ fn down_migration_link_covering_indexes(conn: &rusqlite::Connection) -> Result<(
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_links_source_covering;
          DROP INDEX IF EXISTS idx_links_target_covering;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Dropped link covering indexes (migration 20 down)");
     Ok(())
 }
@@ -2265,8 +1730,7 @@ fn run_migration_upload_sessions(conn: &rusqlite::Connection) -> Result<()> {
              PRIMARY KEY (upload_id, chunk_index),
              FOREIGN KEY (upload_id) REFERENCES upload_sessions(upload_id) ON DELETE CASCADE
          );",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -2276,8 +1740,7 @@ fn down_migration_upload_sessions(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "DROP TABLE IF EXISTS upload_chunks;
          DROP TABLE IF EXISTS upload_sessions;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Dropped upload_sessions and upload_chunks tables (migration 21 down)");
     Ok(())
 }
@@ -2298,16 +1761,14 @@ fn run_migration_service_dead_letters(conn: &rusqlite::Connection) -> Result<()>
          );
          CREATE INDEX IF NOT EXISTS idx_sdl_service ON service_dead_letters(service);
          CREATE INDEX IF NOT EXISTS idx_sdl_created ON service_dead_letters(created_at DESC);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Created service_dead_letters table (migration 22)");
     Ok(())
 }
 
 /// Reverse migration 22: drops the service_dead_letters table.
 fn down_migration_service_dead_letters(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP TABLE IF EXISTS service_dead_letters;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP TABLE IF EXISTS service_dead_letters;")?;
     info!("Dropped service_dead_letters table (migration 22 down)");
     Ok(())
 }
@@ -2329,23 +1790,19 @@ fn run_migration_memories_list_covering_index(conn: &rusqlite::Connection) -> Re
         "CREATE INDEX IF NOT EXISTS idx_memories_list_user_id_desc \
          ON memories(user_id, id DESC) \
          WHERE is_latest = 1 AND is_consolidated = 0;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Created idx_memories_list_user_id_desc (migration 23)");
     Ok(())
 }
 
 /// Reverse migration 23: drops the memories list covering index.
 fn down_migration_memories_list_covering_index(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_memories_list_user_id_desc;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_memories_list_user_id_desc;")?;
     info!("Dropped idx_memories_list_user_id_desc (migration 23 down)");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 24: commerce tables
-// ---------------------------------------------------------------------------
+// --- Migration 24: commerce tables ---
 
 /// Migration 24: creates the commerce tables for payment quotes, settlements, and pricing.
 fn run_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
@@ -2430,8 +1887,7 @@ fn run_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
              FOREIGN KEY (user_id) REFERENCES users(id)
          );
          CREATE INDEX IF NOT EXISTS idx_ds_user_date ON daily_spend(user_id, date);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Created commerce tables (migration 24)");
     Ok(())
 }
@@ -2445,15 +1901,12 @@ fn down_migration_commerce_tables(conn: &rusqlite::Connection) -> Result<()> {
          DROP TABLE IF EXISTS payment_quotes;
          DROP TABLE IF EXISTS volume_discounts;
          DROP TABLE IF EXISTS service_pricing;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Dropped commerce tables (migration 24 down)");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 25: drop user_id from memory core tables
-// ---------------------------------------------------------------------------
+// --- Migration 25: drop user_id from memory core tables ---
 
 /// Migration 25: drop user_id from memories, artifacts, vector_sync_pending,
 /// and structured_facts on the monolith. Idempotent: each ALTER TABLE and DROP
@@ -2462,8 +1915,7 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
     // Drop the prevent_cross_tenant_links trigger: it referenced memories.user_id
     // which is being dropped in this migration. Tenant isolation is now enforced
     // at the database level (one DB per tenant) rather than via row-level user_id.
-    conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")?;
 
     // Drop indexes that key on user_id for these tables.
     // idx_memories_user: simple index on memories(user_id) from migration 2.
@@ -2485,8 +1937,7 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
          DROP INDEX IF EXISTS idx_facts_user;
          DROP INDEX IF EXISTS idx_sf_subject_verb;
          DROP INDEX IF EXISTS idx_facts_user_subject_predicate;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     // Drop user_id from memories if still present.
     let mem_has_user_id: i64 = conn
@@ -2494,11 +1945,9 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
             "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if mem_has_user_id > 0 {
-        conn.execute("ALTER TABLE memories DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE memories DROP COLUMN user_id", [])?;
         info!("Dropped memories.user_id (migration 25)");
     }
 
@@ -2508,11 +1957,9 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
             "SELECT COUNT(*) FROM pragma_table_info('artifacts') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if art_has_user_id > 0 {
-        conn.execute("ALTER TABLE artifacts DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE artifacts DROP COLUMN user_id", [])?;
         info!("Dropped artifacts.user_id (migration 25)");
     }
 
@@ -2522,11 +1969,9 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
             "SELECT COUNT(*) FROM pragma_table_info('vector_sync_pending') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if vsp_has_user_id > 0 {
-        conn.execute("ALTER TABLE vector_sync_pending DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE vector_sync_pending DROP COLUMN user_id", [])?;
         info!("Dropped vector_sync_pending.user_id (migration 25)");
     }
 
@@ -2536,11 +1981,9 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
             "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if sf_has_user_id > 0 {
-        conn.execute("ALTER TABLE structured_facts DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE structured_facts DROP COLUMN user_id", [])?;
         info!("Dropped structured_facts.user_id (migration 25)");
     }
 
@@ -2548,16 +1991,13 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_memories_latest_filter \
          ON memories(is_forgotten, is_archived, is_latest);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 25 complete: user_id dropped from memory core tables");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 64: re-add user_id to memory core tables (reverses migration 25)
-// ---------------------------------------------------------------------------
+// --- Migration 64: re-add user_id to memory core tables (reverses migration 25) ---
 
 /// Migration 64: re-add `user_id` to `memories`, `artifacts`,
 /// `vector_sync_pending`, and `structured_facts` on the monolith, recreate the
@@ -2589,14 +2029,12 @@ fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resul
                 "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
                 rusqlite::params![table],
                 |row| row.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         if has_user_id == 0 {
             conn.execute(
                 &format!("ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"),
                 [],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             info!("Re-added {table}.user_id (migration 64)");
         }
     }
@@ -2614,8 +2052,7 @@ fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resul
          CREATE INDEX IF NOT EXISTS idx_facts_user ON structured_facts(user_id);
          CREATE INDEX IF NOT EXISTS idx_sf_subject_verb ON structured_facts(subject COLLATE NOCASE, verb, user_id);
          CREATE INDEX IF NOT EXISTS idx_facts_user_subject_predicate ON structured_facts(user_id, subject, predicate);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     // Restore the trigger that blocks linking memories owned by different users.
     conn.execute_batch(
@@ -2626,8 +2063,7 @@ fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resul
                 WHERE (SELECT user_id FROM memories WHERE id = NEW.source_id)
                    != (SELECT user_id FROM memories WHERE id = NEW.target_id);
             END;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 64 complete: user_id re-added to memory core tables");
     Ok(())
@@ -2637,8 +2073,7 @@ fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resul
 /// re-added `user_id` indexes, and the `user_id` columns from the four memory
 /// core tables. Mirrors migration 25's up path.
 fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")?;
 
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_memories_user;
@@ -2651,8 +2086,7 @@ fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resu
          DROP INDEX IF EXISTS idx_facts_user;
          DROP INDEX IF EXISTS idx_sf_subject_verb;
          DROP INDEX IF EXISTS idx_facts_user_subject_predicate;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     for table in [
         "memories",
@@ -2665,11 +2099,9 @@ fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resu
                 "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
                 rusqlite::params![table],
                 |row| row.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         if has_user_id > 0 {
-            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])?;
         }
     }
 
@@ -2695,18 +2127,15 @@ fn run_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<(
             "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE webhooks ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added webhooks.user_id (migration 65)");
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);")?;
     info!("Migration 65 complete: user_id re-added to webhooks");
     Ok(())
 }
@@ -2714,18 +2143,15 @@ fn run_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<(
 /// Reverse migration 65: drop the `idx_webhooks_user` index and the `user_id`
 /// column from `webhooks`.
 fn down_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")?;
     let has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
-        conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])?;
     }
     info!("Migration 65 reverted: user_id dropped from webhooks");
     Ok(())
@@ -2746,21 +2172,18 @@ fn run_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result<
             "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE approvals ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added approvals.user_id (migration 66)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_approvals_user ON approvals(user_id);
          CREATE INDEX IF NOT EXISTS idx_approvals_user_status ON approvals(user_id, status);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 66 complete: user_id re-added to approvals");
     Ok(())
 }
@@ -2770,18 +2193,15 @@ fn down_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_approvals_user;
          DROP INDEX IF EXISTS idx_approvals_user_status;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     let has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
-        conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])?;
     }
     info!("Migration 66 reverted: user_id dropped from approvals");
     Ok(())
@@ -2806,8 +2226,7 @@ fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Resul
             "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
         info!("soma_agents.user_id already present, migration 67 is a no-op");
         return Ok(());
@@ -2855,8 +2274,7 @@ fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Resul
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 67 complete: user_id re-added to soma_agents with UNIQUE(name, user_id)");
     Ok(())
@@ -2876,20 +2294,17 @@ fn run_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Resul
             "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE axon_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added axon_events.user_id (migration 68)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_axon_events_user ON axon_events(user_id, channel, id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 68 complete: user_id re-added to axon_events");
     Ok(())
 }
@@ -2897,18 +2312,15 @@ fn run_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Resul
 /// Reverse migration 68: drop the `idx_axon_events_user` index and the
 /// `user_id` column from `axon_events`.
 fn down_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")?;
     let has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
-        conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])?;
     }
     info!("Migration 68 reverted: user_id dropped from axon_events");
     Ok(())
@@ -2928,20 +2340,17 @@ fn run_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Resu
             "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE chiasm_tasks ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added chiasm_tasks.user_id (migration 69)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_chiasm_tasks_user ON chiasm_tasks(user_id, status);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 69 complete: user_id re-added to chiasm_tasks");
     Ok(())
 }
@@ -2949,18 +2358,15 @@ fn run_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Resu
 /// Reverse migration 69: drop the `idx_chiasm_tasks_user` index and the
 /// `user_id` column from `chiasm_tasks`.
 fn down_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")?;
     let has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
-        conn.execute("ALTER TABLE chiasm_tasks DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE chiasm_tasks DROP COLUMN user_id", [])?;
     }
     info!("Migration 69 reverted: user_id dropped from chiasm_tasks");
     Ok(())
@@ -2981,20 +2387,17 @@ fn run_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Res
             "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE conversations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added conversations.user_id (migration 70)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 70 complete: user_id re-added to conversations");
     Ok(())
 }
@@ -3002,18 +2405,15 @@ fn run_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Res
 /// Reverse migration 70: drop the `idx_conversations_user` index and the
 /// `user_id` column from `conversations`.
 fn down_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_conversations_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_conversations_user;")?;
     let has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
-        conn.execute("ALTER TABLE conversations DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE conversations DROP COLUMN user_id", [])?;
     }
     info!("Migration 70 reverted: user_id dropped from conversations");
     Ok(())
@@ -3044,20 +2444,17 @@ fn run_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Resu
                 ),
                 [],
                 |row| row.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         if has_user_id == 0 {
             conn.execute(
                 &format!("ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"),
                 [],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             info!("Re-added {table}.user_id (migration 71)");
         }
         conn.execute_batch(&format!(
             "CREATE INDEX IF NOT EXISTS {index} ON {table}(user_id);"
-        ))
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        ))?;
     }
     info!("Migration 71 complete: user_id re-added to intelligence tables");
     Ok(())
@@ -3071,8 +2468,7 @@ fn down_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Res
         ("consolidations", "idx_consolidations_user"),
         ("causal_chains", "idx_causal_chains_user"),
     ] {
-        conn.execute_batch(&format!("DROP INDEX IF EXISTS {index};"))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute_batch(&format!("DROP INDEX IF EXISTS {index};"))?;
         let has_user_id: i64 = conn
             .query_row(
                 &format!(
@@ -3080,11 +2476,9 @@ fn down_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Res
                 ),
                 [],
                 |row| row.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         if has_user_id > 0 {
-            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])?;
         }
     }
     info!("Migration 71 reverted: user_id dropped from intelligence tables");
@@ -3109,8 +2503,7 @@ fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Re
             "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
         info!("entities.user_id already present, migration 72 is a no-op");
         return Ok(());
@@ -3162,8 +2555,7 @@ fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Re
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 72 complete: user_id re-added to entities with UNIQUE(name, entity_type, user_id)");
     Ok(())
@@ -3180,18 +2572,15 @@ fn run_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<(
             "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE episodes ADD COLUMN user_id INTEGER DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added episodes.user_id (migration 73)");
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_episodes_user ON episodes(user_id);")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_episodes_user ON episodes(user_id);")?;
     info!("Migration 73 complete: user_id re-added to episodes");
     Ok(())
 }
@@ -3219,8 +2608,7 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
             "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if cs_has_user_id == 0 {
         conn.execute_batch(
@@ -3265,8 +2653,7 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
 
              PRAGMA legacy_alter_table = OFF;
              PRAGMA foreign_keys = ON;",
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Migration 74: current_state rebuilt with UNIQUE(agent, key, user_id)");
     } else {
         // Fresh database already has user_id; still ensure all indexes exist.
@@ -3275,97 +2662,76 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
              CREATE INDEX IF NOT EXISTS idx_current_state_user ON current_state(user_id);
              CREATE INDEX IF NOT EXISTS idx_cs_key ON current_state(key COLLATE NOCASE);
              CREATE INDEX IF NOT EXISTS idx_cs_key_user ON current_state(key, user_id);",
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     }
 
-    // -----------------------------------------------------------------------
-    // reconsolidations: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- reconsolidations: ADD COLUMN user_id + index ---
     let recons_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('reconsolidations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if recons_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE reconsolidations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added reconsolidations.user_id (migration 74)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_reconsolidations_user ON reconsolidations(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
-    // -----------------------------------------------------------------------
-    // temporal_patterns: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- temporal_patterns: ADD COLUMN user_id + index ---
     let tp_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('temporal_patterns') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if tp_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE temporal_patterns ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added temporal_patterns.user_id (migration 74)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_temporal_patterns_user ON temporal_patterns(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
-    // -----------------------------------------------------------------------
-    // digests: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- digests: ADD COLUMN user_id + index ---
     let dig_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('digests') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if dig_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE digests ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added digests.user_id (migration 74)");
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_digests_user ON digests(user_id);")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_digests_user ON digests(user_id);")?;
 
-    // -----------------------------------------------------------------------
-    // memory_feedback: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- memory_feedback: ADD COLUMN user_id + index ---
     let mf_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('memory_feedback') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if mf_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE memory_feedback ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added memory_feedback.user_id (migration 74)");
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);")?;
 
     info!("Migration 74 complete: user_id re-added to intelligence remainder tables");
     Ok(())
@@ -3393,8 +2759,7 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
             "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if rubrics_has_user_id == 0 {
         conn.execute_batch(
@@ -3427,107 +2792,85 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
 
              PRAGMA legacy_alter_table = OFF;
              PRAGMA foreign_keys = ON;",
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Migration 75: rubrics rebuilt with UNIQUE(user_id, name)");
     } else {
         // Fresh database already has user_id; still ensure all indexes exist.
         conn.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_rubrics_user_name ON rubrics(user_id, name);
              CREATE INDEX IF NOT EXISTS idx_rubrics_user ON rubrics(user_id);",
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     }
 
-    // -----------------------------------------------------------------------
-    // evaluations: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- evaluations: ADD COLUMN user_id + index ---
     let eval_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if eval_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE evaluations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added evaluations.user_id (migration 75)");
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);")?;
 
-    // -----------------------------------------------------------------------
-    // quality_metrics: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- quality_metrics: ADD COLUMN user_id + index ---
     let qm_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if qm_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE quality_metrics ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added quality_metrics.user_id (migration 75)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_quality_metrics_user ON quality_metrics(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
-    // -----------------------------------------------------------------------
-    // session_quality: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- session_quality: ADD COLUMN user_id + index ---
     let sq_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if sq_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE session_quality ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added session_quality.user_id (migration 75)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_session_quality_user ON session_quality(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
-    // -----------------------------------------------------------------------
-    // behavioral_drift_events: ADD COLUMN user_id + index
-    // -----------------------------------------------------------------------
+    // --- behavioral_drift_events: ADD COLUMN user_id + index ---
     let bde_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if bde_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE behavioral_drift_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
             [],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Re-added behavioral_drift_events.user_id (migration 75)");
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_behavioral_drift_user ON behavioral_drift_events(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 75 complete: user_id re-added to all 5 thymus tables");
     Ok(())
@@ -3541,23 +2884,19 @@ fn run_migration_readd_user_id_graph_remainder(conn: &rusqlite::Connection) -> R
     // entity_cooccurrences: ADD COLUMN with idempotency guard.
     // Use INTEGER DEFAULT 1 (no NOT NULL) to match the CORE schema definition.
     let has_user_id: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-        .exists([])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .prepare("SELECT 1 FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'")?
+        .exists([])?;
     if !has_user_id {
         conn.execute_batch(
             "ALTER TABLE entity_cooccurrences ADD COLUMN user_id INTEGER DEFAULT 1;\
              CREATE INDEX IF NOT EXISTS idx_ec_user ON entity_cooccurrences(user_id);",
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         info!("Migration 76: re-added entity_cooccurrences.user_id");
     }
     // Ensure idx_sf_user exists on structured_facts (which already has the
     // column from v64 / CORE schema). IF NOT EXISTS makes this a no-op on
     // databases that already carry the index.
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sf_user ON structured_facts(user_id);")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_sf_user ON structured_facts(user_id);")?;
     info!("Migration 76 complete: graph_remainder user_id done");
     Ok(())
 }
@@ -3569,10 +2908,8 @@ fn run_migration_readd_user_id_graph_remainder(conn: &rusqlite::Connection) -> R
 /// v77; `transactional: false` because PRAGMA foreign_keys is toggled.
 fn run_migration_readd_user_id_user_preferences(conn: &rusqlite::Connection) -> Result<()> {
     let has_user_id: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('user_preferences') WHERE name = 'user_id'")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-        .exists([])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .prepare("SELECT 1 FROM pragma_table_info('user_preferences') WHERE name = 'user_id'")?
+        .exists([])?;
     if has_user_id {
         return Ok(());
     }
@@ -3617,8 +2954,7 @@ fn run_migration_readd_user_id_user_preferences(conn: &rusqlite::Connection) -> 
 
          PRAGMA legacy_alter_table = OFF;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 77 complete: user_id re-added to user_preferences (REBUILD)");
     Ok(())
 }
@@ -3630,10 +2966,8 @@ fn run_migration_readd_user_id_user_preferences(conn: &rusqlite::Connection) -> 
 /// as v78; `transactional: false` because PRAGMA foreign_keys is toggled.
 fn run_migration_readd_user_id_skills(conn: &rusqlite::Connection) -> Result<()> {
     let has_user_id: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('skill_records') WHERE name = 'user_id'")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-        .exists([])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .prepare("SELECT 1 FROM pragma_table_info('skill_records') WHERE name = 'user_id'")?
+        .exists([])?;
     if has_user_id {
         return Ok(());
     }
@@ -3761,8 +3095,7 @@ fn run_migration_readd_user_id_skills(conn: &rusqlite::Connection) -> Result<()>
 
          PRAGMA legacy_alter_table = OFF;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 78 complete: user_id re-added to skill_records (REBUILD + FTS)");
     Ok(())
 }
@@ -3773,18 +3106,15 @@ fn run_migration_readd_user_id_skills(conn: &rusqlite::Connection) -> Result<()>
 /// MIGRATIONS as v79; `transactional: false` for pragma guard consistency.
 fn run_migration_readd_user_id_brain_edges(conn: &rusqlite::Connection) -> Result<()> {
     let has_user_id: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('brain_edges') WHERE name = 'user_id'")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-        .exists([])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .prepare("SELECT 1 FROM pragma_table_info('brain_edges') WHERE name = 'user_id'")?
+        .exists([])?;
     if has_user_id {
         return Ok(());
     }
     conn.execute_batch(
         "ALTER TABLE brain_edges ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;\
          CREATE INDEX IF NOT EXISTS idx_brain_edges_user ON brain_edges(user_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     info!("Migration 79 complete: user_id re-added to brain_edges");
     Ok(())
 }
@@ -3792,26 +3122,21 @@ fn run_migration_readd_user_id_brain_edges(conn: &rusqlite::Connection) -> Resul
 /// Reverse migration 73: drop the `idx_episodes_user` index and the `user_id`
 /// column from `episodes`.
 fn down_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_episodes_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_episodes_user;")?;
     let has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
-        conn.execute("ALTER TABLE episodes DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE episodes DROP COLUMN user_id", [])?;
     }
     info!("Migration 73 reverted: user_id dropped from episodes");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 26: drop user_id from scratchpad (12-step UNIQUE rebuild)
-// ---------------------------------------------------------------------------
+// --- Migration 26: drop user_id from scratchpad (12-step UNIQUE rebuild) ---
 
 /// Migration 26: drop user_id from scratchpad via the 12-step rebuild path.
 /// scratchpad carried UNIQUE(user_id, session, entry_key), which blocks
@@ -3824,8 +3149,7 @@ fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<
             "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("scratchpad.user_id already absent, migration 26 is a no-op");
         return Ok(());
@@ -3865,16 +3189,13 @@ fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<
          CREATE INDEX idx_scratchpad_expires ON scratchpad(expires_at) WHERE expires_at IS NOT NULL;
 
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 26 complete: user_id dropped from scratchpad");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 27: drop user_id from sessions (simple DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 27: drop user_id from sessions (simple DROP INDEX + DROP COLUMN) ---
 
 /// Migration 27: drop user_id shim from sessions. No UNIQUE or FK references
 /// the column, so ALTER TABLE DROP COLUMN is safe. session_output never had
@@ -3885,26 +3206,21 @@ fn run_migration_drop_user_id_sessions(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("sessions.user_id already absent, migration 27 is a no-op");
         return Ok(());
     }
 
-    conn.execute_batch("DROP INDEX IF EXISTS idx_sessions_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_sessions_user;")?;
 
-    conn.execute("ALTER TABLE sessions DROP COLUMN user_id", [])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute("ALTER TABLE sessions DROP COLUMN user_id", [])?;
 
     info!("Migration 27 complete: user_id dropped from sessions");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 28: drop user_id from chiasm_tasks + chiasm_task_updates
-// ---------------------------------------------------------------------------
+// --- Migration 28: drop user_id from chiasm_tasks + chiasm_task_updates ---
 
 /// Migration 28: drop user_id shim from chiasm_tasks and chiasm_task_updates.
 /// No UNIQUE or FK references the column on either table, so ALTER TABLE
@@ -3912,8 +3228,7 @@ fn run_migration_drop_user_id_sessions(conn: &rusqlite::Connection) -> Result<()
 /// the column drop runs there. Idempotent: skips each table that already
 /// lacks user_id.
 fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")?;
 
     for table in &["chiasm_tasks", "chiasm_task_updates"] {
         let has_user_id: i64 = conn
@@ -3924,14 +3239,12 @@ fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> 
                 ),
                 [],
                 |row| row.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         if has_user_id == 0 {
             info!("{}.user_id already absent, skipping", table);
             continue;
         }
-        conn.execute(&format!("ALTER TABLE {} DROP COLUMN user_id", table), [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(&format!("ALTER TABLE {} DROP COLUMN user_id", table), [])?;
         info!("Dropped {}.user_id (migration 28)", table);
     }
 
@@ -3939,9 +3252,7 @@ fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 29: drop user_id from approvals (simple DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 29: drop user_id from approvals (simple DROP INDEX + DROP COLUMN) ---
 
 /// Migration 29: drop user_id shim from approvals. Both the simple
 /// idx_approvals_user and the composite idx_approvals_user_status
@@ -3953,8 +3264,7 @@ fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<(
             "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("approvals.user_id already absent, migration 29 is a no-op");
         return Ok(());
@@ -3963,19 +3273,15 @@ fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<(
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_approvals_user;
          DROP INDEX IF EXISTS idx_approvals_user_status;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
-    conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])?;
 
     info!("Migration 29 complete: user_id dropped from approvals");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 30: drop user_id from broca_actions (simple DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 30: drop user_id from broca_actions (simple DROP INDEX + DROP COLUMN) ---
 
 /// Migration 30: drop user_id shim from broca_actions. No UNIQUE or FK
 /// references the column. Idempotent: skips if user_id already absent.
@@ -3985,26 +3291,21 @@ fn run_migration_drop_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
             "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("broca_actions.user_id already absent, migration 30 is a no-op");
         return Ok(());
     }
 
-    conn.execute_batch("DROP INDEX IF EXISTS idx_broca_actions_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_broca_actions_user;")?;
 
-    conn.execute("ALTER TABLE broca_actions DROP COLUMN user_id", [])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute("ALTER TABLE broca_actions DROP COLUMN user_id", [])?;
 
     info!("Migration 30 complete: user_id dropped from broca_actions");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 31: drop user_id from projects (12-step UNIQUE rebuild)
-// ---------------------------------------------------------------------------
+// --- Migration 31: drop user_id from projects (12-step UNIQUE rebuild) ---
 
 /// Migration 31: drop user_id from projects via the 12-step rebuild path.
 /// projects carried UNIQUE(name, user_id), which blocks ALTER TABLE DROP
@@ -4019,8 +3320,7 @@ fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("projects.user_id already absent, migration 31 is a no-op");
         return Ok(());
@@ -4056,16 +3356,13 @@ fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 31 complete: user_id dropped from projects");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 32: drop user_id from axon_events + soma_agents
-// ---------------------------------------------------------------------------
+// --- Migration 32: drop user_id from axon_events + soma_agents ---
 
 /// Migration 32: drop user_id shim from axon_events and soma_agents. No UNIQUE
 /// or FK references the column on either table. Idempotent: each table is
@@ -4076,13 +3373,10 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if axon_has_user_id > 0 {
-        conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")?;
+        conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])?;
         info!("Migration 32: user_id dropped from axon_events");
     } else {
         info!("axon_events.user_id already absent, skipping");
@@ -4093,13 +3387,10 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if soma_has_user_id > 0 {
-        conn.execute_batch("DROP INDEX IF EXISTS idx_soma_agents_user;")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        conn.execute("ALTER TABLE soma_agents DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute_batch("DROP INDEX IF EXISTS idx_soma_agents_user;")?;
+        conn.execute("ALTER TABLE soma_agents DROP COLUMN user_id", [])?;
         info!("Migration 32: user_id dropped from soma_agents");
     } else {
         info!("soma_agents.user_id already absent, skipping");
@@ -4109,9 +3400,7 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 33: drop user_id from webhooks (DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 33: drop user_id from webhooks (DROP INDEX + DROP COLUMN) ---
 
 /// Migration 33: drop user_id shim from webhooks. No UNIQUE references the
 /// column (the tenant shard dropped the FK in v9). Idempotent: skips if
@@ -4122,26 +3411,21 @@ fn run_migration_drop_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("webhooks.user_id already absent, migration 33 is a no-op");
         return Ok(());
     }
 
-    conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")?;
 
-    conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])?;
 
     info!("Migration 33 complete: user_id dropped from webhooks");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 34: drop user_id from axon_subscriptions + axon_cursors
-// ---------------------------------------------------------------------------
+// --- Migration 34: drop user_id from axon_subscriptions + axon_cursors ---
 
 /// Migration 34: drop user_id shim from axon_subscriptions and axon_cursors.
 /// UNIQUE(agent, channel) on axon_subscriptions and PRIMARY KEY(agent, channel)
@@ -4154,11 +3438,9 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
             "SELECT COUNT(*) FROM pragma_table_info('axon_subscriptions') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if subs_has_user_id > 0 {
-        conn.execute("ALTER TABLE axon_subscriptions DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE axon_subscriptions DROP COLUMN user_id", [])?;
         info!("Migration 34: user_id dropped from axon_subscriptions");
     } else {
         info!("axon_subscriptions.user_id already absent, skipping");
@@ -4169,11 +3451,9 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
             "SELECT COUNT(*) FROM pragma_table_info('axon_cursors') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if cursors_has_user_id > 0 {
-        conn.execute("ALTER TABLE axon_cursors DROP COLUMN user_id", [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute("ALTER TABLE axon_cursors DROP COLUMN user_id", [])?;
         info!("Migration 34: user_id dropped from axon_cursors");
     } else {
         info!("axon_cursors.user_id already absent, skipping");
@@ -4183,9 +3463,7 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 35: drop user_id from reflections (DROP INDEX + DROP COLUMN)
-// ---------------------------------------------------------------------------
+// --- Migration 35: drop user_id from reflections (DROP INDEX + DROP COLUMN) ---
 
 /// Migration 35: drop user_id shim from reflections. No UNIQUE or FK
 /// references the column. idx_reflections_user must drop first;
@@ -4196,26 +3474,21 @@ fn run_migration_drop_user_id_growth(conn: &rusqlite::Connection) -> Result<()> 
             "SELECT COUNT(*) FROM pragma_table_info('reflections') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("reflections.user_id already absent, migration 35 is a no-op");
         return Ok(());
     }
 
-    conn.execute_batch("DROP INDEX IF EXISTS idx_reflections_user;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_reflections_user;")?;
 
-    conn.execute("ALTER TABLE reflections DROP COLUMN user_id", [])
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute("ALTER TABLE reflections DROP COLUMN user_id", [])?;
 
     info!("Migration 35 complete: user_id dropped from reflections");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 36: drop user_id from ingestion_hashes (PK rebuild)
-// ---------------------------------------------------------------------------
+// --- Migration 36: drop user_id from ingestion_hashes (PK rebuild) ---
 
 /// Migration 36: drop user_id from ingestion_hashes via the 12-step rebuild
 /// path. ingestion_hashes carried PRIMARY KEY (sha256, user_id), which blocks
@@ -4230,8 +3503,7 @@ fn run_migration_drop_user_id_ingestion_hashes(conn: &rusqlite::Connection) -> R
             "SELECT COUNT(*) FROM pragma_table_info('ingestion_hashes') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id == 0 {
         info!("ingestion_hashes.user_id already absent, migration 36 is a no-op");
         return Ok(());
@@ -4258,8 +3530,7 @@ fn run_migration_drop_user_id_ingestion_hashes(conn: &rusqlite::Connection) -> R
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 36 complete: user_id dropped from ingestion_hashes");
     Ok(())
@@ -4273,16 +3544,14 @@ fn run_migration_drop_user_id_loom(conn: &rusqlite::Connection) -> Result<()> {
             "SELECT COUNT(*) FROM pragma_table_info('loom_workflows') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let runs_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('loom_runs') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if wf_has_user_id == 0 && runs_has_user_id == 0 {
         info!("loom_workflows and loom_runs user_id already absent, migration 37 is a no-op");
@@ -4318,8 +3587,7 @@ fn run_migration_drop_user_id_loom(conn: &rusqlite::Connection) -> Result<()> {
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 37 complete: user_id dropped from loom_workflows and loom_runs");
     Ok(())
@@ -4339,40 +3607,35 @@ fn run_migration_drop_user_id_graph(conn: &rusqlite::Connection) -> Result<()> {
             "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let ec_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let mp_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('memory_pagerank') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let pd_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('pagerank_dirty') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let be_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('brain_edges') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if entities_has_user_id == 0
         && ec_has_user_id == 0
@@ -4476,8 +3739,7 @@ fn run_migration_drop_user_id_graph(conn: &rusqlite::Connection) -> Result<()> {
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 38 complete: user_id dropped from graph cluster (5 tables; structured_facts.user_id was dropped in migration 25)");
     Ok(())
@@ -4493,40 +3755,35 @@ fn run_migration_drop_user_id_thymus(conn: &rusqlite::Connection) -> Result<()> 
             "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let evals_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let qm_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let sq_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let bde_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if rubrics_has_user_id == 0
         && evals_has_user_id == 0
@@ -4566,8 +3823,7 @@ fn run_migration_drop_user_id_thymus(conn: &rusqlite::Connection) -> Result<()> 
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 39 complete: user_id dropped from thymus cluster (5 tables)");
     Ok(())
@@ -4583,16 +3839,14 @@ fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result
             "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let conv_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if up_has_user_id == 0 && conv_has_user_id == 0 {
         info!("user_preferences and conversations user_id already absent, migration 40 is a no-op");
@@ -4639,8 +3893,7 @@ fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!(
         "Migration 40 complete: user_id dropped from user_preferences (rebuild) and conversations"
@@ -4657,16 +3910,14 @@ fn run_migration_drop_user_id_intelligence(conn: &rusqlite::Connection) -> Resul
             "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     let consolidations_has_user_id: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('consolidations') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if cs_has_user_id == 0 && consolidations_has_user_id == 0 {
         info!("intelligence tables user_id already absent, migration 41 is a no-op");
@@ -4738,8 +3989,7 @@ fn run_migration_drop_user_id_intelligence(conn: &rusqlite::Connection) -> Resul
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 41 complete: user_id dropped from 7 intelligence tables (current_state rebuild + 6 DROP COLUMN)");
     Ok(())
@@ -4754,8 +4004,7 @@ fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> 
             "SELECT COUNT(*) FROM pragma_table_info('skill_records') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if has_user_id == 0 {
         info!("skill_records user_id already absent, migration 42 is a no-op");
@@ -4882,8 +4131,7 @@ fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> 
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!(
         "Migration 42 complete: user_id dropped from skill_records (Shape B + FTS shadow rebuild)"
@@ -4891,9 +4139,7 @@ fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> 
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Post-import validation (unchanged)
-// ---------------------------------------------------------------------------
+// --- Post-import validation (unchanged) ---
 
 /// Run a set of read-only integrity queries the migrate tool can surface in a
 /// pre-flight report. Every query is tolerant of missing tables so operators
@@ -4960,8 +4206,7 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
             "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if has_user_id == 0 {
         info!("episodes user_id already absent, migration 43 is a no-op");
@@ -4978,8 +4223,7 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!(
         "Migration 43 complete: user_id dropped from episodes (Shape A, FTS triggers unaffected)"
@@ -4987,9 +4231,7 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 44: re-add user_id to projects (C-R3-004)
-// ---------------------------------------------------------------------------
+// --- Migration 44: re-add user_id to projects (C-R3-004) ---
 
 /// Migration 44: re-add user_id to monolith projects so single-DB deployments
 /// are safe even when tenant sharding is disabled. Phase 5 dropped user_id
@@ -5008,8 +4250,7 @@ fn run_migration_readd_user_id_projects(conn: &rusqlite::Connection) -> Result<(
             "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
         info!("projects.user_id already present, migration 44 is a no-op");
         return Ok(());
@@ -5047,16 +4288,13 @@ fn run_migration_readd_user_id_projects(conn: &rusqlite::Connection) -> Result<(
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 44 complete: user_id re-added to projects (defaults to 1 for legacy rows)");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 45: re-add user_id to broca_actions (C-R3-004 / H-R3-006)
-// ---------------------------------------------------------------------------
+// --- Migration 45: re-add user_id to broca_actions (C-R3-004 / H-R3-006) ---
 
 /// Migration 45: re-add user_id to monolith broca_actions. broca_actions has
 /// no UNIQUE/FK on the column, so the simpler ALTER TABLE ADD COLUMN path
@@ -5069,8 +4307,7 @@ fn run_migration_readd_user_id_broca(conn: &rusqlite::Connection) -> Result<()> 
             "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
     if has_user_id > 0 {
         info!("broca_actions.user_id already present, migration 45 is a no-op");
         return Ok(());
@@ -5079,8 +4316,7 @@ fn run_migration_readd_user_id_broca(conn: &rusqlite::Connection) -> Result<()> 
     conn.execute_batch(
         "ALTER TABLE broca_actions ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1;
          CREATE INDEX IF NOT EXISTS idx_broca_actions_user ON broca_actions(user_id, created_at DESC);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 45 complete: user_id re-added to broca_actions");
     Ok(())
@@ -5133,15 +4369,13 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
             conn.execute_batch(
                 "DROP TABLE api_keys;
                  ALTER TABLE _api_keys_old_v46 RENAME TO api_keys;",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         } else {
             // Only backup exists -- crash happened between RENAME and
             // CREATE. Rename backup back so the rebuild starts from the
             // canonical pre-state.
             info!("Migration 48 resuming: only _api_keys_old_v46 exists; restoring api_keys");
-            conn.execute_batch("ALTER TABLE _api_keys_old_v46 RENAME TO api_keys;")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            conn.execute_batch("ALTER TABLE _api_keys_old_v46 RENAME TO api_keys;")?;
         }
     }
 
@@ -5182,8 +4416,7 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
 
          PRAGMA legacy_alter_table = 0;
          PRAGMA foreign_keys = ON;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!(
         "Migration 48 complete: dropped FK on api_keys.agent_id (agents now live in tenant shards)"
@@ -5191,9 +4424,7 @@ fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 46: identity_keys + identities tables
-// ---------------------------------------------------------------------------
+// --- Migration 46: identity_keys + identities tables ---
 
 /// Migration 46: creates the identity_keys and identities tables for PIV-Everywhere auth.
 fn run_migration_identity_tables(conn: &rusqlite::Connection) -> Result<()> {
@@ -5233,16 +4464,13 @@ fn run_migration_identity_tables(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_identities_key ON identities(identity_key_id);
         CREATE INDEX IF NOT EXISTS idx_identities_hash ON identities(identity_hash);
         CREATE INDEX IF NOT EXISTS idx_identities_labels ON identities(host_label, agent_label, model_label);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 46 complete: identity_keys + identities tables created");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 47: audit_log identity columns
-// ---------------------------------------------------------------------------
+// --- Migration 47: audit_log identity columns ---
 
 /// Migration 47: adds identity_id and identity_tier columns to the audit_log table.
 fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<()> {
@@ -5251,8 +4479,7 @@ fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<(
             "SELECT COUNT(*) FROM pragma_table_info('audit_log') WHERE name = 'identity_id'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
     if has_identity_id > 0 {
         info!("audit_log.identity_id already present, migration 47 is a no-op");
@@ -5264,8 +4491,7 @@ fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<(
          ALTER TABLE audit_log ADD COLUMN tier TEXT;
          CREATE INDEX IF NOT EXISTS idx_audit_identity ON audit_log(identity_id);
          CREATE INDEX IF NOT EXISTS idx_audit_tier ON audit_log(tier);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 47 complete: identity_id + tier columns added to audit_log");
     Ok(())
@@ -5293,8 +4519,7 @@ fn run_migration_supervisor_injections(conn: &rusqlite::Connection) -> Result<()
             WHERE claimed_at IS NULL;
          CREATE INDEX IF NOT EXISTS idx_supervisor_injections_created
             ON supervisor_injections(user_id, created_at DESC);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 49 complete: supervisor_injections table created");
     Ok(())
@@ -5306,8 +4531,7 @@ fn down_migration_supervisor_injections(conn: &rusqlite::Connection) -> Result<(
         "DROP INDEX IF EXISTS idx_supervisor_injections_created;
          DROP INDEX IF EXISTS idx_supervisor_injections_pending;
          DROP TABLE IF EXISTS supervisor_injections;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5320,16 +4544,14 @@ fn run_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result
         .any(|name| name == "session_id");
 
     if !has_col {
-        conn.execute_batch("ALTER TABLE gate_requests ADD COLUMN session_id TEXT;")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute_batch("ALTER TABLE gate_requests ADD COLUMN session_id TEXT;")?;
     }
 
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_gate_requests_session_open
             ON gate_requests(user_id, session_id, status)
             WHERE output IS NULL;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 50 complete: gate_requests.session_id added");
     Ok(())
@@ -5337,8 +4559,7 @@ fn run_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result
 
 /// Reverse migration 50: drops the gate_requests session_id index and column.
 fn down_migration_gate_requests_session_id(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP INDEX IF EXISTS idx_gate_requests_session_open;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP INDEX IF EXISTS idx_gate_requests_session_open;")?;
     Ok(())
 }
 
@@ -5355,8 +4576,7 @@ fn run_migration_memory_chunks(conn: &rusqlite::Connection) -> Result<()> {
             UNIQUE(memory_id, chunk_idx)
         );
         CREATE INDEX IF NOT EXISTS idx_chunks_memory ON memory_chunks(memory_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     info!("Migration 51 complete: memory_chunks table created");
     Ok(())
@@ -5367,8 +4587,7 @@ fn down_migration_memory_chunks(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_chunks_memory;
          DROP TABLE IF EXISTS memory_chunks;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5394,15 +4613,13 @@ fn run_migration_activity_log_table(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_activity_log_agent ON activity_log(agent);
         CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
         CREATE INDEX IF NOT EXISTS idx_activity_log_user_created ON activity_log(user_id, created_at DESC);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
 /// Reverse migration 52: drops the activity_log table.
 fn down_migration_activity_log_table(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("DROP TABLE IF EXISTS activity_log;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("DROP TABLE IF EXISTS activity_log;")?;
     Ok(())
 }
 
@@ -5421,15 +4638,13 @@ fn run_migration_identity_keys_scopes(conn: &rusqlite::Connection) -> Result<()>
     conn.execute_batch(
         r#"ALTER TABLE identity_keys
            ADD COLUMN scopes TEXT NOT NULL DEFAULT '["read","write","admin"]';"#,
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
 /// Reverse migration 53: drops the scopes column from identity_keys.
 fn down_migration_identity_keys_scopes(conn: &rusqlite::Connection) -> Result<()> {
-    conn.execute_batch("ALTER TABLE identity_keys DROP COLUMN scopes;")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    conn.execute_batch("ALTER TABLE identity_keys DROP COLUMN scopes;")?;
     Ok(())
 }
 
@@ -5467,15 +4682,12 @@ fn run_migration_identity_keys_scopes_json_to_csv(conn: &rusqlite::Connection) -
     // Collect (id, raw_scopes) pairs first so we can iterate without holding
     // a prepared-statement borrow while we issue UPDATEs on the same conn.
     let mut select = conn
-        .prepare("SELECT id, scopes FROM identity_keys")
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        .prepare("SELECT id, scopes FROM identity_keys")?;
     let rows: Vec<(i64, String)> = select
         .query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     drop(select);
 
     let mut converted = 0usize;
@@ -5494,8 +4706,7 @@ fn run_migration_identity_keys_scopes_json_to_csv(conn: &rusqlite::Connection) -
                 conn.execute(
                     "UPDATE identity_keys SET scopes = ?1 WHERE id = ?2",
                     rusqlite::params![csv, id],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 converted += 1;
             }
             Err(e) => {
@@ -5520,9 +4731,7 @@ fn run_migration_identity_keys_scopes_json_to_csv(conn: &rusqlite::Connection) -
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// v54: tool_manifests
-// ---------------------------------------------------------------------------
+// --- v54: tool_manifests ---
 
 /// Migration 54: creates the tool_manifests table for signed agent tool declarations.
 fn run_migration_tool_manifests(conn: &rusqlite::Connection) -> Result<()> {
@@ -5536,8 +4745,7 @@ fn run_migration_tool_manifests(conn: &rusqlite::Connection) -> Result<()> {
             UNIQUE(agent_identity_id, manifest_hash)
         );
         CREATE INDEX IF NOT EXISTS idx_tool_manifests_agent ON tool_manifests(agent_identity_id);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5546,8 +4754,7 @@ fn down_migration_tool_manifests(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch(
         "DROP INDEX IF EXISTS idx_tool_manifests_agent;
          DROP TABLE IF EXISTS tool_manifests;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5592,8 +4799,7 @@ fn run_migration_handoffs_global(conn: &rusqlite::Connection) -> Result<()> {
             INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
             INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
         END;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5605,14 +4811,11 @@ fn down_migration_handoffs_global(conn: &rusqlite::Connection) -> Result<()> {
          DROP TRIGGER IF EXISTS handoffs_fts_ai;
          DROP TABLE IF EXISTS handoffs_fts;
          DROP TABLE IF EXISTS handoffs;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Migration 56: is_active on users + enrollment_invites table
-// ---------------------------------------------------------------------------
+// --- Migration 56: is_active on users + enrollment_invites table ---
 
 /// Adds a soft-delete flag to the users table so deactivated accounts can be
 /// excluded from queries without losing audit history. Also creates the
@@ -5637,8 +4840,7 @@ fn run_migration_user_active_and_invites(conn: &rusqlite::Connection) -> Result<
              ON enrollment_invites(token_hash);
          CREATE INDEX IF NOT EXISTS idx_enrollment_invites_user
              ON enrollment_invites(user_id, created_at DESC);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5650,8 +4852,7 @@ fn down_migration_user_active_and_invites(conn: &rusqlite::Connection) -> Result
          DROP INDEX IF EXISTS idx_enrollment_invites_token;
          DROP TABLE IF EXISTS enrollment_invites;
          ALTER TABLE users DROP COLUMN is_active;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5682,8 +4883,7 @@ fn run_migration_skill_dispatch_configs(conn: &rusqlite::Connection) -> Result<(
              ON skill_dispatch_configs(skill_name);
          CREATE INDEX IF NOT EXISTS idx_sdc_enabled
              ON skill_dispatch_configs(enabled);",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     // Seed: web_search -- first callable skill.
     conn.execute(
@@ -5697,8 +4897,7 @@ fn run_migration_skill_dispatch_configs(conn: &rusqlite::Connection) -> Result<(
             r#"{"query":{"type":"string","required":true,"description":"Search query (max 512 chars)"},"categories":{"type":"string","required":false,"description":"Search category","enum":["general","images","videos","news","map","music","it","science","files","social media"]},"language":{"type":"string","required":false,"description":"Language code (e.g. en, de, fr)"},"limit":{"type":"integer","required":false,"default":10,"description":"Max results (1-50)"},"pageno":{"type":"integer","required":false,"default":1,"description":"Page number (1-20)"},"safesearch":{"type":"integer","required":false,"description":"0=off, 1=moderate, 2=strict"}}"#,
             r#"{"results_path":"/results","summary_fields":["title","url","snippet"],"count_path":"/count","suggestions_path":"/suggestions"}"#,
         ],
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
 
     Ok(())
 }
@@ -5709,8 +4908,7 @@ fn down_migration_skill_dispatch_configs(conn: &rusqlite::Connection) -> Result<
         "DROP INDEX IF EXISTS idx_sdc_enabled;
          DROP INDEX IF EXISTS idx_sdc_skill_name;
          DROP TABLE IF EXISTS skill_dispatch_configs;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+    )?;
     Ok(())
 }
 
@@ -5724,9 +4922,7 @@ fn run_migration_api_key_hash_version_fixup(conn: &rusqlite::Connection) -> Resu
     )
 }
 
-// ---------------------------------------------------------------------------
-// Migration 59: add narrative and axon_event_id to broca_actions
-// ---------------------------------------------------------------------------
+// --- Migration 59: add narrative and axon_event_id to broca_actions ---
 
 /// Migration 59: add `narrative TEXT` and `axon_event_id INTEGER` to the
 /// `broca_actions` table for existing databases.
@@ -5984,9 +5180,7 @@ fn run_migration_mcp_tokens(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 /// Unit and integration tests for the migration chain.
 #[cfg(test)]
@@ -6215,8 +5409,7 @@ mod tests {
                 "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
                 rusqlite::params![MIGRATION_CREATE_SCHEMA],
                 |row| row.get(0),
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         assert_eq!(count, 1);
 
         Ok(())

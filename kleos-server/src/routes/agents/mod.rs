@@ -200,9 +200,7 @@ async fn get_executions(
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 
-// ---------------------------------------------------------------------------
-// Verify DTOs
-// ---------------------------------------------------------------------------
+// --- Verify DTOs ---
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,9 +234,7 @@ struct VerifyToolManifestInput {
     signature_hex: String,
 }
 
-// ---------------------------------------------------------------------------
-// Verify handler
-// ---------------------------------------------------------------------------
+// --- Verify handler ---
 
 // Supported kinds:
 //   - passport: HMAC-based server-signed credential check
@@ -321,9 +317,7 @@ async fn verify(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Verify helpers
-// ---------------------------------------------------------------------------
+// --- Verify helpers ---
 
 fn verify_execution(input: &VerifyExecutionInput) -> Result<bool, AppError> {
     // Canonicalize: serialize each action entry with sorted keys, then
@@ -397,7 +391,7 @@ async fn verify_tool_manifest(
             ) {
                 Ok(id) => Some(id),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(kleos_lib::EngError::DatabaseMessage(e.to_string())),
+                Err(e) => return Err(kleos_lib::EngError::Database(e)),
             };
 
             let Some(identity_id) = identity_id else {
@@ -413,7 +407,7 @@ async fn verify_tool_manifest(
                      VALUES (?1, ?2, ?3)",
                     rusqlite::params![identity_id, hash, tools_json],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows > 0)
         })

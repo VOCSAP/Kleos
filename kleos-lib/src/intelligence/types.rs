@@ -4,9 +4,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// ---------------------------------------------------------------------------
-// Reflection types
-// ---------------------------------------------------------------------------
+// --- Reflection types ---
 
 /// Valid reflection period values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,9 +27,7 @@ impl std::fmt::Display for ReflectionPeriod {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Contradiction resolution
-// ---------------------------------------------------------------------------
+// --- Contradiction resolution ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -42,9 +38,7 @@ pub enum ContradictionResolution {
     Merge,
 }
 
-// ---------------------------------------------------------------------------
-// Decomposition types
-// ---------------------------------------------------------------------------
+// --- Decomposition types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecompositionResult {
@@ -82,9 +76,7 @@ pub struct DecompositionWithTier {
     pub tier: DecompositionTier,
 }
 
-// ---------------------------------------------------------------------------
-// Fact store metadata
-// ---------------------------------------------------------------------------
+// --- Fact store metadata ---
 
 #[derive(Debug, Clone)]
 pub struct FactStoreMeta {
@@ -99,9 +91,7 @@ pub struct FactStoreMeta {
     pub model: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Valence types
-// ---------------------------------------------------------------------------
+// --- Valence types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValenceResult {
@@ -158,9 +148,7 @@ pub struct OverallEmotionStats {
     pub neutral_count: i64,
 }
 
-// ---------------------------------------------------------------------------
-// Predictive types
-// ---------------------------------------------------------------------------
+// --- Predictive types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PredictiveContext {
@@ -200,9 +188,7 @@ pub struct SequencePattern {
     pub confidence: f64,
 }
 
-// ---------------------------------------------------------------------------
-// Reconsolidation types
-// ---------------------------------------------------------------------------
+// --- Reconsolidation types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReconsolidationResult {
@@ -225,9 +211,7 @@ pub enum ReconsolidationAction {
     Unchanged,
 }
 
-// ---------------------------------------------------------------------------
-// Growth types
-// ---------------------------------------------------------------------------
+// --- Growth types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowthReflectRequest {
@@ -245,9 +229,7 @@ pub struct GrowthReflectResult {
     pub reflection_id: Option<i64>,
 }
 
-// ---------------------------------------------------------------------------
-// Extraction stats
-// ---------------------------------------------------------------------------
+// --- Extraction stats ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ExtractionStats {
@@ -256,9 +238,7 @@ pub struct ExtractionStats {
     pub state_updates: i32,
 }
 
-// ---------------------------------------------------------------------------
-// Consolidation
-// ---------------------------------------------------------------------------
+// --- Consolidation ---
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ConsolidationRecord {
@@ -273,9 +253,7 @@ pub struct SweepResult {
     pub consolidated: i64,
 }
 
-// ---------------------------------------------------------------------------
-// Duplicates
-// ---------------------------------------------------------------------------
+// --- Duplicates ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuplicatePair {
@@ -296,9 +274,7 @@ pub struct DeduplicateResult {
     pub dry_run: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Temporal
-// ---------------------------------------------------------------------------
+// --- Temporal ---
 
 /// A detected recurring pattern across memory timestamps.
 ///
@@ -333,9 +309,7 @@ pub struct TimeTravelResult {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Fact contradiction
-// ---------------------------------------------------------------------------
+// --- Fact contradiction ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FactContradiction {
@@ -348,9 +322,7 @@ pub struct FactContradiction {
     pub old_object: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Growth observations
-// ---------------------------------------------------------------------------
+// --- Growth observations ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrowthObservation {
@@ -361,9 +333,7 @@ pub struct GrowthObservation {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// LLM options
-// ---------------------------------------------------------------------------
+// --- LLM options ---
 
 /// Options for LLM calls.
 #[derive(Debug, Clone)]
@@ -383,9 +353,7 @@ impl Default for LlmOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Scheduler reports
-// ---------------------------------------------------------------------------
+// --- Scheduler reports ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -417,9 +385,7 @@ pub struct PipelineReport {
     pub skipped_count: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Causal chains
-// ---------------------------------------------------------------------------
+// --- Causal chains ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CausalChain {
@@ -458,9 +424,7 @@ pub struct CausalAncestor {
     pub strength_min: f64,
 }
 
-// ---------------------------------------------------------------------------
-// Reflections
-// ---------------------------------------------------------------------------
+// --- Reflections ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Reflection {
@@ -473,9 +437,7 @@ pub struct Reflection {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Contradiction detection
-// ---------------------------------------------------------------------------
+// --- Contradiction detection ---
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Contradiction {
@@ -485,9 +447,7 @@ pub struct Contradiction {
     pub description: String,
 }
 
-// ---------------------------------------------------------------------------
-// Memory health
-// ---------------------------------------------------------------------------
+// --- Memory health ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryHealthReport {
@@ -501,9 +461,7 @@ pub struct MemoryHealthReport {
     pub embedding_coverage_pct: f64,
 }
 
-// ---------------------------------------------------------------------------
-// Digests
-// ---------------------------------------------------------------------------
+// --- Digests ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Digest {
@@ -517,9 +475,7 @@ pub struct Digest {
     pub created_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Feedback
-// ---------------------------------------------------------------------------
+// --- Feedback ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackRequest {
@@ -538,9 +494,7 @@ pub struct FeedbackStats {
     pub total: i64,
 }
 
-// ---------------------------------------------------------------------------
-// Intelligence tier
-// ---------------------------------------------------------------------------
+// --- Intelligence tier ---
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntelligenceTier {

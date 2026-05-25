@@ -110,14 +110,6 @@ pub struct ProvisionResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportData {
-    pub users: Vec<serde_json::Value>,
-    pub memories: Vec<serde_json::Value>,
-    pub conversations: Vec<serde_json::Value>,
-    pub api_keys: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupVerifyResult {
     pub integrity: String,
     pub ok: bool,

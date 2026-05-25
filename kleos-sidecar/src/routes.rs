@@ -224,9 +224,7 @@ async fn probe_upstream_cached(state: &SidecarState) -> bool {
     reachable
 }
 
-// ---------------------------------------------------------------------------
-// POST /session/start
-// ---------------------------------------------------------------------------
+// --- POST /session/start ---
 
 #[derive(Debug, Deserialize)]
 struct StartSessionBody {
@@ -269,9 +267,7 @@ async fn start_session(
     }
 }
 
-// ---------------------------------------------------------------------------
-// GET /sessions
-// ---------------------------------------------------------------------------
+// --- GET /sessions ---
 
 async fn list_sessions(State(state): State<SidecarState>) -> Json<Value> {
     let sessions = state.sessions.read().await;
@@ -286,9 +282,7 @@ async fn list_sessions(State(state): State<SidecarState>) -> Json<Value> {
     }))
 }
 
-// ---------------------------------------------------------------------------
-// POST /observe
-// ---------------------------------------------------------------------------
+// --- POST /observe ---
 
 #[derive(Debug, Deserialize)]
 struct ObserveBody {
@@ -380,9 +374,7 @@ async fn observe(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// POST /recall
-// ---------------------------------------------------------------------------
+// --- POST /recall ---
 
 #[derive(Debug, Deserialize)]
 struct RecallBody {
@@ -536,9 +528,7 @@ async fn recall(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// POST /compress
-// ---------------------------------------------------------------------------
+// --- POST /compress ---
 
 #[derive(Debug, Deserialize)]
 struct CompressBody {
@@ -735,9 +725,7 @@ async fn compress(
     }
 }
 
-// ---------------------------------------------------------------------------
-// POST /end
-// ---------------------------------------------------------------------------
+// --- POST /end ---
 
 #[derive(Debug, Deserialize)]
 struct EndSessionBody {

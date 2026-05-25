@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
 use super::types::{PaymentMethodCounts, ReconciliationResponse, ServiceSpend};
 
@@ -33,8 +33,7 @@ pub async fn get_reconciliation(
                    AND ps.created_at LIKE ?2
                  GROUP BY pq.service_id
                  ORDER BY pq.service_id",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
         let breakdown: Vec<ServiceSpend> = stmt
             .query_map(params![user_id, date_prefix], |row| {
@@ -49,10 +48,8 @@ pub async fn get_reconciliation(
                     calls: row.get(1)?,
                     amount,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let total_spent = breakdown
             .iter()

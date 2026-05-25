@@ -289,11 +289,9 @@ impl Database {
     {
         self.write(move |conn| {
             let tx = conn
-                .transaction()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .transaction()?;
             let result = f(&tx)?;
-            tx.commit()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            tx.commit()?;
             Ok(result)
         })
         .await

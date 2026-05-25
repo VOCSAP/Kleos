@@ -198,7 +198,7 @@ impl CreddClient {
                             "raw secret placeholders are only allowed on admin-gated flows".into(),
                         ));
                     }
-                    self.get_raw(db, agent, &pattern.service, &pattern.key)
+                    self.get_raw(db, user_id, agent, &pattern.service, &pattern.key)
                         .await
                 }
             }
@@ -288,6 +288,7 @@ impl CreddClient {
     pub async fn get_raw(
         &self,
         _db: &Database,
+        _user_id: i64,
         _agent: &str,
         _service: &str,
         _key: &str,
@@ -532,16 +533,6 @@ pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
 
 /// Trust evaluation seam. Currently returns 0 (deny-by-default).
 /// Phase 2 will track session age, tool call count, and gate block count
-/// to produce a decaying score.
-#[allow(
-    dead_code,
-    unused_variables,
-    reason = "Phase 2 seam -- will track session trust decay"
-)]
-pub fn evaluate_trust(session_id: &str) -> u8 {
-    0
-}
-
 /// Build the reqwest client used for every credd call.
 ///
 /// SECURITY / ROBUSTNESS: every HTTP call to credd must time out. Without

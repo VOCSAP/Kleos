@@ -2,13 +2,13 @@
 //! Ported from tier4/valence.ts.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use regex::Regex;
 use rusqlite::params;
 use std::sync::LazyLock;
 
 use super::types::{
-    EmotionMatch, EmotionMemory, EmotionStat, EmotionalProfile, OverallEmotionStats, ValenceResult,
+    EmotionMatch, EmotionStat, EmotionalProfile, OverallEmotionStats, ValenceResult,
 };
 
 struct EmotionPattern {
@@ -186,52 +186,12 @@ pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Resu
             conn.execute(
                 "UPDATE memories SET valence = ?1, arousal = ?2, dominant_emotion = ?3 WHERE id = ?4",
                 params![valence, arousal, dominant_emotion, memory_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await?;
     }
     Ok(result)
-}
-
-#[tracing::instrument(skip(db), fields(emotion = %emotion, user_id, limit))]
-pub async fn query_by_emotion(
-    db: &Database,
-    emotion: &str,
-    user_id: i64,
-    limit: i64,
-) -> Result<Vec<EmotionMemory>> {
-    let emotion_owned = emotion.to_string();
-    db.read(move |conn| {
-        // The owner predicate (?3) keeps single-DB (shared) mode from returning
-        // another user's affect-tagged memories; a no-op in a single-owner shard.
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, importance, valence, arousal, dominant_emotion, created_at \
-                 FROM memories \
-                 WHERE dominant_emotion = ?1 AND user_id = ?3 AND is_forgotten = 0 AND is_archived = 0 \
-                 ORDER BY ABS(valence) DESC, created_at DESC LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![emotion_owned, limit, user_id], |row| {
-                Ok(EmotionMemory {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    category: row.get(2)?,
-                    importance: row.get(3)?,
-                    valence: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
-                    arousal: row.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
-                    dominant_emotion: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                    created_at: row.get(7)?,
-                })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
-    })
-    .await
 }
 
 #[tracing::instrument(skip(db))]
@@ -243,8 +203,7 @@ pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
                     "SELECT dominant_emotion, COUNT(*) as count, AVG(valence), AVG(arousal) \
                      FROM memories WHERE dominant_emotion IS NOT NULL AND is_forgotten = 0 \
                      GROUP BY dominant_emotion ORDER BY count DESC",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok(EmotionStat {
@@ -253,10 +212,8 @@ pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
                         avg_valence: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
                         avg_arousal: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
                     })
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
 
@@ -269,8 +226,7 @@ pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
                      SUM(CASE WHEN valence < -0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence BETWEEN -0.2 AND 0.2 THEN 1 ELSE 0 END) \
                      FROM memories WHERE valence IS NOT NULL AND is_forgotten = 0",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let result = stmt
                 .query_row([], |row| {
                     Ok(OverallEmotionStats {
@@ -280,8 +236,7 @@ pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
                         negative_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
                         neutral_count: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
                     })
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                })?;
             Ok(result)
         })
         .await?;

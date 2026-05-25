@@ -62,9 +62,7 @@ pub fn router() -> Router<AppState> {
         .route("/thymus/stats", get(get_stats_handler))
 }
 
-// ---------------------------------------------------------------------------
-// Rubric handlers
-// ---------------------------------------------------------------------------
+// --- Rubric handlers ---
 
 /// Handler for `GET /thymus/rubrics`. Returns all rubrics belonging to the
 /// authenticated user as `{ "rubrics": [...] }`. Returns 200 on success.
@@ -126,9 +124,7 @@ async fn delete_rubric_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
-// ---------------------------------------------------------------------------
-// Evaluation handlers
-// ---------------------------------------------------------------------------
+// --- Evaluation handlers ---
 
 /// Handler for `POST /thymus/evaluate`. Runs an evaluation against a rubric and
 /// records the result. Injects the authenticated user's ID into the request body.
@@ -202,9 +198,7 @@ async fn get_agent_scores_handler(
     Ok(Json(json!(scores)))
 }
 
-// ---------------------------------------------------------------------------
-// Metric handlers
-// ---------------------------------------------------------------------------
+// --- Metric handlers ---
 
 /// Handler for `POST /thymus/metrics`. Records a single quality metric
 /// observation. Injects the authenticated user's ID into the request body
@@ -263,9 +257,7 @@ async fn get_metric_summary_handler(
     Ok(Json(summary))
 }
 
-// ---------------------------------------------------------------------------
-// Session quality handlers
-// ---------------------------------------------------------------------------
+// --- Session quality handlers ---
 
 /// Handler for `POST /thymus/session-quality`. Records a session quality
 /// snapshot (e.g. coherence, goal completion, drift indicators). Stamps the
@@ -296,9 +288,7 @@ async fn get_session_quality_handler(
     Ok(Json(json!({ "session_quality": records })))
 }
 
-// ---------------------------------------------------------------------------
-// Drift event handlers
-// ---------------------------------------------------------------------------
+// --- Drift event handlers ---
 
 /// Handler for `POST /thymus/drift-events`. Records a behavioral drift event
 /// for an agent (e.g. persona divergence, instruction violation). Stamps the
@@ -344,9 +334,7 @@ async fn get_drift_summary_handler(
     Ok(Json(json!({ "drift_summary": summary })))
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 /// Handler for `GET /thymus/stats`. Returns aggregate thymus statistics for
 /// the authenticated user (rubric count, evaluation count, metric count, etc.).

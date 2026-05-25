@@ -1,12 +1,9 @@
 use super::types::{GraphBuildOptions, GraphBuildResult, GraphEdge, GraphNode, LinkType};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::info;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Build the full graph for the default user.
 #[tracing::instrument(skip(db))]
@@ -41,7 +38,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                      ORDER BY COALESCE(decay_score, importance) DESC \
                      LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let rows = stmt
                 .query_map(rusqlite::params![limit, user_id], |row| {
@@ -72,7 +69,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                         community_id,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut nodes: Vec<GraphNode> = Vec::new();
             let mut memory_ids: Vec<i64> = Vec::new();
@@ -90,7 +87,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                     source_count,
                     decay_score,
                     community_id,
-                ) = row.map_err(rusqlite_to_eng_error)?;
+                ) = row?;
 
                 let label = if content.len() > 60 {
                     format!(
@@ -167,7 +164,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
 
             let valid_set: HashSet<i64> = memory_ids.iter().copied().collect();
 
-            let mut stmt = conn.prepare(&query).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&query)?;
 
             let rows = stmt
                 .query_map(rusqlite::params_from_iter(params.iter()), |row| {
@@ -179,19 +176,19 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                         .unwrap_or_else(|_| "cite".to_string());
                     Ok((source_id, target_id, similarity, link_type_str))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut edges: Vec<GraphEdge> = Vec::new();
 
             for row in rows {
                 let (source_id, target_id, similarity, link_type_str) =
-                    row.map_err(rusqlite_to_eng_error)?;
+                    row?;
 
                 if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
                     continue;
                 }
 
-                let link_type = parse_link_type(&link_type_str);
+                let link_type = LinkType::parse(&link_type_str);
 
                 edges.push(GraphEdge {
                     source: format!("m{}", source_id),
@@ -286,22 +283,6 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     Ok(GraphBuildResult { nodes, edges })
 }
 
-fn parse_link_type(s: &str) -> LinkType {
-    match s {
-        "cite" | "similarity" | "related" => LinkType::Cite,
-        "mentions" | "about" => LinkType::Mentions,
-        "association" | "Association" => LinkType::Association,
-        "temporal" | "Temporal" => LinkType::Temporal,
-        "contradicts" | "contradiction" | "Contradiction" => LinkType::Contradicts,
-        "causal" | "causes" | "caused_by" | "Causal" => LinkType::Causal,
-        "resolves" | "Resolves" => LinkType::Resolves,
-        "refines" | "updates" | "corrects" => LinkType::Refines,
-        "generalizes" | "consolidates" => LinkType::Generalizes,
-        "has_fact" => LinkType::HasFact,
-        _ => LinkType::Cite,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,13 +324,13 @@ mod tests {
 
     #[test]
     fn test_parse_link_type() {
-        assert_eq!(parse_link_type("cite"), LinkType::Cite);
-        assert_eq!(parse_link_type("similarity"), LinkType::Cite);
-        assert_eq!(parse_link_type("contradicts"), LinkType::Contradicts);
-        assert_eq!(parse_link_type("has_fact"), LinkType::HasFact);
-        assert_eq!(parse_link_type("updates"), LinkType::Refines);
-        assert_eq!(parse_link_type("consolidates"), LinkType::Generalizes);
-        assert_eq!(parse_link_type("unknown_type"), LinkType::Cite);
+        assert_eq!(LinkType::parse("cite"), LinkType::Cite);
+        assert_eq!(LinkType::parse("similarity"), LinkType::Cite);
+        assert_eq!(LinkType::parse("contradicts"), LinkType::Contradicts);
+        assert_eq!(LinkType::parse("has_fact"), LinkType::HasFact);
+        assert_eq!(LinkType::parse("updates"), LinkType::Refines);
+        assert_eq!(LinkType::parse("consolidates"), LinkType::Generalizes);
+        assert_eq!(LinkType::parse("unknown_type"), LinkType::Cite);
     }
 
     #[test]

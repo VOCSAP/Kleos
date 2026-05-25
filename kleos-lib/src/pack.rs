@@ -3,12 +3,9 @@
 //! Ports: pack/index.ts
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -57,7 +54,7 @@ pub async fn pack_memories(
                      WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 \
                        AND is_consolidated = 0 AND is_latest = 1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map(rusqlite::params![], |row| {
                     Ok(PackCandidate {
@@ -69,10 +66,10 @@ pub async fn pack_memories(
                         source: "static".to_string(),
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut results = Vec::new();
             for row in rows {
-                results.push(row.map_err(rusqlite_to_eng_error)?);
+                results.push(row?);
             }
             Ok(results)
         })
@@ -90,7 +87,7 @@ pub async fn pack_memories(
                        AND is_consolidated = 0 \
                      ORDER BY ds DESC LIMIT 30",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map(rusqlite::params![], |row| {
                     let ds: f64 = row.get::<_, f64>(4).unwrap_or(5.0);
@@ -103,10 +100,10 @@ pub async fn pack_memories(
                         source: "important".to_string(),
                     })
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut results = Vec::new();
             for row in rows {
-                results.push(row.map_err(rusqlite_to_eng_error)?);
+                results.push(row?);
             }
             Ok(results)
         })

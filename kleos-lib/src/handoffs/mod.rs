@@ -179,11 +179,10 @@ impl HandoffsDb {
                         rusqlite::params![hash2, project2, user_id],
                         |row| row.get(0),
                     )?;
-                    Ok::<bool, rusqlite::Error>(count > 0)
+                    Ok::<bool, EngError>(count > 0)
                 })
                 .await
-                .map_err(|e| EngError::Internal(format!("handoffs reader interact failed: {e}")))?
-                .map_err(|e: rusqlite::Error| EngError::Database(e))?;
+                .map_err(|e| EngError::Internal(format!("handoffs reader interact failed: {e}")))??;
 
             if exists {
                 return Ok(StoreResult {
@@ -226,11 +225,10 @@ impl HandoffsDb {
                         hash,
                     ],
                 )?;
-                Ok::<i64, rusqlite::Error>(conn.last_insert_rowid())
+                Ok::<i64, EngError>(conn.last_insert_rowid())
             })
             .await
-            .map_err(|e| EngError::Internal(format!("handoffs writer interact failed: {e}")))?
-            .map_err(|e: rusqlite::Error| EngError::Database(e))?;
+            .map_err(|e| EngError::Internal(format!("handoffs writer interact failed: {e}")))??;
 
         let writer_clone = self.writer();
         let project3 = project.clone();
@@ -417,11 +415,10 @@ impl HandoffsDb {
             for row in rows {
                 results.push(row?);
             }
-            Ok::<Vec<Handoff>, rusqlite::Error>(results)
+            Ok::<Vec<Handoff>, EngError>(results)
         })
         .await
         .map_err(|e| EngError::Internal(format!("handoffs list interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     pub async fn get_latest(
@@ -521,11 +518,10 @@ impl HandoffsDb {
             for row in rows {
                 results.push(row?);
             }
-            Ok::<Vec<SearchResult>, rusqlite::Error>(results)
+            Ok::<Vec<SearchResult>, EngError>(results)
         })
         .await
         .map_err(|e| EngError::Internal(format!("handoffs search interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     pub async fn stats(&self, user_id: i64) -> Result<HandoffStats> {
@@ -620,7 +616,7 @@ impl HandoffsDb {
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
 
-            Ok::<HandoffStats, rusqlite::Error>(HandoffStats {
+            Ok::<HandoffStats, EngError>(HandoffStats {
                 total,
                 total_content_bytes,
                 date_range,
@@ -632,7 +628,6 @@ impl HandoffsDb {
         })
         .await
         .map_err(|e| EngError::Internal(format!("handoffs stats interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     pub async fn gc(&self, tiered: bool, keep: Option<i64>, user_id: i64) -> Result<GcResult> {
@@ -702,14 +697,13 @@ impl HandoffsDb {
                 |r| r.get(0),
             )?;
 
-            Ok::<GcResult, rusqlite::Error>(GcResult {
+            Ok::<GcResult, EngError>(GcResult {
                 deleted: before - after,
                 remaining: after,
             })
         })
         .await
         .map_err(|e| EngError::Internal(format!("handoffs gc interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     pub async fn delete(&self, id: i64, user_id: i64) -> Result<bool> {
@@ -723,11 +717,10 @@ impl HandoffsDb {
                 "DELETE FROM handoffs WHERE id = ?1 AND user_id = ?2",
                 rusqlite::params![id, user_id],
             )?;
-            Ok::<bool, rusqlite::Error>(affected > 0)
+            Ok::<bool, EngError>(affected > 0)
         })
         .await
         .map_err(|e| EngError::Internal(format!("handoffs delete interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     /// Persists a batch of extracted atoms for a handoff.
@@ -805,11 +798,10 @@ impl HandoffsDb {
             }
 
             tx.commit()?;
-            Ok::<Vec<String>, rusqlite::Error>(ids)
+            Ok::<Vec<String>, EngError>(ids)
         })
         .await
         .map_err(|e| EngError::Internal(format!("store_atoms interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     /// Lists atoms for a project, optionally filtered by type and status.
@@ -911,11 +903,10 @@ impl HandoffsDb {
             for row in rows {
                 results.push(row?);
             }
-            Ok::<Vec<atoms::Atom>, rusqlite::Error>(results)
+            Ok::<Vec<atoms::Atom>, EngError>(results)
         })
         .await
         .map_err(|e| EngError::Internal(format!("list_atoms interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     /// Returns a packed context string for the project within a token budget.
@@ -960,11 +951,10 @@ impl HandoffsDb {
                  WHERE atom_id = ?1 AND user_id = ?3 AND status = 'active'",
                 rusqlite::params![old_atom_id, new_atom_id, user_id],
             )?;
-            Ok::<(), rusqlite::Error>(())
+            Ok::<(), EngError>(())
         })
         .await
         .map_err(|e| EngError::Internal(format!("supersede_atom interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
     /// Applies exponential salience decay to non-immune atoms in a project.
@@ -1012,125 +1002,12 @@ impl HandoffsDb {
                 rusqlite::params![user_id, project],
             )? as u64;
 
-            Ok::<u64, rusqlite::Error>(decay_affected + resolve_affected)
+            Ok::<u64, EngError>(decay_affected + resolve_affected)
         })
         .await
         .map_err(|e| EngError::Internal(format!("apply_session_decay interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
     }
 
-    pub async fn link_atom_entity(
-        &self,
-        atom_id: &str,
-        entity_id: i64,
-        user_id: i64,
-    ) -> Result<()> {
-        let conn =
-            self.writer().get().await.map_err(|e| {
-                EngError::Internal(format!("failed to acquire handoffs writer: {e}"))
-            })?;
-
-        let atom_id = atom_id.to_string();
-
-        conn.interact(move |conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO atom_entity_links (atom_id, entity_id, user_id)
-                 VALUES (?1, ?2, ?3)",
-                rusqlite::params![atom_id, entity_id, user_id],
-            )?;
-            Ok::<(), rusqlite::Error>(())
-        })
-        .await
-        .map_err(|e| EngError::Internal(format!("link_atom_entity interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
-    }
-
-    pub async fn get_atom_entities(&self, atom_id: &str, user_id: i64) -> Result<Vec<i64>> {
-        let conn =
-            self.reader().get().await.map_err(|e| {
-                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-            })?;
-
-        let atom_id = atom_id.to_string();
-
-        conn.interact(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT entity_id FROM atom_entity_links WHERE atom_id = ?1 AND user_id = ?2",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![atom_id, user_id], |row| row.get(0))?;
-            rows.collect::<rusqlite::Result<Vec<i64>>>()
-        })
-        .await
-        .map_err(|e| EngError::Internal(format!("get_atom_entities interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
-    }
-
-    pub async fn get_entity_atoms(&self, entity_id: i64, user_id: i64) -> Result<Vec<atoms::Atom>> {
-        let conn =
-            self.reader().get().await.map_err(|e| {
-                EngError::Internal(format!("failed to acquire handoffs reader: {e}"))
-            })?;
-
-        conn.interact(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT a.id, a.atom_id, a.handoff_id, a.user_id, a.project, a.atom_type,
-                        a.content, a.canonical_form, a.salience, a.confidence, a.status,
-                        a.created_at, a.last_seen_at, a.seen_count, a.decay_immune,
-                        a.superseded_by, a.metadata
-                 FROM handoff_atoms a
-                 JOIN atom_entity_links l ON l.atom_id = a.atom_id AND l.user_id = a.user_id
-                 WHERE l.entity_id = ?1 AND l.user_id = ?2 AND a.status = 'active'
-                 ORDER BY a.salience DESC",
-            )?;
-            let rows = stmt.query_map(rusqlite::params![entity_id, user_id], |row| {
-                let atom_type_str: String = row.get(5)?;
-                let status_str: String = row.get(10)?;
-                let metadata_str: Option<String> = row.get(16)?;
-                let metadata = metadata_str
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str(s).ok());
-
-                let atom_type =
-                    atoms::AtomType::parse(&atom_type_str).unwrap_or(atoms::AtomType::Entity);
-
-                let status = match status_str.as_str() {
-                    "resolved" => atoms::AtomStatus::Resolved,
-                    "superseded" => atoms::AtomStatus::Superseded,
-                    "contested" => atoms::AtomStatus::Contested,
-                    _ => atoms::AtomStatus::Active,
-                };
-
-                Ok(atoms::Atom {
-                    id: Some(row.get(0)?),
-                    atom_id: row.get(1)?,
-                    handoff_id: row.get(2)?,
-                    user_id: row.get(3)?,
-                    project: row.get(4)?,
-                    atom_type,
-                    content: row.get(6)?,
-                    canonical_form: row.get(7)?,
-                    salience: row.get(8)?,
-                    confidence: row.get(9)?,
-                    status,
-                    created_at: row.get(11)?,
-                    last_seen_at: row.get(12)?,
-                    seen_count: row.get(13)?,
-                    decay_immune: row.get(14)?,
-                    superseded_by: row.get(15)?,
-                    metadata,
-                })
-            })?;
-
-            let mut results = Vec::new();
-            for row in rows {
-                results.push(row?);
-            }
-            Ok::<Vec<atoms::Atom>, rusqlite::Error>(results)
-        })
-        .await
-        .map_err(|e| EngError::Internal(format!("get_entity_atoms interact failed: {e}")))?
-        .map_err(|e: rusqlite::Error| EngError::Database(e))
-    }
 }
 
 fn compute_content_hash(content: &str, handoff_type: &str) -> String {

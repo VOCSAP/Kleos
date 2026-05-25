@@ -13,9 +13,6 @@ use std::collections::HashMap;
 use crate::db::Database;
 use crate::{EngError, Result};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ----------------------------------------------------------------------------
 // Core structs
@@ -157,7 +154,7 @@ impl EvolutionState {
                  VALUES ('evolution_state', ?1)",
                 rusqlite::params![json_str],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await
@@ -176,7 +173,7 @@ impl EvolutionState {
                         |row| row.get(0),
                     )
                     .optional();
-                row.map_err(rusqlite_to_eng_error)
+                Ok(row?)
             })
             .await;
 

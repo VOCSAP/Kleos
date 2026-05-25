@@ -112,12 +112,11 @@ async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
     db.read(|conn| {
         let mut stmt = conn
             .prepare("SELECT id FROM users ORDER BY id")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            ?;
         let rows = stmt
             .query_map([], |row| row.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            ?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -567,12 +566,11 @@ async fn recent_memory_contents(
                  WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                  ORDER BY created_at DESC LIMIT ?1",
             )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            ?;
         let rows = stmt
             .query_map(rusqlite::params![limit_i64], |row| row.get::<_, String>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            ?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }

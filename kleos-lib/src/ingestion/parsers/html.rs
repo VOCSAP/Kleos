@@ -33,7 +33,7 @@ fn extract_title(html: &str) -> String {
 
 /// Strip HTML tags and extract text content.
 /// Removes content within SKIP_TAGS entirely.
-fn strip_tags(html: &str) -> String {
+pub fn strip_tags(html: &str) -> String {
     let mut output = String::with_capacity(html.len() / 2);
     let lower = html.to_lowercase();
     let bytes = html.as_bytes();

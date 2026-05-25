@@ -83,7 +83,7 @@ async fn list_handler(
 
             let mut stmt = conn
                 .prepare(&sql)
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params_ref.as_slice(), |row| {
@@ -102,9 +102,9 @@ async fn list_handler(
                         "pubkey_fingerprint": row.get::<_, String>(11)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })
@@ -139,7 +139,7 @@ async fn audit_handler(
                      ORDER BY created_at DESC
                      LIMIT ?3",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params![identity_id, since, limit as i64], |row| {
@@ -152,9 +152,9 @@ async fn audit_handler(
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })

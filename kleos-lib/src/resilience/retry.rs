@@ -8,9 +8,7 @@ use crate::{EngError, Result};
 use std::sync::Arc;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// RetryPolicy
-// ---------------------------------------------------------------------------
+// --- RetryPolicy ---
 
 /// Policy controlling retry behaviour for a fallible async operation.
 #[derive(Clone)]
@@ -48,16 +46,6 @@ impl RetryPolicy {
         }
     }
 
-    /// Retry on every error regardless of type. Useful for infrastructure calls
-    /// where the caller has already verified the error is transient.
-    pub fn always_retry(max_attempts: u32, base_delay: Duration, max_delay: Duration) -> Self {
-        Self {
-            max_attempts,
-            base_delay,
-            max_delay,
-            retry_on: Arc::new(|_| true),
-        }
-    }
 }
 
 /// Returns `true` for errors that are likely transient network/infrastructure
@@ -69,9 +57,7 @@ pub fn is_transient_error(e: &EngError) -> bool {
     )
 }
 
-// ---------------------------------------------------------------------------
-// with_retry
-// ---------------------------------------------------------------------------
+// --- with_retry ---
 
 /// Execute `op` with exponential backoff retry according to `policy`.
 ///
@@ -137,9 +123,7 @@ fn pseudo_rand_percent(attempt: u32) -> u64 {
     (v % 101) as u64
 }
 
-// ---------------------------------------------------------------------------
-// Legacy adapter (re-exported as retry_with_backoff from resilience::)
-// ---------------------------------------------------------------------------
+// --- Legacy adapter (re-exported as retry_with_backoff from resilience::) ---
 
 /// Backwards-compatible retry helper. Retries on every error (no predicate).
 /// New code should use [`with_retry`] with an explicit [`RetryPolicy`].
@@ -174,9 +158,7 @@ where
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

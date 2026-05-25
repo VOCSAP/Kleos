@@ -3,13 +3,10 @@ use std::time::Instant;
 use crate::brain::hopfield::network::{self, HopfieldNetwork};
 use crate::brain::hopfield::pattern;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
 use super::StageReport;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Similarity threshold above which two patterns are considered redundantly
 /// correlated and eligible for edge weight reduction.
@@ -85,7 +82,7 @@ pub async fn decorrelate(
                              WHERE source_id = ?2 AND target_id = ?3",
                             rusqlite::params![decay_rate as f64, id_a, id_b],
                         )
-                        .map_err(rusqlite_to_eng_error)?;
+                        ?;
                     let affected_ba = conn
                         .execute(
                             "UPDATE brain_edges \
@@ -93,7 +90,7 @@ pub async fn decorrelate(
                              WHERE source_id = ?2 AND target_id = ?3",
                             rusqlite::params![decay_rate as f64, id_b, id_a],
                         )
-                        .map_err(rusqlite_to_eng_error)?;
+                        ?;
                     Ok(affected_ab + affected_ba)
                 })
                 .await?;

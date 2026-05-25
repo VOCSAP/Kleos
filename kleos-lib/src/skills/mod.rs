@@ -2,15 +2,11 @@
 //! `skills` table.
 //!
 //! A skill bundles a name, prompt, and metadata; submodules add behavior:
-//! - [`registry`]  CRUD over the `skills` table plus lookup-by-name.
 //! - [`search`]    keyword + semantic search across skills.
 //! - [`analyzer`]  structural analysis passes (size, graph shape).
 //! - [`evolver`]   controlled mutation + evaluation loops.
-//! - [`patch`]     incremental edit application + rollback.
 //! - [`dashboard`] aggregate stats/health for UI surfaces.
 //! - [`cloud`]     import/export to shared cloud skill libraries.
-//! - [`conversation_formatter`] projects conversations into the message
-//!   schemas LLM backends expect.
 //!
 //! Routes under `/skills/*` in `kleos-server` dispatch into these.
 //! Skills read memories and write derived rows; they must not mutate raw
@@ -20,12 +16,9 @@ pub mod aliases;
 pub mod analyzer;
 pub mod bundles;
 pub mod cloud;
-pub mod conversation_formatter;
 pub mod dashboard;
 pub mod evolver;
 pub mod materializations;
-pub mod patch;
-pub mod registry;
 pub mod search;
 pub mod types;
 
@@ -111,8 +104,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
                     Ok(None)
                 }
             })
-            .await
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .await?;
         if let Some((pv, pr)) = result {
             (pv + 1, pr.or(Some(parent_id)))
         } else {
@@ -162,8 +154,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
                     content_hash,
                     user_id,
                 ],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             let id = conn.last_insert_rowid();
 
             // Record lineage
@@ -171,8 +162,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
                 conn.execute(
                     "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
                     params![id, parent_id],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             }
 
             // Insert tags
@@ -181,8 +171,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
                     conn.execute(
                         "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
                         params![id, tag],
-                    )
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    )?;
                 }
             }
 
@@ -192,8 +181,7 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
                     conn.execute(
                         "INSERT OR IGNORE INTO skill_tool_deps (skill_id, tool_name, is_optional) VALUES (?1, ?2, 0)",
                         params![id, dep],
-                    )
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    )?;
                 }
             }
 
@@ -214,14 +202,11 @@ pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
     );
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(&sql)?;
         let mut rows = stmt
-            .query(params![id, user_id])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.next()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .map(|row| row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string())))
+            .query(params![id, user_id])?;
+        rows.next()?
+            .map(|row| row_to_skill(row))
             .transpose()?
             .ok_or_else(|| EngError::NotFound(format!("skill {} not found", id)))
     })
@@ -252,17 +237,14 @@ pub async fn list_skills(
                 SKILL_COLUMNS
             );
             let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare(&sql)?;
             let mut rows = stmt
-                .query(params![agent_str, user_id, limit as i64, offset as i64])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .query(params![agent_str, user_id, limit as i64, offset as i64])?;
             while let Some(row) = rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .next()?
             {
                 skills
-                    .push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+                    .push(row_to_skill(row)?);
             }
         } else {
             let sql = format!(
@@ -272,17 +254,14 @@ pub async fn list_skills(
                 SKILL_COLUMNS
             );
             let mut stmt = conn
-                .prepare(&sql)
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare(&sql)?;
             let mut rows = stmt
-                .query(params![user_id, limit as i64, offset as i64])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .query(params![user_id, limit as i64, offset as i64])?;
             while let Some(row) = rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .next()?
             {
                 skills
-                    .push(row_to_skill(row).map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+                    .push(row_to_skill(row)?);
             }
         };
         Ok(skills)
@@ -320,57 +299,49 @@ pub async fn update_skill(
             conn.execute(
                 "UPDATE skill_records SET code = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![c, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(ref d) = desc {
             conn.execute(
                 "UPDATE skill_records SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![d, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(active) = is_active {
             conn.execute(
                 "UPDATE skill_records SET is_active = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![active as i32, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(deprecated) = is_deprecated {
             conn.execute(
                 "UPDATE skill_records SET is_deprecated = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![deprecated as i32, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(ref m) = meta {
             conn.execute(
                 "UPDATE skill_records SET metadata = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![m, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(ref k) = kind {
             conn.execute(
                 "UPDATE skill_records SET kind = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![k, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(ref sp) = source_path {
             conn.execute(
                 "UPDATE skill_records SET source_path = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![sp, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         if let Some(ref ch) = content_hash {
             conn.execute(
                 "UPDATE skill_records SET content_hash = ?1, updated_at = datetime('now') WHERE id = ?2",
                 params![ch, id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         Ok(())
     })
@@ -391,7 +362,7 @@ pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Ski
 
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE skill_records SET \
                     version = version + 1, \
                     success_count = 0, \
@@ -402,8 +373,7 @@ pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Ski
                     updated_at = datetime('now') \
                  WHERE id = ?1",
                 params![id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -418,11 +388,10 @@ pub async fn recompute_skill(db: &Database, id: i64, user_id: i64) -> Result<Ski
 pub async fn delete_skill(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM skill_records WHERE id = ?1 AND user_id = ?2",
                 params![id, user_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -455,8 +424,7 @@ pub async fn record_execution(
             "INSERT INTO execution_analyses (skill_id, success, duration_ms, error_type, error_message) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![skill_id, success as i32, duration_ms, error_type_owned, error_message_owned],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         // Update skill counters.
         if success {
@@ -465,16 +433,14 @@ pub async fn record_execution(
                  execution_count = execution_count + 1, updated_at = datetime('now') \
                  WHERE id = ?1",
                 params![skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         } else {
             conn.execute(
                 "UPDATE skill_records SET failure_count = failure_count + 1, \
                  execution_count = execution_count + 1, updated_at = datetime('now') \
                  WHERE id = ?1",
                 params![skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
 
         // Update avg_duration_ms
@@ -484,8 +450,7 @@ pub async fn record_execution(
                  COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), \
                  updated_at = datetime('now') WHERE id = ?2",
                 params![dur, skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
 
         Ok(())
@@ -512,8 +477,7 @@ pub async fn get_executions(
                  FROM execution_analyses ea \
                  WHERE ea.skill_id = ?1 \
                  ORDER BY ea.id DESC LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
         let records = stmt
             .query_map(params![skill_id, limit as i64], |row| {
@@ -529,10 +493,8 @@ pub async fn get_executions(
                     metadata: row.get(8)?,
                     created_at: row.get(9)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         Ok(records)
     })
@@ -563,8 +525,7 @@ pub async fn add_judgment(
                 "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) \
                  VALUES (?1, ?2, ?3, ?4)",
                 params![skill_id, judge_agent_owned, score, rationale_owned],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             let id = conn.last_insert_rowid();
 
             // Update trust_score as weighted average of all judgments.
@@ -573,8 +534,7 @@ pub async fn add_judgment(
                  (SELECT AVG(score) FROM skill_judgments WHERE skill_id = ?1), \
                  updated_at = datetime('now') WHERE id = ?1",
                 params![skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
             Ok(id)
         })
@@ -606,8 +566,7 @@ pub async fn get_judgments(
                  FROM skill_judgments sj \
                  WHERE sj.skill_id = ?1 \
                  ORDER BY sj.id DESC",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
         let judgments = stmt
             .query_map(params![skill_id], |row| {
@@ -619,10 +578,8 @@ pub async fn get_judgments(
                     rationale: row.get(4)?,
                     created_at: row.get(5)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         Ok(judgments)
     })
@@ -656,8 +613,7 @@ pub async fn record_tool_quality(
                 latency_ms,
                 error_type_owned
             ],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -675,20 +631,17 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
                     "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
                      AVG(latency_ms) as avg_latency \
                      FROM tool_quality_records WHERE tool_name = ?1",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let mut rows = stmt
-                .query(params![tool_name_owned])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            if let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                .query(params![tool_name_owned])?;
+            if let Some(row) = rows.next()? {
                 let total: i64 =
-                    row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    row.get(0)?;
                 let successes: i64 = row
-                    .get::<_, Option<i64>>(1)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                    .get::<_, Option<i64>>(1)?
                     .unwrap_or(0);
                 let avg_latency: Option<f64> =
-                    row.get(2).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    row.get(2)?;
                 Ok(Some((total, successes, avg_latency)))
             } else {
                 Ok(None)
@@ -721,13 +674,10 @@ pub async fn get_skill_tags(db: &Database, skill_id: i64, user_id: i64) -> Resul
             .prepare(
                 "SELECT st.tag FROM skill_tags st \
                  WHERE st.skill_id = ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let tags = stmt
-            .query_map(params![skill_id], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<String>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![skill_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(tags)
     })
     .await
@@ -745,21 +695,13 @@ pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result
             .prepare(
                 "SELECT std.tool_name FROM skill_tool_deps std \
                  WHERE std.skill_id = ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let deps = stmt
-            .query_map(params![skill_id], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<String>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![skill_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
         Ok(deps)
     })
     .await
-}
-
-/// Check if all required tools for a skill are available.
-pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) -> bool {
-    required_tools.iter().all(|t| available_tools.contains(t))
 }
 
 /// List recently-evolved skills for a user. An evolution is any
@@ -783,8 +725,7 @@ pub async fn list_recent_evolutions(
                    ORDER BY sr.created_at DESC \
                    LIMIT ?2";
         let mut stmt = conn
-            .prepare(sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(sql)?;
         let raw: Vec<(i64, String, i32, String, String, String)> = stmt
             .query_map(params![since_clause, limit as i64], |row| {
                 Ok((
@@ -795,8 +736,7 @@ pub async fn list_recent_evolutions(
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
                 ))
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            })?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -804,14 +744,12 @@ pub async fn list_recent_evolutions(
             .prepare(
                 "SELECT parent_id FROM skill_lineage_parents \
                  WHERE skill_id = ?1 ORDER BY parent_id",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
         let mut out = Vec::with_capacity(raw.len());
         for (skill_id, name, version, tag, agent, created_at) in raw {
             let parent_ids: Vec<i64> = parents_stmt
-                .query_map(params![skill_id], |row| row.get::<_, i64>(0))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .query_map(params![skill_id], |row| row.get::<_, i64>(0))?
                 .filter_map(|r| r.ok())
                 .collect();
             out.push(EvolutionFeedRow {
@@ -842,13 +780,10 @@ pub async fn get_lineage(db: &Database, skill_id: i64, user_id: i64) -> Result<V
             .prepare(
                 "SELECT slp.parent_id FROM skill_lineage_parents slp \
                  WHERE slp.skill_id = ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let parents = stmt
-            .query_map(params![skill_id], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<i64>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![skill_id], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(parents)
     })
     .await
