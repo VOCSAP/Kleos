@@ -133,7 +133,4 @@ impl ToolQualityManager {
         .await
     }
 
-    pub fn adjust_tool_ranking(&self, tool_scores: &mut [(String, f64)]) {
-        tool_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    }
 }

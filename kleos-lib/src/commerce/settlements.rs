@@ -1,96 +1,11 @@
 use rusqlite::params;
 use rust_decimal::Decimal;
 use std::str::FromStr;
-use uuid::Uuid;
 
 use crate::db::Database;
 use crate::{EngError, Result};
 
-use super::types::{AccountBalance, PaymentMethod, PaymentSettlement, SettlementStatus};
-
-// ---------------------------------------------------------------------------
-// Create settlement
-// ---------------------------------------------------------------------------
-
-/// Parameters for creating a new payment settlement.
-pub struct CreateSettlementParams<'a> {
-    pub quote_id: &'a str,
-    pub user_id: Option<i64>,
-    pub wallet_address: Option<&'a str>,
-    pub amount: Decimal,
-    pub currency: &'a str,
-    pub payment_method: PaymentMethod,
-    pub tx_hash: Option<&'a str>,
-    pub block_number: Option<i64>,
-}
-
-/// Record a settlement for a settled quote.
-pub async fn create_settlement(
-    db: &Database,
-    params: CreateSettlementParams<'_>,
-) -> Result<PaymentSettlement> {
-    let CreateSettlementParams {
-        quote_id,
-        user_id,
-        wallet_address,
-        amount,
-        currency,
-        payment_method,
-        tx_hash,
-        block_number,
-    } = params;
-    let id = format!("stl_{}", Uuid::new_v4().as_simple());
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let amt_str = amount.to_string();
-
-    let settlement = PaymentSettlement {
-        id: id.clone(),
-        quote_id: quote_id.to_string(),
-        user_id,
-        wallet_address: wallet_address.map(|s| s.to_string()),
-        amount,
-        currency: currency.to_string(),
-        payment_method,
-        tx_hash: tx_hash.map(|s| s.to_string()),
-        block_number,
-        status: SettlementStatus::Confirmed,
-        created_at: now.clone(),
-        confirmed_at: Some(now.clone()),
-    };
-
-    let qid = quote_id.to_string();
-    let cur = currency.to_string();
-    let pm = payment_method.as_str().to_string();
-    let txh = tx_hash.map(|s| s.to_string());
-    let wa = wallet_address.map(|s| s.to_string());
-
-    db.write(move |conn| {
-        conn.execute(
-            "INSERT INTO payment_settlements
-                (id, quote_id, user_id, wallet_address, amount, currency,
-                 payment_method, tx_hash, block_number, status, created_at, confirmed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                id,
-                qid,
-                user_id,
-                wa,
-                amt_str,
-                cur,
-                pm,
-                txh,
-                block_number,
-                "confirmed",
-                now,
-                now
-            ],
-        )?;
-        Ok(())
-    })
-    .await?;
-
-    Ok(settlement)
-}
+use super::types::AccountBalance;
 
 // ---------------------------------------------------------------------------
 // Account balance
@@ -121,82 +36,6 @@ pub async fn get_balance(db: &Database, user_id: i64) -> Result<AccountBalance> 
             }),
             Err(e) => Err(EngError::Database(e)),
         }
-    })
-    .await
-}
-
-/// Deduct from a user's prepaid balance. Returns error if insufficient funds.
-pub async fn deduct_balance(db: &Database, user_id: i64, amount: Decimal) -> Result<Decimal> {
-    let amt_str = amount.to_string();
-    db.write(move |conn| {
-        // Read current balance.
-        let current: String = conn
-            .query_row(
-                "SELECT balance FROM account_balances WHERE user_id = ?1",
-                params![user_id],
-                |row| row.get(0),
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    EngError::InvalidInput("no prepaid balance account".to_string())
-                }
-                other => EngError::DatabaseMessage(other.to_string()),
-            })?;
-
-        let current_dec = Decimal::from_str(&current).unwrap_or(Decimal::ZERO);
-        let deduct = Decimal::from_str(&amt_str).unwrap_or(Decimal::ZERO);
-
-        if current_dec < deduct {
-            return Err(EngError::InvalidInput(format!(
-                "insufficient balance: have {}, need {}",
-                current_dec, deduct
-            )));
-        }
-
-        let new_balance = current_dec - deduct;
-        conn.execute(
-            "UPDATE account_balances SET balance = ?2, updated_at = datetime('now')
-             WHERE user_id = ?1",
-            params![user_id, new_balance.to_string()],
-        )?;
-
-        Ok(new_balance)
-    })
-    .await
-}
-
-/// Record daily spend for policy enforcement.
-/// Performs addition in Rust with Decimal to avoid float drift from SQL CAST AS REAL.
-pub async fn record_daily_spend(db: &Database, user_id: i64, amount: Decimal) -> Result<()> {
-    let date = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    db.write(move |conn| {
-        use rusqlite::OptionalExtension;
-        let existing: Option<(String, i64)> = conn
-            .query_row(
-                "SELECT total_amount, call_count FROM daily_spend WHERE user_id = ?1 AND date = ?2",
-                params![user_id, date],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?;
-
-        match existing {
-            Some((current_str, count)) => {
-                let current = Decimal::from_str(&current_str).unwrap_or(Decimal::ZERO);
-                let new_total = (current + amount).to_string();
-                conn.execute(
-                    "UPDATE daily_spend SET total_amount = ?1, call_count = ?2, updated_at = datetime('now') \
-                     WHERE user_id = ?3 AND date = ?4",
-                    params![new_total, count + 1, user_id, date],
-                )?;
-            }
-            None => {
-                conn.execute(
-                    "INSERT INTO daily_spend (user_id, date, total_amount, call_count) VALUES (?1, ?2, ?3, 1)",
-                    params![user_id, date, amount.to_string()],
-                )?;
-            }
-        }
-        Ok(())
     })
     .await
 }

@@ -5,11 +5,8 @@
 //! - [`search`]    keyword + semantic search across skills.
 //! - [`analyzer`]  structural analysis passes (size, graph shape).
 //! - [`evolver`]   controlled mutation + evaluation loops.
-//! - [`patch`]     incremental edit application + rollback.
 //! - [`dashboard`] aggregate stats/health for UI surfaces.
 //! - [`cloud`]     import/export to shared cloud skill libraries.
-//! - [`conversation_formatter`] projects conversations into the message
-//!   schemas LLM backends expect.
 //!
 //! Routes under `/skills/*` in `kleos-server` dispatch into these.
 //! Skills read memories and write derived rows; they must not mutate raw
@@ -19,11 +16,9 @@ pub mod aliases;
 pub mod analyzer;
 pub mod bundles;
 pub mod cloud;
-pub mod conversation_formatter;
 pub mod dashboard;
 pub mod evolver;
 pub mod materializations;
-pub mod patch;
 pub mod search;
 pub mod types;
 
@@ -707,11 +702,6 @@ pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result
         Ok(deps)
     })
     .await
-}
-
-/// Check if all required tools for a skill are available.
-pub fn check_tool_safety(required_tools: &[String], available_tools: &[String]) -> bool {
-    required_tools.iter().all(|t| available_tools.contains(t))
 }
 
 /// List recently-evolved skills for a user. An evolution is any

@@ -263,16 +263,6 @@ impl HttpReranker {
         }
     }
 
-    /// Current circuit state string for metrics/health checks.
-    /// Returns "closed", "open", or "half_open". Returns "closed" when no
-    /// guard is present (constructed without a database).
-    pub fn breaker_state(&self) -> &'static str {
-        match self.guard.as_ref().map(|g| g.circuit_state()) {
-            Some(crate::resilience::CircuitState::Open) => "open",
-            Some(crate::resilience::CircuitState::HalfOpen) => "half_open",
-            _ => "closed",
-        }
-    }
 }
 
 #[async_trait]

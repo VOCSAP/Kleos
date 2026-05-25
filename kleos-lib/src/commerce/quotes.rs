@@ -206,17 +206,3 @@ pub async fn mark_expired(db: &Database, quote_id: &str) -> Result<()> {
     .await
 }
 
-/// Expire all quotes that have passed their expires_at.
-pub async fn expire_stale_quotes(db: &Database) -> Result<i64> {
-    let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    db.write(move |conn| {
-        let rows = conn
-            .execute(
-                "UPDATE payment_quotes SET status = 'expired'
-                 WHERE status = 'pending' AND expires_at < ?1",
-                params![now],
-            )?;
-        Ok(rows as i64)
-    })
-    .await
-}

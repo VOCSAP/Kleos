@@ -486,18 +486,6 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     Ok(true)
 }
 
-#[tracing::instrument(skip(db))]
-pub async fn drain_jobs(db: &Database, limit: usize) -> Result<usize> {
-    let mut processed = 0;
-    while processed < limit {
-        if !process_next_job(db).await? {
-            break;
-        }
-        processed += 1;
-    }
-    Ok(processed)
-}
-
 // -- Scheduler leases (ported from TS jobs/scheduler.ts) --
 #[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn acquire_lease(

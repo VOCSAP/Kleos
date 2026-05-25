@@ -609,22 +609,7 @@ async fn export_table_user(
     .await
 }
 
-/// Build the full export blob (all tables) for the current tenant database.
-#[tracing::instrument(skip(db))]
-pub async fn export_data(db: &Database) -> Result<ExportData> {
-    let users = export_table(db, "SELECT * FROM users").await?;
-    let memories = export_table(db, "SELECT id, content, category, source, importance, space_id, created_at FROM memories WHERE is_forgotten = 0").await?;
-    let conversations = export_table(db, "SELECT * FROM conversations").await?;
-    let api_keys = export_table(db, "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active, created_at FROM api_keys").await?;
-    Ok(ExportData {
-        users,
-        memories,
-        conversations,
-        api_keys,
-    })
-}
-
-/// Serialize all rows of one unscoped table into the export blob format used by /admin/export.
+/// Serialize all rows of one unscoped table into the export blob format.
 async fn export_table(db: &Database, sql: &str) -> Result<Vec<serde_json::Value>> {
     let sql_owned = sql.to_string();
     db.read(move |conn| {

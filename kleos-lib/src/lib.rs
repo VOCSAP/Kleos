@@ -7,7 +7,6 @@ pub mod artifacts_crypto;
 pub mod audit;
 pub mod auth;
 pub mod auth_piv;
-pub mod cognitive;
 pub mod commerce;
 pub mod config;
 pub mod context;

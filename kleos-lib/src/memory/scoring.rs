@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 pub use crate::validation::RERANKER_TOP_K;
-pub const AUTO_LINK_THRESHOLD: f64 = 0.55;
-pub const AUTO_LINK_MAX: usize = 6;
 pub const SEARCH_FACT_VECTOR_FLOOR: f64 = 0.22;
 pub const SEARCH_PREFERENCE_VECTOR_FLOOR: f64 = 0.12;
 pub const SEARCH_REASONING_VECTOR_FLOOR: f64 = 0.10;

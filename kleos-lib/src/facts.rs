@@ -187,29 +187,6 @@ pub async fn list_facts(
     .await
 }
 
-/// Hard-delete a structured fact by id, scoped to the given user.
-/// The `user_id` predicate ensures a user cannot delete another user's
-/// facts in single-DB mode.
-#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
-pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    let affected = db
-        .write(move |conn| {
-            Ok(conn.execute(
-                "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
-            )?)
-        })
-        .await?;
-
-    if affected == 0 {
-        return Err(EngError::NotFound(format!(
-            "structured_fact {} not found",
-            id
-        )));
-    }
-    Ok(())
-}
-
 // -- Current state (per-agent key-value) ---
 
 /// Upsert a state entry for the given agent/key/user combination.

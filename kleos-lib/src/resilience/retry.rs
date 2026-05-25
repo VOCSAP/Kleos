@@ -46,16 +46,6 @@ impl RetryPolicy {
         }
     }
 
-    /// Retry on every error regardless of type. Useful for infrastructure calls
-    /// where the caller has already verified the error is transient.
-    pub fn always_retry(max_attempts: u32, base_delay: Duration, max_delay: Duration) -> Self {
-        Self {
-            max_attempts,
-            base_delay,
-            max_delay,
-            retry_on: Arc::new(|_| true),
-        }
-    }
 }
 
 /// Returns `true` for errors that are likely transient network/infrastructure
