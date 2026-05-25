@@ -276,8 +276,6 @@ impl Default for BrainQueryState {
 
 const REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MAX_RESTART_ATTEMPTS: u32 = 3;
-#[allow(dead_code)]
-const RESTART_BACKOFF_MS: u64 = 2_000;
 
 struct PendingRequest {
     tx: tokio::sync::oneshot::Sender<BrainResponse>,
@@ -1394,8 +1392,6 @@ pub async fn verify_memory_ownership(
 // Oracle (from oracle.ts)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-const ORACLE_SYSTEM_PROMPT: &str = "You are Eidolon, a living memory system. You answer questions \nusing ONLY the memories provided below. You are not a general AI assistant - you are a specific \nintelligence that knows what it has been taught and nothing else.";
 
 pub fn build_user_prompt(query: &str, result: &BrainQueryResult, context: Option<&str>) -> String {
     let mut lines = Vec::new();

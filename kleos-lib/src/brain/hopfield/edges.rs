@@ -165,29 +165,6 @@ pub async fn count_edges(db: &Database, user_id: i64) -> Result<i64> {
     .await
 }
 
-/// Delete a specific edge belonging to `user_id`.
-#[allow(dead_code)]
-#[tracing::instrument(skip(db), fields(source_id, target_id, edge_type = ?edge_type, user_id))]
-pub async fn delete_edge(
-    db: &Database,
-    source_id: i64,
-    target_id: i64,
-    edge_type: EdgeType,
-    user_id: i64,
-) -> Result<()> {
-    let edge_type_str = edge_type.to_string();
-    db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM brain_edges \
-             WHERE source_id = ?1 AND target_id = ?2 \
-               AND edge_type = ?3 AND user_id = ?4",
-            rusqlite::params![source_id, target_id, edge_type_str, user_id],
-        )
-        ?;
-        Ok(())
-    })
-    .await
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
