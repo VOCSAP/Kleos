@@ -318,11 +318,11 @@ mod tests {
 
         let stored_score: f64 = db
             .read(|conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT score FROM memory_pagerank WHERE memory_id = 1",
                     [],
                     |row| row.get(0),
-                )
+                )?)
             })
             .await
             .unwrap();
