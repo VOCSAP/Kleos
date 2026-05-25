@@ -6,7 +6,7 @@
 //! Pattern mirrors `webhook_dead_letters` from `kleos_lib::webhooks`.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -34,10 +34,6 @@ pub struct ServiceDeadLetter {
 // Write
 // ---------------------------------------------------------------------------
 
-fn rusqlite_to_eng(e: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(e.to_string())
-}
-
 /// Record a dead-letter entry for a service call that exhausted all retries.
 ///
 /// `payload` is serialised to JSON. Pass `serde_json::Value::Null` if there
@@ -64,7 +60,7 @@ pub async fn record_dead_letter(
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![svc, op, payload_s, err_s, retries],
         )
-        .map_err(rusqlite_to_eng)?;
+        ?;
         Ok(())
     })
     .await
@@ -104,23 +100,23 @@ pub async fn list_dead_letters(
             )
         };
 
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params_from_iter(
                 params_vec.iter().map(|b| b.as_ref()),
             ))
-            .map_err(rusqlite_to_eng)?;
+            ?;
 
         let mut result = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng)? {
+        while let Some(row) = rows.next()? {
             result.push(ServiceDeadLetter {
-                id: row.get(0).map_err(rusqlite_to_eng)?,
-                service: row.get(1).map_err(rusqlite_to_eng)?,
-                operation: row.get(2).map_err(rusqlite_to_eng)?,
+                id: row.get(0)?,
+                service: row.get(1)?,
+                operation: row.get(2)?,
                 payload_json: row.get(3).unwrap_or(None),
                 error: row.get(4).unwrap_or(None),
-                retry_count: row.get(5).map_err(rusqlite_to_eng)?,
-                created_at: row.get(6).map_err(rusqlite_to_eng)?,
+                retry_count: row.get(5)?,
+                created_at: row.get(6)?,
             });
         }
         Ok(result)

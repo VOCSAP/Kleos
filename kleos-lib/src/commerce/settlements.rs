@@ -119,7 +119,7 @@ pub async fn get_balance(db: &Database, user_id: i64) -> Result<AccountBalance> 
                 currency: "USDC".to_string(),
                 updated_at: String::new(),
             }),
-            Err(e) => Err(EngError::DatabaseMessage(e.to_string())),
+            Err(e) => Err(EngError::Database(e)),
         }
     })
     .await
@@ -212,7 +212,7 @@ pub async fn get_daily_spend(db: &Database, user_id: i64) -> Result<Decimal> {
         ) {
             Ok(s) => Ok(Decimal::from_str(&s).unwrap_or(Decimal::ZERO)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(Decimal::ZERO),
-            Err(e) => Err(EngError::DatabaseMessage(e.to_string())),
+            Err(e) => Err(EngError::Database(e)),
         }
     })
     .await

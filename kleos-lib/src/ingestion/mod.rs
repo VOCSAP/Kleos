@@ -52,10 +52,10 @@ async fn record_hash(db: &Database, hash: &str, _user_id: i64, job_id: &str) {
     let j = job_id.to_string();
     let _ = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "INSERT OR IGNORE INTO ingestion_hashes (sha256, job_id) VALUES (?1, ?2)",
                 rusqlite::params![h, j],
-            )
+            )?)
         })
         .await;
 }

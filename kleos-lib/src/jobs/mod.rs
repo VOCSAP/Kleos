@@ -125,7 +125,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
                     })
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(crate::EngError::DatabaseMessage(e.to_string())),
+                Err(e) => return Err(crate::EngError::Database(e)),
             }
         };
 
@@ -373,11 +373,11 @@ pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
 #[tracing::instrument(skip(db))]
 pub async fn count_failed_jobs(db: &Database) -> Result<i64> {
     db.read(|conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*) FROM jobs WHERE status = 'failed'",
             [],
             |row| row.get(0),
-        )
+        )?)
     })
     .await
 }
