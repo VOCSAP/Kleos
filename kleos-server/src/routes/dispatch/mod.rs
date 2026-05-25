@@ -10,9 +10,7 @@ use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
-// ---------------------------------------------------------------------------
-// Request / response types
-// ---------------------------------------------------------------------------
+// --- Request / response types ---
 
 /// Query parameters for the list endpoint.
 #[derive(Debug, Deserialize)]
@@ -82,9 +80,7 @@ struct UpdateConfigBody {
     enabled: Option<bool>,
 }
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 /// Register all `/dispatch/configs` routes.
 pub fn router() -> Router<AppState> {
@@ -96,9 +92,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
 /// Parse a TEXT column that contains a JSON string into a `Value`.
 /// Falls back to `Value::Null` on parse failure rather than erroring.
@@ -106,9 +100,7 @@ fn parse_json_column(raw: &str) -> Value {
     serde_json::from_str(raw).unwrap_or(Value::Null)
 }
 
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
+// --- Handlers ---
 
 /// List all dispatch configs.
 ///

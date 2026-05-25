@@ -200,9 +200,7 @@ async fn get_executions(
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 
-// ---------------------------------------------------------------------------
-// Verify DTOs
-// ---------------------------------------------------------------------------
+// --- Verify DTOs ---
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,9 +234,7 @@ struct VerifyToolManifestInput {
     signature_hex: String,
 }
 
-// ---------------------------------------------------------------------------
-// Verify handler
-// ---------------------------------------------------------------------------
+// --- Verify handler ---
 
 // Supported kinds:
 //   - passport: HMAC-based server-signed credential check
@@ -321,9 +317,7 @@ async fn verify(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Verify helpers
-// ---------------------------------------------------------------------------
+// --- Verify helpers ---
 
 fn verify_execution(input: &VerifyExecutionInput) -> Result<bool, AppError> {
     // Canonicalize: serialize each action entry with sorted keys, then

@@ -343,9 +343,7 @@ fn config_dir() -> PathBuf {
     base.join("engram")
 }
 
-// ---------------------------------------------------------------------------
-// subprocess helpers
-// ---------------------------------------------------------------------------
+// --- subprocess helpers ---
 
 /// Get device selection args if YKSERIAL is set.
 fn device_args() -> Vec<String> {
