@@ -2983,12 +2983,11 @@ mod user_id_migration_tests {
 
     async fn count_rows(db: &Database, user_id: i64) -> i64 {
         db.read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM cred_secrets WHERE user_id = ?1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .unwrap()

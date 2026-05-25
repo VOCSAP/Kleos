@@ -11,7 +11,6 @@ use crate::crypto::{decrypt_secret, encrypt_secret, KEY_SIZE};
 use crate::types::SecretData;
 use crate::{CredError, Result};
 use kleos_lib::db::Database;
-use kleos_lib::EngError;
 
 /// Recovery key length (256 bits = 32 bytes, displayed as 64 hex chars).
 pub const RECOVERY_KEY_SIZE: usize = 32;
@@ -92,16 +91,14 @@ pub async fn store_recovery_key(
         conn.execute(
             "DELETE FROM cred_recovery WHERE user_id = ?1",
             params![user_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         // Store the new recovery key
         conn.execute(
             "INSERT INTO cred_recovery (user_id, encrypted_master, recovery_hint, created_at)
              VALUES (?1, ?2, ?3, ?4)",
             params![user_id, encrypted_blob, hint_owned, now],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -119,21 +116,13 @@ pub async fn recover_master_key(
     let encrypted_blob: Option<Vec<u8>> = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")?;
 
-            let mut rows = stmt
-                .query(params![user_id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt.query(params![user_id])?;
 
-            match rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            {
+            match rows.next()? {
                 Some(row) => {
-                    let blob: Vec<u8> = row
-                        .get(0)
-                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    let blob: Vec<u8> = row.get(0)?;
                     Ok(Some(blob))
                 }
                 None => Ok(None),
@@ -179,17 +168,11 @@ pub async fn recover_master_key(
 pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")?;
 
-        let mut rows = stmt
-            .query(params![user_id])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut rows = stmt.query(params![user_id])?;
 
-        let found = rows
-            .next()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .is_some();
+        let found = rows.next()?.is_some();
 
         Ok(found)
     })
@@ -204,21 +187,16 @@ pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<Rec
         let mut stmt = conn
             .prepare(
                 "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
-        let mut rows = stmt
-            .query(params![user_id])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut rows = stmt.query(params![user_id])?;
 
-        match rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+        match rows.next()? {
             Some(row) => {
-                let id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let uid: i64 = row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let hint: Option<String> =
-                    row.get(2).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let created_at: String =
-                    row.get(3).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let id: i64 = row.get(0)?;
+                let uid: i64 = row.get(1)?;
+                let hint: Option<String> = row.get(2)?;
+                let created_at: String = row.get(3)?;
 
                 Ok(Some(RecoveryInfo {
                     id,
@@ -243,8 +221,7 @@ pub async fn delete_recovery_key(db: &Database, user_id: i64) -> Result<()> {
                 .execute(
                     "DELETE FROM cred_recovery WHERE user_id = ?1",
                     params![user_id],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             Ok(n)
         })
         .await
@@ -275,7 +252,7 @@ mod tests {
                 )",
                 [],
             )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            ?;
             Ok(())
         })
         .await
