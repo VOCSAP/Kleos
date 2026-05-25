@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-client", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest", "forge", "kleos-install-core", "kleos-install", "kleos-install-gui"]
+members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-client", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest", "forge", "kleos-install-core", "kleos-install", "kleos-install-gui", "kleos-phylax", "kleos-phylaxd"]
 exclude = []
 
 [workspace.package]
@@ -57,6 +57,7 @@ secrecy = { version = "0.8", features = ["serde"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 mimalloc = { version = "0.1", default-features = false }
 lru = "0.16"
+dashmap = "6"
 arc-swap = "1"
 walkdir = "2"
 metrics = "0.24"
