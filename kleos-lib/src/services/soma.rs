@@ -85,8 +85,6 @@ fn parse_json(text: &str, fallback: serde_json::Value) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or(fallback)
 }
 
-/// Convert a [`rusqlite::Error`] into [`EngError::DatabaseMessage`] so it can
-
 /// Map a raw rusqlite `Row` to an [`Agent`] struct. Column order must match
 /// [`AGENT_COLUMNS`]. `owner_user_id` fills `Agent.user_id`; the column is not
 /// selected (correctness comes from the always-applied `user_id` predicate, so

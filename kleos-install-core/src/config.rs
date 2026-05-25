@@ -231,7 +231,7 @@ impl InstallerConfig {
         }
 
         if let Some(RerankerConfig::Remote { api_key, endpoint, model, .. }) = &self.reranker {
-            out.push_str(&"ENGRAM_RERANKER_BACKEND=http\n".to_string());
+            out.push_str("ENGRAM_RERANKER_BACKEND=http\n");
             out.push_str(&format!("ENGRAM_RERANKER_HTTP_ENDPOINT={endpoint}\n"));
             out.push_str(&format!("ENGRAM_RERANKER_HTTP_API_KEY={api_key}\n"));
             out.push_str(&format!("ENGRAM_RERANKER_HTTP_MODEL={model}\n"));

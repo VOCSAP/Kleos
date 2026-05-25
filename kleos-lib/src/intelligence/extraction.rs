@@ -10,10 +10,6 @@ use crate::Result;
 use regex::Regex;
 use tracing::{debug, warn};
 
-/// Retained for symmetry with other modules. Extraction writes errors are
-/// logged inline via `warn!` and do not propagate, so `?` + this helper is
-/// not used on the hot path. Kept so new write paths have a consistent
-
 // Static regex patterns compiled once via OnceLock (DOS-H4 fix).
 fn buy_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();

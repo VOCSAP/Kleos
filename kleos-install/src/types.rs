@@ -34,6 +34,7 @@ pub struct InputField {
     /// Cursor position within `value` (byte index, clamped to `value.len()`).
     pub cursor_pos: usize,
     /// Optional validation function. Returns `Some(error_message)` on invalid input.
+    #[allow(clippy::type_complexity)]
     pub validator: Option<Box<dyn Fn(&str) -> Option<String>>>,
     /// Most recent validation error, or `None` if the field is valid or unvalidated.
     pub error: Option<String>,

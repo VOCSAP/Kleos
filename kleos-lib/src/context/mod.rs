@@ -298,13 +298,6 @@ pub fn assemble_context_string(
 
 // --- Helpers ---
 
-/// Check whether content is semantically duplicate against already-added blocks.
-/// Computes the candidate embedding on-demand using the provider.
-/// Returns false when no provider or embedding fails.
-///
-/// Kept as an on-demand variant for callers that have not pre-embedded the
-
-
 /// Build a working-memory block from scratchpad entries.
 /// Returns None when rows is empty.
 fn build_working_memory_block(rows: &[scratchpad::ScratchEntry]) -> Option<String> {
