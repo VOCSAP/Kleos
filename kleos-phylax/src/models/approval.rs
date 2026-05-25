@@ -1,1 +1,274 @@
 //! Approval request model and DB operations.
+
+use kleos_cred::{CredError, Result};
+use kleos_lib::db::Database;
+use rusqlite::params;
+
+/// Approval status values stored as integers in the DB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ApprovalStatus {
+    /// Waiting for operator decision.
+    Pending = 0,
+    /// Operator approved the request.
+    Approved = 1,
+    /// Operator denied the request.
+    Denied = 2,
+    /// Request expired without a decision.
+    Expired = 3,
+}
+
+impl ApprovalStatus {
+    /// Parse from integer stored in DB. Returns None for unknown values.
+    pub fn from_i32(v: i32) -> Option<Self> {
+        match v {
+            0 => Some(Self::Pending),
+            1 => Some(Self::Approved),
+            2 => Some(Self::Denied),
+            3 => Some(Self::Expired),
+            _ => None,
+        }
+    }
+}
+
+/// An approval request for a policy-gated secret.
+#[derive(Debug, Clone)]
+pub struct Approval {
+    /// Row ID.
+    pub id: i64,
+    /// Owner user ID.
+    pub user_id: i64,
+    /// Agent that requested access.
+    pub agent_name: String,
+    /// Secret category.
+    pub category: String,
+    /// Secret name.
+    pub secret_name: String,
+    /// Resolve mode requested (text, proxy, raw).
+    pub resolve_mode: String,
+    /// Current approval status.
+    pub status: ApprovalStatus,
+    /// Who approved or denied (operator name).
+    pub decided_by: Option<String>,
+    /// Operator-provided reason for decision.
+    pub reason: Option<String>,
+    /// Lease ID if a lease was minted from this approval.
+    pub lease_id: Option<i64>,
+    /// Correlation ID linking related operations.
+    pub correlation_id: Option<String>,
+    /// When the request was created.
+    pub created_at: String,
+    /// When the decision was made.
+    pub decided_at: Option<String>,
+    /// When the request expires if not decided.
+    pub expires_at: String,
+}
+
+/// Serializable approval for JSON responses.
+impl Approval {
+    /// Convert to a serde_json::Value for API responses.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "id": self.id,
+            "agent_name": self.agent_name,
+            "category": self.category,
+            "secret_name": self.secret_name,
+            "resolve_mode": self.resolve_mode,
+            "status": self.status as i32,
+            "decided_by": self.decided_by,
+            "reason": self.reason,
+            "lease_id": self.lease_id,
+            "correlation_id": self.correlation_id,
+            "created_at": self.created_at,
+            "decided_at": self.decided_at,
+            "expires_at": self.expires_at,
+        })
+    }
+}
+
+/// Create a pending approval request.
+pub async fn create_approval(
+    db: &Database,
+    user_id: i64,
+    agent_name: &str,
+    category: &str,
+    secret_name: &str,
+    resolve_mode: &str,
+    correlation_id: Option<&str>,
+    expires_at: &str,
+) -> Result<Approval> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let agent = agent_name.to_string();
+    let cat = category.to_string();
+    let sec = secret_name.to_string();
+    let mode = resolve_mode.to_string();
+    let corr = correlation_id.map(|s| s.to_string());
+    let exp = expires_at.to_string();
+    let now2 = now.clone();
+
+    let id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO phylax_approvals
+                 (user_id, agent_name, category, secret_name, resolve_mode,
+                  status, correlation_id, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)",
+                params![user_id, agent, cat, sec, mode, corr, now2, exp],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    Ok(Approval {
+        id,
+        user_id,
+        agent_name: agent_name.to_string(),
+        category: category.to_string(),
+        secret_name: secret_name.to_string(),
+        resolve_mode: resolve_mode.to_string(),
+        status: ApprovalStatus::Pending,
+        decided_by: None,
+        reason: None,
+        lease_id: None,
+        correlation_id: correlation_id.map(|s| s.to_string()),
+        created_at: now,
+        decided_at: None,
+        expires_at: expires_at.to_string(),
+    })
+}
+
+/// Get an approval by ID.
+pub async fn get_approval(db: &Database, id: i64) -> Result<Approval> {
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, agent_name, category, secret_name, resolve_mode,
+                    status, decided_by, reason, lease_id, correlation_id,
+                    created_at, decided_at, expires_at
+             FROM phylax_approvals WHERE id = ?1",
+        )?;
+        let approval = stmt.query_row(params![id], row_to_approval)?;
+        Ok(approval)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
+}
+
+/// List approvals, optionally filtered by status.
+pub async fn list_approvals(
+    db: &Database,
+    user_id: i64,
+    status: Option<ApprovalStatus>,
+    limit: i64,
+) -> Result<Vec<Approval>> {
+    db.read(move |conn| {
+        let approvals = match status {
+            Some(s) => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, user_id, agent_name, category, secret_name, resolve_mode,
+                            status, decided_by, reason, lease_id, correlation_id,
+                            created_at, decided_at, expires_at
+                     FROM phylax_approvals
+                     WHERE user_id = ?1 AND status = ?2
+                     ORDER BY created_at DESC LIMIT ?3",
+                )?;
+                let rows = stmt.query_map(params![user_id, s as i32, limit], row_to_approval)?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            }
+            None => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, user_id, agent_name, category, secret_name, resolve_mode,
+                            status, decided_by, reason, lease_id, correlation_id,
+                            created_at, decided_at, expires_at
+                     FROM phylax_approvals
+                     WHERE user_id = ?1
+                     ORDER BY created_at DESC LIMIT ?2",
+                )?;
+                let rows = stmt.query_map(params![user_id, limit], row_to_approval)?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            }
+        };
+        Ok(approvals)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
+}
+
+/// Approve or deny a pending request. Only affects rows with status=0 (pending).
+pub async fn decide_approval(
+    db: &Database,
+    id: i64,
+    decision: ApprovalStatus,
+    decided_by: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let by = decided_by.to_string();
+    let rsn = reason.map(|s| s.to_string());
+
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "UPDATE phylax_approvals
+                 SET status = ?1, decided_by = ?2, reason = ?3, decided_at = ?4
+                 WHERE id = ?5 AND status = 0",
+                params![decision as i32, by, rsn, now, id],
+            )?)
+        })
+        .await
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    if affected == 0 {
+        return Err(CredError::NotFound(
+            "approval not found or already decided".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Link a lease ID to an approval after minting.
+pub async fn set_approval_lease(db: &Database, approval_id: i64, lease_id: i64) -> Result<()> {
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE phylax_approvals SET lease_id = ?1 WHERE id = ?2",
+            params![lease_id, approval_id],
+        )?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
+}
+
+/// Expire all pending approvals past their expires_at.
+pub async fn expire_stale_approvals(db: &Database) -> Result<usize> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    db.write(move |conn| {
+        Ok(conn.execute(
+            "UPDATE phylax_approvals SET status = 3
+             WHERE status = 0 AND expires_at < ?1",
+            params![now],
+        )? as usize)
+    })
+    .await
+    .map_err(|e| CredError::Database(e.to_string()))
+}
+
+/// Parse a database row into an Approval struct.
+fn row_to_approval(row: &rusqlite::Row<'_>) -> rusqlite::Result<Approval> {
+    Ok(Approval {
+        id: row.get(0)?,
+        user_id: row.get(1)?,
+        agent_name: row.get(2)?,
+        category: row.get(3)?,
+        secret_name: row.get(4)?,
+        resolve_mode: row.get(5)?,
+        status: ApprovalStatus::from_i32(row.get(6)?).unwrap_or(ApprovalStatus::Pending),
+        decided_by: row.get(7)?,
+        reason: row.get(8)?,
+        lease_id: row.get(9)?,
+        correlation_id: row.get(10)?,
+        created_at: row.get(11)?,
+        decided_at: row.get(12)?,
+        expires_at: row.get(13)?,
+    })
+}
