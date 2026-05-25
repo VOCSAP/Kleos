@@ -328,22 +328,10 @@ async fn recall_due(
         query: params.topic.clone(),
         embedding,
         limit: Some(fetch_limit),
-        category: None,
         source: params.session.clone(),
-        tags: None,
-        threshold: None,
         user_id: Some(auth.user_id),
-        space_id: None,
         include_forgotten: Some(false),
-        mode: None,
-        question_type: None,
-        expand_relationships: false,
-        include_links: false,
-        latest_only: true,
-        source_filter: None,
-        include_archived: None,
-        include_noise: None,
-        exclude_consolidated: None,
+        ..Default::default()
     };
 
     let arc_results = hybrid_search(&db, req).await?;

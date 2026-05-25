@@ -896,41 +896,18 @@ mod tests {
             content: content.to_string(),
             category: "test".to_string(),
             source: "test".to_string(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         }
     }
 
     fn search_request(query: &str, user_id: i64, limit: usize) -> SearchRequest {
         SearchRequest {
             query: query.to_string(),
-            embedding: None,
             limit: Some(limit),
-            category: None,
-            source: None,
-            tags: None,
-            threshold: None,
             user_id: Some(user_id),
-            space_id: None,
-            include_forgotten: None,
-            mode: None,
             question_type: Some(QuestionType::FactRecall),
-            expand_relationships: false,
-            include_links: false,
-            latest_only: true,
-            source_filter: None,
-            include_archived: None,
-            include_noise: None,
-            exclude_consolidated: None,
+            ..Default::default()
         }
     }
 

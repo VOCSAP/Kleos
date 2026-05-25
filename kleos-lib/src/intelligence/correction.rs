@@ -31,15 +31,11 @@ pub async fn correct_memory(
                 .tags
                 .as_ref()
                 .and_then(|t| serde_json::from_str(t).ok()),
-            embedding: None,
             session_id: original.session_id.clone(),
             is_static: Some(original.is_static),
             user_id: Some(user_id),
             space_id: original.space_id,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         },
         None,
         false,

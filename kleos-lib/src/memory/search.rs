@@ -1345,19 +1345,10 @@ pub async fn faceted_search(
             category: req.category.clone(),
             source: req.source.clone(),
             tags: req.tags_all.clone(),
-            threshold: None,
             user_id: Some(user_id),
             space_id: req.space_id,
             include_forgotten: Some(false),
-            mode: None,
-            question_type: None,
-            expand_relationships: false,
-            include_links: false,
-            latest_only: true,
-            source_filter: None,
-            include_archived: None,
-            include_noise: None,
-            exclude_consolidated: None,
+            ..Default::default()
         };
         let arc = hybrid_search(db, search_req).await?;
         let mut candidates = (*arc).clone();

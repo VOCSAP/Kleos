@@ -568,22 +568,11 @@ async fn assemble_context_inner(
         query: opts.query.clone(),
         embedding: query_emb,
         limit: Some(semantic_limit),
-        category: None,
         source: source_filter.clone(),
-        tags: None,
-        threshold: None,
         user_id: Some(user_id),
-        space_id: None,
         include_forgotten: Some(false),
-        mode: None,
-        question_type: None,
-        expand_relationships: false,
-        include_links: false,
-        latest_only: true,
-        source_filter: None,
-        include_archived: None,
-        include_noise: None,
         exclude_consolidated: Some(true),
+        ..Default::default()
     };
     let semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);

@@ -140,11 +140,7 @@ async fn execute_store(
         session_id: body.session_id,
         space_id: body.space_id,
         user_id: Some(user_id),
-        embedding: None,
-        parent_memory_id: None,
-        chunk_embeddings: None,
-        sync_id: None,
-        artifacts: None,
+        ..Default::default()
     };
 
     let store_outcome = if let Some(embedder) = state.current_embedder().await {

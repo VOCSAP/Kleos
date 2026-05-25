@@ -360,9 +360,7 @@ async fn search_memories(
         include_links: body.include_links.unwrap_or(false),
         latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
-        include_archived: None,
-        include_noise: None,
-        exclude_consolidated: None,
+        ..Default::default()
     };
 
     // SEC-recall-1.5: route the rerank through the library wrapper so any
@@ -486,9 +484,7 @@ async fn explain_search(
         include_links: body.include_links.unwrap_or(false),
         latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
-        include_archived: None,
-        include_noise: None,
-        exclude_consolidated: None,
+        ..Default::default()
     };
 
     let hybrid_start = std::time::Instant::now();
@@ -605,22 +601,9 @@ async fn recall(
         query: query.clone(),
         embedding: query_embedding,
         limit: Some(limit),
-        category: None,
-        source: None,
-        tags: None,
-        threshold: None,
         user_id: Some(user_id),
         space_id: body.space_id,
-        include_forgotten: None,
-        mode: None,
-        question_type: None,
-        expand_relationships: false,
-        include_links: false,
-        latest_only: true,
-        source_filter: None,
-        include_archived: None,
-        include_noise: None,
-        exclude_consolidated: None,
+        ..Default::default()
     };
     let semantic_results = hybrid_search(&db, semantic_req).await?;
 

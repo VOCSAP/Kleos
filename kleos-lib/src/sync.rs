@@ -69,16 +69,9 @@ pub async fn receive_sync(
                         .unwrap_or_else(|| "general".to_string()),
                     source: "sync".to_string(),
                     importance: change.importance.unwrap_or(5),
-                    tags: None,
-                    embedding: None,
-                    session_id: None,
-                    is_static: None,
                     user_id: Some(user_id),
-                    space_id: None,
-                    parent_memory_id: None,
-                    chunk_embeddings: None,
                     sync_id: Some(change.sync_id.clone()),
-                    artifacts: None,
+                    ..Default::default()
                 };
                 memory::store(db, req, None, false).await?;
                 applied += 1;

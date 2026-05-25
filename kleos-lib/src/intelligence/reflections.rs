@@ -398,16 +398,8 @@ mod tests {
             category: "task".to_string(),
             source: "test".to_string(),
             importance,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         }
     }
 

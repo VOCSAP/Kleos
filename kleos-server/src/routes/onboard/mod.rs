@@ -52,17 +52,8 @@ async fn onboard(
             content: "Kleos onboarding test memory -- safe to delete".into(),
             category: "system".into(),
             source: "onboarding".into(),
-            importance: 5,
             user_id: Some(auth.user_id),
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         },
         None,
         false,
@@ -100,21 +91,7 @@ async fn onboard(
                 embedding,
                 limit: Some(1),
                 user_id: Some(auth.user_id),
-                latest_only: true,
-                category: None,
-                source: None,
-                tags: None,
-                threshold: None,
-                space_id: None,
-                include_forgotten: None,
-                mode: None,
-                question_type: None,
-                expand_relationships: false,
-                include_links: false,
-                source_filter: None,
-                include_archived: None,
-                include_noise: None,
-                exclude_consolidated: None,
+                ..Default::default()
             },
         )
         .await;
@@ -314,14 +291,7 @@ async fn fetch_url(
                 "url:{}",
                 kleos_lib::validation::truncate_on_char_boundary(&body.url, 200)
             )]),
-            embedding: None,
-            session_id: None,
-            is_static: None,
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         };
 
         if let Some(embedder) = state.current_embedder().await {
