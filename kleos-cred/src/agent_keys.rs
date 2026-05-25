@@ -77,7 +77,7 @@ impl AgentKeyPermissions {
             if pattern == "*" {
                 true
             } else if let Some(prefix) = pattern.strip_suffix("/*") {
-                ns.starts_with(prefix)
+                ns.starts_with(prefix) && ns.len() > prefix.len() && ns.as_bytes()[prefix.len()] == b'/'
             } else {
                 pattern == ns
             }

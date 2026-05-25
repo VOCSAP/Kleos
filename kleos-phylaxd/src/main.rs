@@ -3,8 +3,6 @@
 //! Composes credd's base router with Phylax agent-native extensions.
 //! If no policies are configured, behaves identically to plain credd.
 
-use std::net::SocketAddr;
-
 use clap::Parser;
 use tracing::info;
 
