@@ -51,8 +51,7 @@ pub async fn set_preference(
                  value = excluded.value, \
                  updated_at = datetime('now')",
             params![user_id, key_owned, value_owned],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -70,8 +69,7 @@ pub async fn get_preference(db: &Database, user_id: i64, key: &str) -> Result<Us
     );
     db.read(move |conn| {
         conn.query_row(&sql, params![user_id, key], row_to_preference)
-            .optional()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .optional()?
             .ok_or_else(|| EngError::NotFound(format!("preference not found for user {}", user_id)))
     })
     .await
@@ -86,14 +84,12 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
     );
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(&sql)?;
         let rows = stmt
-            .query_map(params![user_id], row_to_preference)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![user_id], row_to_preference)?;
         let mut prefs = Vec::new();
         for row in rows {
-            prefs.push(row.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            prefs.push(row?);
         }
         Ok(prefs)
     })
@@ -105,11 +101,10 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
 pub async fn delete_all_preferences(db: &Database, user_id: i64) -> Result<u64> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM user_preferences WHERE user_id = ?1",
                 params![user_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
     Ok(affected as u64)
@@ -121,11 +116,10 @@ pub async fn delete_preference(db: &Database, user_id: i64, key: &str) -> Result
     let key = key.to_string();
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM user_preferences WHERE user_id = ?1 AND key = ?2",
                 params![user_id, key],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
 

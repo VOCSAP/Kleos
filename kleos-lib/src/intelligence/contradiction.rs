@@ -4,14 +4,10 @@
 use super::types::Contradiction;
 use crate::db::Database;
 use crate::memory::types::Memory;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use tracing::{info, warn};
 
-/// Convert a rusqlite error into the crate's canonical error type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Detect contradictions between a new memory and existing facts.
 ///
@@ -32,7 +28,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                      FROM structured_facts \
                      WHERE memory_id = ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map(params![memory_id], |row| {
                     Ok((
@@ -43,9 +39,9 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                         row.get::<_, f64>(4)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(rows)
         })
         .await?;
@@ -70,7 +66,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                            AND sf.id != ?4 \
                          ORDER BY sf.confidence DESC",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let rows = stmt
                     .query_map(params![subject_c, predicate_c, memory_id, nfid], |row| {
                         Ok((
@@ -80,9 +76,9 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                             row.get::<_, f64>(3)?,
                         ))
                     })
-                    .map_err(rusqlite_to_eng_error)?
+                    ?
                     .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 Ok(rows)
             })
             .await?;
@@ -126,7 +122,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                              VALUES (?1, ?2, ?3, 'contradicts')",
                             params![memory_id, mem_b_id, conf_f64],
                         )
-                        .map_err(rusqlite_to_eng_error)?;
+                        ?;
                         Ok(())
                     })
                     .await
@@ -161,7 +157,7 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                        AND sf1.memory_id != sf2.memory_id \
                      LIMIT 500",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
@@ -175,9 +171,9 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                         row.get::<_, f64>(7)?,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(rows)
         })
         .await?;

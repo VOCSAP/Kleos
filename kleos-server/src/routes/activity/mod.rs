@@ -10,8 +10,6 @@ use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::activity::{process_activity, ActivityReport};
 
-#[allow(dead_code)]
-mod types;
 
 pub fn router() -> Router<AppState> {
     Router::new()

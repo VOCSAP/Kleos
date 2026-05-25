@@ -6,9 +6,6 @@ use crate::memory::types::Memory;
 use crate::{EngError, Result};
 use tracing::info;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Consolidate a set of similar memories into a single merged memory.
 ///
@@ -48,17 +45,17 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                  FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0",
                 placeholders
             );
-            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt
                 .query(rusqlite::params![user_id])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut result = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            while let Some(row) = rows.next()? {
                 result.push((
-                    row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, String>(1).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, String>(2).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)?,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
                 ));
             }
             Ok(result)
@@ -118,7 +115,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                     user_id,
                 ],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             let new_id = tx.last_insert_rowid();
 
@@ -129,13 +126,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                      VALUES (?1, ?2, 1.0, 'consolidates')",
                     rusqlite::params![new_id, source_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 tx.execute(
                     "UPDATE memories SET is_consolidated = 1, updated_at = datetime('now') \
                      WHERE id = ?1",
                     rusqlite::params![source_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
 
             // Record consolidation, owned by the caller.
@@ -144,7 +141,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                  VALUES (?1, ?2, 'merge', 1.0, ?3)",
                 rusqlite::params![source_ids_json, new_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             Ok(new_id)
         })
@@ -173,11 +170,11 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                      valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated \
                      FROM memories WHERE id = ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![new_id])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            if let Some(row) = rows.next()? {
                 row_to_memory(row)
             } else {
                 Err(EngError::Internal(
@@ -218,14 +215,14 @@ pub async fn find_consolidation_candidates(
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![threshold as f64])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut pairs = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let source_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let target_id: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next()? {
+                let source_id: i64 = row.get(0)?;
+                let target_id: i64 = row.get(1)?;
                 pairs.push((source_id, target_id));
             }
             Ok(pairs)
@@ -324,15 +321,15 @@ pub async fn list_consolidations(
                  ORDER BY c.created_at DESC \
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id, limit as i64])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut records = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             records.push(ConsolidationRecord {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                summary: row.get(1).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                summary: row.get(1)?,
             });
         }
         Ok(records)
@@ -342,55 +339,55 @@ pub async fn list_consolidations(
 
 fn row_to_memory(row: &rusqlite::Row<'_>) -> crate::Result<Memory> {
     Ok(Memory {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        content: row.get(1).map_err(rusqlite_to_eng_error)?,
-        category: row.get(2).map_err(rusqlite_to_eng_error)?,
-        source: row.get(3).map_err(rusqlite_to_eng_error)?,
-        session_id: row.get(4).map_err(rusqlite_to_eng_error)?,
-        importance: row.get(5).map_err(rusqlite_to_eng_error)?,
+        id: row.get(0)?,
+        content: row.get(1)?,
+        category: row.get(2)?,
+        source: row.get(3)?,
+        session_id: row.get(4)?,
+        importance: row.get(5)?,
         embedding: None,
-        version: row.get(6).map_err(rusqlite_to_eng_error)?,
-        is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
-        parent_memory_id: row.get(8).map_err(rusqlite_to_eng_error)?,
-        root_memory_id: row.get(9).map_err(rusqlite_to_eng_error)?,
-        source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
-        is_static: row.get::<_, i32>(11).map_err(rusqlite_to_eng_error)? != 0,
-        is_forgotten: row.get::<_, i32>(12).map_err(rusqlite_to_eng_error)? != 0,
-        is_archived: row.get::<_, i32>(13).map_err(rusqlite_to_eng_error)? != 0,
-        is_fact: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
-        is_decomposed: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
-        forget_after: row.get(16).map_err(rusqlite_to_eng_error)?,
-        forget_reason: row.get(17).map_err(rusqlite_to_eng_error)?,
-        model: row.get(18).map_err(rusqlite_to_eng_error)?,
-        recall_hits: row.get(19).map_err(rusqlite_to_eng_error)?,
-        recall_misses: row.get(20).map_err(rusqlite_to_eng_error)?,
-        adaptive_score: row.get(21).map_err(rusqlite_to_eng_error)?,
-        pagerank_score: row.get(22).map_err(rusqlite_to_eng_error)?,
-        last_accessed_at: row.get(23).map_err(rusqlite_to_eng_error)?,
-        access_count: row.get(24).map_err(rusqlite_to_eng_error)?,
-        tags: row.get(25).map_err(rusqlite_to_eng_error)?,
-        episode_id: row.get(26).map_err(rusqlite_to_eng_error)?,
-        decay_score: row.get(27).map_err(rusqlite_to_eng_error)?,
-        confidence: row.get(28).map_err(rusqlite_to_eng_error)?,
-        sync_id: row.get(29).map_err(rusqlite_to_eng_error)?,
-        status: row.get(30).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(31).map_err(rusqlite_to_eng_error)?,
-        space_id: row.get(32).map_err(rusqlite_to_eng_error)?,
-        fsrs_stability: row.get(33).map_err(rusqlite_to_eng_error)?,
-        fsrs_difficulty: row.get(34).map_err(rusqlite_to_eng_error)?,
-        fsrs_storage_strength: row.get(35).map_err(rusqlite_to_eng_error)?,
-        fsrs_retrieval_strength: row.get(36).map_err(rusqlite_to_eng_error)?,
-        fsrs_learning_state: row.get(37).map_err(rusqlite_to_eng_error)?,
-        fsrs_reps: row.get(38).map_err(rusqlite_to_eng_error)?,
-        fsrs_lapses: row.get(39).map_err(rusqlite_to_eng_error)?,
-        fsrs_last_review_at: row.get(40).map_err(rusqlite_to_eng_error)?,
-        valence: row.get(41).map_err(rusqlite_to_eng_error)?,
-        arousal: row.get(42).map_err(rusqlite_to_eng_error)?,
-        dominant_emotion: row.get(43).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(44).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(45).map_err(rusqlite_to_eng_error)?,
-        is_superseded: row.get::<_, i32>(46).map_err(rusqlite_to_eng_error)? != 0,
-        is_consolidated: row.get::<_, i32>(47).map_err(rusqlite_to_eng_error)? != 0,
+        version: row.get(6)?,
+        is_latest: row.get::<_, i32>(7)? != 0,
+        parent_memory_id: row.get(8)?,
+        root_memory_id: row.get(9)?,
+        source_count: row.get(10)?,
+        is_static: row.get::<_, i32>(11)? != 0,
+        is_forgotten: row.get::<_, i32>(12)? != 0,
+        is_archived: row.get::<_, i32>(13)? != 0,
+        is_fact: row.get::<_, i32>(14)? != 0,
+        is_decomposed: row.get::<_, i32>(15)? != 0,
+        forget_after: row.get(16)?,
+        forget_reason: row.get(17)?,
+        model: row.get(18)?,
+        recall_hits: row.get(19)?,
+        recall_misses: row.get(20)?,
+        adaptive_score: row.get(21)?,
+        pagerank_score: row.get(22)?,
+        last_accessed_at: row.get(23)?,
+        access_count: row.get(24)?,
+        tags: row.get(25)?,
+        episode_id: row.get(26)?,
+        decay_score: row.get(27)?,
+        confidence: row.get(28)?,
+        sync_id: row.get(29)?,
+        status: row.get(30)?,
+        user_id: row.get(31)?,
+        space_id: row.get(32)?,
+        fsrs_stability: row.get(33)?,
+        fsrs_difficulty: row.get(34)?,
+        fsrs_storage_strength: row.get(35)?,
+        fsrs_retrieval_strength: row.get(36)?,
+        fsrs_learning_state: row.get(37)?,
+        fsrs_reps: row.get(38)?,
+        fsrs_lapses: row.get(39)?,
+        fsrs_last_review_at: row.get(40)?,
+        valence: row.get(41)?,
+        arousal: row.get(42)?,
+        dominant_emotion: row.get(43)?,
+        created_at: row.get(44)?,
+        updated_at: row.get(45)?,
+        is_superseded: row.get::<_, i32>(46)? != 0,
+        is_consolidated: row.get::<_, i32>(47)? != 0,
     })
 }
 

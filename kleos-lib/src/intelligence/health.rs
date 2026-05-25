@@ -2,11 +2,8 @@
 
 use super::types::MemoryHealthReport;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Generate a health report for a user's memory store.
 #[tracing::instrument(skip(db))]
@@ -20,7 +17,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<i64>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .unwrap_or(0);
 
             // Without embeddings
@@ -31,7 +28,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<i64>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .unwrap_or(0);
 
             // Archived
@@ -41,7 +38,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<i64>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .unwrap_or(0);
 
             // Superseded
@@ -51,7 +48,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<i64>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .unwrap_or(0);
 
             // With links
@@ -63,7 +60,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<i64>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .unwrap_or(0);
 
             // Average importance
@@ -73,7 +70,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<f64>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .unwrap_or(0.0);
 
             // Oldest memory
@@ -83,7 +80,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     [],
                     |row| row.get::<_, Option<String>>(0),
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let coverage = if total > 0 {
                 ((total - no_emb) as f64 / total as f64 * 100.0 * 100.0).round() / 100.0

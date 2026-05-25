@@ -30,7 +30,7 @@
 use super::types::Reflection;
 use crate::db::Database;
 use crate::llm::{local::LocalModelClient, repair_and_parse_json};
-use crate::{EngError, Result};
+use crate::Result;
 use async_trait::async_trait;
 use rusqlite::params;
 
@@ -65,8 +65,7 @@ pub async fn create_reflection(
                 "INSERT INTO reflections (content, reflection_type, source_memory_ids, confidence, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![content_owned, reflection_type_owned, ids_json, confidence, user_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -138,8 +137,7 @@ pub async fn generate_reflections(
                        AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
                      LIMIT ?3",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map(
                     params![min_importance, age_cutoff, fetch_limit, user_id],
@@ -151,10 +149,8 @@ pub async fn generate_reflections(
                             importance: row.get(3)?,
                         })
                     },
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                )?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
 
@@ -290,8 +286,7 @@ pub async fn generate_reflections_with_llm(
                        AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
                      LIMIT ?3",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map(
                     params![min_importance, age_cutoff, fetch_limit, user_id],
@@ -303,10 +298,8 @@ pub async fn generate_reflections_with_llm(
                             importance: row.get(3)?,
                         })
                     },
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                )?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
 
@@ -371,8 +364,7 @@ pub async fn list_reflections(
             .prepare(
                 "SELECT id, content, reflection_type, source_memory_ids, confidence, created_at \
                  FROM reflections WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
             .query_map(params![user_id, limit as i64], |row| {
                 let ids_json: Option<String> = row.get(3)?;
@@ -389,10 +381,8 @@ pub async fn list_reflections(
                     user_id,
                     created_at: row.get(5)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     })
     .await
 }
@@ -408,16 +398,8 @@ mod tests {
             category: "task".to_string(),
             source: "test".to_string(),
             importance,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         }
     }
 
@@ -434,8 +416,7 @@ mod tests {
             conn.execute(
                 &format!("UPDATE memories SET created_at = {} WHERE id = ?1", expr),
                 params![mid],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -517,6 +498,7 @@ mod tests {
 
     // -- LLM-backed pipeline ------------------------------------------------
 
+    use crate::EngError;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CannedReflector {

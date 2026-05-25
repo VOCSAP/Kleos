@@ -8,9 +8,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use std::collections::HashMap;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 const VALID_RATINGS: &[&str] = &["helpful", "irrelevant", "off-topic", "outdated"];
 
@@ -40,7 +37,7 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
              VALUES (?1, ?2, ?3, ?4)",
             params![memory_id, user_id, rating, context],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -82,7 +79,7 @@ pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap
                  WHERE f.user_id = ?1 \
                  GROUP BY m.category, f.rating",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![user_id], |row| {
@@ -91,11 +88,11 @@ pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap
                 let count: i64 = row.get(2)?;
                 Ok((cat, rating, count))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut totals: HashMap<String, (f64, f64)> = HashMap::new();
         for row in rows {
-            let (cat, rating, count) = row.map_err(rusqlite_to_eng_error)?;
+            let (cat, rating, count) = row?;
             let weight: f64 = match rating.as_str() {
                 "helpful" => 1.0,
                 "irrelevant" | "off-topic" | "outdated" => -1.0,
@@ -130,7 +127,7 @@ pub async fn feedback_stats(db: &Database, user_id: i64) -> Result<FeedbackStats
                  WHERE user_id = ?1 \
                  GROUP BY rating",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![user_id], |row| {
@@ -138,7 +135,7 @@ pub async fn feedback_stats(db: &Database, user_id: i64) -> Result<FeedbackStats
                 let count: i64 = row.get(1)?;
                 Ok((rating, count))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut stats = FeedbackStats {
             helpful: 0,
@@ -149,7 +146,7 @@ pub async fn feedback_stats(db: &Database, user_id: i64) -> Result<FeedbackStats
         };
 
         for row in rows {
-            let (rating, count) = row.map_err(rusqlite_to_eng_error)?;
+            let (rating, count) = row?;
             match rating.as_str() {
                 "helpful" => stats.helpful = count,
                 "irrelevant" => stats.irrelevant = count,
@@ -175,17 +172,8 @@ mod tests {
             content: content.to_string(),
             category: category.to_string(),
             source: "test".to_string(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         }
     }
 

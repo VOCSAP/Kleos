@@ -20,7 +20,6 @@ pub mod disk_sampler;
 pub mod pagerank_refresh;
 #[cfg(feature = "tenant-sharding")]
 pub mod pagerank_refresh_tenant;
-pub mod quota_sync;
 pub mod types;
 pub use types::*;
 
@@ -47,8 +46,7 @@ fn handlers() -> &'static RwLock<HashMap<String, JobHandler>> {
 #[tracing::instrument(skip(db))]
 pub async fn ensure_schema(db: &Database) -> Result<()> {
     db.write(|conn| {
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), claimed_at TEXT, completed_at TEXT, next_retry_at TEXT); CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at); CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status); CREATE TABLE IF NOT EXISTS scheduler_leases (job_name TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL, last_run_at TEXT);")
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS jobs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), claimed_at TEXT, completed_at TEXT, next_retry_at TEXT); CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, next_retry_at); CREATE INDEX IF NOT EXISTS idx_jobs_type ON jobs(type, status); CREATE TABLE IF NOT EXISTS scheduler_leases (job_name TEXT PRIMARY KEY, holder_id TEXT NOT NULL, acquired_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL, last_run_at TEXT);")?;
         Ok(())
     })
     .await
@@ -67,8 +65,7 @@ pub async fn enqueue_job(
         conn.execute(
             "INSERT INTO jobs (type, payload, max_attempts) VALUES (?1, ?2, ?3)",
             params![job_type, payload, max_attempts],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(conn.last_insert_rowid())
     })
     .await
@@ -80,8 +77,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
     // ensures only one worker can claim the same pending job.
     db.write(|conn| {
         let tx = conn
-            .transaction()
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .transaction()?;
 
         let result: Option<Job> = {
             let mut stmt = tx
@@ -92,8 +88,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
                        AND (next_retry_at IS NULL OR next_retry_at <= datetime('now')) \
                      ORDER BY created_at ASC \
                      LIMIT 1",
-                )
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                )?;
 
             let row = stmt
                 .query_row([], |row| {
@@ -113,8 +108,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
                     tx.execute(
                         "UPDATE jobs SET status = 'running', claimed_at = datetime('now'), attempts = attempts + 1 WHERE id = ?1",
                         params![id],
-                    )
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                    )?;
                     Some(Job {
                         id,
                         job_type: jt,
@@ -130,12 +124,11 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
                     })
                 }
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(crate::EngError::DatabaseMessage(e.to_string())),
+                Err(e) => return Err(crate::EngError::Database(e)),
             }
         };
 
-        tx.commit()
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        tx.commit()?;
         Ok(result)
     })
     .await
@@ -147,8 +140,7 @@ pub async fn complete_job(db: &Database, id: i64) -> Result<()> {
         conn.execute(
             "UPDATE jobs SET status = 'completed', completed_at = datetime('now'), error = NULL WHERE id = ?1",
             params![id],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -163,8 +155,7 @@ pub async fn fail_job(db: &Database, id: i64, err_msg: &str) -> Result<()> {
         conn.execute(
             "UPDATE jobs SET status = 'failed', error = ?1, completed_at = datetime('now') WHERE id = ?2",
             params![err_msg, id],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -180,8 +171,7 @@ pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) ->
         conn.execute(
             "UPDATE jobs SET status = 'pending', error = ?1, next_retry_at = datetime('now', ?3) WHERE id = ?2",
             params![err_msg, id, modifier],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await?;
@@ -193,22 +183,17 @@ pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) ->
 pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     db.read(|conn| {
         let mut stmt = conn
-            .prepare("SELECT status, COUNT(*) as count FROM jobs GROUP BY status")
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .prepare("SELECT status, COUNT(*) as count FROM jobs GROUP BY status")?;
         let mut stats = JobStats::default();
         let mut rows = stmt
-            .query([])
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .query([])?;
         while let Some(row) = rows
-            .next()
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+            .next()?
         {
             let s: String = row
-                .get(0)
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                .get(0)?;
             let n: i64 = row
-                .get(1)
-                .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+                .get(1)?;
             match s.as_str() {
                 "pending" => stats.pending = n,
                 "running" => stats.running = n,
@@ -229,8 +214,7 @@ pub async fn cleanup_completed_jobs(db: &Database) -> Result<u64> {
             .execute(
                 "DELETE FROM jobs WHERE id IN (SELECT id FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', '-1 hour') LIMIT 100)",
                 [],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n as u64)
     })
     .await
@@ -248,8 +232,7 @@ pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
             .execute(
                 "DELETE FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', ?1)",
                 params![modifier],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n as u64)
     })
     .await
@@ -262,8 +245,7 @@ pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
             .execute(
                 "UPDATE jobs SET status = 'pending', claimed_at = NULL WHERE status = 'running' AND claimed_at < datetime('now', '-5 minutes')",
                 [],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n as u64)
     })
     .await
@@ -276,41 +258,31 @@ pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<
             .prepare(
                 "SELECT id, type, payload, attempts, max_attempts, error, created_at, completed_at \
                  FROM jobs WHERE status = 'failed' ORDER BY completed_at DESC LIMIT ?1 OFFSET ?2",
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let mut rows = stmt
-            .query(params![limit, offset])
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .query(params![limit, offset])?;
         let mut jobs = Vec::new();
         while let Some(r) = rows
-            .next()
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+            .next()?
         {
             jobs.push(Job {
                 id: r
-                    .get(0)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(0)?,
                 job_type: r
-                    .get(1)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(1)?,
                 payload: r
-                    .get(2)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(2)?,
                 status: JobStatus::Failed,
                 attempts: r
-                    .get(3)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(3)?,
                 max_attempts: r
-                    .get(4)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(4)?,
                 error: r
-                    .get(5)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(5)?,
                 created_at: r.get::<_, String>(6).unwrap_or_default(),
                 claimed_at: None,
                 completed_at: r
-                    .get(7)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(7)?,
                 next_retry_at: None,
             });
         }
@@ -326,40 +298,31 @@ pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result
             .prepare(
                 "SELECT id, type, payload, attempts, max_attempts, created_at, next_retry_at \
                  FROM jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?1 OFFSET ?2",
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let mut rows = stmt
-            .query(params![limit, offset])
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .query(params![limit, offset])?;
         let mut jobs = Vec::new();
         while let Some(r) = rows
-            .next()
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+            .next()?
         {
             jobs.push(Job {
                 id: r
-                    .get(0)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(0)?,
                 job_type: r
-                    .get(1)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(1)?,
                 payload: r
-                    .get(2)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(2)?,
                 status: JobStatus::Pending,
                 attempts: r
-                    .get(3)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(3)?,
                 max_attempts: r
-                    .get(4)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(4)?,
                 error: None,
                 created_at: r.get::<_, String>(5).unwrap_or_default(),
                 claimed_at: None,
                 completed_at: None,
                 next_retry_at: r
-                    .get(6)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(6)?,
             });
         }
         Ok(jobs)
@@ -374,38 +337,29 @@ pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
             .prepare(
                 "SELECT id, type, payload, attempts, max_attempts, created_at, claimed_at \
                  FROM jobs WHERE status = 'running' ORDER BY claimed_at ASC",
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let mut rows = stmt
-            .query([])
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            .query([])?;
         let mut jobs = Vec::new();
         while let Some(r) = rows
-            .next()
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?
+            .next()?
         {
             jobs.push(Job {
                 id: r
-                    .get(0)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(0)?,
                 job_type: r
-                    .get(1)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(1)?,
                 payload: r
-                    .get(2)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(2)?,
                 status: JobStatus::Running,
                 attempts: r
-                    .get(3)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(3)?,
                 max_attempts: r
-                    .get(4)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(4)?,
                 error: None,
                 created_at: r.get::<_, String>(5).unwrap_or_default(),
                 claimed_at: r
-                    .get(6)
-                    .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?,
+                    .get(6)?,
                 completed_at: None,
                 next_retry_at: None,
             });
@@ -418,12 +372,11 @@ pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
 #[tracing::instrument(skip(db))]
 pub async fn count_failed_jobs(db: &Database) -> Result<i64> {
     db.read(|conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*) FROM jobs WHERE status = 'failed'",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
+        )?)
     })
     .await
 }
@@ -435,8 +388,7 @@ pub async fn retry_failed_job(db: &Database, id: i64) -> Result<bool> {
             .execute(
                 "UPDATE jobs SET status = 'pending', error = NULL, attempts = 0, next_retry_at = NULL WHERE id = ?1 AND status = 'failed'",
                 params![id],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n > 0)
     })
     .await
@@ -453,8 +405,7 @@ pub async fn purge_failed_jobs(db: &Database, older_than_days: i64) -> Result<u6
             .execute(
                 "DELETE FROM jobs WHERE status = 'failed' AND completed_at < datetime('now', ?1)",
                 params![modifier],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n as u64)
     })
     .await
@@ -534,18 +485,6 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     Ok(true)
 }
 
-#[tracing::instrument(skip(db))]
-pub async fn drain_jobs(db: &Database, limit: usize) -> Result<usize> {
-    let mut processed = 0;
-    while processed < limit {
-        if !process_next_job(db).await? {
-            break;
-        }
-        processed += 1;
-    }
-    Ok(processed)
-}
-
 // -- Scheduler leases (ported from TS jobs/scheduler.ts) --
 #[tracing::instrument(skip(db), fields(job_name = %job_name, holder_id = %holder_id))]
 pub async fn acquire_lease(
@@ -568,8 +507,7 @@ pub async fn acquire_lease(
                    expires_at = datetime('now', ?3) \
                  WHERE expires_at < datetime('now') OR holder_id = ?2",
                 params![job_name, holder_id, modifier],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n > 0)
     })
     .await
@@ -583,8 +521,7 @@ pub async fn release_lease(db: &Database, job_name: &str, holder_id: &str) -> Re
         conn.execute(
             "DELETE FROM scheduler_leases WHERE job_name = ?1 AND holder_id = ?2",
             params![job_name, holder_id],
-        )
-        .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -605,8 +542,7 @@ pub async fn touch_lease(
             .execute(
                 "UPDATE scheduler_leases SET expires_at = datetime('now', ?3), last_run_at = datetime('now') WHERE job_name = ?1 AND holder_id = ?2",
                 params![job_name, holder_id, modifier],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n > 0)
     })
     .await

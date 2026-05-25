@@ -1,6 +1,6 @@
 use super::{row_to_skill, Skill, SKILL_COLUMNS};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -48,13 +48,10 @@ pub async fn search_skills(
 
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(&sql)?;
         let skills = stmt
-            .query_map(params![sanitized, limit as i64, user_id], row_to_skill)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![sanitized, limit as i64, user_id], row_to_skill)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(skills)
     })
     .await
@@ -113,23 +110,7 @@ impl Score {
     }
 }
 
-/// Strips non-alphanumeric characters and short tokens for safe FTS5 input.
-fn sanitize_fts(query: &str) -> String {
-    let s: String = query
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    s.split_whitespace()
-        .filter(|w| w.len() >= 2)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+use crate::memory::fts::sanitize_fts_query as sanitize_fts;
 
 /// Hybrid skill search combining FTS5, alias, fuzzy, and vector signals.
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
@@ -257,14 +238,12 @@ async fn fts_candidates(db: &Database, sanitized: &str, limit: usize) -> Result<
                  WHERE sr.is_active = 1 \
                  ORDER BY sr.trust_score DESC \
                  LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
-            .query_map(params![q, limit_i], |r| r.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![q, limit_i], |r| r.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for (idx, r) in rows.enumerate() {
-            let id = r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let id = r?;
             out.push((id, idx));
         }
         Ok(out)
@@ -295,16 +274,14 @@ async fn fetch_by_ids(db: &Database, ids: &[i64], include_deprecated: bool) -> R
     );
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(&sql)?;
         let bound: Vec<&dyn rusqlite::ToSql> =
             ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
         let rows = stmt
-            .query_map(bound.as_slice(), row_to_skill)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(bound.as_slice(), row_to_skill)?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -327,19 +304,17 @@ async fn ids_with_tag(
     );
     db.read(move |conn| {
         let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(&sql)?;
         let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + ids.len());
         bound.push(&tag);
         for id in &ids {
             bound.push(id);
         }
         let rows = stmt
-            .query_map(bound.as_slice(), |r| r.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(bound.as_slice(), |r| r.get::<_, i64>(0))?;
         let mut out = std::collections::HashSet::new();
         for r in rows {
-            out.insert(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.insert(r?);
         }
         Ok(out)
     })

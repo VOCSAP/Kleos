@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use crate::Client;
 
-// --------------------------------------------------------------------------
-// CLI definition
-// --------------------------------------------------------------------------
+// --- CLI definition ---
 
 #[derive(Subcommand)]
 pub enum HookCommands {
@@ -31,9 +29,7 @@ pub enum HookCommands {
     PostBash,
 }
 
-// --------------------------------------------------------------------------
-// Constants
-// --------------------------------------------------------------------------
+// --- Constants ---
 
 /// Offline / fetch-failure fallback for the mandatory rules text.
 ///
@@ -48,9 +44,7 @@ const POLICY_CACHE_TTL_SECS: u64 = 60;
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-// --------------------------------------------------------------------------
-// Policy fetch with cache
-// --------------------------------------------------------------------------
+// --- Policy fetch with cache ---
 
 /// Returns the mandatory rules text.
 /// Tries `{server_url}/policy/mandatory` first (2s timeout).
@@ -112,9 +106,7 @@ fn write_policy_cache(rules: &str) {
     }
 }
 
-// --------------------------------------------------------------------------
-// Helpers
-// --------------------------------------------------------------------------
+// --- Helpers ---
 
 fn read_stdin_json() -> Value {
     let mut buf = String::new();
@@ -188,9 +180,7 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
     }
 }
 
-// --------------------------------------------------------------------------
-// Hook handlers
-// --------------------------------------------------------------------------
+// --- Hook handlers ---
 
 async fn handle_session_start(client: &Client) {
     // Register session with activity (best-effort)
@@ -363,9 +353,7 @@ async fn handle_post_tool(client: &Client, input: &Value) {
     // No stdout output for PostToolUse
 }
 
-// --------------------------------------------------------------------------
-// Entry point
-// --------------------------------------------------------------------------
+// --- Entry point ---
 
 pub async fn run_hook(cmd: &HookCommands, client: &Client) {
     match cmd {
@@ -390,9 +378,7 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
     }
 }
 
-// --------------------------------------------------------------------------
-// Tests
-// --------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

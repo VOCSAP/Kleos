@@ -3,9 +3,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpisodeRow {
@@ -56,7 +53,7 @@ pub async fn create_episode(
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![req.title, req.session_id, req.agent, req.summary, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -73,7 +70,7 @@ pub async fn create_episode(
             rusqlite::Error::QueryReturnedNoRows => {
                 EngError::Internal("failed to create episode".into())
             }
-            other => rusqlite_to_eng_error(other),
+            other => EngError::Database(other),
         })
     })
     .await
@@ -90,7 +87,7 @@ pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<
                  ORDER BY started_at DESC
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![user_id, limit as i64], |row| {
@@ -102,7 +99,7 @@ pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<
                     )
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_episodes(rows)
     })
@@ -129,7 +126,7 @@ pub async fn list_episodes_by_time_range(
                  ORDER BY started_at DESC
                  LIMIT ?3",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![after, before, limit as i64, user_id], |row| {
@@ -141,7 +138,7 @@ pub async fn list_episodes_by_time_range(
                     )
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_episodes(rows)
     })
@@ -166,7 +163,7 @@ pub async fn search_episodes_fts(
                  ORDER BY started_at DESC
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![like, limit as i64, user_id], |row| {
@@ -178,7 +175,7 @@ pub async fn search_episodes_fts(
                     )
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_episodes(rows)
     })
@@ -199,7 +196,7 @@ pub async fn get_episode_for_user(db: &Database, id: i64, user_id: i64) -> Resul
             rusqlite::Error::QueryReturnedNoRows => {
                 EngError::NotFound(format!("episode {}", id))
             }
-            other => rusqlite_to_eng_error(other),
+            other => EngError::Database(other),
         })
     })
     .await
@@ -220,7 +217,7 @@ pub async fn get_episode_memories(
                    AND is_latest = 1 AND is_archived = 0
                  ORDER BY created_at DESC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![episode_id, user_id], |row| {
@@ -232,12 +229,12 @@ pub async fn get_episode_memories(
                 let created_at: String = row.get(5)?;
                 Ok((id, content, category, source, importance, created_at))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut memories = Vec::new();
         for row in rows {
             let (id, content, category, source, importance, created_at) =
-                row.map_err(rusqlite_to_eng_error)?;
+                row?;
             memories.push(serde_json::json!({
                 "id": id,
                 "content": content,
@@ -272,7 +269,7 @@ pub async fn update_episode_for_user(
              WHERE id = ?4 AND user_id = ?5",
             params![title, summary, ended_at, id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -295,7 +292,7 @@ pub async fn assign_memories_to_episode(
                 params![episode_id, user_id],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if owns_episode == 0 {
             return Err(EngError::NotFound(format!("episode {}", episode_id)));
         }
@@ -308,7 +305,7 @@ pub async fn assign_memories_to_episode(
                      WHERE id = ?2 AND user_id = ?3 AND is_latest = 1 AND is_archived = 0",
                     params![episode_id, *memory_id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             assigned += count as i64;
         }
 
@@ -320,7 +317,7 @@ pub async fn assign_memories_to_episode(
              WHERE id = ?1 AND user_id = ?2",
             params![episode_id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(assigned)
     })
@@ -339,7 +336,7 @@ pub async fn finalize_episode(db: &Database, id: i64, user_id: i64) -> Result<Ep
              WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -353,7 +350,7 @@ where
 {
     let mut episodes = Vec::new();
     for row in rows {
-        episodes.push(row.map_err(rusqlite_to_eng_error)?);
+        episodes.push(row?);
     }
     Ok(episodes)
 }

@@ -72,9 +72,7 @@ fn load_config_file(path: &str) -> ConfigFile {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
+// --- CLI ---
 
 #[derive(Parser, Debug, Clone)]
 #[command(
@@ -175,9 +173,7 @@ struct Cli {
     log_format: String,
 }
 
-// ---------------------------------------------------------------------------
-// Resolved config -- the merged result of config file + env + CLI.
-// ---------------------------------------------------------------------------
+// --- Resolved config -- the merged result of config file + env + CLI. ---
 
 struct ResolvedConfig {
     port: u16,
@@ -273,9 +269,7 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// main
-// ---------------------------------------------------------------------------
+// --- main ---
 
 #[tokio::main]
 async fn main() {
@@ -577,9 +571,7 @@ fn init_json_tracing() {
         .init();
 }
 
-// ---------------------------------------------------------------------------
-// Graceful shutdown
-// ---------------------------------------------------------------------------
+// --- Graceful shutdown ---
 
 /// Wait for SIGTERM or Ctrl-C. On signal, flush all pending sessions with a
 /// 10s deadline before returning so in-flight observations reach Kleos.

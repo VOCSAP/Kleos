@@ -18,10 +18,6 @@ fn default_storage_bytes_limit() -> i64 {
     DEFAULT_STORAGE_BYTES_LIMIT
 }
 
-/// Converts a rusqlite error into an EngError for uniform error propagation.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,39 +72,6 @@ pub struct QuotaStatus {
 // Admin CRUD -- tenant_quotas table
 // ---------------------------------------------------------------------------
 
-/// Fetch the quota row for a specific user, or None if no row exists.
-#[tracing::instrument(skip(db))]
-pub async fn get_quota(db: &Database, user_id: i64) -> Result<Option<TenantQuota>> {
-    db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT user_id, max_memories, max_conversations, max_api_keys, max_spaces, \
-                 max_memory_size_bytes, storage_bytes_limit, rate_limit_override \
-                 FROM tenant_quotas WHERE user_id = ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
-
-        let mut rows = stmt
-            .query(params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-
-        match rows.next().map_err(rusqlite_to_eng_error)? {
-            Some(row) => Ok(Some(TenantQuota {
-                user_id: row.get(0).unwrap_or(0),
-                max_memories: row.get(1).unwrap_or(10000),
-                max_conversations: row.get(2).unwrap_or(1000),
-                max_api_keys: row.get(3).unwrap_or(10),
-                max_spaces: row.get(4).unwrap_or(5),
-                max_memory_size_bytes: row.get(5).unwrap_or(102400),
-                storage_bytes_limit: row.get(6).unwrap_or(DEFAULT_STORAGE_BYTES_LIMIT),
-                rate_limit_override: row.get(7).ok(),
-            })),
-            None => Ok(None),
-        }
-    })
-    .await
-}
-
 /// Insert or update the quota row for a user.
 #[tracing::instrument(skip(db, quota), fields(user_id = quota.user_id))]
 pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
@@ -146,7 +109,7 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
                 rate_limit_override,
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -164,7 +127,7 @@ pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
                  FROM tenant_quotas tq \
                  JOIN users u ON tq.user_id = u.id",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -182,10 +145,9 @@ pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
                     row.get::<_, String>(8).unwrap_or_default(),
                 ))
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -208,17 +170,17 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
                     "SELECT max_memories, max_spaces, storage_bytes_limit \
                      FROM tenant_quotas WHERE user_id = ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut rows = stmt
                 .query(params![user_id])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            match rows.next().map_err(rusqlite_to_eng_error)? {
+            match rows.next()? {
                 Some(row) => {
-                    let ml: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-                    let sl: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
-                    let stl: i64 = row.get(2).map_err(rusqlite_to_eng_error)?;
+                    let ml: i64 = row.get(0)?;
+                    let sl: i64 = row.get(1)?;
+                    let stl: i64 = row.get(2)?;
                     (ml, sl, stl)
                 }
                 None => (
@@ -237,7 +199,7 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
                 params![],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         // Count spaces.
         let spaces_count: i64 = conn
@@ -246,7 +208,7 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
                 params![user_id],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         // Sum artifact storage bytes.
         let storage_bytes_used: i64 = conn
@@ -255,7 +217,7 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
                 params![],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let within_limits = memory_count < memory_limit
             && spaces_count <= spaces_limit
@@ -339,12 +301,11 @@ pub fn enforce_quota_in_tx(
 pub async fn enforce_storage_quota(db: &Database, upload_bytes: i64) -> Result<()> {
     let current_usage: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts",
                 params![],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -395,7 +356,7 @@ pub async fn record_usage(
              VALUES (?1, ?2, ?3, ?4)",
             params![user_id, agent_id, event_type, quantity],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await

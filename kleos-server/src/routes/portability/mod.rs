@@ -20,8 +20,6 @@ use crate::{
 };
 use kleos_lib::db::Database;
 
-#[allow(dead_code)]
-mod types;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -44,9 +42,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
+// --- Export ---
 
 // DOS-L2: stream export as NDJSON so large user datasets don't require
 // buffering the entire response as a single JSON blob. One JSON object per
@@ -94,9 +90,7 @@ async fn export_handler(
         .unwrap())
 }
 
-// ---------------------------------------------------------------------------
-// Import (auto-detect format)
-// ---------------------------------------------------------------------------
+// --- Import (auto-detect format) ---
 
 async fn import_handler(
     Auth(auth): Auth,
@@ -315,9 +309,7 @@ async fn import_mem0_array(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
+// --- State ---
 
 async fn get_state_handler(
     Auth(auth): Auth,
@@ -391,9 +383,7 @@ async fn delete_state_handler(
     Ok(Json(json!({ "deleted": affected })))
 }
 
-// ---------------------------------------------------------------------------
-// Preferences
-// ---------------------------------------------------------------------------
+// --- Preferences ---
 
 async fn list_preferences_handler(
     Auth(auth): Auth,

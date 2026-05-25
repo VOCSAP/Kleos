@@ -60,7 +60,7 @@ async fn review(
     // dropped from memories in Phase 5.1.
     let row_data = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
                 params![id],
                 |row| {
@@ -77,8 +77,7 @@ async fn review(
                     ))
                 },
             )
-            .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .optional()?)
         })
         .await?;
 
@@ -161,7 +160,7 @@ async fn review(
                     id
                 ],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
             Ok(())
         })
         .await?;
@@ -181,7 +180,7 @@ async fn get_state(
 
     let row_data = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
                 params![id],
                 |row| {
@@ -198,8 +197,7 @@ async fn get_state(
                     ))
                 },
             )
-            .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            .optional()?)
         })
         .await?;
 
@@ -257,18 +255,18 @@ async fn init_backfill(
         .read(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL")
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let mut rows = stmt
                 .query(params![])
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             let mut results = Vec::new();
             while let Some(row) = rows
                 .next()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
             {
                 let id: i64 = row
                     .get(0)
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    ?;
                 results.push(id);
             }
             Ok(results)
@@ -296,7 +294,7 @@ async fn init_backfill(
                         *id
                     ],
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
             }
             Ok(())
         })
@@ -330,22 +328,10 @@ async fn recall_due(
         query: params.topic.clone(),
         embedding,
         limit: Some(fetch_limit),
-        category: None,
         source: params.session.clone(),
-        tags: None,
-        threshold: None,
         user_id: Some(auth.user_id),
-        space_id: None,
         include_forgotten: Some(false),
-        mode: None,
-        question_type: None,
-        expand_relationships: false,
-        include_links: false,
-        latest_only: true,
-        source_filter: None,
-        include_archived: None,
-        include_noise: None,
-        exclude_consolidated: None,
+        ..Default::default()
     };
 
     let arc_results = hybrid_search(&db, req).await?;

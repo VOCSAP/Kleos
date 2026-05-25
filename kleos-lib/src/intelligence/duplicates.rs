@@ -2,12 +2,9 @@
 
 use super::types::{DeduplicateResult, DuplicatePair};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use tracing::warn;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Find duplicate memory pairs based on similarity links.
 #[tracing::instrument(skip(db))]
@@ -32,7 +29,7 @@ pub async fn find_duplicates(
                  ORDER BY ml.similarity DESC \
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let pairs = stmt
             .query_map(rusqlite::params![threshold, limit], |row| {
@@ -46,9 +43,9 @@ pub async fn find_duplicates(
                     importance_b: row.get(6)?,
                 })
             })
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(pairs)
     })
@@ -98,7 +95,7 @@ pub async fn deduplicate(
                          WHERE id = ?1 AND is_superseded = 0",
                         rusqlite::params![supersede_id],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 Ok(n)
             })
             .await?;
@@ -112,7 +109,7 @@ pub async fn deduplicate(
                          VALUES (?1, ?2, ?3, 'supersedes')",
                         rusqlite::params![keep_id, supersede_id, similarity],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                     Ok(())
                 })
                 .await

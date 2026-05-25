@@ -1,11 +1,8 @@
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -78,14 +75,13 @@ pub async fn log_mutation(
     let operation = operation.to_string();
 
     db.write(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "INSERT INTO audit_log (action, target_type, target_id, details)
              VALUES (?1, ?2, ?3, ?4)
              RETURNING id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at",
             params![operation, target_type, target_id, details],
             row_to_entry,
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -121,7 +117,7 @@ pub async fn log_request(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![user_id, agent_id, action, target_type, target_id, details, ip, request_id, identity_id, tier],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -154,29 +150,29 @@ pub async fn query_audit_log(
                 sql = "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                        FROM audit_log WHERE user_id = ?1 AND target_type = ?2 AND target_id = ?3
                        ORDER BY id DESC LIMIT ?4".to_string();
-                stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                stmt = conn.prepare(&sql)?;
                 rows = Box::new(
                     stmt.query_map(params![user_id, rt, tid, limit_i64], row_to_entry)
-                        .map_err(rusqlite_to_eng_error)?,
+                        ?,
                 );
             }
             (Some(rt), None) => {
                 sql = "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                        FROM audit_log WHERE user_id = ?1 AND target_type = ?2
                        ORDER BY id DESC LIMIT ?3".to_string();
-                stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                stmt = conn.prepare(&sql)?;
                 rows = Box::new(
                     stmt.query_map(params![user_id, rt, limit_i64], row_to_entry)
-                        .map_err(rusqlite_to_eng_error)?,
+                        ?,
                 );
             }
             _ => {
                 sql = "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                        FROM audit_log WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2".to_string();
-                stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                stmt = conn.prepare(&sql)?;
                 rows = Box::new(
                     stmt.query_map(params![user_id, limit_i64], row_to_entry)
-                        .map_err(rusqlite_to_eng_error)?,
+                        ?,
                 );
             }
         }
@@ -210,10 +206,10 @@ pub async fn list_audit_entries(
                 "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                  FROM audit_log WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let rows = stmt
             .query_map(params![user_id, limit, offset], row_to_entry)
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut entries = Vec::new();
         for row in rows {
             match row {
@@ -230,12 +226,11 @@ pub async fn list_audit_entries(
 #[tracing::instrument(skip(db))]
 pub async fn count_audit_entries(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*) FROM audit_log WHERE user_id = ?1",
             params![user_id],
             |row| row.get(0),
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -263,29 +258,29 @@ pub async fn query_audit_log_admin(
                 sql = "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                        FROM audit_log WHERE target_type = ?1 AND target_id = ?2
                        ORDER BY id DESC LIMIT ?3".to_string();
-                stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                stmt = conn.prepare(&sql)?;
                 rows = Box::new(
                     stmt.query_map(params![rt, tid, limit_i64], row_to_entry)
-                        .map_err(rusqlite_to_eng_error)?,
+                        ?,
                 );
             }
             (Some(rt), None) => {
                 sql = "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                        FROM audit_log WHERE target_type = ?1
                        ORDER BY id DESC LIMIT ?2".to_string();
-                stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                stmt = conn.prepare(&sql)?;
                 rows = Box::new(
                     stmt.query_map(params![rt, limit_i64], row_to_entry)
-                        .map_err(rusqlite_to_eng_error)?,
+                        ?,
                 );
             }
             _ => {
                 sql = "SELECT id, user_id, agent_id, action, target_type, target_id, details, ip, request_id, created_at
                        FROM audit_log ORDER BY id DESC LIMIT ?1".to_string();
-                stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+                stmt = conn.prepare(&sql)?;
                 rows = Box::new(
                     stmt.query_map(params![limit_i64], row_to_entry)
-                        .map_err(rusqlite_to_eng_error)?,
+                        ?,
                 );
             }
         }

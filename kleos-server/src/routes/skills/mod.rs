@@ -78,9 +78,7 @@ fn is_path_allowed(dir: &str, allowlist: &[std::path::PathBuf]) -> bool {
     allowlist.iter().any(|root| canon.starts_with(root))
 }
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 /// Register all `/skills`, `/tools`, and `/bundles` routes onto a shared Axum router.
 pub fn router() -> Router<AppState> {
@@ -184,9 +182,7 @@ fn llm_routes() -> Router<AppState> {
         ))
 }
 
-// ---------------------------------------------------------------------------
-// CRUD handlers
-// ---------------------------------------------------------------------------
+// --- CRUD handlers ---
 
 /// Create a new skill record owned by the authenticated user and return it with 201.
 #[tracing::instrument(skip_all)]
@@ -276,9 +272,7 @@ async fn recompute_skill_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Execution handlers
-// ---------------------------------------------------------------------------
+// --- Execution handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn record_execution_handler(
@@ -318,9 +312,7 @@ async fn get_executions_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Judgment handlers
-// ---------------------------------------------------------------------------
+// --- Judgment handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn judge_handler(
@@ -354,9 +346,7 @@ async fn get_judgments_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Tags, deps, lineage handlers
-// ---------------------------------------------------------------------------
+// --- Tags, deps, lineage handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn get_tags_handler(
@@ -390,9 +380,7 @@ async fn get_lineage_handler(
     Ok(Json(json!({ "lineage": lineage })))
 }
 
-// ---------------------------------------------------------------------------
-// Tool quality handlers
-// ---------------------------------------------------------------------------
+// --- Tool quality handlers ---
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 #[tracing::instrument(skip_all)]
@@ -427,9 +415,7 @@ async fn get_tool_quality_handler(
     Ok(Json(json!(quality)))
 }
 
-// ---------------------------------------------------------------------------
-// Dashboard handlers
-// ---------------------------------------------------------------------------
+// --- Dashboard handlers ---
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 #[tracing::instrument(skip_all)]
@@ -476,9 +462,7 @@ async fn detail_handler(
     Ok(Json(detail))
 }
 
-// ---------------------------------------------------------------------------
-// Evolution handlers (hybrid: need state.llm for LLM-driven transforms)
-// ---------------------------------------------------------------------------
+// --- Evolution handlers (hybrid: need state.llm for LLM-driven transforms) ---
 
 #[tracing::instrument(skip_all)]
 async fn evolve_handler(
@@ -554,9 +538,7 @@ async fn evolution_recent_handler(
     Ok(Json(json!({ "recent": rows, "count": rows.len() })))
 }
 
-// ---------------------------------------------------------------------------
-// Analyzer handlers
-// ---------------------------------------------------------------------------
+// --- Analyzer handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn usage_stats_handler(
@@ -567,9 +549,7 @@ async fn usage_stats_handler(
     Ok(Json(stats))
 }
 
-// ---------------------------------------------------------------------------
-// Cloud handlers (no DB access, just external HTTP)
-// ---------------------------------------------------------------------------
+// --- Cloud handlers (no DB access, just external HTTP) ---
 
 #[tracing::instrument(skip_all)]
 async fn cloud_search_handler(
@@ -615,9 +595,7 @@ async fn cloud_upload_handler(
     Ok(Json(json!({ "uploaded": true, "id": result })))
 }
 
-// ---------------------------------------------------------------------------
-// Sync, Execute, Upload handlers (parity with original kleos)
-// ---------------------------------------------------------------------------
+// --- Sync, Execute, Upload handlers (parity with original kleos) ---
 
 /// Sync skills from filesystem directories.
 /// Note: In the Rust version, skills are primarily stored in the database.
@@ -824,9 +802,7 @@ async fn upload_skill_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Skills Cloud (v50+) handlers
-// ---------------------------------------------------------------------------
+// --- Skills Cloud (v50+) handlers ---
 
 // POST /skills/find -- hybrid search returning ranked candidates with
 // per-signal score breakdown. Replaces the role of /skills/search for the

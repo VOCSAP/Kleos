@@ -91,26 +91,22 @@ pub struct SubscribeRequest {
     pub webhook_url: Option<String>,
 }
 
-/// Maps a rusqlite error to EngError.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Converts a rusqlite Row into an Event. `owner_user_id` fills `Event.user_id`
 /// (the column is not in `EVENT_COLUMNS`); correctness comes from the
 /// always-applied `user_id` predicate, so the value is the caller's id.
 fn row_to_event(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Event> {
-    let payload_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
+    let payload_str: String = row.get(4)?;
     let payload: serde_json::Value = serde_json::from_str(&payload_str)?;
-    let source: String = row.get(2).map_err(rusqlite_to_eng_error)?;
+    let source: String = row.get(2)?;
     Ok(Event {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        channel: row.get(1).map_err(rusqlite_to_eng_error)?,
+        id: row.get(0)?,
+        channel: row.get(1)?,
         source: Some(source.clone()),
         agent: Some(source),
-        action: row.get(3).map_err(rusqlite_to_eng_error)?,
+        action: row.get(3)?,
         payload,
-        created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+        created_at: row.get(5)?,
         user_id: owner_user_id,
     })
 }
@@ -145,7 +141,7 @@ pub async fn publish_event(db: &Database, req: PublishEventRequest) -> Result<Ev
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 rusqlite::params![channel, source, action, payload_str, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -158,13 +154,13 @@ pub async fn get_event(db: &Database, id: i64, user_id: i64) -> Result<Event> {
     let sql = format!("SELECT {EVENT_COLUMNS} FROM axon_events WHERE id = ?1 AND user_id = ?2");
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound(format!("event {}", id)))?;
         row_to_event(row, user_id)
     })
@@ -214,11 +210,11 @@ pub async fn query_events(
     params_vec.push(rusqlite::types::Value::Integer(offset as i64));
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let params = rusqlite::params_from_iter(params_vec.iter().cloned());
-        let mut rows = stmt.query(params).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(params)?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             results.push(row_to_event(row, user_id)?);
         }
         Ok(results)
@@ -238,20 +234,20 @@ pub async fn list_channels(db: &Database, user_id: i64) -> Result<Vec<Channel>> 
                FROM axon_channels c ORDER BY c.name ASC";
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             results.push(Channel {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                name: row.get(1).map_err(rusqlite_to_eng_error)?,
-                description: row.get(2).map_err(rusqlite_to_eng_error)?,
-                retain_hours: row.get(3).map_err(rusqlite_to_eng_error)?,
-                created_at: row.get(4).map_err(rusqlite_to_eng_error)?,
-                event_count: row.get(5).map_err(rusqlite_to_eng_error)?,
-                subscriber_count: row.get(6).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                name: row.get(1)?,
+                description: row.get(2)?,
+                retain_hours: row.get(3)?,
+                created_at: row.get(4)?,
+                event_count: row.get(5)?,
+                subscriber_count: row.get(6)?,
             });
         }
         Ok(results)
@@ -272,7 +268,7 @@ pub async fn ensure_channel(
 
     db.write(move |conn| {
         conn.execute(sql, rusqlite::params![name, description])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(())
     })
     .await
@@ -297,7 +293,7 @@ pub async fn upsert_subscription(
     let wh = req.webhook_url.clone();
     db.write(move |conn| {
         conn.execute(sql, rusqlite::params![a, c, ft, wh])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(())
     })
     .await?;
@@ -319,22 +315,22 @@ pub async fn get_subscription(
     let channel_s = channel.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![agent_s, channel_s])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let row = rows
             .next()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound("subscription".into()))?;
         Ok(Subscription {
-            id: row.get(0).map_err(rusqlite_to_eng_error)?,
-            agent: row.get(1).map_err(rusqlite_to_eng_error)?,
-            channel: row.get(2).map_err(rusqlite_to_eng_error)?,
-            filter_type: row.get(3).map_err(rusqlite_to_eng_error)?,
-            webhook_url: row.get(4).map_err(rusqlite_to_eng_error)?,
+            id: row.get(0)?,
+            agent: row.get(1)?,
+            channel: row.get(2)?,
+            filter_type: row.get(3)?,
+            webhook_url: row.get(4)?,
             user_id,
-            created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+            created_at: row.get(5)?,
         })
     })
     .await
@@ -349,8 +345,7 @@ pub async fn delete_subscription(db: &Database, agent: &str, channel: &str) -> R
 
     let n = db
         .write(move |conn| {
-            conn.execute(sql, rusqlite::params![a, c])
-                .map_err(rusqlite_to_eng_error)
+            Ok(conn.execute(sql, rusqlite::params![a, c])?)
         })
         .await?;
     Ok(n > 0)
@@ -370,20 +365,20 @@ pub async fn list_subscriptions_for_agent(
     let a = agent.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![a])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut results = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             results.push(Subscription {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                agent: row.get(1).map_err(rusqlite_to_eng_error)?,
-                channel: row.get(2).map_err(rusqlite_to_eng_error)?,
-                filter_type: row.get(3).map_err(rusqlite_to_eng_error)?,
-                webhook_url: row.get(4).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                agent: row.get(1)?,
+                channel: row.get(2)?,
+                filter_type: row.get(3)?,
+                webhook_url: row.get(4)?,
                 user_id,
-                created_at: row.get(5).map_err(rusqlite_to_eng_error)?,
+                created_at: row.get(5)?,
             });
         }
         Ok(results)
@@ -401,16 +396,16 @@ pub async fn get_cursor(db: &Database, agent: &str, channel: &str, user_id: i64)
     let c = channel.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
         let mut rows = stmt
             .query(rusqlite::params![a.clone(), c.clone()])
-            .map_err(rusqlite_to_eng_error)?;
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        match rows.next()? {
             Some(row) => Ok(Cursor {
-                agent: row.get(0).map_err(rusqlite_to_eng_error)?,
-                channel: row.get(1).map_err(rusqlite_to_eng_error)?,
-                last_event_id: row.get(2).map_err(rusqlite_to_eng_error)?,
-                updated_at: row.get(3).map_err(rusqlite_to_eng_error)?,
+                agent: row.get(0)?,
+                channel: row.get(1)?,
+                last_event_id: row.get(2)?,
+                updated_at: row.get(3)?,
                 user_id,
             }),
             None => Ok(Cursor {
@@ -442,7 +437,7 @@ async fn upsert_cursor(
 
     db.write(move |conn| {
         conn.execute(sql, rusqlite::params![a, c, last_event_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(())
     })
     .await
@@ -468,12 +463,12 @@ pub async fn consume(
 
     let events: Vec<Event> = db
         .read(move |conn| {
-            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql)?;
             let mut rows = stmt
                 .query(rusqlite::params![channel_s, last, limit as i64, user_id])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut out = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            while let Some(row) = rows.next()? {
                 out.push(row_to_event(row, user_id)?);
             }
             Ok(out)
@@ -502,7 +497,7 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<AxonStats> {
                     Ok((total, chans, srcs))
                 },
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut by_channel = Vec::new();
         let mut stmt = conn
@@ -513,15 +508,15 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<AxonStats> {
                  GROUP BY channel
                  ORDER BY channel ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        while let Some(row) = rows.next()? {
             by_channel.push(ChannelStat {
-                channel: row.get(0).map_err(rusqlite_to_eng_error)?,
-                count: row.get(1).map_err(rusqlite_to_eng_error)?,
-                latest: row.get(2).map_err(rusqlite_to_eng_error)?,
+                channel: row.get(0)?,
+                count: row.get(1)?,
+                latest: row.get(2)?,
             });
         }
 

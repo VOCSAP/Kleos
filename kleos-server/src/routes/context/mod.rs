@@ -20,8 +20,6 @@ use kleos_lib::context::{
     assemble_context, assemble_context_streaming, ContextOptions, ContextProgressEvent,
 };
 
-#[allow(dead_code)]
-mod types;
 
 pub fn router() -> Router<AppState> {
     Router::new()

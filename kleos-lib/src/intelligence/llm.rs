@@ -1,5 +1,5 @@
-//! LLM helper -- configurable endpoint for calling a local model (Ollama, etc).
-//! Ported from llm/local.ts.
+//! LLM helper -- calls any OpenAI-compatible /v1/chat/completions endpoint.
+//! Provider-agnostic: works with mistral.rs, vLLM, llama.cpp, Ollama, cloud APIs.
 
 use super::types::LlmOptions;
 use serde::{Deserialize, Serialize};
@@ -17,17 +17,34 @@ static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::n
 });
 
 /// Check whether an LLM endpoint is configured.
-/// ENGRAM_LLM_URL (legacy) takes precedence; falls back to OLLAMA_URL.
 pub fn is_llm_available() -> bool {
     llm_url().is_some()
 }
 
 /// Resolve the LLM endpoint URL.
-/// ENGRAM_LLM_URL (legacy/undocumented) → OLLAMA_URL (official) → None.
+/// KLEOS_LLM_URL (canonical) -> ENGRAM_LLM_URL (legacy) -> OLLAMA_URL (legacy) -> None.
 fn llm_url() -> Option<String> {
-    std::env::var("ENGRAM_LLM_URL")
+    std::env::var("KLEOS_LLM_URL")
         .ok()
+        .or_else(|| std::env::var("ENGRAM_LLM_URL").ok())
         .or_else(|| std::env::var("OLLAMA_URL").ok())
+}
+
+/// Resolve the LLM API key.
+/// KLEOS_LLM_API_KEY (canonical) -> LLM_API_KEY (legacy) -> None.
+fn llm_api_key() -> Option<String> {
+    std::env::var("KLEOS_LLM_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("LLM_API_KEY").ok())
+}
+
+/// Resolve the LLM model name.
+/// KLEOS_LLM_MODEL (canonical) -> OLLAMA_MODEL (legacy) -> ENGRAM_LLM_MODEL (legacy).
+fn llm_model() -> String {
+    std::env::var("KLEOS_LLM_MODEL")
+        .or_else(|_| std::env::var("OLLAMA_MODEL"))
+        .or_else(|_| std::env::var("ENGRAM_LLM_MODEL"))
+        .unwrap_or_else(|_| "llama3.2:3b".to_string())
 }
 
 /// OpenAI-compatible request body (/v1/chat/completions).
@@ -71,11 +88,9 @@ pub async fn call_llm(
     opts: Option<LlmOptions>,
 ) -> Result<String, String> {
     let opts = opts.unwrap_or_default();
-    let url = llm_url().ok_or_else(|| "No LLM URL configured (set OLLAMA_URL)".to_string())?;
-    let model = std::env::var("OLLAMA_MODEL")
-        .or_else(|_| std::env::var("ENGRAM_LLM_MODEL"))
-        .unwrap_or_else(|_| "llama3.2:3b".to_string());
-    let api_key = std::env::var("LLM_API_KEY").ok();
+    let url = llm_url().ok_or_else(|| "No LLM URL configured (set KLEOS_LLM_URL)".to_string())?;
+    let model = llm_model();
+    let api_key = llm_api_key();
 
     let body = OpenAiRequest {
         model,
@@ -211,8 +226,9 @@ mod tests {
 
     #[test]
     fn test_is_llm_available_default() {
-        // Without env var, should be false
+        std::env::remove_var("KLEOS_LLM_URL");
         std::env::remove_var("ENGRAM_LLM_URL");
+        std::env::remove_var("OLLAMA_URL");
         assert!(!is_llm_available());
     }
 }

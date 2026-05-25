@@ -54,7 +54,7 @@ async fn inject_handler(
                     body.message,
                 ],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -89,7 +89,7 @@ async fn pending_handler(
                      WHERE user_id = ?1 AND session_id = ?2 AND claimed_at IS NULL
                      RETURNING id, session_id, rule_id, severity, message, created_at",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params![user_id, session_id], |row| {
@@ -102,11 +102,11 @@ async fn pending_handler(
                         created_at: row.get(5)?,
                     })
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let mut out = Vec::new();
             for r in rows {
-                out.push(r.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?);
+                out.push(r?);
             }
             Ok(out)
         })

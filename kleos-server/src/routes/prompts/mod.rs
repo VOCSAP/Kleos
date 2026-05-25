@@ -97,24 +97,10 @@ async fn post_prompt_generate(
     if include_personality {
         let personality_req = SearchRequest {
             query: format!("{agent} personality"),
-            embedding: None,
             limit: Some(3),
             user_id: Some(auth.user_id),
-            latest_only: true,
             category: Some("personality".into()),
-            source: None,
-            tags: None,
-            threshold: None,
-            space_id: None,
-            include_forgotten: None,
-            mode: None,
-            question_type: None,
-            expand_relationships: false,
-            include_links: false,
-            source_filter: None,
-            include_archived: None,
-            include_noise: None,
-            exclude_consolidated: None,
+            ..Default::default()
         };
         if let Ok(results) = hybrid_search(&db, personality_req).await {
             if !results.is_empty() {
@@ -137,24 +123,9 @@ async fn post_prompt_generate(
     if include_memories {
         let memory_req = SearchRequest {
             query: task.to_string(),
-            embedding: None,
             limit: Some(memory_limit),
             user_id: Some(auth.user_id),
-            latest_only: true,
-            category: None,
-            source: None,
-            tags: None,
-            threshold: None,
-            space_id: None,
-            include_forgotten: None,
-            mode: None,
-            question_type: None,
-            expand_relationships: false,
-            include_links: false,
-            source_filter: None,
-            include_archived: None,
-            include_noise: None,
-            exclude_consolidated: None,
+            ..Default::default()
         };
         let results = hybrid_search(&db, memory_req).await?;
         if !results.is_empty() {

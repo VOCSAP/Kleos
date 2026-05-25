@@ -44,6 +44,7 @@ impl OpenAiProvider {
         let url = std::env::var("KLEOS_EMBEDDING_URL").ok()?;
         let api_key = std::env::var("KLEOS_EMBEDDING_API_KEY")
             .ok()
+            .or_else(|| std::env::var("KLEOS_LLM_API_KEY").ok())
             .or_else(|| std::env::var("LLM_API_KEY").ok());
         let model = std::env::var("KLEOS_EMBEDDING_MODEL").ok();
         Some(Self::new(http, url, api_key, model, dim))

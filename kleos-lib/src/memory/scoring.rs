@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 pub use crate::validation::RERANKER_TOP_K;
-pub const AUTO_LINK_THRESHOLD: f64 = 0.55;
-pub const AUTO_LINK_MAX: usize = 6;
 pub const SEARCH_FACT_VECTOR_FLOOR: f64 = 0.22;
 pub const SEARCH_PREFERENCE_VECTOR_FLOOR: f64 = 0.12;
 pub const SEARCH_REASONING_VECTOR_FLOOR: f64 = 0.10;
@@ -112,191 +110,8 @@ pub fn question_strategy(qt: QuestionType) -> SearchStrategy {
     }
 }
 
-pub fn normalize_text(text: &str) -> String {
-    let lowered: String = text
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c.is_whitespace() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    lowered.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-pub fn tokenize_query(query: &str) -> Vec<String> {
-    let normalized = normalize_text(query);
-    let mut seen = std::collections::HashSet::new();
-    normalized
-        .split(' ')
-        .filter(|t| t.len() >= 3)
-        .filter(|t| seen.insert(t.to_string()))
-        .map(|t| t.to_string())
-        .collect()
-}
-
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|n| haystack.contains(n))
-}
-
-pub fn classify_question(query: &str) -> QuestionType {
-    let q = query.to_lowercase();
-    if contains_any(
-        &q,
-        &[
-            "when did",
-            "when was",
-            "timeline",
-            "sequence",
-            "history of",
-            "over the past",
-            "how long ago",
-            "since when",
-        ],
-    ) {
-        return QuestionType::Temporal;
-    }
-    if (contains_any(&q, &["how has", "how have"]) && q.contains("changed"))
-        || contains_any(
-            &q,
-            &[
-                "used to",
-                "originally",
-                "evolution of",
-                "progression",
-                "over time",
-                "shifted",
-                "shifting",
-                "transitioned",
-                "transition",
-            ],
-        )
-    {
-        return QuestionType::Temporal;
-    }
-    if extract_query_date(query).is_some()
-        && contains_any(&q, &["what", "who", "how", "which", "did"])
-    {
-        return QuestionType::Temporal;
-    }
-    if contains_any(
-        &q,
-        &[
-            "recently",
-            "attended",
-            "joined",
-            "last time",
-            "went to",
-            "visited",
-            "started",
-            "stopped",
-            "what happened first",
-            "what happened after",
-        ],
-    ) {
-        return QuestionType::FactRecall;
-    }
-    if contains_any(
-        &q,
-        &[
-            "what is my",
-            "what are my",
-            "what was my",
-            "what were my",
-            "what is the",
-            "what are the",
-            "tell me about",
-            "do i have",
-            "do i own",
-            "do i use",
-            "what did i",
-            "what did they",
-            "where do",
-            "where did",
-            "where does",
-            "who is",
-            "who was",
-            "who did",
-        ],
-    ) {
-        return QuestionType::FactRecall;
-    }
-    if contains_any(
-        &q,
-        &[
-            "why did",
-            "what made",
-            "decided",
-            "reason",
-            "reasons",
-            "because",
-            "why do",
-            "why does",
-            "motivation",
-            "what led",
-        ],
-    ) {
-        return QuestionType::Reasoning;
-    }
-    if contains_any(
-        &q,
-        &[
-            "should i",
-            "do you think",
-            "considering",
-            "would i",
-            "could i",
-            "good fit",
-            "worth it",
-            "does it make sense",
-            "make sense for me",
-        ],
-    ) {
-        return QuestionType::Generalization;
-    }
-    if contains_any(
-        &q,
-        &[
-            "suggest",
-            "recommend",
-            "what would",
-            "ideas",
-            "weekend",
-            "fit me",
-            "aligned",
-        ],
-    ) || contains_any(
-        &q,
-        &[
-            "favorite",
-            "prefer",
-            "like most",
-            "enjoy",
-            "love",
-            "hate",
-            "dislike",
-            "interested in",
-            "passionate about",
-            "into",
-        ],
-    ) || contains_any(
-        &q,
-        &[
-            "what kind of",
-            "what type of",
-            "what sort of",
-            "taste in",
-            "style of",
-            "based on my",
-            "based on what",
-        ],
-    ) {
-        return QuestionType::Preference;
-    }
-    QuestionType::FactRecall
 }
 
 pub fn classify_question_mixed(query: &str) -> HashMap<QuestionType, f64> {
@@ -653,16 +468,6 @@ pub fn recency_score(created_at: &str) -> f64 {
     (-age_days / 30.0_f64).exp()
 }
 
-/// Map a per-category preference score (see
-/// `intelligence::feedback::category_preferences`) to a retrieval boost
-/// multiplier. Input is clamped to `[-1.0, 1.0]` and linearly mapped to
-/// `[0.8, 1.2]`: a score of 0 produces a neutral boost of 1.0, +1 yields
-/// 1.2, -1 yields 0.8.
-pub fn category_preference_boost(preference_score: f64) -> f64 {
-    let s = preference_score.clamp(-1.0, 1.0);
-    1.0 + s * 0.2
-}
-
 pub fn link_type_weight(link_type: &str) -> f64 {
     match link_type {
         "caused_by" | "causes" => 2.0,
@@ -672,57 +477,13 @@ pub fn link_type_weight(link_type: &str) -> f64 {
     }
 }
 
-pub fn score_signal_match(
-    query: &str,
-    subject: &str,
-    reasoning: Option<&str>,
-    source_text: Option<&str>,
-    content: &str,
-    intensity: f64,
-) -> f64 {
-    let haystack = normalize_text(
-        &[
-            subject,
-            reasoning.unwrap_or(""),
-            source_text.unwrap_or(""),
-            content,
-        ]
-        .join(" "),
-    );
-    let nq = normalize_text(query);
-    let tokens = tokenize_query(query);
-    if haystack.is_empty() {
-        return 0.0;
-    }
-    let mut score = 0.0;
-    if !nq.is_empty() && haystack.contains(&nq) {
-        score += 0.45;
-    }
-    let ns = normalize_text(subject);
-    if !ns.is_empty()
-        && !nq.is_empty()
-        && ns
-            .split_whitespace()
-            .any(|t| !t.is_empty() && nq.contains(t))
-    {
-        score += 0.05;
-    }
-    if !tokens.is_empty() {
-        let matched = tokens
-            .iter()
-            .filter(|t| haystack.contains(t.as_str()))
-            .count();
-        score += (matched as f64 / tokens.len() as f64) * 0.35;
-    }
-    score += intensity.clamp(0.0, 1.0) * 0.2;
-    score.min(1.0)
-}
-
-fn parse_date_ms(s: &str) -> Option<i64> {
+/// Parse a date string into epoch milliseconds, handling ISO8601 with or
+/// without timezone, space-separated datetime, and bare dates.
+pub(crate) fn parse_date_ms(s: &str) -> Option<i64> {
     let n = if s.contains('Z') || s.contains('+') {
-        s.to_string()
-    } else if s.contains('T') {
-        format!("{}Z", s)
+        s.replace(' ', "T")
+    } else if s.contains('T') || s.contains(' ') {
+        format!("{}Z", s.replace(' ', "T"))
     } else {
         format!("{}T00:00:00Z", s)
     };
@@ -734,58 +495,6 @@ fn parse_date_ms(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn classify_temporal() {
-        assert_eq!(
-            classify_question("when did I start using Rust?"),
-            QuestionType::Temporal
-        );
-        assert_eq!(
-            classify_question("what happened yesterday?"),
-            QuestionType::Temporal
-        );
-    }
-
-    #[test]
-    fn classify_fact() {
-        assert_eq!(
-            classify_question("what is my favorite language?"),
-            QuestionType::FactRecall
-        );
-        assert_eq!(
-            classify_question("tell me about my work setup"),
-            QuestionType::FactRecall
-        );
-    }
-
-    #[test]
-    fn classify_pref() {
-        assert_eq!(
-            classify_question("suggest a good book for me"),
-            QuestionType::Preference
-        );
-        assert_eq!(
-            classify_question("I love action movies, what do you recommend?"),
-            QuestionType::Preference
-        );
-    }
-
-    #[test]
-    fn classify_reasoning_test() {
-        assert_eq!(
-            classify_question("why did I choose Rust over Go?"),
-            QuestionType::Reasoning
-        );
-    }
-
-    #[test]
-    fn classify_gen() {
-        assert_eq!(
-            classify_question("should I learn Haskell?"),
-            QuestionType::Generalization
-        );
-    }
 
     #[test]
     fn extract_iso() {
@@ -815,18 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn normalize_works() {
-        assert_eq!(normalize_text("Hello, World! 123"), "hello world 123");
-    }
-
-    #[test]
-    fn tokenize_works() {
-        let t = tokenize_query("Hello World! The quick brown fox");
-        assert!(t.contains(&"hello".to_string()));
-        assert!(t.contains(&"world".to_string()));
-    }
-
-    #[test]
     fn temporal_boost_close() {
         let b = temporal_proximity_boost("2026-03-15", "2026-03-15T12:00:00Z");
         assert!(b > 1.4, "got {}", b);
@@ -852,27 +549,6 @@ mod tests {
     }
 
     #[test]
-    fn category_preference_boost_neutral() {
-        assert!((category_preference_boost(0.0) - 1.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn category_preference_boost_endpoints() {
-        assert!((category_preference_boost(1.0) - 1.2).abs() < 1e-9);
-        assert!((category_preference_boost(-1.0) - 0.8).abs() < 1e-9);
-    }
-
-    #[test]
-    fn category_preference_boost_clamps_above_one() {
-        assert!((category_preference_boost(5.0) - 1.2).abs() < 1e-9);
-    }
-
-    #[test]
-    fn category_preference_boost_clamps_below_negative_one() {
-        assert!((category_preference_boost(-3.5) - 0.8).abs() < 1e-9);
-    }
-
-    #[test]
     fn blend_single() {
         let mut w = HashMap::new();
         w.insert(QuestionType::FactRecall, 1.0);
@@ -893,25 +569,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn signal_match() {
-        let s1 = score_signal_match(
-            "coffee preference",
-            "coffee",
-            Some("loves dark roast"),
-            None,
-            "Alice prefers dark roast coffee",
-            0.8,
-        );
-        assert!(s1 > 0.3, "got {}", s1);
-        let s2 = score_signal_match(
-            "quantum physics",
-            "coffee",
-            None,
-            None,
-            "dark roast beans",
-            0.5,
-        );
-        assert!(s2 < s1);
-    }
 }

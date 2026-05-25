@@ -3,9 +3,6 @@ use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 // -- Types ---
 
@@ -101,7 +98,7 @@ pub async fn create_fact(
                         |_| Ok(()),
                     )
                     .optional()
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 Ok(result.is_some())
             })
             .await?;
@@ -126,7 +123,7 @@ pub async fn create_fact(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![memory_id, subject, predicate, object, confidence, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -141,7 +138,7 @@ pub async fn create_fact(
     db.read(move |conn| {
         conn.query_row(&sql, params![new_id, user_id], row_to_fact)
             .optional()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
     })
     .await
@@ -177,41 +174,17 @@ pub async fn list_facts(
     };
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params![user_id], row_to_fact)
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut facts = Vec::new();
         for row in rows {
-            facts.push(row.map_err(rusqlite_to_eng_error)?);
+            facts.push(row?);
         }
         Ok(facts)
     })
     .await
-}
-
-/// Hard-delete a structured fact by id, scoped to the given user.
-/// The `user_id` predicate ensures a user cannot delete another user's
-/// facts in single-DB mode.
-#[tracing::instrument(skip(db), fields(fact_id = id, user_id))]
-pub async fn delete_fact(db: &Database, id: i64, user_id: i64) -> Result<()> {
-    let affected = db
-        .write(move |conn| {
-            conn.execute(
-                "DELETE FROM structured_facts WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)
-        })
-        .await?;
-
-    if affected == 0 {
-        return Err(EngError::NotFound(format!(
-            "structured_fact {} not found",
-            id
-        )));
-    }
-    Ok(())
 }
 
 // -- Current state (per-agent key-value) ---
@@ -241,7 +214,7 @@ pub async fn set_state(
                  updated_at = datetime('now')",
             params![agent_owned, key_owned, value_owned, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -267,7 +240,7 @@ pub async fn get_state(
     db.read(move |conn| {
         conn.query_row(&sql, params![agent, key, user_id], row_to_state)
             .optional()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .ok_or_else(|| EngError::NotFound("state not found".to_string()))
     })
     .await
@@ -283,13 +256,13 @@ pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<
         STATE_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(params![agent, user_id], row_to_state)
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut entries = Vec::new();
         for row in rows {
-            entries.push(row.map_err(rusqlite_to_eng_error)?);
+            entries.push(row?);
         }
         Ok(entries)
     })

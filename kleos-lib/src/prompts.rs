@@ -4,13 +4,10 @@
 
 use crate::config::ServerEntry;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptResult {
@@ -51,7 +48,7 @@ pub async fn generate_prompt(
                          WHERE is_static = 1 AND is_forgotten = 0 \
                            AND is_consolidated = 0",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let rows = stmt
                     .query_map([], |row| {
                         Ok((
@@ -60,9 +57,9 @@ pub async fn generate_prompt(
                             row.get::<_, String>(2)?,
                         ))
                     })
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 for row in rows {
-                    let (id, content, category) = row.map_err(rusqlite_to_eng_error)?;
+                    let (id, content, category) = row?;
                     if seen.insert(id) {
                         out.push((id, content, category, 100.0));
                     }
@@ -80,7 +77,7 @@ pub async fn generate_prompt(
                            AND is_latest = 1 AND is_consolidated = 0 \
                          ORDER BY ds DESC LIMIT 1000",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let rows = stmt
                     .query_map([], |row| {
                         Ok((
@@ -90,9 +87,9 @@ pub async fn generate_prompt(
                             row.get::<_, f64>(4).unwrap_or(5.0),
                         ))
                     })
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 for row in rows {
-                    let (id, content, category, ds) = row.map_err(rusqlite_to_eng_error)?;
+                    let (id, content, category, ds) = row?;
                     if seen.insert(id) {
                         out.push((id, content, category, ds * 2.0));
                     }
@@ -166,7 +163,7 @@ pub async fn generate_header(
                        AND is_latest = 1 AND is_consolidated = 0 \
                      ORDER BY created_at DESC LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows = stmt
                 .query_map(params![fetch_limit], |row| {
                     Ok((
@@ -178,10 +175,10 @@ pub async fn generate_header(
                         row.get::<_, String>(5).unwrap_or_default(),
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut out = Vec::new();
             for row in rows {
-                out.push(row.map_err(rusqlite_to_eng_error)?);
+                out.push(row?);
             }
             Ok(out)
         })

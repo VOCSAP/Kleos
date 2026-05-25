@@ -8,10 +8,6 @@
 use crate::db::Database;
 use crate::{EngError, Result};
 
-/// Map a rusqlite error to the crate's EngError type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Record a heartbeat for the given task.
 ///
@@ -31,7 +27,7 @@ pub async fn record_heartbeat(db: &Database, id: i64, user_id: i64) -> Result<()
                      WHERE id = ?1 AND user_id = ?2",
                     rusqlite::params![id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             Ok(n)
         })
         .await?;
@@ -88,14 +84,14 @@ pub async fn mark_stale_tasks(
                        AND julianday('now') - julianday(last_heartbeat) \
                            > (heartbeat_interval * ?1 / 86400.0)",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![grace_multiplier])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut ids = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let owner: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next()? {
+                let id: i64 = row.get(0)?;
+                let owner: i64 = row.get(1)?;
                 ids.push((id, owner));
             }
             Ok(ids)
@@ -120,14 +116,14 @@ pub async fn mark_stale_tasks(
                                > (heartbeat_interval * ?2 / 86400.0)",
                         rusqlite::params![task_id, gm],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 if n > 0 {
                     conn.execute(
                         "INSERT INTO chiasm_task_updates (task_id, agent, status, summary) \
                          VALUES (?1, 'system', 'stale', 'marked stale: heartbeat overdue')",
                         rusqlite::params![task_id],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 }
                 Ok(n)
             })
@@ -217,7 +213,7 @@ mod tests {
                  WHERE id = ?1",
                 rusqlite::params![task.id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(0usize)
         })
         .await

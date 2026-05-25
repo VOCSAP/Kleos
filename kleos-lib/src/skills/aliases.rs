@@ -60,8 +60,7 @@ pub async fn add_alias(
             "INSERT OR IGNORE INTO skill_aliases (alias, skill_id, confidence, source) \
              VALUES (?1, ?2, ?3, ?4)",
             params![alias_clone, skill_id, confidence, source],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         // Return the row id of the matching pair (newly inserted or
         // pre-existing -- INSERT OR IGNORE leaves last_insert_rowid at 0
         // on conflict, so look it up explicitly).
@@ -70,8 +69,7 @@ pub async fn add_alias(
                 "SELECT id FROM skill_aliases WHERE alias = ?1 AND skill_id = ?2",
                 params![alias, skill_id],
                 |r| r.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(id)
     })
     .await
@@ -95,18 +93,15 @@ pub async fn add_auto_aliases(
     }
     db.write(move |conn| {
         let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .unchecked_transaction()?;
         for (a, c) in &aliases {
             tx.execute(
                 "INSERT OR IGNORE INTO skill_aliases (alias, skill_id, confidence, source) \
                  VALUES (?1, ?2, ?3, 'auto')",
                 params![a, skill_id, c],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
-        tx.commit()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        tx.commit()?;
         Ok(())
     })
     .await
@@ -120,8 +115,7 @@ pub async fn remove_alias(db: &Database, skill_id: i64, alias: &str) -> Result<u
             .execute(
                 "DELETE FROM skill_aliases WHERE alias = ?1 AND skill_id = ?2",
                 params![alias, skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n)
     })
     .await
@@ -136,8 +130,7 @@ pub async fn clear_auto_aliases(db: &Database, skill_id: i64) -> Result<usize> {
             .execute(
                 "DELETE FROM skill_aliases WHERE skill_id = ?1 AND source = 'auto'",
                 params![skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n)
     })
     .await
@@ -151,8 +144,7 @@ pub async fn list_for_skill(db: &Database, skill_id: i64) -> Result<Vec<SkillAli
                 "SELECT id, alias, skill_id, confidence, source, created_at \
                  FROM skill_aliases WHERE skill_id = ?1 \
                  ORDER BY created_at DESC, id DESC",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
             .query_map(params![skill_id], |r| {
                 Ok(SkillAlias {
@@ -163,11 +155,10 @@ pub async fn list_for_skill(db: &Database, skill_id: i64) -> Result<Vec<SkillAli
                     source: r.get(4)?,
                     created_at: r.get(5)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -192,8 +183,7 @@ pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<V
                 "SELECT skill_id, alias, confidence, source \
                  FROM skill_aliases WHERE alias = ?1 \
                  ORDER BY confidence DESC, id DESC LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let mut hits: Vec<AliasMatch> = stmt
             .query_map(params![q, limit_i], |r| {
                 Ok(AliasMatch {
@@ -202,8 +192,7 @@ pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<V
                     confidence: r.get(2)?,
                     source: r.get(3)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            })?
             .filter_map(|r| r.ok())
             .collect();
         // If we still have headroom, fall back to prefix match. Confidence
@@ -216,8 +205,7 @@ pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<V
                     "SELECT skill_id, alias, confidence, source \
                      FROM skill_aliases WHERE alias LIKE ?1 AND alias != ?2 \
                      ORDER BY confidence DESC, length(alias) ASC LIMIT ?3",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let prefix_hits: Vec<AliasMatch> = stmt2
                 .query_map(params![pattern, q, remaining], |r| {
                     Ok(AliasMatch {
@@ -226,8 +214,7 @@ pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<V
                         confidence: r.get::<_, f64>(2)? * 0.7,
                         source: r.get(3)?,
                     })
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             hits.extend(prefix_hits);

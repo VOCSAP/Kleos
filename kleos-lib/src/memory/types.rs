@@ -304,6 +304,53 @@ fn default_importance() -> i32 {
     5
 }
 
+impl Default for StoreRequest {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            category: default_category(),
+            source: default_source(),
+            importance: default_importance(),
+            tags: None,
+            embedding: None,
+            chunk_embeddings: None,
+            session_id: None,
+            is_static: None,
+            user_id: None,
+            space_id: None,
+            parent_memory_id: None,
+            sync_id: None,
+            artifacts: None,
+        }
+    }
+}
+
+impl Default for SearchRequest {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            embedding: None,
+            limit: None,
+            category: None,
+            source: None,
+            tags: None,
+            threshold: None,
+            user_id: None,
+            space_id: None,
+            include_forgotten: None,
+            mode: None,
+            question_type: None,
+            expand_relationships: false,
+            include_links: false,
+            latest_only: true,
+            source_filter: None,
+            include_archived: None,
+            include_noise: None,
+            exclude_consolidated: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreResult {
     pub id: i64,

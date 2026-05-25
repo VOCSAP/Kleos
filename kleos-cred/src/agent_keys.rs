@@ -1,7 +1,6 @@
 //! Agent key management with permission scoping and revocation.
 
 use kleos_lib::db::Database;
-use kleos_lib::EngError;
 use rand::Rng;
 use rusqlite::params;
 use subtle::ConstantTimeEq;
@@ -139,8 +138,7 @@ pub async fn create_agent_key(
                 "INSERT INTO cred_agent_keys (user_id, key_hash, name, permissions, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![user_id, key_hash, name_owned, permissions_json, now],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await
@@ -173,38 +171,18 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
                      FROM cred_agent_keys
                      WHERE revoked_at IS NULL AND key_hash = ?1
                      LIMIT 1",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
 
-            let mut rows = stmt
-                .query(rusqlite::params![key_hash])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt.query(rusqlite::params![key_hash])?;
 
-            if let Some(row) = rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            {
-                let id: i64 = row
-                    .get(0)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let user_id: i64 = row
-                    .get(1)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let stored_hash: String = row
-                    .get(2)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let name: String = row
-                    .get(3)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let permissions_json: String = row
-                    .get(4)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let created_at: String = row
-                    .get(5)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let revoked_at: Option<String> = row
-                    .get(6)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            if let Some(row) = rows.next()? {
+                let id: i64 = row.get(0)?;
+                let user_id: i64 = row.get(1)?;
+                let stored_hash: String = row.get(2)?;
+                let name: String = row.get(3)?;
+                let permissions_json: String = row.get(4)?;
+                let created_at: String = row.get(5)?;
+                let revoked_at: Option<String> = row.get(6)?;
 
                 // Defense-in-depth: constant-time verify after index lookup.
                 if key_hash.as_bytes().ct_eq(stored_hash.as_bytes()).into() {
@@ -243,34 +221,31 @@ pub async fn list_agent_keys(db: &Database, user_id: i64) -> Result<Vec<AgentKey
                  FROM cred_agent_keys
                  WHERE user_id = ?1
                  ORDER BY created_at DESC",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
-        let rows = stmt
-            .query_map(params![user_id], |row| {
-                let id: i64 = row.get(0)?;
-                let user_id: i64 = row.get(1)?;
-                let key_hash: String = row.get(2)?;
-                let name: String = row.get(3)?;
-                let permissions_json: String = row.get(4)?;
-                let created_at: String = row.get(5)?;
-                let revoked_at: Option<String> = row.get(6)?;
-                Ok((
-                    id,
-                    user_id,
-                    key_hash,
-                    name,
-                    permissions_json,
-                    created_at,
-                    revoked_at,
-                ))
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            let id: i64 = row.get(0)?;
+            let user_id: i64 = row.get(1)?;
+            let key_hash: String = row.get(2)?;
+            let name: String = row.get(3)?;
+            let permissions_json: String = row.get(4)?;
+            let created_at: String = row.get(5)?;
+            let revoked_at: Option<String> = row.get(6)?;
+            Ok((
+                id,
+                user_id,
+                key_hash,
+                name,
+                permissions_json,
+                created_at,
+                revoked_at,
+            ))
+        })?;
 
         let mut keys = Vec::new();
         for row_result in rows {
             let (id, user_id, key_hash, name, permissions_json, created_at, revoked_at) =
-                row_result.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                row_result?;
             let permissions = AgentKeyPermissions::from_json(&permissions_json);
             keys.push(AgentKey {
                 id,
@@ -297,11 +272,10 @@ pub async fn revoke_agent_key(db: &Database, user_id: i64, name: &str) -> Result
 
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE cred_agent_keys SET revoked_at = ?1 WHERE user_id = ?2 AND name = ?3 AND revoked_at IS NULL",
                 params![now, user_id, name_owned],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .map_err(|e| CredError::Database(e.to_string()))?;
@@ -320,11 +294,10 @@ pub async fn delete_agent_key(db: &Database, user_id: i64, name: &str) -> Result
 
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM cred_agent_keys WHERE user_id = ?1 AND name = ?2",
                 params![user_id, name_owned],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .map_err(|e| CredError::Database(e.to_string()))?;

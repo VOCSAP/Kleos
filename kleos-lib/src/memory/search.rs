@@ -1,6 +1,6 @@
 use super::fts::fts_search;
 use super::vector::{chunk_vector_search, vector_search};
-use super::{row_to_memory, rusqlite_to_eng_error, MEMORY_COLUMNS};
+use super::{row_to_memory, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
     self, blend_strategies, classify_question_mixed, question_strategy, rrf_score,
@@ -233,7 +233,7 @@ async fn hydrate_candidates(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
 
         let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
         for id in ids.iter() {
@@ -243,33 +243,33 @@ async fn hydrate_candidates(
 
         let mut rows = stmt
             .query(params.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         // 6.9 capacity hint: upper bound is the input id set.
         let mut hydrated = Vec::with_capacity(ids.len());
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             hydrated.push(HydratedCandidateRow {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                created_at: row.get(1).map_err(rusqlite_to_eng_error)?,
-                importance: row.get(2).map_err(rusqlite_to_eng_error)?,
-                is_static: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
-                source_count: row.get(4).map_err(rusqlite_to_eng_error)?,
-                version: row.get(5).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                created_at: row.get(1)?,
+                importance: row.get(2)?,
+                is_static: row.get::<_, i32>(3)? != 0,
+                source_count: row.get(4)?,
+                version: row.get(5)?,
                 is_latest: row
                     .get::<_, Option<i32>>(6)
-                    .map_err(rusqlite_to_eng_error)?
+                    ?
                     .map(|value| value != 0),
-                source: row.get(7).map_err(rusqlite_to_eng_error)?,
-                model: row.get(8).map_err(rusqlite_to_eng_error)?,
-                access_count: row.get(9).map_err(rusqlite_to_eng_error)?,
+                source: row.get(7)?,
+                model: row.get(8)?,
+                access_count: row.get(9)?,
                 pagerank_score: row
                     .get::<_, Option<f64>>(10)
-                    .map_err(rusqlite_to_eng_error)?
+                    ?
                     .unwrap_or(0.0),
-                fsrs_stability: row.get(11).map_err(rusqlite_to_eng_error)?,
-                content: row.get(12).map_err(rusqlite_to_eng_error)?,
-                category: row.get(13).map_err(rusqlite_to_eng_error)?,
-                is_archived: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
-                is_consolidated: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
+                fsrs_stability: row.get(11)?,
+                content: row.get(12)?,
+                category: row.get(13)?,
+                is_archived: row.get::<_, i32>(14)? != 0,
+                is_consolidated: row.get::<_, i32>(15)? != 0,
             });
         }
         Ok(hydrated)
@@ -297,59 +297,30 @@ async fn fetch_graph_neighbors(
         WHERE ml.target_id = ?1 AND m.user_id = ?2";
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(link_sql)?;
         let mut rows = stmt
             .query(rusqlite::params![seed_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         // 6.9 capacity hint: typical graph-neighbor fanout.
         let mut linked = Vec::with_capacity(16);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             linked.push(GraphExpansionRow {
-                link_id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                similarity: row.get(1).map_err(rusqlite_to_eng_error)?,
-                link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
-                content: row.get(3).map_err(rusqlite_to_eng_error)?,
-                category: row.get(4).map_err(rusqlite_to_eng_error)?,
-                importance: row.get(5).map_err(rusqlite_to_eng_error)?,
-                created_at: row.get(6).map_err(rusqlite_to_eng_error)?,
-                is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
-                is_forgotten: row.get::<_, i32>(8).map_err(rusqlite_to_eng_error)? != 0,
-                version: row.get(9).map_err(rusqlite_to_eng_error)?,
-                source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
-                model: row.get(11).map_err(rusqlite_to_eng_error)?,
-                source: row.get(12).map_err(rusqlite_to_eng_error)?,
+                link_id: row.get(0)?,
+                similarity: row.get(1)?,
+                link_type: row.get(2)?,
+                content: row.get(3)?,
+                category: row.get(4)?,
+                importance: row.get(5)?,
+                created_at: row.get(6)?,
+                is_latest: row.get::<_, i32>(7)? != 0,
+                is_forgotten: row.get::<_, i32>(8)? != 0,
+                version: row.get(9)?,
+                source_count: row.get(10)?,
+                model: row.get(11)?,
+                source: row.get(12)?,
             });
         }
         Ok(linked)
-    })
-    .await
-}
-
-/// Single-memory fetch retained for targeted lookups (e.g. re-hydrating a
-/// specific id after a graph-walk hop). The hot search path now batches via
-/// `fetch_memories_batch`, so this helper is currently unreferenced.
-#[allow(dead_code)]
-async fn fetch_memory_for_search(
-    db: &Database,
-    id: i64,
-    user_id: i64,
-) -> Result<Option<crate::memory::types::Memory>> {
-    let fetch_sql = format!(
-        "SELECT {} FROM memories \
-         WHERE id = ?1 AND user_id = ?2 AND is_forgotten = 0 AND is_latest = 1",
-        MEMORY_COLUMNS
-    );
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            Ok(Some(row_to_memory(row, user_id)?))
-        } else {
-            Ok(None)
-        }
     })
     .await
 }
@@ -374,7 +345,7 @@ async fn fetch_memories_batch(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&fetch_sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&fetch_sql)?;
 
         let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids.len() + 1);
         for id in ids.iter() {
@@ -384,59 +355,14 @@ async fn fetch_memories_batch(
 
         let mut rows = stmt
             .query(params.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut map = HashMap::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             let mem = row_to_memory(row, user_id)?;
             map.insert(mem.id, mem);
         }
         Ok(map)
-    })
-    .await
-}
-
-/// Single-memory link fetch retained for targeted link expansion. The hot
-/// search path uses `fetch_links_batch` to fetch links for all result ids in
-/// one query, so this helper is currently unreferenced.
-#[allow(dead_code)]
-async fn fetch_links_for_search(
-    db: &Database,
-    memory_id: i64,
-    _user_id: i64,
-) -> Result<Vec<LinkedMemory>> {
-    let link_sql = "SELECT ml.target_id, ml.similarity, ml.type, \
-        m.content, m.category, m.is_forgotten \
-        FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-        WHERE ml.source_id = ?1 \
-        UNION \
-        SELECT ml.source_id, ml.similarity, ml.type, \
-        m.content, m.category, m.is_forgotten \
-        FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-        WHERE ml.target_id = ?1";
-
-    db.read(move |conn| {
-        let mut stmt = conn.prepare(link_sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![memory_id])
-            .map_err(rusqlite_to_eng_error)?;
-        // 6.9 capacity hint: typical link fanout.
-        let mut links = Vec::with_capacity(16);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
-                continue;
-            }
-            links.push(LinkedMemory {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                similarity: ((row.get::<_, f64>(1).map_err(rusqlite_to_eng_error)? * 1000.0)
-                    .round())
-                    / 1000.0,
-                link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
-                content: row.get(3).map_err(rusqlite_to_eng_error)?,
-                category: row.get(4).map_err(rusqlite_to_eng_error)?,
-            });
-        }
-        Ok(links)
     })
     .await
 }
@@ -471,7 +397,7 @@ async fn fetch_links_batch(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&link_sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&link_sql)?;
 
         let mut params: Vec<&dyn rusqlite::types::ToSql> =
             Vec::with_capacity(memory_ids.len() * 2 + 2);
@@ -486,23 +412,23 @@ async fn fetch_links_batch(
 
         let mut rows = stmt
             .query(params.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut map: HashMap<i64, Vec<LinkedMemory>> = HashMap::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             // Skip forgotten memories
-            if row.get::<_, i32>(6).map_err(rusqlite_to_eng_error)? != 0 {
+            if row.get::<_, i32>(6)? != 0 {
                 continue;
             }
-            let owner: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+            let owner: i64 = row.get(0)?;
             let link = LinkedMemory {
-                id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                similarity: ((row.get::<_, f64>(2).map_err(rusqlite_to_eng_error)? * 1000.0)
+                id: row.get(1)?,
+                similarity: ((row.get::<_, f64>(2)? * 1000.0)
                     .round())
                     / 1000.0,
-                link_type: row.get(3).map_err(rusqlite_to_eng_error)?,
-                content: row.get(4).map_err(rusqlite_to_eng_error)?,
-                category: row.get(5).map_err(rusqlite_to_eng_error)?,
+                link_type: row.get(3)?,
+                content: row.get(4)?,
+                category: row.get(5)?,
             };
             map.entry(owner).or_default().push(link);
         }
@@ -533,7 +459,7 @@ async fn fetch_version_chains_batch(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&chain_sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&chain_sql)?;
 
         let mut params: Vec<&dyn rusqlite::types::ToSql> =
             Vec::with_capacity(root_ids.len() * 2 + 1);
@@ -547,16 +473,16 @@ async fn fetch_version_chains_batch(
 
         let mut rows = stmt
             .query(params.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut map: HashMap<i64, Vec<VersionChainEntry>> = HashMap::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let root: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next()? {
+            let root: i64 = row.get(0)?;
             let entry = VersionChainEntry {
-                id: row.get(1).map_err(rusqlite_to_eng_error)?,
-                content: row.get(2).map_err(rusqlite_to_eng_error)?,
-                version: row.get(3).map_err(rusqlite_to_eng_error)?,
-                is_latest: row.get::<_, i32>(4).map_err(rusqlite_to_eng_error)? != 0,
+                id: row.get(1)?,
+                content: row.get(2)?,
+                version: row.get(3)?,
+                is_latest: row.get::<_, i32>(4)? != 0,
             };
             map.entry(root).or_default().push(entry);
         }
@@ -1419,19 +1345,10 @@ pub async fn faceted_search(
             category: req.category.clone(),
             source: req.source.clone(),
             tags: req.tags_all.clone(),
-            threshold: None,
             user_id: Some(user_id),
             space_id: req.space_id,
             include_forgotten: Some(false),
-            mode: None,
-            question_type: None,
-            expand_relationships: false,
-            include_links: false,
-            latest_only: true,
-            source_filter: None,
-            include_archived: None,
-            include_noise: None,
-            exclude_consolidated: None,
+            ..Default::default()
         };
         let arc = hybrid_search(db, search_req).await?;
         let mut candidates = (*arc).clone();
@@ -1568,13 +1485,13 @@ async fn faceted_db_scan(
             .iter()
             .map(|b| b.as_ref() as &dyn rusqlite::types::ToSql)
             .collect();
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(param_refs.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         // 6.9 capacity hint: SQL over-fetches limit*3 for tag filtering.
         let mut memories = Vec::with_capacity(limit.saturating_mul(3));
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, user_id)?);
         }
         Ok(memories
@@ -1704,81 +1621,3 @@ fn parse_iso_date(s: &str) -> Option<String> {
     }
 }
 
-/// Auto-link a memory to similar memories based on embedding similarity.
-/// Matches TS autoLink function.
-///
-/// SEC-recall-3.4: prefer the LanceDB vector index. The libSQL `vector_top_k`
-/// path requires the sqlite-vec extension which is not loaded by the active
-/// build (`db/schema.rs:17-19`), so the previous `vector_search` call was
-/// returning empty in practice and approximating similarity from rank.
-/// LanceDB returns real cosine distance per hit, so similarity is just
-/// `1 - distance` and the `AUTO_LINK_THRESHOLD = 0.55` cutoff becomes
-/// meaningful again. When LanceDB is unavailable the function falls back
-/// to the libSQL path with rank-approximated similarity (matching prior
-/// behavior).
-#[tracing::instrument(skip(db, embedding), fields(embedding_dim = embedding.len()))]
-pub async fn auto_link(
-    db: &Database,
-    memory_id: i64,
-    embedding: &[f32],
-    user_id: i64,
-) -> Result<usize> {
-    let mut similarities: Vec<(i64, f64)> = Vec::new();
-    if let Some(index) = db.vector_index.as_ref() {
-        let hits = index.search(embedding, 50).await.unwrap_or_default();
-        for hit in &hits {
-            if hit.memory_id == memory_id {
-                continue;
-            }
-            // LanceDB cosine distance -> similarity. If the column was
-            // missing (`distance: None`), fall back to rank-based approx
-            // so we still produce some links rather than zero.
-            let sim = match hit.distance {
-                Some(d) => 1.0 - d as f64,
-                None => 1.0 - (hit.rank as f64 / 50.0),
-            };
-            if sim >= scoring::AUTO_LINK_THRESHOLD {
-                similarities.push((hit.memory_id, sim));
-            }
-        }
-    } else {
-        let hits = vector_search(db, embedding, 50, user_id).await?;
-        for hit in &hits {
-            if hit.memory_id == memory_id {
-                continue;
-            }
-            let approx_sim = 1.0 - (hit.rank as f64 / 50.0);
-            if approx_sim >= scoring::AUTO_LINK_THRESHOLD {
-                similarities.push((hit.memory_id, approx_sim));
-            }
-        }
-    }
-
-    similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    similarities.truncate(scoring::AUTO_LINK_MAX);
-
-    let mut linked = 0usize;
-    for (target_id, similarity) in &similarities {
-        let _ = crate::memory::insert_link(
-            db,
-            memory_id,
-            *target_id,
-            *similarity,
-            "similarity",
-            user_id,
-        )
-        .await;
-        let _ = crate::memory::insert_link(
-            db,
-            *target_id,
-            memory_id,
-            *similarity,
-            "similarity",
-            user_id,
-        )
-        .await;
-        linked += 1;
-    }
-
-    Ok(linked)
-}

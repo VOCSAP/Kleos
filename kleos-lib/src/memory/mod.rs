@@ -74,9 +74,6 @@ fn clamp_importance(value: i32) -> i32 {
     value.clamp(1, 10)
 }
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Record a failed LanceDB write into the vector_sync_pending table so a
 /// sweeper (or the admin replay endpoint) can retry it. Intentionally
@@ -98,7 +95,7 @@ async fn record_vector_sync_failure(
                  VALUES (?1, ?2, ?3)",
                 rusqlite::params![memory_id, op_owned, err_owned],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await;
@@ -122,18 +119,18 @@ pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<
                 "DELETE FROM memory_chunks WHERE memory_id = ?1",
                 rusqlite::params![memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             let mut stmt = conn
                 .prepare(
                     "INSERT INTO memory_chunks (memory_id, chunk_idx, content, embedding_vec_1024) \
                      VALUES (?1, ?2, ?3, ?4)",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             for (idx, (text, blob)) in chunks_for_tx.iter().enumerate() {
                 stmt.execute(rusqlite::params![memory_id, idx as i64, text, blob])
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
             }
             Ok(())
         })
@@ -167,7 +164,7 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
                     rusqlite::params![old_memory_id],
                     |row| row.get(0),
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             if count == 0 {
                 return Ok(());
@@ -179,7 +176,7 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
                  FROM memory_chunks WHERE memory_id = ?2",
                 rusqlite::params![new_memory_id, old_memory_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             Ok(())
         })
@@ -201,17 +198,17 @@ async fn carry_forward_chunks(db: &Database, old_memory_id: i64, new_memory_id: 
                         "SELECT chunk_idx, embedding_vec_1024 FROM memory_chunks \
                          WHERE memory_id = ?1 ORDER BY chunk_idx",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let rows = stmt
                     .query_map(rusqlite::params![new_memory_id], |row| {
                         let idx: usize = row.get(0)?;
                         let blob: Option<Vec<u8>> = row.get(1)?;
                         Ok((idx, blob))
                     })
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 let mut out = Vec::new();
                 for r in rows {
-                    let (idx, blob) = r.map_err(rusqlite_to_eng_error)?;
+                    let (idx, blob) = r?;
                     if let Some(b) = blob {
                         let emb: Vec<f32> = b
                             .chunks_exact(4)
@@ -285,56 +282,56 @@ fn embedding_to_blob(embedding: &[f32]) -> Vec<u8> {
 /// from context rather than from the row.
 pub(crate) fn row_to_memory(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Result<Memory> {
     Ok(Memory {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        content: row.get(1).map_err(rusqlite_to_eng_error)?,
-        category: row.get(2).map_err(rusqlite_to_eng_error)?,
-        source: row.get(3).map_err(rusqlite_to_eng_error)?,
-        session_id: row.get(4).map_err(rusqlite_to_eng_error)?,
-        importance: row.get(5).map_err(rusqlite_to_eng_error)?,
+        id: row.get(0)?,
+        content: row.get(1)?,
+        category: row.get(2)?,
+        source: row.get(3)?,
+        session_id: row.get(4)?,
+        importance: row.get(5)?,
         embedding: None,
-        version: row.get(6).map_err(rusqlite_to_eng_error)?,
-        is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
-        parent_memory_id: row.get(8).map_err(rusqlite_to_eng_error)?,
-        root_memory_id: row.get(9).map_err(rusqlite_to_eng_error)?,
-        source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
-        is_static: row.get::<_, i32>(11).map_err(rusqlite_to_eng_error)? != 0,
-        is_forgotten: row.get::<_, i32>(12).map_err(rusqlite_to_eng_error)? != 0,
-        is_archived: row.get::<_, i32>(13).map_err(rusqlite_to_eng_error)? != 0,
-        is_fact: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
-        is_decomposed: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
-        forget_after: row.get(16).map_err(rusqlite_to_eng_error)?,
-        forget_reason: row.get(17).map_err(rusqlite_to_eng_error)?,
-        model: row.get(18).map_err(rusqlite_to_eng_error)?,
-        recall_hits: row.get(19).map_err(rusqlite_to_eng_error)?,
-        recall_misses: row.get(20).map_err(rusqlite_to_eng_error)?,
-        adaptive_score: row.get(21).map_err(rusqlite_to_eng_error)?,
-        pagerank_score: row.get(22).map_err(rusqlite_to_eng_error)?,
-        last_accessed_at: row.get(23).map_err(rusqlite_to_eng_error)?,
-        access_count: row.get(24).map_err(rusqlite_to_eng_error)?,
-        tags: row.get(25).map_err(rusqlite_to_eng_error)?,
-        episode_id: row.get(26).map_err(rusqlite_to_eng_error)?,
-        decay_score: row.get(27).map_err(rusqlite_to_eng_error)?,
-        confidence: row.get(28).map_err(rusqlite_to_eng_error)?,
-        sync_id: row.get(29).map_err(rusqlite_to_eng_error)?,
-        status: row.get(30).map_err(rusqlite_to_eng_error)?,
+        version: row.get(6)?,
+        is_latest: row.get::<_, i32>(7)? != 0,
+        parent_memory_id: row.get(8)?,
+        root_memory_id: row.get(9)?,
+        source_count: row.get(10)?,
+        is_static: row.get::<_, i32>(11)? != 0,
+        is_forgotten: row.get::<_, i32>(12)? != 0,
+        is_archived: row.get::<_, i32>(13)? != 0,
+        is_fact: row.get::<_, i32>(14)? != 0,
+        is_decomposed: row.get::<_, i32>(15)? != 0,
+        forget_after: row.get(16)?,
+        forget_reason: row.get(17)?,
+        model: row.get(18)?,
+        recall_hits: row.get(19)?,
+        recall_misses: row.get(20)?,
+        adaptive_score: row.get(21)?,
+        pagerank_score: row.get(22)?,
+        last_accessed_at: row.get(23)?,
+        access_count: row.get(24)?,
+        tags: row.get(25)?,
+        episode_id: row.get(26)?,
+        decay_score: row.get(27)?,
+        confidence: row.get(28)?,
+        sync_id: row.get(29)?,
+        status: row.get(30)?,
         // user_id is no longer a column in MEMORY_COLUMNS; filled from caller.
         user_id: owner_user_id,
-        space_id: row.get(31).map_err(rusqlite_to_eng_error)?,
-        fsrs_stability: row.get(32).map_err(rusqlite_to_eng_error)?,
-        fsrs_difficulty: row.get(33).map_err(rusqlite_to_eng_error)?,
-        fsrs_storage_strength: row.get(34).map_err(rusqlite_to_eng_error)?,
-        fsrs_retrieval_strength: row.get(35).map_err(rusqlite_to_eng_error)?,
-        fsrs_learning_state: row.get(36).map_err(rusqlite_to_eng_error)?,
-        fsrs_reps: row.get(37).map_err(rusqlite_to_eng_error)?,
-        fsrs_lapses: row.get(38).map_err(rusqlite_to_eng_error)?,
-        fsrs_last_review_at: row.get(39).map_err(rusqlite_to_eng_error)?,
-        valence: row.get(40).map_err(rusqlite_to_eng_error)?,
-        arousal: row.get(41).map_err(rusqlite_to_eng_error)?,
-        dominant_emotion: row.get(42).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(43).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(44).map_err(rusqlite_to_eng_error)?,
-        is_superseded: row.get::<_, i32>(45).map_err(rusqlite_to_eng_error)? != 0,
-        is_consolidated: row.get::<_, i32>(46).map_err(rusqlite_to_eng_error)? != 0,
+        space_id: row.get(31)?,
+        fsrs_stability: row.get(32)?,
+        fsrs_difficulty: row.get(33)?,
+        fsrs_storage_strength: row.get(34)?,
+        fsrs_retrieval_strength: row.get(35)?,
+        fsrs_learning_state: row.get(36)?,
+        fsrs_reps: row.get(37)?,
+        fsrs_lapses: row.get(38)?,
+        fsrs_last_review_at: row.get(39)?,
+        valence: row.get(40)?,
+        arousal: row.get(41)?,
+        dominant_emotion: row.get(42)?,
+        created_at: row.get(43)?,
+        updated_at: row.get(44)?,
+        is_superseded: row.get::<_, i32>(45)? != 0,
+        is_consolidated: row.get::<_, i32>(46)? != 0,
     })
 }
 
@@ -464,13 +461,13 @@ pub async fn store(
 
     let duplicate = db
         .read(move |conn| {
-            let mut stmt = conn.prepare(dup_sql).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(dup_sql)?;
             let mut rows = stmt
                 .query(rusqlite::params![user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let existing_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let existing_content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+                ?;
+            while let Some(row) = rows.next()? {
+                let existing_id: i64 = row.get(0)?;
+                let existing_content: String = row.get(1)?;
                 let existing_hash = simhash::simhash(&existing_content);
                 if simhash::hamming_distance(content_hash, existing_hash) < 3 {
                     return Ok(Some(existing_id));
@@ -603,13 +600,13 @@ fn store_transactional_rusqlite(
     let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
         let mut stmt = tx
             .prepare("SELECT version, root_memory_id FROM memories WHERE id = ?1")
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![parent_id])
-            .map_err(rusqlite_to_eng_error)?;
-        if let Some(parent_row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let parent_version: i32 = parent_row.get(0).map_err(rusqlite_to_eng_error)?;
-            let parent_root: Option<i64> = parent_row.get(1).map_err(rusqlite_to_eng_error)?;
+            ?;
+        if let Some(parent_row) = rows.next()? {
+            let parent_version: i32 = parent_row.get(0)?;
+            let parent_root: Option<i64> = parent_row.get(1)?;
             let root = parent_root.unwrap_or(parent_id);
             (parent_version + 1, Some(root))
         } else {
@@ -633,7 +630,7 @@ fn store_transactional_rusqlite(
                 "UPDATE memories SET is_latest = 0, updated_at = datetime('now') WHERE id = ?1 AND is_latest = 1 AND user_id = ?2",
                 rusqlite::params![parent_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if affected == 0 {
             return Err(EngError::Conflict(format!(
                 "parent memory {} is not the latest version; refusing to fork the chain",
@@ -674,7 +671,7 @@ fn store_transactional_rusqlite(
             user_id
         ],
     )
-    .map_err(rusqlite_to_eng_error)?;
+    ?;
 
     let new_id = tx.last_insert_rowid();
 
@@ -684,7 +681,7 @@ fn store_transactional_rusqlite(
             "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
             rusqlite::params![emb_blob, new_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
     }
 
     Ok(new_id)
@@ -725,11 +722,11 @@ async fn get_internal(
     let sql_for_read = format!("{sql} AND user_id = ?2");
     let memory = db
         .read(move |conn| {
-            let mut stmt = conn.prepare(&sql_for_read).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql_for_read)?;
             let mut rows = stmt
                 .query(rusqlite::params![id, user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            if let Some(row) = rows.next()? {
                 row_to_memory(row, user_id)
             } else {
                 Err(EngError::NotFound(format!("memory {} not found", id)))
@@ -747,7 +744,7 @@ async fn get_internal(
                  WHERE id = ?1 AND user_id = ?2",
                 rusqlite::params![id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(())
         })
         .await?;
@@ -820,11 +817,11 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     // 6.9 capacity hint: LIMIT bounds the row count.
     let cap = opts.limit;
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rusqlite_params = rusqlite::params_from_iter(param_values.iter().cloned());
-        let mut rows = stmt.query(rusqlite_params).map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite_params)?;
         let mut memories = Vec::with_capacity(cap);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, owner_user_id)?);
         }
         Ok(memories)
@@ -837,15 +834,14 @@ pub async fn delete(db: &Database, id: i64, user_id: i64) -> Result<()> {
     // Soft delete -- set is_forgotten, record reason
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE memories SET \
                     is_forgotten = 1, \
                     forget_reason = 'user_deleted', \
                     updated_at = datetime('now') \
                  WHERE id = ?1 AND is_forgotten = 0 AND user_id = ?2",
                 rusqlite::params![id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -883,13 +879,13 @@ pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<V
         MEMORY_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut rows = stmt
             .query(rusqlite::params![user_id, limit as i64])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         // 6.9 capacity hint: LIMIT bounds the row count.
         let mut result = Vec::with_capacity(limit);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             result.push(row_to_memory(row, user_id)?);
         }
         Ok(result)
@@ -903,15 +899,14 @@ pub async fn list_trashed(db: &Database, user_id: i64, limit: usize) -> Result<V
 pub async fn restore(db: &Database, id: i64, user_id: i64) -> Result<Memory> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE memories SET \
                     is_forgotten = 0, \
                     forget_reason = NULL, \
                     updated_at = datetime('now') \
                  WHERE id = ?1 AND is_forgotten = 1 AND forget_reason = 'user_deleted' AND user_id = ?2",
                 rusqlite::params![id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -953,7 +948,7 @@ pub async fn purge_trashed(
                     rusqlite::params![cutoff],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let n = conn
                 .execute(
@@ -963,7 +958,7 @@ pub async fn purge_trashed(
                        AND updated_at < datetime('now', ?1)",
                     rusqlite::params![cutoff],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             if del_bytes > 0 || del_count > 0 {
                 conn.execute(
@@ -971,24 +966,23 @@ pub async fn purge_trashed(
                      updated_at = datetime('now') WHERE key = 'content_bytes'",
                     rusqlite::params![del_bytes],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 conn.execute(
                     "UPDATE tenant_state SET value = MAX(0, value - ?1), \
                      updated_at = datetime('now') WHERE key = 'memory_count'",
                     rusqlite::params![del_count],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
             Ok(n)
         } else {
-            conn.execute(
+            Ok(conn.execute(
                 "DELETE FROM memories \
                  WHERE is_forgotten = 1 \
                    AND forget_reason = 'user_deleted' \
                    AND updated_at < datetime('now', ?1)",
                 rusqlite::params![cutoff],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         }
     })
     .await
@@ -1023,11 +1017,11 @@ pub async fn update(
     let sql_for_read = sql.clone();
     let old = db
         .read(move |conn| {
-            let mut stmt = conn.prepare(&sql_for_read).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql_for_read)?;
             let mut rows = stmt
                 .query(rusqlite::params![id, user_id])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            if let Some(row) = rows.next()? {
                 row_to_memory(row, user_id)
             } else {
                 Err(EngError::NotFound(format!("memory {} not found", id)))
@@ -1126,12 +1120,11 @@ pub async fn update(
         } else {
             let blob: Option<Vec<u8>> = db
                 .read(move |conn| {
-                    conn.query_row(
+                    Ok(conn.query_row(
                         "SELECT embedding_vec_1024 FROM memories WHERE id = ?1",
                         rusqlite::params![new_id],
                         |row| row.get::<_, Option<Vec<u8>>>(0),
-                    )
-                    .map_err(rusqlite_to_eng_error)
+                    )?)
                 })
                 .await?;
             blob.map(|b| {
@@ -1180,11 +1173,11 @@ pub async fn update(
         MEMORY_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&new_sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&new_sql)?;
         let mut rows = stmt
             .query(rusqlite::params![new_id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            ?;
+        if let Some(row) = rows.next()? {
             row_to_memory(row, user_id)
         } else {
             Err(EngError::Internal(
@@ -1223,7 +1216,7 @@ fn update_transactional_rusqlite(
              WHERE id = ?1 AND is_latest = 1 AND user_id = ?2",
             rusqlite::params![old_id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
     if affected == 0 {
         return Err(EngError::NotFound(format!(
             "memory {} is no longer the latest version (concurrent update)",
@@ -1295,7 +1288,7 @@ fn update_transactional_rusqlite(
             user_id
         ],
     )
-    .map_err(rusqlite_to_eng_error)?;
+    ?;
 
     let new_id = tx.last_insert_rowid();
 
@@ -1305,7 +1298,7 @@ fn update_transactional_rusqlite(
             "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
             rusqlite::params![emb_blob, new_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
     } else {
         // SEC-recall-1.7: when the caller does not supply a fresh embedding,
         // carry forward the old version's `embedding_vec_1024` blob so the
@@ -1320,7 +1313,7 @@ fn update_transactional_rusqlite(
              WHERE id = ?2",
             rusqlite::params![old_id, new_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
     }
 
     Ok(new_id)
@@ -1332,11 +1325,10 @@ fn update_transactional_rusqlite(
 pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE memories SET is_forgotten = 1, updated_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -1365,11 +1357,10 @@ pub async fn mark_forgotten(db: &Database, id: i64, user_id: i64) -> Result<()> 
 pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE memories SET is_archived = 1, updated_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -1389,11 +1380,10 @@ pub async fn mark_archived(db: &Database, id: i64, user_id: i64) -> Result<()> {
 pub async fn mark_unarchived(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE memories SET is_archived = 0, updated_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![id],
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -1422,7 +1412,7 @@ pub async fn update_forget_reason(
             "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
             rusqlite::params![reason, id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -1443,7 +1433,7 @@ pub async fn adjust_importance(
             "UPDATE memories SET importance = MAX(importance + ?1, 0) WHERE id = ?2"
         };
         conn.execute(sql, rusqlite::params![delta, memory_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(())
     })
     .await
@@ -1468,7 +1458,7 @@ pub async fn insert_link(
                 rusqlite::params![source_id, target_id],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         if count < 2 {
             return Err(EngError::NotFound(format!(
                 "one or both memories ({}, {}) not found",
@@ -1479,7 +1469,7 @@ pub async fn insert_link(
             "INSERT OR IGNORE INTO memory_links (source_id, target_id, similarity, type) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![source_id, target_id, similarity, link_type],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -1505,7 +1495,7 @@ pub async fn update_source_count(
             "UPDATE memories SET source_count = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![source_count, id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -1523,14 +1513,14 @@ pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>>
                    AND tags IS NOT NULL
                    AND tags != '[]'",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let mut counts: HashMap<String, i64> = HashMap::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let raw_tags: Option<String> = row.get(0).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next()? {
+            let raw_tags: Option<String> = row.get(0)?;
             for tag in parse_tags_json(&raw_tags) {
                 *counts.entry(tag).or_insert(0) += 1;
             }
@@ -1613,7 +1603,7 @@ pub async fn search_by_tags(
     };
 
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         // Bind each tag at indices 1..N, then the owner id at N+1.
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
             Vec::with_capacity(tag_count + 1);
@@ -1625,10 +1615,10 @@ pub async fn search_by_tags(
             params_vec.iter().map(|b| b.as_ref()).collect();
         let mut rows = stmt
             .query(param_refs.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         // 6.9 capacity hint: LIMIT bounds the row count.
         let mut memories = Vec::with_capacity(limit);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, user_id)?);
         }
         Ok(memories)
@@ -1656,7 +1646,7 @@ pub async fn update_memory_tags(
             "UPDATE memories SET tags = ?1, updated_at = datetime('now') WHERE id = ?2",
             rusqlite::params![normalized, memory_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -1685,23 +1675,23 @@ pub async fn get_links_for(
                  JOIN memories m ON m.id = ml.source_id
                  WHERE ml.target_id = ?1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![memory_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         // 6.9 capacity hint: link fanout typically small.
         let mut links = Vec::with_capacity(16);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            if row.get::<_, i32>(5).map_err(rusqlite_to_eng_error)? != 0 {
+        while let Some(row) = rows.next()? {
+            if row.get::<_, i32>(5)? != 0 {
                 continue;
             }
             links.push(LinkedMemory {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                similarity: row.get(1).map_err(rusqlite_to_eng_error)?,
-                link_type: row.get(2).map_err(rusqlite_to_eng_error)?,
-                content: row.get(3).map_err(rusqlite_to_eng_error)?,
-                category: row.get(4).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                similarity: row.get(1)?,
+                link_type: row.get(2)?,
+                content: row.get(3)?,
+                category: row.get(4)?,
             });
         }
         Ok(links)
@@ -1726,19 +1716,19 @@ pub async fn get_version_chain(
                  WHERE (root_memory_id = ?1 OR id = ?1)
                  ORDER BY version ASC",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![root_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         // 6.9 capacity hint: version chains are usually short.
         let mut chain = Vec::with_capacity(8);
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             chain.push(VersionChainEntry {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                content: row.get(1).map_err(rusqlite_to_eng_error)?,
-                version: row.get(2).map_err(rusqlite_to_eng_error)?,
-                is_latest: row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)? != 0,
+                id: row.get(0)?,
+                content: row.get(1)?,
+                version: row.get(2)?,
+                is_latest: row.get::<_, i32>(3)? != 0,
             });
         }
         Ok(chain)
@@ -1750,7 +1740,7 @@ pub async fn get_version_chain(
 pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile> {
     let (memory_count, oldest_memory, newest_memory, avg_importance) = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*), MIN(created_at), MAX(created_at), AVG(importance)
                  FROM memories
                  WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
@@ -1763,8 +1753,7 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
                         row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
                     ))
                 },
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -1779,17 +1768,17 @@ pub async fn get_user_profile(db: &Database, user_id: i64) -> Result<UserProfile
                      ORDER BY COUNT(*) DESC, category ASC
                      LIMIT 10",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![user_id])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             // 6.9 capacity hint: SQL caps at LIMIT 10.
             let mut top_categories = Vec::with_capacity(10);
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            while let Some(row) = rows.next()? {
                 top_categories.push(CategoryCount {
-                    category: row.get(0).map_err(rusqlite_to_eng_error)?,
-                    count: row.get(1).map_err(rusqlite_to_eng_error)?,
+                    category: row.get(0)?,
+                    count: row.get(1)?,
                 });
             }
             Ok(top_categories)
@@ -1837,62 +1826,56 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
     // carries user_id on shards (skills repair step).
     let memories: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     let archived: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE user_id = ?1 AND is_archived = 1 AND is_latest = 1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     let conversations: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM conversations WHERE user_id = ?1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     let episodes: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM episodes WHERE user_id = ?1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     let entities: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM entities WHERE user_id = ?1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     let skills: i64 = db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM skill_records",
                 rusqlite::params![],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
 
@@ -1906,15 +1889,15 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
                      GROUP BY category
                      ORDER BY COUNT(*) DESC, category ASC",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![user_id])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut categories = BTreeMap::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            while let Some(row) = rows.next()? {
                 categories.insert(
-                    row.get::<_, String>(0).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, i64>(1).map_err(rusqlite_to_eng_error)?,
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
                 );
             }
             Ok(categories)
@@ -1967,8 +1950,7 @@ mod tests {
                  VALUES ('col-audit', 'general', 'test', 5, 1.0, \
                  datetime('now'), datetime('now'), 1, 0, 0)",
                 params![],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -1978,8 +1960,7 @@ mod tests {
         let got = db
             .read(move |conn| {
                 let mut stmt = conn
-                    .prepare(&sql)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    .prepare(&sql)?;
                 let mem = stmt
                     .query_row(params![], |row| {
                         row_to_memory(row, 1).map_err(|e| {
@@ -1987,8 +1968,7 @@ mod tests {
                                 std::io::Error::other(e.to_string()),
                             ))
                         })
-                    })
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    })?;
                 Ok(mem)
             })
             .await
@@ -2001,28 +1981,18 @@ mod tests {
             content: content.to_string(),
             category: "test".to_string(),
             source: "test".to_string(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         }
     }
 
     async fn read_valence(db: &Database, id: i64) -> (Option<f64>, Option<String>) {
         db.read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT valence, dominant_emotion FROM memories WHERE id = ?1",
                 rusqlite::params![id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .expect("read valence")

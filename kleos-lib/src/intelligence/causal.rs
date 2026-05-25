@@ -17,8 +17,7 @@ pub async fn create_chain(
             conn.execute(
                 "INSERT INTO causal_chains (root_memory_id, description, user_id) VALUES (?1, ?2, ?3)",
                 params![root_memory_id, description_owned, user_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -62,11 +61,9 @@ pub async fn add_link(
     let chain_exists = db
         .read(move |conn| {
             let mut stmt = conn
-                .prepare("SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare("SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2")?;
             let found = stmt
-                .query_map(params![chain_id, user_id], |_row| Ok(()))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .query_map(params![chain_id, user_id], |_row| Ok(()))?
                 .next()
                 .is_some();
             Ok(found)
@@ -89,13 +86,11 @@ pub async fn add_link(
                 .prepare(
                     "SELECT COUNT(*) FROM memories \
                      WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let c: i64 = stmt
                 .query_row(params![cause_memory_id, effect_memory_id, user_id], |row| {
                     row.get(0)
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                })?;
             Ok(c)
         })
         .await?;
@@ -112,8 +107,7 @@ pub async fn add_link(
                 "INSERT INTO causal_links (chain_id, cause_memory_id, effect_memory_id, strength, order_index) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![chain_id, cause_memory_id, effect_memory_id, strength, order_index],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -138,8 +132,7 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
                 .prepare(
                     "SELECT id, root_memory_id, description, confidence, created_at \
                      FROM causal_chains WHERE id = ?1 AND user_id = ?2",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let mut rows = stmt
                 .query_map(params![chain_id, user_id], |row| {
                     Ok(CausalChain {
@@ -151,11 +144,9 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
                         created_at: row.get(4)?,
                         links: Vec::new(),
                     })
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                })?;
             rows.next()
-                .transpose()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+                .transpose()?
                 .ok_or_else(|| EngError::NotFound(format!("causal chain {} not found", chain_id)))
         })
         .await?;
@@ -167,8 +158,7 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
                 .prepare(
                     "SELECT id, chain_id, cause_memory_id, effect_memory_id, strength, order_index, created_at \
                      FROM causal_links WHERE chain_id = ?1 ORDER BY order_index",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
                 .query_map(params![chain_id], |row| {
                     Ok(CausalLink {
@@ -180,10 +170,8 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
                         order_index: row.get(5)?,
                         created_at: row.get(6)?,
                     })
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
 
@@ -199,13 +187,10 @@ pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Ve
             let mut stmt = conn
                 .prepare(
                     "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
             let rows = stmt
-                .query_map(params![user_id, limit as i64], |row| row.get::<_, i64>(0))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                .query_map(params![user_id, limit as i64], |row| row.get::<_, i64>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
 
@@ -255,15 +240,12 @@ pub async fn backward_chain(
                          FROM causal_links l \
                          JOIN causal_chains c ON c.id = l.chain_id \
                          WHERE l.effect_memory_id = ?1 AND c.user_id = ?2",
-                    )
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    )?;
                 let iter = stmt
                     .query_map(params![current_effect, user_id], |row| {
                         Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
-                    })
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                iter.collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                    })?;
+                Ok(iter.collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .await?;
 
@@ -317,17 +299,8 @@ mod tests {
             content: content.to_string(),
             category: "fact".to_string(),
             source: "test".to_string(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         }
     }
 

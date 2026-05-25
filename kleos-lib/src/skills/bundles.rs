@@ -55,15 +55,13 @@ pub async fn create_bundle(
             "INSERT OR IGNORE INTO skill_bundles (name, description, auto_generated) \
              VALUES (?1, ?2, ?3)",
             params![name, description, auto_flag],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         let id: i64 = conn
             .query_row(
                 "SELECT id FROM skill_bundles WHERE name = ?1",
                 params![name],
                 |r| r.get(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(id)
     })
     .await
@@ -119,8 +117,7 @@ pub async fn list_bundles(db: &Database, limit: usize) -> Result<Vec<BundleSumma
                         (SELECT COUNT(*) FROM skill_bundle_members m WHERE m.bundle_id = b.id) \
                  FROM skill_bundles b \
                  ORDER BY b.created_at DESC, b.id DESC LIMIT ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
             .query_map(params![limit_i], |r| {
                 Ok(BundleSummary {
@@ -134,11 +131,10 @@ pub async fn list_bundles(db: &Database, limit: usize) -> Result<Vec<BundleSumma
                     },
                     member_count: r.get(6)?,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -152,8 +148,7 @@ pub async fn add_member(db: &Database, bundle_id: i64, skill_id: i64) -> Result<
             "INSERT OR IGNORE INTO skill_bundle_members (bundle_id, skill_id) \
              VALUES (?1, ?2)",
             params![bundle_id, skill_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -168,18 +163,15 @@ pub async fn add_members(db: &Database, bundle_id: i64, skill_ids: &[i64]) -> Re
     let ids = skill_ids.to_vec();
     db.write(move |conn| {
         let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .unchecked_transaction()?;
         for sid in &ids {
             tx.execute(
                 "INSERT OR IGNORE INTO skill_bundle_members (bundle_id, skill_id) \
                  VALUES (?1, ?2)",
                 params![bundle_id, sid],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
-        tx.commit()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        tx.commit()?;
         Ok(())
     })
     .await
@@ -192,8 +184,7 @@ pub async fn remove_member(db: &Database, bundle_id: i64, skill_id: i64) -> Resu
             .execute(
                 "DELETE FROM skill_bundle_members WHERE bundle_id = ?1 AND skill_id = ?2",
                 params![bundle_id, skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         Ok(n)
     })
     .await
@@ -206,14 +197,12 @@ pub async fn list_members(db: &Database, bundle_id: i64) -> Result<Vec<i64>> {
             .prepare(
                 "SELECT skill_id FROM skill_bundle_members \
                  WHERE bundle_id = ?1 ORDER BY added_at ASC, skill_id ASC",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         let rows = stmt
-            .query_map(params![bundle_id], |r| r.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![bundle_id], |r| r.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -226,8 +215,7 @@ pub async fn delete_bundle(db: &Database, bundle_id: i64) -> Result<()> {
         conn.execute(
             "DELETE FROM skill_bundles WHERE id = ?1",
             params![bundle_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await

@@ -132,16 +132,14 @@ pub async fn persist_evolved_skill(
     db.write(move |conn| {
         let (version, root_id) = if let Some(&parent_id) = parent_ids_owned.first() {
             let mut stmt = conn
-                .prepare("SELECT version, root_skill_id FROM skill_records WHERE id = ?1")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                .prepare("SELECT version, root_skill_id FROM skill_records WHERE id = ?1")?;
             let mut rows = stmt
-                .query(params![parent_id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            if let Some(row) = rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+                .query(params![parent_id])?;
+            if let Some(row) = rows.next()? {
                 let pv: i32 =
-                    row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    row.get(0)?;
                 let pr: Option<i64> =
-                    row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    row.get(1)?;
                 (pv + 1, pr.or(Some(parent_id)))
             } else {
                 (1, None)
@@ -165,8 +163,7 @@ pub async fn persist_evolved_skill(
                 root_id,
                 user_id,
             ],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         let new_id = conn.last_insert_rowid();
 
@@ -174,15 +171,13 @@ pub async fn persist_evolved_skill(
             conn.execute(
                 "INSERT OR IGNORE INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
                 params![new_id, pid],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         for tag in &tags_owned {
             conn.execute(
                 "INSERT OR IGNORE INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
                 params![new_id, tag],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
         Ok(new_id)
     })
@@ -196,8 +191,7 @@ pub async fn deactivate_skill(db: &Database, skill_id: i64) -> Result<()> {
         conn.execute(
             "UPDATE skill_records SET is_active = 0, updated_at = datetime('now') WHERE id = ?1",
             params![skill_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await

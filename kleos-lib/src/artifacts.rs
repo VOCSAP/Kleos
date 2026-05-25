@@ -9,12 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::Database;
 use crate::validation::ARTIFACT_FTS_MAX_SIZE;
-use crate::{EngError, Result};
+use crate::Result;
 
-/// Converts a rusqlite error into an EngError for uniform error propagation.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Row representation of a stored artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,7 +167,7 @@ pub async fn store_artifact(
                 |_| Ok(()),
             )
             .optional()
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         if exists.is_none() {
             return Err(crate::EngError::NotFound("memory not found".into()));
@@ -226,14 +222,13 @@ pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Ve
                  FROM artifacts \
                  WHERE memory_id = ?1",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![memory_id], row_to_artifact)
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -242,7 +237,7 @@ pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Ve
 #[tracing::instrument(skip(db), fields(artifact_id))]
 pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Option<ArtifactRow>> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT id, memory_id, filename, mime_type, size_bytes, \
                     sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
              FROM artifacts \
@@ -250,8 +245,7 @@ pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Optio
             params![artifact_id],
             row_to_artifact,
         )
-        .optional()
-        .map_err(rusqlite_to_eng_error)
+        .optional()?)
     })
     .await
 }
@@ -263,7 +257,7 @@ pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Optio
 #[tracing::instrument(skip(db))]
 pub async fn get_artifact_stats(db: &Database) -> Result<ArtifactStats> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*), \
                     COALESCE(SUM(size_bytes),0), \
                     COALESCE(SUM(CASE WHEN storage_mode='inline' THEN size_bytes ELSE 0 END),0), \
@@ -273,8 +267,7 @@ pub async fn get_artifact_stats(db: &Database) -> Result<ArtifactStats> {
              FROM artifacts",
             [],
             stats_from_row,
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -308,14 +301,13 @@ pub async fn enrich_with_artifacts(
 #[tracing::instrument(skip(db), fields(artifact_id))]
 pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option<Vec<u8>>> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT data FROM artifacts WHERE id = ?1",
             params![artifact_id],
             |row| row.get::<_, Option<Vec<u8>>>(0),
         )
         .optional()
-        .map(|opt| opt.flatten())
-        .map_err(rusqlite_to_eng_error)
+        .map(|opt| opt.flatten())?)
     })
     .await
 }
@@ -337,12 +329,12 @@ pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<S
                 |row| row.get(0),
             )
             .optional()
-            .map_err(rusqlite_to_eng_error)?
+            ?
             .flatten();
 
         let rows_deleted = conn
             .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact_id])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         if rows_deleted == 0 {
             Ok(None)
@@ -389,14 +381,13 @@ pub async fn search_artifacts(
                  ORDER BY bm25(artifacts_fts) \
                  LIMIT ?3",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
             .query_map(params![query, memory_id, limit], row_to_artifact)
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }

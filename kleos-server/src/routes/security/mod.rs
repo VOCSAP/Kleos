@@ -168,12 +168,11 @@ async fn record_usage_handler(
         let owned = state
             .db
             .read(move |conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT COUNT(*) FROM agents WHERE id = ?1 AND user_id = ?2",
                     rusqlite::params![agent_id, auth.user_id],
                     |row| row.get::<_, i64>(0),
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                )?)
             })
             .await?;
         if owned == 0 {

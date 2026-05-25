@@ -3,11 +3,8 @@
 pub mod types;
 pub use types::*;
 
-use crate::{db::Database, EngError, Result};
+use crate::{db::Database, Result};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Log an error event to the database. Returns the new row id.
 #[tracing::instrument(skip(db, req), fields(source = %req.source, level = %req.level, message_len = req.message.len(), user_id = ?user_id))]
@@ -28,7 +25,7 @@ pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str
                 ],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         Ok(id)
     })
     .await
@@ -64,7 +61,7 @@ pub async fn list_errors(
                  ORDER BY created_at DESC \
                  LIMIT ?4 OFFSET ?5",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut rows = stmt
             .query(rusqlite::params![
                 user_id_owned,
@@ -73,14 +70,14 @@ pub async fn list_errors(
                 limit,
                 offset
             ])
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
         let mut events = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             events.push(ErrorEvent {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                source: row.get(1).map_err(rusqlite_to_eng_error)?,
-                level: row.get(2).map_err(rusqlite_to_eng_error)?,
-                message: row.get(3).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                source: row.get(1)?,
+                level: row.get(2)?,
+                message: row.get(3)?,
                 context: row.get(4).unwrap_or(None),
                 created_at: row.get(5).unwrap_or_default(),
                 user_id: row.get(6).unwrap_or(None),

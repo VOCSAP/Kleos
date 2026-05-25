@@ -42,17 +42,9 @@ pub async fn process(
             content: content.to_string(),
             category: options.category.clone(),
             source: options.source.clone(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(options.user_id),
             space_id: options.space_id,
-            parent_memory_id: None,
-            chunk_embeddings: None,
-            sync_id: None,
-            artifacts: None,
+            ..Default::default()
         };
 
         let store_outcome = match &ctx.embedder {
