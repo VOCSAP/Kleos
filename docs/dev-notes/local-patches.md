@@ -3706,6 +3706,145 @@ agent-forge spec_id : `spec_e46b8918` + `hyp_5ed03a1e`.
 
 ---
 
+## Patch 35 -- dreamer.rs growth::reflect outer loop par space (2026-05-26)
+
+**Symptome** -- Patch 33 6/N a etendu `GrowthReflectRequest.space_id` et
+l'INSERT `growth_observations` cote `kleos-lib`, mais les deux call sites
+dans `kleos-server/src/dreamer.rs` (`run_cycle` lignes 339-390 et
+`run_cycle_tenants` lignes 645-670) passaient encore `space_id: None`
+hardcode avec un TODO Patch 33 explicite. Resultat : les observations
+growth generees par le scheduler dreamer pour un user ayant plusieurs
+spaces actifs sont produites a partir d'un contexte mixte (faits issus
+de N projets melanges) et persistees avec `space_id = NULL`. Bug Kleos
+#3028 reste donc partiellement ouvert apres Patch 33 -- les nouveaux
+faits stores via `/memory` sont bien partitionnes, mais le pipeline
+intelligence background continue de pomper du cross-projet.
+
+**Approche (niveau additif/chirurgical)** -- deux helpers prives ajoutes
+en fin du module dreamer :
+
+- `list_user_spaces(db, user_id) -> Result<Vec<Option<i64>>, EngError>`
+  : `SELECT DISTINCT space_id FROM memories WHERE user_id = ?1 AND
+  is_forgotten = 0 ORDER BY space_id NULLS LAST`. Le bucket legacy
+  `NULL` apparait sous forme `None` dans la liste, traite comme un
+  space distinct (pas de fusion accidentelle).
+- `recent_memory_contents_for_space(db, user_id, space_id, limit)` :
+  variant scoped de `recent_memory_contents`. La SQL est branchee :
+  `space_id = ?2` pour `Some(id)`, `space_id IS NULL` pour `None`. Le
+  helper original (qui ignorait `user_id` -- `_user_id` souligne par
+  Patch 33 6/N) est supprime, plus aucun call site ne le consomme.
+
+Les boucles growth deviennent :
+
+```rust
+for user_id in &users {
+    let spaces = list_user_spaces(db, *user_id).await?; // 1 SELECT par user
+    for space_id_opt in &spaces {
+        let roll: f64 = rand::random();
+        if roll >= GROWTH_REFLECT_CHANCE { continue; } // throttle par paire
+        let ctx = recent_memory_contents_for_space(db, *user_id, *space_id_opt, GROWTH_CONTEXT_SIZE).await?;
+        if ctx.is_empty() { continue; }
+        // merge avec build_dream_context (reste global, brain Hopfield par design)
+        let req = GrowthReflectRequest {
+            service: "dreamer".to_string(),
+            context: merged_ctx,
+            existing_growth: None,
+            prompt_override: None,
+            space_id: *space_id_opt,
+        };
+        growth::reflect(db, &req, *user_id).await?;
+    }
+}
+```
+
+`build_dream_context` reste calcule une fois par user (le brain
+Hopfield est un substrat global par design, cf. plan section 4
+paragraphe Brain). Le throttle `GROWTH_REFLECT_CHANCE = 0.2` est
+applique par paire `(user, space)`, preservant le profil de charge :
+avec N=5 spaces par user, environ 1 reflect par tick par user en
+moyenne (loi binomiale).
+
+**Fichiers touches** -- `kleos-server/src/dreamer.rs` uniquement
+(2 helpers ajoutes, ancien helper supprime, 2 boucles imbriquees). Zero
+touche cote `kleos-lib` (les signatures Patch 33 6/N suffisent). Niveau
+**additif/chirurgical** (~80 lignes nettes, dont 2 helpers + 2 boucles
+patched + 1 helper retire).
+
+**Tests** -- `cargo check -p kleos-server` : 0 error, 0 warning sur
+dreamer.rs apres cleanup du dead helper. Les tests d'integration
+(`cargo test -p kleos-server`) plantent rustc sur Windows MSVC avec
+`STATUS_STACK_BUFFER_OVERRUN (0xc0000409)` + `datafusion_catalog rlib
+cache obsolete` + `invalid metadata files for kleos_lib/kleos_server`.
+Aucune erreur ne reference `dreamer.rs`. Validation E2E reelle requise
+sur LXC 121 apres build WSL + deploy.
+
+**Conditions de retrait** -- candidat PR upstream apres :
+1. Validation E2E sur LXC 121 (verifier que `/growth/observations`
+   retourne des observations avec `space_id` peuple sur tenant 2 apres
+   un tick dreamer complet).
+2. Decision upstream Ghost-Frame d'absorber le concept spaces (cf.
+   meme conditions que Patches 33/34).
+
+agent-forge spec_id : `spec_3c68317c` + `hyp_e44b4354`.
+
+---
+
+## Patch 35.1 -- fix regression user_id schema mismatch (2026-05-26)
+
+**Symptome** -- Apres deploy Patch 35 sur LXC 121 (04:47:54 BRT), les
+logs montrent un warn a chaque tick dreamer :
+`dreamer: failed to enumerate spaces, skipping growth this tick
+user_id=<N> error=database error: no such column: user_id in SELECT
+DISTINCT space_id FROM memories WHERE user_id = ?1 AND is_forgotten = 0
+ORDER BY space_id NULLS LAST`. 3 warns par tick (user 1, user 2 main DB,
+user 2 tenant shard). Pipeline intelligence + brain dream + skill
+evolution continuent normalement, seul le growth reflect est skipped.
+
+**Cause racine** -- le commit `61346ec0 refactor(tenant): Phase 5.1 -
+drop user_id from memory core` (git log dreamer.rs) a supprime la
+colonne `memories.user_id` parce que les tenant shards isolent deja par
+DB. C'est pourquoi le helper original `recent_memory_contents` ecrivait
+`_user_id: i64` souligne (parametre intentionnellement ignore). Patch
+35 avait ajoute `WHERE user_id = ?1` sur `memories` sans verifier la
+discipline cross-call-site.
+
+**Fix (additif/chirurgical, dreamer.rs uniquement)** -- deux ajustements :
+
+- `list_user_spaces` query la table `spaces` (qui garde `user_id`,
+  cf. `kleos-lib/src/space.rs:87`) au lieu de `memories.user_id`.
+  Append systematique de `None` (bucket legacy NULL) pour conserver
+  la traversee du bucket transitoire.
+
+  ```rust
+  SELECT id FROM spaces WHERE user_id = ?1 ORDER BY id
+  // puis spaces.push(None);
+  ```
+
+- `recent_memory_contents_for_space` retire `user_id` du WHERE (les
+  tenant shards isolent deja par DB). Le parametre `_user_id` est
+  conserve souligne pour API symmetry et alignement upstream avec le
+  helper original supprime.
+
+**Fichiers touches** -- `kleos-server/src/dreamer.rs` uniquement
+(2 helpers reecrits, zero changement de signature). Niveau
+**chirurgical**, ~15 lignes nettes.
+
+**Tests** -- `cargo check -p kleos-server` : 0 error, 0 warning sur
+dreamer.rs (0.61s). Verification E2E : observer les prochains ticks
+dreamer apres redeploy, le warn doit disparaitre et `growth_calls`
+doit incrementer dans `DreamerStats.totals`.
+
+**Lecon pour les patches futurs** -- toujours grep cross-call-site
+les symboles touches (colonnes, methodes) avant d'ecrire une clause
+SQL. Le `_user_id` souligne dans l'helper original etait un tell
+direct que la colonne n'existait plus. Discipline rappelee dans la
+rule `.claude/rules/kleos-patching-discipline.md`.
+
+agent-forge : meme `spec_3c68317c` que Patch 35 (continuite du meme
+chantier), nouvelle `hyp_705f30a5`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
