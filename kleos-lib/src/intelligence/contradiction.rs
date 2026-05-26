@@ -151,6 +151,13 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
+                    // Patch 37 -- partition pair detection by space_id so
+                    // contradictions never cross spaces (aligns with the
+                    // discipline applied to duplicates/consolidation in
+                    // Patch 33 part 1). NULL legacy memories isolate
+                    // naturally because NULL = NULL evaluates to false in
+                    // SQL, so legacy rows neither merge with each other
+                    // nor with spaced rows -- safe-by-default in transition.
                     "SELECT sf1.memory_id, sf2.memory_id, \
                             sf1.subject, sf1.predicate, sf1.object, sf2.object, \
                             sf1.confidence, sf2.confidence \
@@ -159,6 +166,9 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                        AND sf1.predicate = sf2.predicate \
                        AND sf1.id < sf2.id \
                        AND sf1.memory_id != sf2.memory_id \
+                     JOIN memories m1 ON m1.id = sf1.memory_id \
+                     JOIN memories m2 ON m2.id = sf2.memory_id \
+                       AND m1.space_id = m2.space_id \
                      LIMIT 500",
                 )
                 .map_err(rusqlite_to_eng_error)?;

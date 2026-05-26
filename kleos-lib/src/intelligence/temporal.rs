@@ -63,15 +63,19 @@ const MONTHLY_TOLERANCE_SECS: f64 = 432_000.0;
 /// silently skipped to avoid hallucinated recurrence claims.
 #[tracing::instrument(skip(db))]
 pub async fn detect_patterns(db: &Database) -> Result<Vec<TemporalPattern>> {
-    // --- 1. Load timestamps grouped by category ---
-    let rows: Vec<(i64, String, String)> = db
+    // --- 1. Load timestamps grouped by category + space ---
+    // Patch 37 -- include space_id so the recurrence buckets do not mix
+    // memories across projects. NULL legacy memories form their own
+    // bucket (Some(None) key), still detected if dense enough but never
+    // merged with spaced rows.
+    let rows: Vec<(i64, String, String, Option<i64>)> = db
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, category, created_at \
+                    "SELECT id, category, created_at, space_id \
                      FROM memories \
                      WHERE is_forgotten = 0 \
-                     ORDER BY category, created_at \
+                     ORDER BY space_id, category, created_at \
                      LIMIT ?1",
                 )
                 .map_err(rusqlite_to_eng_error)?;
@@ -82,6 +86,7 @@ pub async fn detect_patterns(db: &Database) -> Result<Vec<TemporalPattern>> {
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
                     ))
                 })
                 .map_err(rusqlite_to_eng_error)?;
@@ -91,18 +96,21 @@ pub async fn detect_patterns(db: &Database) -> Result<Vec<TemporalPattern>> {
         })
         .await?;
 
-    // --- 2. Group by category ---
+    // --- 2. Group by (space_id, category) ---
     use std::collections::HashMap;
-    let mut by_category: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
-    for (id, category, created_at_str) in rows {
+    let mut by_space_category: HashMap<(Option<i64>, String), Vec<(i64, i64)>> = HashMap::new();
+    for (id, category, created_at_str, space_id) in rows {
         let ts = parse_sqlite_timestamp(&created_at_str);
-        by_category.entry(category).or_default().push((id, ts));
+        by_space_category
+            .entry((space_id, category))
+            .or_default()
+            .push((id, ts));
     }
 
-    // --- 3. Analyse each category ---
+    // --- 3. Analyse each (space, category) bucket ---
     let mut patterns: Vec<TemporalPattern> = Vec::new();
 
-    for (category, mut entries) in by_category {
+    for ((_space_id, category), mut entries) in by_space_category {
         if entries.len() < MIN_SAMPLE_SIZE {
             continue;
         }
@@ -560,7 +568,7 @@ const STATE_VERBS: &[&str] = &[
 pub async fn detect_fact_contradictions(
     db: &Database,
     new_fact_id: i64,
-    _memory_id: i64,
+    memory_id: i64,
     subject: &str,
     verb: &str,
     object: Option<&str>,
@@ -589,26 +597,39 @@ pub async fn detect_fact_contradictions(
         .read(move |conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, memory_id, object, quantity
-                     FROM structured_facts
-                     WHERE subject = ?1 COLLATE NOCASE
-                       AND verb = ?2 COLLATE NOCASE
-                       AND id != ?3
-                       AND invalid_at IS NULL
-                     ORDER BY created_at DESC
+                    // Patch 37 -- partition candidate lookup by the new
+                    // memory's space_id so contradiction detection stays
+                    // within the same project. JOIN on memories twice:
+                    // m_cand for the candidate fact's owner, m_new for the
+                    // new fact's owner. NULL = NULL is false in SQL so
+                    // NULL legacy memories isolate naturally during the
+                    // transition window (Patch 33 convention).
+                    "SELECT sf.id, sf.memory_id, sf.object, sf.quantity
+                     FROM structured_facts sf
+                     JOIN memories m_cand ON m_cand.id = sf.memory_id
+                     JOIN memories m_new ON m_new.id = ?4
+                     WHERE sf.subject = ?1 COLLATE NOCASE
+                       AND sf.verb = ?2 COLLATE NOCASE
+                       AND sf.id != ?3
+                       AND sf.invalid_at IS NULL
+                       AND m_cand.space_id = m_new.space_id
+                     ORDER BY sf.created_at DESC
                      LIMIT 20",
                 )
                 .map_err(rusqlite_to_eng_error)?;
 
             let rows = stmt
-                .query_map(params![subject_c, verb_c, new_fact_id], |row| {
-                    Ok(CandidateRow {
-                        old_id: row.get(0)?,
-                        old_memory_id: row.get(1)?,
-                        old_object: row.get(2)?,
-                        old_quantity: row.get(3)?,
-                    })
-                })
+                .query_map(
+                    params![subject_c, verb_c, new_fact_id, memory_id],
+                    |row| {
+                        Ok(CandidateRow {
+                            old_id: row.get(0)?,
+                            old_memory_id: row.get(1)?,
+                            old_object: row.get(2)?,
+                            old_quantity: row.get(3)?,
+                        })
+                    },
+                )
                 .map_err(rusqlite_to_eng_error)?;
 
             rows.collect::<std::result::Result<Vec<_>, _>>()
