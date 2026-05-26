@@ -3845,6 +3845,106 @@ chantier), nouvelle `hyp_705f30a5`.
 
 ---
 
+## Patch 36 -- brain_query post-ranking filter par space (2026-05-26)
+
+**Symptome / motivation** -- Le plan Patch 33 section 4 paragraphe Brain
+prevoit que le brain Hopfield reste un substrat associatif **global**
+(la dream_cycle est par design partagee entre tous les contextes pour
+preserver la dynamique d'attraction), tout en exposant un filtrage
+**optionnel cote query** : un caller qui sait dans quel projet il
+travaille doit pouvoir restreindre les patterns retournes au scope du
+space courant. Patch 33 6/N a livre `space_id` sur `memories` mais
+n'a pas touche `/brain/query`, donc le caller ne pouvait pas filtrer.
+
+**Approche (niveau additif/chirurgical, kleos-server uniquement)** --
+implementer le filtre **apres** ranking Hopfield, cote handler :
+
+1. Wrapper local `BrainQueryRequest` dans
+   `kleos-server/src/routes/brain/types.rs` qui flatten l'upstream
+   `BrainQueryOptions` (back-compat strict des payloads existants) et
+   ajoute trois champs :
+
+   ```rust
+   #[derive(Debug, Deserialize)]
+   pub struct BrainQueryRequest {
+       #[serde(flatten)]
+       pub inner: BrainQueryOptions,
+       #[serde(default)]
+       pub space: Option<String>,
+       #[serde(default)]
+       pub space_id: Option<i64>,
+       #[serde(default = "default_include_unscoped")]
+       pub include_unscoped: bool,
+   }
+   ```
+
+2. `query_handler` (mod.rs) gagne l'extractor `ResolvedDb`, resolve le
+   target via `kleos_lib::space::resolve_space_filter(&db, user_id,
+   space_id, space)`, appelle `brain.query` **inchange** avec
+   `&body.inner`, puis applique le filtre :
+
+   ```rust
+   if let Some(target_id) = target_space {
+       let ids: Vec<i64> = result.activated.iter().map(|m| m.id).collect();
+       if !ids.is_empty() {
+           let space_map = load_memory_space_ids(&db, &ids).await?;
+           let include_unscoped = body.include_unscoped;
+           result.activated.retain(|m| match space_map.get(&m.id) {
+               Some(Some(sid)) => *sid == target_id,
+               Some(None) => include_unscoped,
+               None => false,
+           });
+       }
+   }
+   ```
+
+3. Helper local `load_memory_space_ids(db, &[i64]) -> HashMap<i64,
+   Option<i64>>` fait un seul `SELECT id, space_id FROM memories WHERE
+   id IN (?,?,...)` via `rusqlite::params_from_iter`. Le set est
+   borne par `top_k` brain (typiquement <=50), bien sous la limite
+   SQLite 999 placeholders.
+
+**Comportement** :
+
+| Payload | Resultat |
+|---|---|
+| Aucun `space` / `space_id` | `brain.query` inchange (back-compat strict) |
+| `space="kleos"` + defaut `include_unscoped=true` | `activated` retient ceux dont `space_id = id(kleos) OR space_id IS NULL` |
+| `space="kleos"` + `include_unscoped=false` | `activated` retient strictement `space_id = id(kleos)` |
+| `space_id=N` valide pour le user | meme regle que `space` resolu en N |
+| `space_id=N` qui n'appartient pas au user | 400 `InvalidInput` via `resolve_space_filter` |
+
+Le moteur Hopfield voit toujours le set global (preserve la dynamique
+d'attraction). Le filtre s'applique apres ranking ; `top_k` peut donc
+renvoyer moins de N apres filtre, ce qui est la semantique attendue
+("retourne jusqu'a top_k patterns globalement actives qui sont dans ce
+space").
+
+**Fichiers touches** -- `kleos-server` uniquement :
+- `kleos-server/src/routes/brain/types.rs` : nouveau wrapper
+  `BrainQueryRequest` (~30 lignes).
+- `kleos-server/src/routes/brain/mod.rs` : import update, signature
+  `query_handler` change, post-filter ajoute, helper
+  `load_memory_space_ids` (~70 lignes nettes).
+
+Zero touche cote `kleos-lib` (`BrainQueryOptions`, `BrainMemory`,
+`BrainQueryResult` restent strictement upstream). Niveau **additif**.
+
+**Tests** -- `cargo check -p kleos-server` : 0 error, 0 warning sur les
+fichiers modifies. Verification E2E reportee a build WSL + redeploy
+LXC 121.
+
+**Conditions de retrait** -- candidat PR upstream apres :
+1. Validation E2E sur LXC 121 (smoke test : `POST /brain/query
+   {"query":"...","space":"kleos","include_unscoped":false}` retourne
+   un set strictement scope kleos).
+2. Absorption upstream du concept spaces (meme prerequis que Patches
+   33/34/35).
+
+agent-forge spec_id : `spec_d8ad66d8`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -7,13 +9,14 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::auth::{AuthContext, Scope};
+use kleos_lib::db::Database;
 use kleos_lib::services::brain::{
-    get_memory_for_absorb, verify_memory_ownership, AbsorbRequest, BrainQueryOptions, DecayRequest,
-    FeedbackRequest,
+    get_memory_for_absorb, verify_memory_ownership, AbsorbRequest, DecayRequest, FeedbackRequest,
 };
+use kleos_lib::EngError;
 
-#[allow(dead_code)]
 mod types;
+use types::BrainQueryRequest;
 
 // H-R3-001: dream / decay / evolution_train mutate the global brain. Any
 // auth+write user could pin CPU or corrupt the shared model. Gating these
@@ -75,10 +78,16 @@ async fn stats_handler(
 }
 
 // Query scopes the recall to the caller's pattern space via auth.user_id.
+// Patch 36 -- accepts an optional `space` / `space_id` / `include_unscoped`
+// trio that post-filters the activated patterns returned by `brain.query`.
+// The Hopfield substrate stays global (cf. plan Patch 33 section 4
+// paragraphe Brain); filtering happens here, after ranking, so the brain
+// engine is not modified.
 async fn query_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
-    Json(body): Json<BrainQueryOptions>,
+    ResolvedDb(db): ResolvedDb,
+    Json(body): Json<BrainQueryRequest>,
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
     let brain = state
@@ -90,10 +99,76 @@ async fn query_handler(
             "embedder not ready (still loading)".into(),
         ))
     })?;
-    let result = brain
-        .query(embedder.as_ref(), &body.query, auth.user_id, &body)
+
+    // Resolve target space before doing the Hopfield work so an invalid
+    // payload short-circuits with 400 instead of consuming brain CPU.
+    let target_space = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
+    let mut result = brain
+        .query(embedder.as_ref(), &body.inner.query, auth.user_id, &body.inner)
         .await?;
+
+    if let Some(target_id) = target_space {
+        let ids: Vec<i64> = result.activated.iter().map(|m| m.id).collect();
+        if !ids.is_empty() {
+            let space_map = load_memory_space_ids(&db, &ids).await?;
+            let include_unscoped = body.include_unscoped;
+            result.activated.retain(|m| match space_map.get(&m.id) {
+                Some(Some(sid)) => *sid == target_id,
+                Some(None) => include_unscoped,
+                None => false,
+            });
+        }
+    }
+
     Ok(Json(json!({ "ok": true, "result": result })))
+}
+
+/// Patch 36 helper -- batch lookup of `memories.space_id` for the subset
+/// of ids returned by `brain.query`. Returns a `HashMap` so the handler
+/// can resolve each pattern in O(1) during the retain pass. The query
+/// is a single SELECT with inlined `?` placeholders bounded by the
+/// activated set size (typically <= top_k, small).
+async fn load_memory_space_ids(
+    db: &Database,
+    ids: &[i64],
+) -> Result<HashMap<i64, Option<i64>>, AppError> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id, space_id FROM memories WHERE id IN ({})",
+        placeholders
+    );
+    let ids_owned: Vec<i64> = ids.to_vec();
+    let rows = db
+        .read(move |conn| -> Result<Vec<(i64, Option<i64>)>, EngError> {
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let params = rusqlite::params_from_iter(ids_owned.iter());
+            let mapped = stmt
+                .query_map(params, |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<i64>>(1)?))
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            mapped
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })
+        .await
+        .map_err(AppError)?;
+    Ok(rows.into_iter().collect())
 }
 
 // C-R3-001: absorb fetches the memory from the caller's tenant DB and pipes
