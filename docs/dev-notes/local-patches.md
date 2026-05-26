@@ -3945,6 +3945,86 @@ agent-forge spec_id : `spec_d8ad66d8`.
 
 ---
 
+## Patch 37 -- intelligence contradiction + temporal filter par space (2026-05-26)
+
+**Symptome / motivation** -- Le plan Patch 33 section 4 prevoit que
+chaque passe paire du pipeline intelligence applique le filtre
+`a.space_id = b.space_id` pour eviter les fusions cross-space en
+background. Patch 33 partie 1 (commit `588afb78`) a couvert
+`duplicates` et `consolidation`. Restaient `contradiction` (pair
+detection sur structured_facts) et `temporal` (pair fact contradiction
++ pattern recurrence detection). Sans ce filtre, une contradiction
+detectee entre 2 memoires de projets differents serait remontee a tort,
+ou un pattern temporel mergerait des memoires cross-projet.
+
+**Approche (niveau chirurgical + refactor local, kleos-lib uniquement)** :
+
+1. `contradiction.rs::scan_all_contradictions` -- ajouter 3 lignes SQL :
+   ```sql
+   JOIN memories m1 ON m1.id = sf1.memory_id
+   JOIN memories m2 ON m2.id = sf2.memory_id
+     AND m1.space_id = m2.space_id
+   ```
+   NULL legacy isole naturellement (NULL = NULL faux en SQL).
+
+2. `temporal.rs::detect_fact_contradictions` -- consommer le parametre
+   `_memory_id` (precedemment underscored, signature externe stable),
+   ajouter `JOIN memories m_cand ON ... JOIN memories m_new ON m_new.id
+   = ?4 WHERE ... AND m_cand.space_id = m_new.space_id` au candidate
+   query. 4eme placeholder bind sur `memory_id`.
+
+3. `temporal.rs::detect_patterns` -- refactor local :
+   - SQL ajoute `space_id` au SELECT
+   - `HashMap<String, Vec<(i64, i64)>>` devient
+     `HashMap<(Option<i64>, String), Vec<(i64, i64)>>`
+   - Group key change de `category` a `(space_id, category)`
+   - Pattern description inchangee (utilise `category` seul, le scope
+     space etant implicite via memory_ids qui appartiennent au meme
+     bucket)
+
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/contradiction.rs` (~10 lignes ajoutees
+  dont 7 commentaires) -- scan_all_contradictions JOIN clause.
+- `kleos-lib/src/intelligence/temporal.rs` (~30 lignes touchees) --
+  detect_fact_contradictions (JOIN + bind param), detect_patterns
+  (SELECT + HashMap + loop tuple destructuring).
+
+Zero touche cote `kleos-server` (les signatures publiques
+`scan_all_contradictions(db, user_id)`, `detect_fact_contradictions(...,
+memory_id, ...)`, `detect_patterns(db)` restent identiques). Callers
+intelligence/mod.rs et intelligence/scheduler.rs inchanges.
+
+**Comportement** :
+
+| Cas | Resultat |
+|---|---|
+| 2 memoires meme space (kleos id=2 et kleos id=2) | Paire detectee normalement (filtre passe) |
+| 2 memoires spaces differents (kleos et default) | Paire ignoree |
+| 2 memoires NULL legacy | Paire ignoree (NULL = NULL faux), isolation safe-by-default |
+| detect_patterns : N memoires meme category split sur 3 spaces | 3 buckets analyses separement, chacun doit atteindre MIN_SAMPLE_SIZE |
+| detect_fact_contradictions appele avec memory_id inexistant | Subquery m_new retourne 0 ligne, INNER JOIN echoue, 0 candidat (skip silencieux) |
+
+**Tests** -- `cargo check -p kleos-lib --features bundled-sqlite` :
+0 error, 10 warnings (tous pre-existants dans cred/bootstrap.rs).
+`cargo check -p kleos-server` : 0 error, 10 warnings (idem).
+Validation agent-forge `verify` : 2/2 steps passed.
+
+Tests integration kleos-lib non-executes cote Windows MSVC pour ICE
+STATUS_STACK_BUFFER_OVERRUN pre-existant (memoire Kleos #4545,
+independant). Validation E2E LXC 121 reportee a build WSL + redeploy.
+
+**Conditions de retrait** -- candidat PR upstream apres :
+1. Validation E2E sur LXC 121 (smoke : creer 2 memoires meme category
+   dans 2 spaces differents, declencher dreamer scheduler, verifier
+   aucun temporal_pattern ne merge les 2 ; idem pour
+   scan_all_contradictions via 2 structured_facts cross-space).
+2. Absorption upstream du concept spaces (meme prerequis que Patches
+   33/34/35/36).
+
+agent-forge spec_id : `spec_cbf300ff`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
