@@ -76,6 +76,8 @@ zeroize = { workspace = true }
 toml = { workspace = true }
 metrics = { workspace = true }
 rust_decimal = { workspace = true }
+unicode-normalization = { workspace = true }
+rust-stemmers = { workspace = true }
 
 # Crypto: ECDH bootstrap + Sparkling Fairy PIV-Everywhere auth.
 p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
