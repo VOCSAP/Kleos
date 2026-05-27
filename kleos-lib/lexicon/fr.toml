@@ -22,7 +22,7 @@ words = ["est", "suis", "es", "sont", "etait", "etaient", "a", "ai", "as", "avon
 words = ["le", "la", "les", "un", "une", "des", "du", "de", "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "notre", "votre", "leur"]
 
 [classes.stopwords]
-words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette", "ces", "a", "de", "du", "des", "en", "sur", "sous", "dans", "par", "pour", "avec"]
+words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette", "ces", "a", "de", "du", "des", "en", "sur", "sous", "dans", "par", "pour", "avec", "ont", "etaient", "leur", "leurs", "ils", "elles", "ete", "propos", "lequel", "laquelle", "quel", "quelle", "serait", "pourrait", "devrait", "alors", "quand", "quoi", "aussi"]
 
 [classes.first_person_pronoun]
 words = ["je", "j'", "j'ai", "moi", "me", "m'"]

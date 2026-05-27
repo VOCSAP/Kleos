@@ -1479,14 +1479,15 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
     let claims = extract_claims(answer);
     let mut flags = Vec::new();
 
-    let stopwords: HashSet<&str> = [
-        "this", "that", "with", "from", "have", "been", "were", "they", "about", "their", "there",
-        "which", "would", "could", "should", "these", "those", "then", "than", "when", "what",
-        "also", "into",
-    ]
-    .iter()
-    .copied()
-    .collect();
+    // Patch 38 L2 site 7 -- stopwords sourced from the i18n lexicon
+    // (stopwords class) across every supported language so French
+    // claims get filtered symmetrically. The HashSet is built per call
+    // and stores owned Strings rather than &'static str references.
+    let stopwords: HashSet<String> = crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "stopwords"))
+        .map(|w| w.to_lowercase())
+        .collect();
 
     for claim in &claims {
         let keywords: Vec<String> = claim
@@ -1501,7 +1502,7 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
             })
             .collect::<String>()
             .split_whitespace()
-            .filter(|w| w.len() > 4 && !stopwords.contains(w))
+            .filter(|w| w.len() > 4 && !stopwords.contains(*w))
             .map(String::from)
             .collect();
 
