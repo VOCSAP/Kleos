@@ -47,14 +47,19 @@ pub async fn issue_challenge(
     rand::Rng::fill(&mut rand::rng(), &mut nonce);
 
     let challenge_id = uuid::Uuid::new_v4().to_string();
-    state
-        .challenges
-        .insert(challenge_id.clone(), (nonce.to_vec(), std::time::Instant::now()));
+    state.challenges.insert(
+        challenge_id.clone(),
+        (nonce.to_vec(), std::time::Instant::now()),
+    );
 
     let _ = log_phylax_audit(
         &state.inner.db,
         auth.user_id(),
         auth.agent_name(),
+        None,
+        None,
+        None,
+        None,
         actions::ECDH_CHALLENGE,
         "",
         "",
@@ -91,6 +96,10 @@ pub async fn enroll_pubkey(
         &state.inner.db,
         auth.user_id(),
         Some(&body.agent_name),
+        None,
+        None,
+        None,
+        None,
         actions::PIV_ENROLLED,
         "",
         "",
@@ -117,6 +126,10 @@ pub async fn revoke_pubkey(
     let _ = log_phylax_audit(
         &state.inner.db,
         auth.user_id(),
+        None,
+        None,
+        None,
+        None,
         None,
         actions::PIV_REVOKED,
         "",

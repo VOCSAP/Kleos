@@ -1,14 +1,23 @@
 //! Phylax route tree -- extends credd's base router with /phylax/* endpoints.
 
+use axum::extract::DefaultBodyLimit;
+use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
+use std::time::Duration;
+use tower_http::timeout::TimeoutLayer;
+use tower_http::trace::TraceLayer;
 
 use crate::handlers::{approvals, ecdh, leases, namespaces, policies, ssh};
+use crate::middleware::policy_check_middleware;
 use crate::state::PhylaxState;
+use kleos_credd::auth::{auth_middleware, preauth_rate_limit};
+use kleos_credd::state::AppState;
+use kleos_credd::{CREDD_BODY_LIMIT, CREDD_REQUEST_TIMEOUT_SECS};
 
 /// Build the Phylax extension routes. These are merged into the credd
 /// router by the phylaxd binary.
-pub fn phylax_routes() -> Router<PhylaxState> {
+pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
     Router::new()
         // Approval workflows
         .route("/phylax/approvals", post(approvals::request_approval))
@@ -38,4 +47,36 @@ pub fn phylax_routes() -> Router<PhylaxState> {
             "/phylax/ssh/{category}/{name}",
             get(ssh::get_settings).put(ssh::update_settings),
         )
+        // Apply the same auth and preauth protections as credd routes.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(state, preauth_rate_limit))
+        .layer(DefaultBodyLimit::max(CREDD_BODY_LIMIT))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(CREDD_REQUEST_TIMEOUT_SECS),
+        ))
+        .layer(TraceLayer::new_for_http())
+}
+
+/// Compose credd base routes and phylax extensions into a single router.
+///
+/// The returned app keeps credd middleware semantics, then inserts
+/// `policy_check_middleware` so /resolve/* requests can return approval
+/// responses before credd plaintext handlers execute.
+pub fn compose_router(state: AppState) -> Router {
+    let phylax_state = PhylaxState::from_app_state(state.clone());
+
+    // Merge credd base routes with phylax extension routes and enforce policy
+    // interception on all resolve endpoints before the plaintext resolve handlers run.
+    let app = kleos_credd::credd_routes::<PhylaxState>(state.clone())
+        .merge(phylax_routes(state))
+        .route_layer(middleware::from_fn_with_state(
+            phylax_state.clone(),
+            policy_check_middleware,
+        ));
+
+    app.with_state(phylax_state)
 }

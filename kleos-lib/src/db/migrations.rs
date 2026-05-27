@@ -231,6 +231,7 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(80, "identity_keys_scopes_json_to_csv", run_migration_identity_keys_scopes_json_to_csv, tx),
     migration!(81, "mcp_tokens", run_migration_mcp_tokens, tx),
     migration!(82, "phylax_tables", run_migration_phylax_tables, tx),
+    migration!(83, "cred_audit_attribution_columns", run_migration_cred_audit_attribution_columns, tx),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -415,6 +416,8 @@ const MIGRATION_IDENTITY_KEYS_SCOPES_JSON_TO_CSV: i64 = 80;
 const MIGRATION_MCP_TOKENS: i64 = 81;
 /// Version number for the Phylax agent-native credential tables migration.
 const MIGRATION_PHYLAX_TABLES: i64 = 82;
+/// Version number for cred_audit attribution columns.
+const MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS: i64 = 83;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1089,6 +1092,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         record_migration(conn, MIGRATION_PHYLAX_TABLES, "phylax_tables")?;
     }
 
+    if current_version < MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS {
+        info!("Running migration 83: cred_audit_attribution_columns");
+        run_migration_cred_audit_attribution_columns(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS,
+            "cred_audit_attribution_columns",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -1602,6 +1615,10 @@ fn run_migration_cred_tables(conn: &rusqlite::Connection) -> Result<()> {
             action TEXT NOT NULL,
             category TEXT NOT NULL,
             secret_name TEXT NOT NULL,
+            operator_id TEXT,
+            source_ip TEXT,
+            policy_id INTEGER,
+            session_id TEXT,
             access_tier TEXT,
             success INTEGER NOT NULL,
             timestamp TEXT NOT NULL
@@ -1620,6 +1637,18 @@ fn run_migration_cred_tables(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_cred_audit_user ON cred_audit(user_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_cred_agent_keys_user ON cred_agent_keys(user_id);",
     )?;
+    Ok(())
+}
+
+/// Migration 83: add attribution columns used by Phylax audit events.
+///
+/// Columns are nullable so old audit rows stay valid and insert paths that do
+/// not provide attribution information keep working.
+fn run_migration_cred_audit_attribution_columns(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "cred_audit", "operator_id", "TEXT")?;
+    add_column_if_not_exists(conn, "cred_audit", "source_ip", "TEXT")?;
+    add_column_if_not_exists(conn, "cred_audit", "policy_id", "INTEGER")?;
+    add_column_if_not_exists(conn, "cred_audit", "session_id", "TEXT")?;
     Ok(())
 }
 

@@ -6,12 +6,16 @@
 //! poll URL instead of the resolved secret.
 
 use axum::body::Body;
-use axum::extract::State;
-use axum::http::{Request, StatusCode};
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use kleos_cred::agent_keys::parse_agent_key;
+use kleos_cred::agent_keys::validate_agent_key;
+use kleos_cred::crypto::hash_key;
 use serde_json::json;
+use subtle::ConstantTimeEq;
 
 use kleos_credd::auth::AuthInfo;
 
@@ -29,7 +33,7 @@ const RESOLVE_PATHS: &[&str] = &["/resolve/text", "/resolve/proxy", "/resolve/ra
 /// to the handler.
 pub async fn policy_check_middleware(
     State(state): State<PhylaxState>,
-    request: Request<Body>,
+    request: Request,
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
@@ -39,8 +43,17 @@ pub async fn policy_check_middleware(
         return next.run(request).await;
     }
 
-    // Extract auth info (inserted by auth_middleware).
+    // Extract auth info (inserted by auth_middleware) or derive it from the
+    // request token when this middleware runs before auth.
     let auth = match request.extensions().get::<AuthInfo>().cloned() {
+        Some(auth) => Some(auth),
+        None => match extract_bearer_token(&request).map(str::to_owned) {
+            Some(token) => resolve_auth_info(&state, token).await,
+            None => None,
+        },
+    };
+
+    let auth = match auth {
         Some(auth) => auth,
         None => return next.run(request).await,
     };
@@ -69,7 +82,10 @@ pub async fn policy_check_middleware(
     let body_bytes = match axum::body::to_bytes(body, 1024 * 64).await {
         Ok(bytes) => bytes,
         Err(_) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({"error": "request body too large"})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "request body too large"})),
+            )
                 .into_response();
         }
     };
@@ -118,18 +134,23 @@ pub async fn policy_check_middleware(
     }
 
     // Check if the resolve mode is allowed.
-    if !matching_policy.allowed_modes.iter().any(|m| m == resolve_mode) {
+    if !matching_policy
+        .allowed_modes
+        .iter()
+        .any(|m| m == resolve_mode)
+    {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"error": format!("resolve mode '{}' not allowed by policy", resolve_mode)})),
+            Json(
+                json!({"error": format!("resolve mode '{}' not allowed by policy", resolve_mode)}),
+            ),
         )
             .into_response();
     }
 
     // Create an approval request.
     let correlation_id = uuid::Uuid::new_v4().to_string();
-    let expires_at = (chrono::Utc::now()
-        + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
@@ -151,6 +172,10 @@ pub async fn policy_check_middleware(
                 &state.inner.db,
                 auth.user_id(),
                 Some(&agent_name),
+                None,
+                None,
+                Some(matching_policy.id),
+                None,
                 actions::APPROVAL_REQUESTED,
                 &category,
                 &secret_name,
@@ -210,4 +235,52 @@ fn extract_secret_ref(mode: &str, body: &[u8]) -> Option<(String, String)> {
         }
         _ => None,
     }
+}
+
+/// Read the bearer token from the Authorization header.
+fn extract_bearer_token(request: &Request) -> Option<&str> {
+    request
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+/// Resolve AuthInfo from request credentials when auth middleware has not yet
+/// executed.
+///
+/// This preserves behavior when policy middleware is mounted before auth and still
+/// needs to identify the requesting agent for policy lookup.
+async fn resolve_auth_info(state: &PhylaxState, token: String) -> Option<AuthInfo> {
+    let master_hash = hash_key(&**state.master_key);
+    let token_bytes = hex::decode(&token).unwrap_or_else(|_| token.as_bytes().to_vec());
+    let token_hash = hash_key(&token_bytes);
+    if master_hash.len() == token_hash.len()
+        && master_hash
+            .as_bytes()
+            .ct_eq(token_hash.as_bytes())
+            .unwrap_u8()
+            == 1
+    {
+        return Some(AuthInfo::Master { user_id: 1 });
+    }
+
+    if let Ok(raw) = parse_agent_key(&token) {
+        if let Ok(agent_key) = validate_agent_key(&state.db, &raw).await {
+            return Some(AuthInfo::Agent {
+                user_id: agent_key.user_id,
+                key: agent_key,
+            });
+        }
+    }
+
+    let mut store = state.inner.file_agent_keys.lock().ok()?;
+    let agent_id = store.validate(&token)?;
+    let scopes = store.scopes_for(&agent_id);
+    store.touch(&agent_id);
+
+    Some(AuthInfo::BootstrapAgent {
+        name: agent_id,
+        scopes,
+    })
 }

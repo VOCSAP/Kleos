@@ -55,12 +55,11 @@ pub async fn request_approval(
     State(state): State<PhylaxState>,
     Json(body): Json<ApprovalRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let agent_name = auth.agent_name().ok_or_else(|| {
-        CredError::PermissionDenied("only agents can request approvals".into())
-    })?;
+    let agent_name = auth
+        .agent_name()
+        .ok_or_else(|| CredError::PermissionDenied("only agents can request approvals".into()))?;
 
-    let expires_at = (chrono::Utc::now()
-        + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(DEFAULT_APPROVAL_TTL_SECS))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
@@ -85,6 +84,10 @@ pub async fn request_approval(
         &state.inner.db,
         auth.user_id(),
         Some(agent_name),
+        None,
+        None,
+        None,
+        None,
         actions::APPROVAL_REQUESTED,
         &body.category,
         &body.secret_name,
@@ -147,7 +150,11 @@ pub async fn decide_approval(
     let decision = match body.decision.as_str() {
         "approved" => ApprovalStatus::Approved,
         "denied" => ApprovalStatus::Denied,
-        _ => return Err(CredError::InvalidInput("decision must be 'approved' or 'denied'".into()).into()),
+        _ => {
+            return Err(
+                CredError::InvalidInput("decision must be 'approved' or 'denied'".into()).into(),
+            )
+        }
     };
 
     // Get the approval first to know the secret details for audit/lease.
@@ -172,6 +179,10 @@ pub async fn decide_approval(
         &state.inner.db,
         auth.user_id(),
         Some(&a.agent_name),
+        None,
+        None,
+        None,
+        None,
         audit_action,
         &a.category,
         &a.secret_name,
@@ -200,6 +211,10 @@ pub async fn decide_approval(
             &state.inner.db,
             auth.user_id(),
             Some(&a.agent_name),
+            None,
+            None,
+            None,
+            None,
             actions::LEASE_MINTED,
             &a.category,
             &a.secret_name,

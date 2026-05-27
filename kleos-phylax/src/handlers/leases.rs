@@ -9,7 +9,7 @@ use serde_json::json;
 
 use kleos_cred::CredError;
 use kleos_credd::auth::Auth;
-use kleos_credd::handlers::{get_secret_with_fallback, AppError};
+use kleos_credd::handlers::AppError;
 
 use crate::audit::{actions, log_phylax_audit};
 use crate::models::lease;
@@ -43,9 +43,10 @@ pub async fn list_leases(
     Ok(Json(json!({ "leases": items })))
 }
 
-/// Atomically redeem a lease and return the resolved secret.
+/// Atomically redeem a lease and return metadata.
 ///
-/// Returns the secret value on success, 409 if already used, 404 if not found.
+/// Returns the lease payload and a blocked status message on success. Plaintext
+/// secret delivery is intentionally disabled until proxy delivery is implemented.
 pub async fn redeem_lease(
     Auth(auth): Auth,
     State(state): State<PhylaxState>,
@@ -58,6 +59,10 @@ pub async fn redeem_lease(
                 &state.inner.db,
                 auth.user_id(),
                 auth.agent_name(),
+                None,
+                None,
+                None,
+                None,
                 actions::LEASE_REPLAY,
                 "",
                 "",
@@ -78,6 +83,10 @@ pub async fn redeem_lease(
         &state.inner.db,
         auth.user_id(),
         Some(&l.agent_name),
+        None,
+        None,
+        None,
+        None,
         actions::LEASE_REDEEMED,
         &l.category,
         &l.secret_name,
@@ -86,13 +95,11 @@ pub async fn redeem_lease(
     )
     .await;
 
-    // Resolve the actual secret.
-    let (_, secret_data) =
-        get_secret_with_fallback(&state.inner, l.user_id, &l.category, &l.secret_name).await?;
-
     Ok(Json(json!({
         "lease": l.to_json(),
-        "secret": secret_data,
+        "status": "redeemed",
+        "message": "plaintext delivery disabled until proxy delivery is enabled",
+        "secret": null,
     }))
     .into_response())
 }

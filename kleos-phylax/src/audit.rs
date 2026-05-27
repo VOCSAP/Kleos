@@ -17,6 +17,10 @@ pub async fn log_phylax_audit(
     db: &Database,
     user_id: i64,
     agent_name: Option<&str>,
+    operator_id: Option<&str>,
+    source_ip: Option<&str>,
+    policy_id: Option<i64>,
+    session_id: Option<&str>,
     action: &str,
     category: &str,
     secret_name: &str,
@@ -26,6 +30,9 @@ pub async fn log_phylax_audit(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let action_owned = action.to_string();
     let agent_owned = agent_name.map(|s| s.to_string());
+    let operator_id_owned = operator_id.map(|s| s.to_string());
+    let source_ip_owned = source_ip.map(|s| s.to_string());
+    let session_id_owned = session_id.map(|s| s.to_string());
     let cat = category.to_string();
     let sec = secret_name.to_string();
     let corr = correlation_id.map(|s| s.to_string());
@@ -33,11 +40,16 @@ pub async fn log_phylax_audit(
     db.write(move |conn| {
         conn.execute(
             "INSERT INTO cred_audit
-             (user_id, agent_name, action, category, secret_name, access_tier, success, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (user_id, agent_name, operator_id, source_ip, policy_id, session_id,
+              action, category, secret_name, access_tier, success, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 user_id,
                 agent_owned,
+                operator_id_owned,
+                source_ip_owned,
+                policy_id,
+                session_id_owned,
                 action_owned,
                 cat,
                 sec,

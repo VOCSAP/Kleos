@@ -1,9 +1,11 @@
 //! Phylax credential authority daemon.
 //!
 //! Composes credd's base router with Phylax agent-native extensions.
-//! If no policies are configured, behaves identically to plain credd.
+//! If no policies are configured, it behaves identically to plain credd.
 
 use clap::Parser;
+use kleos_credd::server;
+use kleos_phylax::router::compose_router;
 use tracing::info;
 
 /// Phylax daemon CLI arguments.
@@ -11,53 +13,61 @@ use tracing::info;
 #[command(name = "phylaxd", about = "Phylax agent-native credential authority")]
 struct Args {
     /// Address to bind to.
-    #[arg(long, default_value = "127.0.0.1:3100")]
-    bind: String,
+    #[arg(
+        long,
+        visible_alias = "bind",
+        default_value = "127.0.0.1:3100",
+        env = "CREDD_BIND"
+    )]
+    listen: String,
 
     /// Path to the credential database.
-    #[arg(long, env = "CREDD_DB_PATH")]
-    db_path: Option<String>,
+    #[arg(long, default_value = "kleos.db", env = "CREDD_DB_PATH")]
+    db_path: String,
+
+    /// How phylaxd derives its master key. `yubikey` (default) does an
+    /// HMAC-SHA1 challenge against slot 2 and Argon2id-derives a 32-byte
+    /// key, requiring no on-disk secrets. `password` reads from
+    /// --master-password or stdin and derives the same way. `keyfile` reads a
+    /// pre-derived 32-byte hex key from a file.
+    #[arg(long, default_value = "yubikey", env = "CREDD_AUTH_MODE")]
+    auth_mode: String,
+
+    /// Path to a hex-encoded 32-byte master key file.
+    /// Used only when --auth-mode=keyfile.
+    #[arg(long, env = "CREDD_KEYFILE")]
+    keyfile: Option<std::path::PathBuf>,
+
+    /// Master password used when --auth-mode=password.
+    #[arg(long, env = "CREDD_MASTER_PASSWORD")]
+    master_password: Option<String>,
 }
 
 /// Entry point for the phylaxd daemon.
-///
-/// Starts up with the same master key derivation and bootstrap sequence
-/// as credd, then layers Phylax policy and approval routing on top.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,kleos_phylax=debug,kleos_credd=debug".into()),
-        )
-        .init();
+    kleos_lib::config::migrate_env_prefix();
+
+    let _otel_guard = kleos_lib::observability::init_tracing(
+        "engram-phylaxd",
+        "kleos_phylax=info,kleos_credd=info",
+    );
 
     let args = Args::parse();
 
-    info!("phylaxd starting");
+    info!(
+        listen = %args.listen,
+        db_path = %args.db_path,
+        "starting phylaxd"
+    );
 
-    // Build credd's AppState using the same startup sequence as credd.
-    // For now, delegate to a simplified builder. The full credd startup
-    // (master key derivation, YubiKey, bootstrap loading) will be wired
-    // in when phylaxd replaces credd as the production binary.
-    //
-    // TODO: Wire up the full credd startup sequence. For now, phylaxd
-    // requires CREDD_MASTER_KEY_HEX environment variable.
-    let db_path = args
-        .db_path
-        .unwrap_or_else(|| {
-            dirs::config_dir()
-                .map(|p| p.join("cred").join("credentials.db").to_string_lossy().into_owned())
-                .unwrap_or_else(|| "credentials.db".to_string())
-        });
-
-    info!(db_path = %db_path, "opening database");
-
-    // Placeholder: in production, this would use credd's full startup
-    // to build AppState (master key, bootstrap, agent keys, PIV keys).
-    // For the initial port, we'll refine this in integration testing.
-    info!("phylaxd placeholder -- full startup integration pending");
-    info!("bind address: {}", args.bind);
-
-    Ok(())
+    server::run_with_env(
+        &args.listen,
+        &args.db_path,
+        args.auth_mode.as_str(),
+        args.master_password,
+        args.keyfile,
+        compose_router,
+    )
+    .await
 }

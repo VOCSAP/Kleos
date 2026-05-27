@@ -2,27 +2,31 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use axum::middleware;
 use axum::Router;
 use http_body_util::BodyExt;
+use rusqlite::params;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use kleos_cred::audit::{self, AccessTier, AuditAction};
 use kleos_cred::crypto::derive_key;
-use kleos_credd::auth::{auth_middleware, preauth_rate_limit};
 use kleos_credd::state::AppState;
 use kleos_lib::db::Database;
-use kleos_phylax::router::phylax_routes;
-use kleos_phylax::state::PhylaxState;
+use kleos_lib::EngError;
+use kleos_phylax::audit::{actions, log_phylax_audit};
+use kleos_phylax::router::compose_router;
 
 /// Test harness wrapping a Phylax-enabled router.
 struct TestApp {
     /// Combined credd + phylax router with all middleware applied.
     router: Router,
+    /// Shared test database.
+    db: std::sync::Arc<Database>,
     /// Hex-encoded master token derived from the test password.
     master_token: String,
 }
 
+/// Helpers for building and exercising a Phylax-aware test app.
 impl TestApp {
     /// Create a test app with in-memory DB, migrations applied.
     async fn new() -> Self {
@@ -32,29 +36,14 @@ impl TestApp {
         let master_token = hex::encode(*master_key);
 
         let app_state = AppState::new(db, *master_key);
-        let phylax_state = PhylaxState::from_app_state(app_state);
 
-        // Build combined router: credd base (with auth middleware) merged with
-        // phylax extension routes. Phylax routes need the same auth middleware
-        // applied explicitly because Axum's merge does not propagate layers
-        // from one router to the other.
-        let credd_router = kleos_credd::build_router(phylax_state.inner.clone());
-        let phylax_router = phylax_routes()
-            .layer(middleware::from_fn_with_state(
-                phylax_state.inner.clone(),
-                auth_middleware,
-            ))
-            .layer(middleware::from_fn_with_state(
-                phylax_state.inner.clone(),
-                preauth_rate_limit,
-            ))
-            .with_state(phylax_state.clone());
-
-        // Phylax routes take precedence for /phylax/* paths.
-        let router = credd_router.merge(phylax_router);
+        // Compose base credd routes with phylax extensions and shared policy
+        // middleware ordering.
+        let router = compose_router(app_state.clone());
 
         Self {
             router,
+            db: app_state.db.clone(),
             master_token,
         }
     }
@@ -154,11 +143,7 @@ async fn test_policy_crud() {
 
     // Delete the policy.
     let (status, _) = app
-        .request_master(
-            "DELETE",
-            &format!("/phylax/policies/{}", policy_id),
-            None,
-        )
+        .request_master("DELETE", &format!("/phylax/policies/{}", policy_id), None)
         .await;
     assert_eq!(status, StatusCode::OK);
 
@@ -227,11 +212,7 @@ async fn test_approval_flow() {
 
     // Get approval status -- should be pending (status=0).
     let (status, body) = app
-        .request_master(
-            "GET",
-            &format!("/phylax/approvals/{}", approval_id),
-            None,
-        )
+        .request_master("GET", &format!("/phylax/approvals/{}", approval_id), None)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], 0);
@@ -255,6 +236,69 @@ async fn test_approval_flow() {
     let (status, body) = app.request_master("GET", "/phylax/leases", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["leases"].as_array().unwrap().len() >= 1);
+}
+
+/// Test that policy-gated resolve endpoints return approvals for agents.
+#[tokio::test]
+async fn test_resolve_raw_requires_approval() {
+    let app = TestApp::new().await;
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({
+                "data": {
+                    "type": "note",
+                    "content": "super-secret"
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": true,
+                "allowed_modes": ["raw"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": "raw-agent",
+                "categories": ["prod/*"],
+                "allow_raw": true
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/raw",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["approval_required"], true);
+    assert!(body["approval_id"].as_i64().is_some());
 }
 
 // ---- Approval denial test ----
@@ -334,9 +378,7 @@ async fn test_namespace_list() {
     }
 
     // List namespaces.
-    let (status, body) = app
-        .request_master("GET", "/phylax/namespaces", None)
-        .await;
+    let (status, body) = app.request_master("GET", "/phylax/namespaces", None).await;
     assert_eq!(status, StatusCode::OK);
     let namespaces = body["namespaces"].as_array().unwrap();
     assert_eq!(namespaces.len(), 3);
@@ -448,4 +490,184 @@ async fn test_piv_enroll_revoke() {
         )
         .await;
     assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+/// Verify legacy audit insertion still works with the new nullable columns present.
+async fn test_log_audit_compatible_after_cred_audit_extension() {
+    let app = TestApp::new().await;
+
+    let audit_id = audit::log_audit(
+        &app.db,
+        1,
+        Some("agent-legacy"),
+        AuditAction::Get,
+        "prod",
+        "api-key",
+        Some(AccessTier::Proxy),
+        true,
+    )
+    .await
+    .unwrap();
+
+    let (operator_id, source_ip, policy_id, session_id): (Option<String>, Option<String>, Option<i64>, Option<String>) =
+        app.db
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT operator_id, source_ip, policy_id, session_id FROM cred_audit WHERE id = ?1",
+                    params![audit_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                        ))
+                    },
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            })
+            .await
+            .unwrap();
+
+    assert!(operator_id.is_none());
+    assert!(source_ip.is_none());
+    assert!(policy_id.is_none());
+    assert!(session_id.is_none());
+}
+
+#[tokio::test]
+/// Verify Phylax audit can write operator/source/policy/session metadata columns.
+async fn test_phylax_audit_writes_attribution_columns() {
+    let app = TestApp::new().await;
+
+    let id = log_phylax_audit(
+        &app.db,
+        1,
+        Some("agent-1"),
+        Some("operator-1"),
+        Some("127.0.0.1"),
+        Some(42),
+        Some("session-1"),
+        actions::LEASE_MINTED,
+        "prod",
+        "api-key",
+        true,
+        Some("corr-1"),
+    )
+    .await
+    .unwrap();
+
+    let (operator_id, source_ip, policy_id, session_id): (Option<String>, Option<String>, Option<i64>, Option<String>) =
+        app.db
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT operator_id, source_ip, policy_id, session_id FROM cred_audit WHERE id = ?1",
+                    params![id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                        ))
+                    },
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            })
+            .await
+            .unwrap();
+
+    assert_eq!(operator_id.as_deref(), Some("operator-1"));
+    assert_eq!(source_ip.as_deref(), Some("127.0.0.1"));
+    assert_eq!(policy_id, Some(42));
+    assert_eq!(session_id.as_deref(), Some("session-1"));
+}
+
+#[tokio::test]
+/// Verify lease redemption no longer returns the plaintext secret payload.
+async fn test_redeem_lease_does_not_return_plaintext_secret() {
+    let app = TestApp::new().await;
+
+    let (status, _body) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": true,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": "redeem-agent",
+                "categories": ["prod/*"],
+                "allow_raw": false
+            })),
+            &app.master_token,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/secret-key",
+            Some(json!({
+                "data": { "type": "api_key", "key": "super-secret-key" }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/phylax/approvals",
+            Some(json!({
+                "category": "prod",
+                "secret_name": "secret-key",
+                "resolve_mode": "text"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let approval_id = body["approval_id"].as_i64().unwrap();
+
+    let (status, body) = app
+        .request_master(
+            "PUT",
+            &format!("/phylax/approvals/{}", approval_id),
+            Some(json!({
+                "decision": "approved",
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let jti = body["lease"]["jti"].as_str().unwrap().to_string();
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            &format!("/phylax/leases/{}/redeem", jti),
+            None,
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "redeemed");
+    assert_eq!(
+        body["message"],
+        "plaintext delivery disabled until proxy delivery is enabled"
+    );
+    assert!(body["secret"].is_null());
 }

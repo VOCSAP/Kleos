@@ -6,6 +6,7 @@
 //! kleos-lib migration chain.
 
 use kleos_cred::CredError;
+use rusqlite::params;
 
 /// Ensure all Phylax tables exist. Idempotent (IF NOT EXISTS on all statements).
 pub fn ensure_tables(conn: &rusqlite::Connection) -> Result<(), CredError> {
@@ -83,5 +84,49 @@ pub fn ensure_tables(conn: &rusqlite::Connection) -> Result<(), CredError> {
         );",
     )
     .map_err(|e| CredError::Database(e.to_string()))?;
+
+    ensure_cred_audit_column(conn, "operator_id", "TEXT")?;
+    ensure_cred_audit_column(conn, "source_ip", "TEXT")?;
+    ensure_cred_audit_column(conn, "policy_id", "INTEGER")?;
+    ensure_cred_audit_column(conn, "session_id", "TEXT")?;
+
+    Ok(())
+}
+
+/// Add a missing `cred_audit` column if the table and column are absent.
+fn ensure_cred_audit_column(
+    conn: &rusqlite::Connection,
+    column: &str,
+    definition: &str,
+) -> Result<(), CredError> {
+    let table_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cred_audit'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    if table_exists == 0 {
+        return Ok(());
+    }
+
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('cred_audit') WHERE name = ?1",
+            params![column],
+            |row| row.get(0),
+        )
+        .map_err(|e| CredError::Database(e.to_string()))?;
+
+    if exists == 0 {
+        let sql = format!(
+            "ALTER TABLE cred_audit ADD COLUMN {} {}",
+            column, definition
+        );
+        conn.execute(&sql, [])
+            .map_err(|e| CredError::Database(e.to_string()))?;
+    }
+
     Ok(())
 }
