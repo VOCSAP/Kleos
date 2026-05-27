@@ -2,29 +2,40 @@ schema_version = 1
 language = "fr"
 
 # French baseline lexicon for the kleos-lib intelligence pipeline.
-# Patch 38 Livrable 1 -- premiere langue cible apres l'anglais. Couvre les
-# memes classes que en.toml pour permettre l'iteration multi-lang en
-# Livrable 2 (refactor extraction.rs, personality.rs, etc.).
+# Patch 38 Livrable 2 normalize: the runtime matcher folds inputs and
+# lexicon entries through lowercase + Unicode-NFD diacritic strip +
+# optional Snowball stemming (lexicon::fold_for_matching). The TOML
+# can therefore carry the orthographically-correct French forms with
+# their proper accents -- the matcher reconciles user input that
+# omits accents or uses inflected forms (aimer / aimee / aimait).
 
 [classes.verb_like]
-words = ["aimer", "adorer", "apprecier", "preferer", "kiffer"]
+words = ["aimer", "adorer", "apprécier", "préférer", "kiffer"]
 
 [classes.verb_dislike]
-words = ["detester", "hair", "ne pas aimer", "ne pas supporter"]
+words = ["détester", "haïr", "ne pas aimer", "ne pas supporter"]
 
 [classes.verb_buy]
-words = ["acheter", "achete", "achetee", "achetes", "achetees", "acquis", "commande", "recu"]
+words = ["acheter", "acheté", "achetée", "achetés", "achetées", "acquis", "commandé", "reçu"]
 
 [classes.state_verbs]
-words = ["est", "suis", "es", "sont", "etait", "etaient", "a", "ai", "as", "avons", "avez", "ont", "habite", "habites", "habitons", "habitez", "habitent", "travaille", "travailles", "travaillons", "travaillez", "travaillent", "devient", "deviens", "devenons", "commence", "demenage"]
+# Grammar class -- short forms not suitable for stemming.
+stem = false
+words = ["est", "suis", "es", "sont", "était", "étaient", "a", "ai", "as", "avons", "avez", "ont", "habite", "habites", "habitons", "habitez", "habitent", "travaille", "travailles", "travaillons", "travaillez", "travaillent", "devient", "deviens", "devenons", "commence", "déménage"]
 
 [classes.articles]
+# Grammar class -- short tokens not stemmable.
+stem = false
 words = ["le", "la", "les", "un", "une", "des", "du", "de", "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "notre", "votre", "leur"]
 
 [classes.stopwords]
-words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette", "ces", "a", "de", "du", "des", "en", "sur", "sous", "dans", "par", "pour", "avec", "ont", "etaient", "leur", "leurs", "ils", "elles", "ete", "propos", "lequel", "laquelle", "quel", "quelle", "serait", "pourrait", "devrait", "alors", "quand", "quoi", "aussi"]
+# Grammar class -- whole-token equality only.
+stem = false
+words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette", "ces", "à", "de", "du", "des", "en", "sur", "sous", "dans", "par", "pour", "avec", "ont", "étaient", "leur", "leurs", "ils", "elles", "été", "propos", "lequel", "laquelle", "quel", "quelle", "serait", "pourrait", "devrait", "alors", "quand", "quoi", "aussi"]
 
 [classes.first_person_pronoun]
+# Grammar class -- pronouns are not stemmable.
+stem = false
 words = ["je", "j'", "j'ai", "moi", "me", "m'"]
 
 [classes.emotion_happy]
@@ -33,7 +44,7 @@ valence = 1.0
 intensity = 0.6
 
 [classes.emotion_excited]
-words = ["excite", "excitee", "enthousiaste", "impatient", "impatiente"]
+words = ["excité", "excitée", "enthousiaste", "impatient", "impatiente"]
 valence = 1.0
 intensity = 0.8
 
@@ -43,17 +54,17 @@ valence = 1.0
 intensity = 0.7
 
 [classes.emotion_proud]
-words = ["fier", "fiere"]
+words = ["fier", "fière"]
 valence = 1.0
 intensity = 0.7
 
 [classes.emotion_relieved]
-words = ["soulage", "soulagee", "rassure", "rassuree"]
+words = ["soulagé", "soulagée", "rassuré", "rassurée"]
 valence = 1.0
 intensity = 0.5
 
 [classes.emotion_thrilled]
-words = ["enchante", "enchantee", "ravi", "ravie", "comble", "comblee"]
+words = ["enchanté", "enchantée", "ravi", "ravie", "comblé", "comblée"]
 valence = 1.0
 intensity = 0.9
 
@@ -63,108 +74,117 @@ valence = 1.0
 intensity = 0.5
 
 [classes.emotion_sad]
-words = ["triste", "abattu", "abattue", "depite", "depitee"]
+words = ["triste", "abattu", "abattue", "dépité", "dépitée"]
 valence = -1.0
 intensity = 0.6
 
 [classes.emotion_angry]
-words = ["en_colere", "furieux", "furieuse", "irrite", "irritee", "enrage", "enragee"]
+words = ["en colère", "furieux", "furieuse", "irrité", "irritée", "enragé", "enragée"]
 valence = -1.0
 intensity = 0.8
 
 [classes.emotion_frustrated]
-words = ["frustre", "frustree", "exaspere", "exasperee"]
+words = ["frustré", "frustrée", "exaspéré", "exaspérée"]
 valence = -1.0
 intensity = 0.7
 
 [classes.emotion_anxious]
-words = ["anxieux", "anxieuse", "inquiet", "inquiete", "nerveux", "nerveuse"]
+words = ["anxieux", "anxieuse", "inquiet", "inquiète", "nerveux", "nerveuse"]
 valence = -1.0
 intensity = 0.6
 
 [classes.emotion_stressed]
-words = ["stresse", "stressee", "tendu", "tendue"]
+words = ["stressé", "stressée", "tendu", "tendue"]
 valence = -1.0
 intensity = 0.7
 
 [classes.emotion_disappointed]
-words = ["decu", "decue", "decourage", "decouragee"]
+words = ["déçu", "déçue", "découragé", "découragée"]
 valence = -1.0
 intensity = 0.6
 
 [classes.emotion_overwhelmed]
-words = ["depasse", "depassee", "submerge", "submergee"]
+words = ["dépassé", "dépassée", "submergé", "submergée"]
 valence = -1.0
 intensity = 0.8
 
 [classes.emotion_lonely]
-words = ["seul", "seule", "solitaire", "isole", "isolee"]
+words = ["seul", "seule", "solitaire", "isolé", "isolée"]
 valence = -1.0
 intensity = 0.7
 
 [classes.emotion_worried]
-words = ["soucieux", "soucieuse", "preoccupe", "preoccupee"]
+words = ["soucieux", "soucieuse", "préoccupé", "préoccupée"]
 valence = -1.0
 intensity = 0.5
 
 [classes.emotion_bored]
-words = ["ennuye", "ennuyee", "blase", "blasee"]
+words = ["ennuyé", "ennuyée", "blasé", "blasée"]
 valence = -1.0
 intensity = 0.4
 
 [classes.intensifier_weakening]
-# multiplier 0.5
-words = ["a_peine", "presque_pas"]
+# multiplier 0.5. Grammar-like adverbs -- no stemming.
+stem = false
+words = ["à peine", "presque pas"]
 
 [classes.intensifier_softening]
 # multiplier 0.6
+stem = false
 words = ["doucement", "mollement"]
 
 [classes.intensifier_attenuating]
 # multiplier 0.7
-words = ["un_peu", "quelque_peu", "plutot", "legerement", "modere"]
+stem = false
+words = ["un peu", "quelque peu", "plutôt", "légèrement", "modéré"]
 
 [classes.intensifier_strong]
 # multiplier 1.3
-words = ["vraiment", "tres", "fort", "totalement", "completement", "profondement", "fortement", "hautement"]
+stem = false
+words = ["vraiment", "très", "fort", "totalement", "complètement", "profondément", "fortement", "hautement"]
 
 [classes.intensifier_very_strong]
 # multiplier 1.4
-words = ["absolument", "extremement", "incroyablement"]
+stem = false
+words = ["absolument", "extrêmement", "incroyablement"]
 
 [classes.negation_marker]
-words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans", "n_est_pas", "n_a_pas", "n_etait_pas", "ne_va_pas"]
+# Grammar class -- contractions and short particles, no stemming.
+stem = false
+words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans", "n'est pas", "n'a pas", "n'était pas", "ne va pas"]
 
 [classes.causal_strong]
-words = ["cause par", "resulte de", "resulte en", "provoque par", "du fait de", "a cause de", "en raison de", "grace a", "declenche"]
+words = ["causé par", "résulte de", "résulte en", "provoqué par", "du fait de", "à cause de", "en raison de", "grâce à", "déclenché"]
 
 [classes.causal_context]
-words = ["apres", "suite a", "compte tenu de", "etant donne", "depuis", "parce que", "donc", "par consequent"]
+words = ["après", "suite à", "compte tenu de", "étant donné", "depuis", "parce que", "donc", "par conséquent"]
 
 [classes.causal_weak]
-# Voir en.toml: melange likelihood + verbes d action causale (broke/fixed equivalent FR).
-words = ["peut-etre", "possiblement", "probablement", "pourrait", "casse", "repare"]
+# Voir en.toml: mélange likelihood + verbes d action causale (broke/fixed équivalent FR).
+words = ["peut-être", "possiblement", "probablement", "pourrait", "cassé", "réparé"]
 
 [classes.filler_prefixes]
-words = ["euh", "ben", "alors", "donc", "voila", "tu sais", "en fait", "honnetement", "je veux dire", "bref", "bon"]
+words = ["euh", "ben", "alors", "donc", "voilà", "tu sais", "en fait", "honnêtement", "je veux dire", "bref", "bon"]
 
 [classes.meta_stoplist]
-words = ["en tant qu IA", "je suis une IA", "je ne peux pas", "je n ai pas", "en tant que modele de langage", "je ne suis pas en mesure", "je m excuse", "pour clarifier", "pour resumer", "en conclusion", "laisse moi expliquer", "comme je l ai dit", "en resume", "comme nous en avons parle", "pour etre clair", "pour le contexte", "passons", "a propos", "au fait"]
+words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en tant que modèle de langage", "je ne suis pas en mesure", "je m'excuse", "pour clarifier", "pour résumer", "en conclusion", "laisse-moi expliquer", "comme je l'ai dit", "en résumé", "comme nous en avons parlé", "pour être clair", "pour le contexte", "passons", "à propos", "au fait"]
 
 [classes.credential_keywords]
-words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "cle_privee", "cle_ssh", "client_secret"]
+# Technical tokens -- stemming would distort api_key, clé_ssh, etc.
+stem = false
+words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "clé_privée", "clé_ssh", "client_secret"]
 
 [classes.domain_food]
-words = ["nourriture", "manger", "cuisiner", "boire", "pizza", "cafe", "petit_dejeuner", "dejeuner", "diner", "repas", "restaurant", "recette", "epicerie", "boulangerie"]
+words = ["nourriture", "manger", "cuisiner", "boire", "pizza", "café", "petit-déjeuner", "déjeuner", "dîner", "repas", "restaurant", "recette", "épicerie", "boulangerie"]
 
 [classes.domain_entertainment]
-words = ["film", "serie", "regarder", "spectacle", "cinema"]
+words = ["film", "série", "regarder", "spectacle", "cinéma"]
 
 [classes.domain_reading]
 words = ["livre", "lire", "auteur", "lecture", "roman"]
 
 [classes.domain_music]
-words = ["musique", "chanson", "groupe", "ecouter", "album"]
+words = ["musique", "chanson", "groupe", "écouter", "album"]
 
 [classes.domain_gaming]
 words = ["jeu", "jouer", "console"]
@@ -176,4 +196,4 @@ words = ["sport", "exercice", "courir", "gym", "fitness", "course"]
 words = ["voyage", "voyager", "visiter", "trajet", "destination"]
 
 [classes.prohibition_marker]
-words = ["interdit", "interdite", "prohibe", "prohibee", "non autorise", "refuse", "bloque", "restreint", "ne doit pas", "ne peut pas", "jamais", "ne pas", "banni"]
+words = ["interdit", "interdite", "prohibé", "prohibée", "non autorisé", "refusé", "bloqué", "restreint", "ne doit pas", "ne peut pas", "jamais", "ne pas", "banni"]

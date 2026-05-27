@@ -49,10 +49,6 @@ fn negation_keywords() -> Vec<String> {
         .iter()
         .flat_map(|lang| crate::lexicon::word_class(lang, "negation_marker"))
         .map(|w| w.to_lowercase())
-        // The contraction forms in the TOML use underscore as the apostrophe
-        // proxy (didn_t in TOML key, didn't in source text). Normalise both
-        // directions here so the caller compares the canonical form.
-        .map(|w| w.replace('_', "'"))
         .collect()
 }
 
