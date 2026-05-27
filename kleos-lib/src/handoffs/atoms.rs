@@ -191,42 +191,53 @@ pub fn make_atom_id(atom_type: AtomType, canonical_form: &str) -> String {
 // they encode structural patterns (path prefixes, `file:` / `service:`
 // label syntax) that do not vary across human languages.
 
-fn build_atom_regex(markers: &[String]) -> Option<Regex> {
+fn build_atom_regex(lang: &str, class: &str) -> Option<Regex> {
+    // Patch 38 L2.B wildcard-after-stem: stem each marker (one-shot at
+    // load) and append `\w*` so inflected forms (`decided` -> `decide`
+    // matches `decides`, `decideront`) catch without TOML duplication.
+    // Multi-word markers ("we will") keep the inner-whitespace `\s+`
+    // collapse so the regex still matches normalised source text.
+    let markers = crate::lexicon::word_class(lang, class);
     if markers.is_empty() {
         return None;
     }
-    // Each marker may already contain whitespace (e.g. "we will"); collapse
-    // any inner whitespace into `\s+` so the regex matches normalised
-    // source text. The leading anchor stays an alphanumeric word boundary
-    // where the marker starts on a letter, falling back to a literal
-    // match otherwise (e.g. "TODO:" or "[ ]" begins on punctuation).
+    let with_stem = crate::lexicon::class_stem_enabled(lang, class);
     let alternation = markers
         .iter()
         .map(|m| {
+            // Stem each whitespace-separated token of the marker, then
+            // escape and re-glue with `\s+` to keep the multi-word
+            // tolerance.
             m.split_whitespace()
-                .map(regex::escape)
+                .map(|tok| {
+                    let folded = crate::lexicon::fold_for_matching(tok, lang, with_stem);
+                    regex::escape(&folded)
+                })
                 .collect::<Vec<_>>()
                 .join(r"\s+")
         })
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(r"(?i)(?:\b|(?<=^|\s))(?:{alternation}).{{0,120}}")).ok()
+    Regex::new(&format!(
+        r"(?i)(?:\b|(?<=^|\s))(?:{alternation})\w*.{{0,120}}"
+    ))
+    .ok()
 }
 
 fn atom_decision_regex_for(lang: &str) -> Option<Regex> {
-    build_atom_regex(&crate::lexicon::word_class(lang, "atom_decision_markers"))
+    build_atom_regex(lang, "atom_decision_markers")
 }
 
 fn atom_constraint_regex_for(lang: &str) -> Option<Regex> {
-    build_atom_regex(&crate::lexicon::word_class(lang, "atom_constraint_markers"))
+    build_atom_regex(lang, "atom_constraint_markers")
 }
 
 fn atom_task_regex_for(lang: &str) -> Option<Regex> {
-    build_atom_regex(&crate::lexicon::word_class(lang, "atom_task_markers"))
+    build_atom_regex(lang, "atom_task_markers")
 }
 
 fn atom_question_regex_for(lang: &str) -> Option<Regex> {
-    build_atom_regex(&crate::lexicon::word_class(lang, "atom_question_markers"))
+    build_atom_regex(lang, "atom_question_markers")
 }
 
 struct AtomRegexCache {
