@@ -1,0 +1,65 @@
+schema_version = 1
+language = "en"
+
+# English baseline lexicon for the kleos-lib intelligence pipeline.
+# Patch 38 Livrable 1 -- additive, no consumer yet. Future patches refactor
+# extraction.rs, personality.rs, valence.rs, sentiment.rs, etc. to read from
+# this lexicon rather than hardcoded constants.
+
+[classes.verb_like]
+words = ["love", "like", "enjoy", "adore", "prefer"]
+
+[classes.verb_dislike]
+words = ["hate", "dislike", "detest", "loathe"]
+
+[classes.verb_buy]
+words = ["bought", "purchased", "got", "acquired", "received", "ordered", "picked up"]
+
+[classes.state_verbs]
+words = ["am", "is", "are", "was", "were", "have", "has", "had", "become", "became", "live", "work", "start"]
+
+[classes.articles]
+words = ["the", "a", "an", "my", "your", "his", "her", "their", "our"]
+
+[classes.stopwords]
+words = ["the", "a", "an", "and", "or", "but", "so", "for", "to", "of", "in", "on", "at", "by", "with", "from", "that", "this", "these", "those", "is", "are"]
+
+[classes.first_person_pronoun]
+words = ["I", "i", "I'm", "I've", "I'll", "I'd"]
+
+[classes.emotion_happy]
+words = ["happy", "joyful", "content", "delighted", "thrilled", "proud", "excited"]
+valence = 0.7
+intensity = 0.6
+
+[classes.emotion_sad]
+words = ["sad", "disappointed", "downcast", "discouraged", "blue", "depressed"]
+valence = -0.6
+intensity = 0.5
+
+[classes.intensifier_strong]
+words = ["very", "really", "extremely", "absolutely", "totally", "completely", "utterly", "highly"]
+
+[classes.negation_marker]
+words = ["not", "no", "never", "none", "neither", "nor", "without"]
+
+[classes.causal_strong]
+words = ["caused by", "results from", "produced by", "led to", "because of", "due to"]
+
+[classes.causal_context]
+words = ["after", "following", "as a result of", "given that", "since"]
+
+[classes.causal_weak]
+words = ["maybe", "perhaps", "possibly", "might"]
+
+[classes.filler_prefixes]
+words = ["um", "uh", "well", "so", "actually", "basically", "literally", "honestly", "you know"]
+
+[classes.meta_stoplist]
+words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language model", "I am unable", "I'm just", "I don't have access", "I apologize", "let me clarify", "to summarize", "in conclusion"]
+
+[classes.credential_keywords]
+words = ["password", "passphrase", "secret", "api_key", "token", "bearer", "credential", "private_key", "ssh_key", "client_secret"]
+
+[classes.prohibition_marker]
+words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not"]

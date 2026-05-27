@@ -1,0 +1,65 @@
+schema_version = 1
+language = "fr"
+
+# French baseline lexicon for the kleos-lib intelligence pipeline.
+# Patch 38 Livrable 1 -- premiere langue cible apres l'anglais. Couvre les
+# memes classes que en.toml pour permettre l'iteration multi-lang en
+# Livrable 2 (refactor extraction.rs, personality.rs, etc.).
+
+[classes.verb_like]
+words = ["aimer", "adorer", "apprecier", "preferer", "kiffer"]
+
+[classes.verb_dislike]
+words = ["detester", "hair", "ne pas aimer", "ne pas supporter"]
+
+[classes.verb_buy]
+words = ["acheter", "achete", "achetee", "achetes", "achetees", "acquis", "commande", "recu"]
+
+[classes.state_verbs]
+words = ["est", "suis", "es", "sont", "etait", "etaient", "a", "ai", "as", "avons", "avez", "ont", "habite", "habites", "habitons", "habitez", "habitent", "travaille", "travailles", "travaillons", "travaillez", "travaillent", "devient", "deviens", "devenons", "commence", "demenage"]
+
+[classes.articles]
+words = ["le", "la", "les", "un", "une", "des", "du", "de", "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "notre", "votre", "leur"]
+
+[classes.stopwords]
+words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette", "ces", "a", "de", "du", "des", "en", "sur", "sous", "dans", "par", "pour", "avec"]
+
+[classes.first_person_pronoun]
+words = ["je", "j'", "j'ai", "moi", "me", "m'"]
+
+[classes.emotion_happy]
+words = ["heureux", "heureuse", "content", "contente", "ravi", "ravie", "enchante", "enchantee", "fier", "fiere", "joyeux", "joyeuse"]
+valence = 0.7
+intensity = 0.6
+
+[classes.emotion_sad]
+words = ["triste", "decu", "decue", "abattu", "abattue", "decourage", "decouragee", "depite", "depitee"]
+valence = -0.6
+intensity = 0.5
+
+[classes.intensifier_strong]
+words = ["vraiment", "extremement", "absolument", "totalement", "completement", "tres", "fort", "hautement"]
+
+[classes.negation_marker]
+words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans"]
+
+[classes.causal_strong]
+words = ["cause par", "resulte de", "provoque par", "du fait de", "a cause de", "en raison de"]
+
+[classes.causal_context]
+words = ["apres", "suite a", "compte tenu de", "etant donne", "depuis"]
+
+[classes.causal_weak]
+words = ["peut-etre", "possiblement", "probablement", "pourrait"]
+
+[classes.filler_prefixes]
+words = ["euh", "ben", "alors", "donc", "voila", "tu sais", "en fait", "honnetement"]
+
+[classes.meta_stoplist]
+words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en tant que modele de langage", "je ne suis pas en mesure", "je m'excuse", "pour clarifier", "pour resumer", "en conclusion"]
+
+[classes.credential_keywords]
+words = ["mot de passe", "mot_de_passe", "secret", "api_key", "jeton", "token", "credential", "cle_privee", "cle_ssh", "client_secret"]
+
+[classes.prohibition_marker]
+words = ["interdit", "interdite", "prohibe", "prohibee", "non autorise", "refuse", "bloque", "restreint", "ne doit pas", "ne peut pas"]
