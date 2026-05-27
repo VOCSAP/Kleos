@@ -174,6 +174,31 @@ words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en
 stem = false
 words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "clé_privée", "clé_ssh", "client_secret"]
 
+[classes.favorite_marker]
+# Marqueurs d'introduction "mon préféré", "ma préférée", etc.
+stem = false
+words = ["préféré", "préférée", "préférés", "préférées", "favori", "favorite", "favoris", "favorites"]
+
+[classes.favorite_category]
+# Catégories qui suivent "mon X préféré".
+stem = false
+words = ["plat", "film", "livre", "série", "jeu", "chanson", "couleur", "sport", "endroit", "boisson", "artiste", "groupe", "auteur", "nourriture"]
+
+[classes.is_or_are]
+# Copule utilisée dans le motif favorite_regex.
+stem = false
+words = ["est", "sont"]
+
+[classes.location_verbs]
+# Phrases introduisant un changement ou un état de localisation.
+stem = false
+words = ["déménagé à", "déménagé vers", "habite à", "vis à", "vis en", "reste à", "installé à", "installée à"]
+
+[classes.role_verbs]
+# Phrases introduisant un nouveau rôle ou poste.
+stem = false
+words = ["commencé", "débuté", "promu", "travaille maintenant comme", "suis maintenant", "viens de devenir", "promue"]
+
 [classes.sentiment_pos5]
 # Sélection FR équivalente à AFINN +5
 words = ["aimer", "adorer", "excellent", "formidable", "fantastique", "brillant", "merveilleux", "parfait", "incroyable", "magnifique", "exceptionnel", "génial", "sublime", "extraordinaire"]

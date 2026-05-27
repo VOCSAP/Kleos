@@ -172,6 +172,31 @@ words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language m
 stem = false
 words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
 
+[classes.favorite_marker]
+# "my favorite", "my fav", "my favourite" introducers in the favorite_regex.
+stem = false
+words = ["favorite", "fav", "favourite"]
+
+[classes.favorite_category]
+# Categories that follow the "my favorite X" introducer.
+stem = false
+words = ["food", "movie", "book", "show", "game", "song", "color", "colour", "sport", "place", "drink", "artist", "band", "author"]
+
+[classes.is_or_are]
+# Copula used inside the favorite_regex tail.
+stem = false
+words = ["is", "are"]
+
+[classes.location_verbs]
+# Phrases that introduce a location change or current location.
+stem = false
+words = ["moved to", "relocated to", "live in", "living in", "staying in"]
+
+[classes.role_verbs]
+# Phrases that introduce a new role or position.
+stem = false
+words = ["started", "began", "got promoted to", "now work as", "am now", "just became"]
+
 [classes.sentiment_pos5]
 # AFINN +5 (strong positive)
 words = ["love", "adore", "excellent", "amazing", "fantastic", "brilliant", "wonderful", "outstanding", "superb", "perfect", "incredible", "magnificent", "phenomenal", "exceptional", "flawless", "spectacular", "breathtaking", "glorious", "marvelous", "supreme"]
