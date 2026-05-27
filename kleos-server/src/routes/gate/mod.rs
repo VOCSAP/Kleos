@@ -648,16 +648,17 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
     };
 
     const ACTIVATION_THRESHOLD: f64 = 0.6;
-    const PROHIBITIONS: &[&str] = &[
-        "never",
-        "do not",
-        "don't",
-        "must not",
-        "prohibited",
-        "forbidden",
-        "blocked",
-        "banned",
-    ];
+
+    // Patch 38 L2 site 2 -- prohibition markers sourced from the i18n
+    // lexicon across every supported language (EN + FR + future). The
+    // previous hardcoded English-only PROHIBITIONS constant missed every
+    // non-English brain memory; lexicon::prohibition_marker now drives
+    // both languages from a single TOML.
+    let prohibitions: Vec<String> = kleos_lib::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| kleos_lib::lexicon::word_class(lang, "prohibition_marker"))
+        .map(|w| w.to_lowercase())
+        .collect();
 
     let command_lower = command.to_lowercase();
     let command_tokens: Vec<&str> = command_lower
@@ -670,7 +671,7 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
             continue;
         }
         let content_lower = mem.content.to_lowercase();
-        let has_prohibition = PROHIBITIONS.iter().any(|k| content_lower.contains(k));
+        let has_prohibition = prohibitions.iter().any(|k| content_lower.contains(k.as_str()));
         if !has_prohibition {
             continue;
         }
