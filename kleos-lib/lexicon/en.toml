@@ -22,7 +22,7 @@ words = ["am", "is", "are", "was", "were", "have", "has", "had", "become", "beca
 words = ["the", "a", "an", "my", "your", "his", "her", "their", "our"]
 
 [classes.stopwords]
-words = ["the", "a", "an", "and", "or", "but", "so", "for", "to", "of", "in", "on", "at", "by", "with", "from", "that", "this", "these", "those", "is", "are"]
+words = ["the", "a", "an", "and", "or", "but", "so", "for", "to", "of", "in", "on", "at", "by", "with", "from", "that", "this", "these", "those", "is", "are", "have", "been", "were", "they", "about", "their", "there", "which", "would", "could", "should", "then", "than", "when", "what", "also", "into"]
 
 [classes.first_person_pronoun]
 words = ["I", "i", "I'm", "I've", "I'll", "I'd"]
