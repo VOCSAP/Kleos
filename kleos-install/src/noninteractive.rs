@@ -7,11 +7,15 @@
 
 use std::path::PathBuf;
 
-use kleos_install_core::config::{EmbeddingConfig, InstallerConfig, RerankerConfig, SecurityConfig};
+use kleos_install_core::config::{
+    EmbeddingConfig, InstallerConfig, RerankerConfig, SecurityConfig,
+};
 use kleos_install_core::plan::{InstallPlan, InstallProgress};
 use kleos_install_core::security;
 use kleos_install_core::system::SystemIntegration;
-use kleos_install_core::{profile_components, resolve_dependencies, InstallError, PlatformInfo, Profile};
+use kleos_install_core::{
+    profile_components, resolve_dependencies, InstallError, PlatformInfo, Profile,
+};
 
 /// Run the installer in non-interactive mode.
 ///
@@ -23,7 +27,10 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let platform_info = PlatformInfo::detect();
     println!("Kleos Installer -- non-interactive mode");
-    println!("Platform: {} ({})", platform_info.os_name, platform_info.arch);
+    println!(
+        "Platform: {} ({})",
+        platform_info.os_name, platform_info.arch
+    );
 
     let selected_profile = parse_profile(profile);
     println!("Profile: {profile}");
@@ -60,7 +67,11 @@ pub async fn run(
     let has_server = components.iter().any(|c| c == "kleos-server");
 
     let installer_config = InstallerConfig {
-        server: if has_server { Some(server_config) } else { None },
+        server: if has_server {
+            Some(server_config)
+        } else {
+            None
+        },
         embedding: if has_server {
             Some(EmbeddingConfig::LocalOnnx {
                 model: "BAAI/bge-m3".to_string(),

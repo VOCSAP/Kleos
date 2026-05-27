@@ -6,7 +6,6 @@ use crate::db::Database;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingMemory {
     pub id: i64,
@@ -81,8 +80,7 @@ pub async fn approve_memory(db: &Database, id: i64, user_id: i64) -> Result<()> 
         conn.execute(
             "UPDATE memories SET status = 'approved', updated_at = datetime('now') WHERE id = ?1",
             rusqlite::params![id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -108,8 +106,7 @@ pub async fn set_forget_reason(db: &Database, id: i64, reason: &str) -> Result<(
         conn.execute(
             "UPDATE memories SET forget_reason = ?1 WHERE id = ?2",
             rusqlite::params![reason, id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -157,8 +154,7 @@ pub async fn edit_and_approve(
         idx
     );
     db.write(move |conn| {
-        conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))
-            ?;
+        conn.execute(&sql, rusqlite::params_from_iter(vals.iter().cloned()))?;
         Ok(())
     })
     .await

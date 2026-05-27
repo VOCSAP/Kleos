@@ -11,7 +11,6 @@ use crate::db::Database;
 use crate::validation::ARTIFACT_FTS_MAX_SIZE;
 use crate::Result;
 
-
 /// Row representation of a stored artifact.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactRow {
@@ -166,8 +165,7 @@ pub async fn store_artifact(
                 params![memory_id],
                 |_| Ok(()),
             )
-            .optional()
-            ?;
+            .optional()?;
 
         if exists.is_none() {
             return Err(crate::EngError::NotFound("memory not found".into()));
@@ -215,18 +213,14 @@ pub async fn store_artifact(
 #[tracing::instrument(skip(db), fields(memory_id))]
 pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Vec<ArtifactRow>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, memory_id, filename, mime_type, size_bytes, \
+        let mut stmt = conn.prepare(
+            "SELECT id, memory_id, filename, mime_type, size_bytes, \
                         sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
                  FROM artifacts \
                  WHERE memory_id = ?1",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![memory_id], row_to_artifact)
-            ?;
+        let rows = stmt.query_map(params![memory_id], row_to_artifact)?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
@@ -237,15 +231,16 @@ pub async fn get_artifacts_by_memory(db: &Database, memory_id: i64) -> Result<Ve
 #[tracing::instrument(skip(db), fields(artifact_id))]
 pub async fn get_artifact_by_id(db: &Database, artifact_id: i64) -> Result<Option<ArtifactRow>> {
     db.read(move |conn| {
-        Ok(conn.query_row(
-            "SELECT id, memory_id, filename, mime_type, size_bytes, \
+        Ok(conn
+            .query_row(
+                "SELECT id, memory_id, filename, mime_type, size_bytes, \
                     sha256, storage_mode, disk_path, is_encrypted, is_indexed, created_at \
              FROM artifacts \
              WHERE id = ?1",
-            params![artifact_id],
-            row_to_artifact,
-        )
-        .optional()?)
+                params![artifact_id],
+                row_to_artifact,
+            )
+            .optional()?)
     })
     .await
 }
@@ -301,13 +296,14 @@ pub async fn enrich_with_artifacts(
 #[tracing::instrument(skip(db), fields(artifact_id))]
 pub async fn get_artifact_data(db: &Database, artifact_id: i64) -> Result<Option<Vec<u8>>> {
     db.read(move |conn| {
-        Ok(conn.query_row(
-            "SELECT data FROM artifacts WHERE id = ?1",
-            params![artifact_id],
-            |row| row.get::<_, Option<Vec<u8>>>(0),
-        )
-        .optional()
-        .map(|opt| opt.flatten())?)
+        Ok(conn
+            .query_row(
+                "SELECT data FROM artifacts WHERE id = ?1",
+                params![artifact_id],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()
+            .map(|opt| opt.flatten())?)
     })
     .await
 }
@@ -328,13 +324,11 @@ pub async fn delete_artifact(db: &Database, artifact_id: i64) -> Result<Option<S
                 params![artifact_id],
                 |row| row.get(0),
             )
-            .optional()
-            ?
+            .optional()?
             .flatten();
 
-        let rows_deleted = conn
-            .execute("DELETE FROM artifacts WHERE id = ?1", params![artifact_id])
-            ?;
+        let rows_deleted =
+            conn.execute("DELETE FROM artifacts WHERE id = ?1", params![artifact_id])?;
 
         if rows_deleted == 0 {
             Ok(None)
@@ -369,9 +363,8 @@ pub async fn search_artifacts(
     let limit = limit as i64;
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, \
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.memory_id, a.filename, a.mime_type, a.size_bytes, \
                         a.sha256, a.storage_mode, a.disk_path, a.is_encrypted, \
                         a.is_indexed, a.created_at \
                  FROM artifacts a \
@@ -380,12 +373,9 @@ pub async fn search_artifacts(
                    AND (?2 IS NULL OR a.memory_id = ?2) \
                  ORDER BY bm25(artifacts_fts) \
                  LIMIT ?3",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![query, memory_id, limit], row_to_artifact)
-            ?;
+        let rows = stmt.query_map(params![query, memory_id, limit], row_to_artifact)?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })

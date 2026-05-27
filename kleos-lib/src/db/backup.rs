@@ -5,7 +5,6 @@ pub use super::types::{CheckpointMode, RestoreReport};
 use crate::{EngError, Result};
 use std::path::Path;
 
-
 /// Creates a consistent backup of the database using VACUUM INTO.
 /// The destination path must not contain single quotes.
 #[tracing::instrument(skip(db, dest))]
@@ -71,17 +70,13 @@ pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
         )
         .map_err(|e| EngError::DatabaseMessage(format!("restore_test open: {e}")))?;
 
-        let schema_version: i64 = conn
-            .query_row("PRAGMA schema_version", [], |row| row.get(0))
-            ?;
+        let schema_version: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
 
-        let table_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
-                [],
-                |row| row.get(0),
-            )
-            ?;
+        let table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |row| row.get(0),
+        )?;
 
         let memory_count: Option<i64> = conn
             .query_row(

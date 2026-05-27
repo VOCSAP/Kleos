@@ -18,7 +18,6 @@ struct MemoryNodeRow {
     community_id: Option<u32>,
 }
 
-
 /// Search graph nodes by name/content pattern.
 /// Returns nodes whose content matches the query (LIKE search).
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
@@ -33,9 +32,8 @@ pub async fn graph_search(
 
     let mut nodes: Vec<GraphNode> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance, pagerank_score, \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance, pagerank_score, \
                             source, created_at, is_static, source_count, \
                             decay_score, community_id \
                      FROM memories \
@@ -44,43 +42,39 @@ pub async fn graph_search(
                        AND content LIKE ?1 \
                      ORDER BY importance DESC \
                      LIMIT ?2",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(
-                    rusqlite::params![pattern_clone, limit as i64, user_id],
-                    |row| {
-                        let id: i64 = row.get(0)?;
-                        let content: String = row.get(1)?;
-                        let category: String =
-                            row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
-                        let importance: i64 = row.get(3)?;
-                        let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
-                        let source: String =
-                            row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
-                        let created_at: String = row.get::<_, String>(6).unwrap_or_default();
-                        let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
-                        let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
-                        let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
-                        let community_id: Option<u32> =
-                            row.get::<_, i64>(10).ok().map(|v| v as u32);
-                        Ok((
-                            id,
-                            content,
-                            category,
-                            importance,
-                            pagerank,
-                            source,
-                            created_at,
-                            is_static,
-                            source_count,
-                            decay_score,
-                            community_id,
-                        ))
-                    },
-                )
-                ?;
+            let rows = stmt.query_map(
+                rusqlite::params![pattern_clone, limit as i64, user_id],
+                |row| {
+                    let id: i64 = row.get(0)?;
+                    let content: String = row.get(1)?;
+                    let category: String =
+                        row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
+                    let importance: i64 = row.get(3)?;
+                    let pagerank: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
+                    let source: String =
+                        row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                    let created_at: String = row.get::<_, String>(6).unwrap_or_default();
+                    let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
+                    let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
+                    let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
+                    let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
+                    Ok((
+                        id,
+                        content,
+                        category,
+                        importance,
+                        pagerank,
+                        source,
+                        created_at,
+                        is_static,
+                        source_count,
+                        decay_score,
+                        community_id,
+                    ))
+                },
+            )?;
 
             let mut nodes = Vec::new();
             for row in rows {
@@ -140,24 +134,21 @@ pub async fn graph_search(
     // Also search entities
     let entity_nodes: Vec<GraphNode> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, name, entity_type \
+            let mut stmt = conn.prepare(
+                "SELECT id, name, entity_type \
                      FROM entities \
                      WHERE (name LIKE ?1 OR aliases LIKE ?1 OR description LIKE ?1) \
                        AND user_id = ?3 \
                      ORDER BY occurrence_count DESC \
                      LIMIT ?2",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(rusqlite::params![pattern, limit as i64, user_id], |row| {
+            let rows =
+                stmt.query_map(rusqlite::params![pattern, limit as i64, user_id], |row| {
                     let id: i64 = row.get(0)?;
                     let name: String = row.get(1)?;
                     Ok((id, name))
-                })
-                ?;
+                })?;
 
             let mut nodes = Vec::new();
             for row in rows {
@@ -428,23 +419,21 @@ async fn batch_fetch_memory_nodes(
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params.iter().map(|p| p.as_ref()).collect();
 
-            let mapped = stmt
-                .query_map(param_refs.as_slice(), |row: &rusqlite::Row| {
-                    Ok(MemoryNodeRow {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get::<_, String>(2).unwrap_or_else(|_| "general".into()),
-                        importance: row.get(3)?,
-                        pagerank: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
-                        source: row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into()),
-                        created_at: row.get::<_, String>(6).unwrap_or_default(),
-                        is_static: row.get::<_, bool>(7).unwrap_or(false),
-                        source_count: row.get::<_, i64>(8).unwrap_or(1),
-                        decay_score: row.get::<_, f64>(9).ok(),
-                        community_id: row.get::<_, i64>(10).ok().map(|v| v as u32),
-                    })
+            let mapped = stmt.query_map(param_refs.as_slice(), |row: &rusqlite::Row| {
+                Ok(MemoryNodeRow {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get::<_, String>(2).unwrap_or_else(|_| "general".into()),
+                    importance: row.get(3)?,
+                    pagerank: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                    source: row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into()),
+                    created_at: row.get::<_, String>(6).unwrap_or_default(),
+                    is_static: row.get::<_, bool>(7).unwrap_or(false),
+                    source_count: row.get::<_, i64>(8).unwrap_or(1),
+                    decay_score: row.get::<_, f64>(9).ok(),
+                    community_id: row.get::<_, i64>(10).ok().map(|v| v as u32),
                 })
-                ?;
+            })?;
 
             let mut result: Vec<MemoryNodeRow> = Vec::new();
             for row in mapped {

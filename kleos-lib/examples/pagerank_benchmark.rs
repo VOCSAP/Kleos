@@ -135,6 +135,7 @@ fn search_request(args: &Args) -> SearchRequest {
         include_archived: None,
         include_noise: None,
         exclude_consolidated: None,
+        budget: None,
     }
 }
 

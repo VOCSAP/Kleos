@@ -66,7 +66,7 @@ pub fn draw_security_step(
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(10),  // key list
+            Constraint::Min(10),   // key list
             Constraint::Length(5), // open-access toggle + warning
         ])
         .split(area);
@@ -76,12 +76,7 @@ pub fn draw_security_step(
 }
 
 /// Render the four key rows.
-fn draw_key_list(
-    f: &mut Frame,
-    area: Rect,
-    state: &WizardState,
-    step_state: &SecurityStepState,
-) {
+fn draw_key_list(f: &mut Frame, area: Rect, state: &WizardState, step_state: &SecurityStepState) {
     let sc = &state.security_config;
     let key_values = [
         sc.encryption_key.as_str(),
@@ -97,7 +92,9 @@ fn draw_key_list(
         let is_editing = step_state.editing_field == Some(i);
 
         let label_style = if is_focused {
-            Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(COLOR_ACTIVE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(COLOR_DIM)
         };
@@ -131,10 +128,7 @@ fn draw_key_list(
             ]),
             Line::from(vec![
                 Span::raw("    "),
-                Span::styled(
-                    truncate_key(display_value),
-                    value_style,
-                ),
+                Span::styled(truncate_key(display_value), value_style),
             ]),
         ]));
     }
@@ -161,7 +155,9 @@ fn draw_open_access(
 
     let toggle_text = if is_on { "[ON]  " } else { "[off] " };
     let toggle_style = if is_on {
-        Style::default().fg(COLOR_ERROR).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(COLOR_ERROR)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(COLOR_DIM)
     };
@@ -176,7 +172,10 @@ fn draw_open_access(
         Line::from(vec![
             Span::raw(if is_focused { "> " } else { "  " }),
             Span::styled(toggle_text, toggle_style),
-            Span::styled("Open access (no API key required)", Style::default().fg(COLOR_WARN)),
+            Span::styled(
+                "Open access (no API key required)",
+                Style::default().fg(COLOR_WARN),
+            ),
         ]),
         Line::from(vec![
             Span::raw("    "),
@@ -237,11 +236,10 @@ pub fn handle_security_input(
                 step_state.edit_buffer.clear();
                 step_state.edit_cursor = 0;
             }
-            KeyCode::Backspace
-                if step_state.edit_cursor > 0 => {
-                    step_state.edit_buffer.remove(step_state.edit_cursor - 1);
-                    step_state.edit_cursor -= 1;
-                }
+            KeyCode::Backspace if step_state.edit_cursor > 0 => {
+                step_state.edit_buffer.remove(step_state.edit_cursor - 1);
+                step_state.edit_cursor -= 1;
+            }
             KeyCode::Char(c) => {
                 step_state.edit_buffer.insert(step_state.edit_cursor, c);
                 step_state.edit_cursor += 1;

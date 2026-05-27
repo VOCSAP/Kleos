@@ -8,11 +8,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
-use kleos_install_core::{
-    profile_components, EmbeddingConfig, ExistingInstall, InstallerConfig,
-    InstallPlan, PlatformInfo, Profile, RerankerConfig, SecurityConfig, ServerConfig,
-};
 use kleos_install_core::system::SystemIntegration;
+use kleos_install_core::{
+    profile_components, EmbeddingConfig, ExistingInstall, InstallPlan, InstallerConfig,
+    PlatformInfo, Profile, RerankerConfig, SecurityConfig, ServerConfig,
+};
 
 use crate::steps;
 use crate::theme;
@@ -195,10 +195,7 @@ impl InstallerApp {
         let server_port_buf = server_config.port.to_string();
         let server_data_dir_buf = server_config.data_dir.display().to_string();
         let server_db_path_buf = server_config.db_path.clone();
-        let server_cors_buf = server_config
-            .cors_origins
-            .clone()
-            .unwrap_or_default();
+        let server_cors_buf = server_config.cors_origins.clone().unwrap_or_default();
 
         InstallerApp {
             current_step: WizardStep::Components,
@@ -326,9 +323,21 @@ impl InstallerApp {
         let has_server = self.selected_components.iter().any(|c| c == "kleos-server");
 
         let installer_config = InstallerConfig {
-            server: if has_server { Some(self.build_server_config()) } else { None },
-            embedding: if has_server { Some(self.build_embedding_config()) } else { None },
-            reranker: if has_server { Some(self.build_reranker_config()) } else { None },
+            server: if has_server {
+                Some(self.build_server_config())
+            } else {
+                None
+            },
+            embedding: if has_server {
+                Some(self.build_embedding_config())
+            } else {
+                None
+            },
+            reranker: if has_server {
+                Some(self.build_reranker_config())
+            } else {
+                None
+            },
             security: self.security_config.clone(),
         };
 
@@ -377,17 +386,13 @@ impl eframe::App for InstallerApp {
 
         // -- Central panel: current step content --
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                match self.current_step {
-                    WizardStep::Components => steps::components::draw_components(ui, self),
-                    WizardStep::ServerConfig => steps::server::draw_server_config(ui, self),
-                    WizardStep::Embeddings => steps::embeddings::draw_embeddings(ui, self),
-                    WizardStep::Security => steps::security::draw_security(ui, self),
-                    WizardStep::SystemIntegration => {
-                        steps::system::draw_system_integration(ui, self)
-                    }
-                    WizardStep::Summary => steps::summary::draw_summary(ui, self),
-                }
+            egui::ScrollArea::vertical().show(ui, |ui| match self.current_step {
+                WizardStep::Components => steps::components::draw_components(ui, self),
+                WizardStep::ServerConfig => steps::server::draw_server_config(ui, self),
+                WizardStep::Embeddings => steps::embeddings::draw_embeddings(ui, self),
+                WizardStep::Security => steps::security::draw_security(ui, self),
+                WizardStep::SystemIntegration => steps::system::draw_system_integration(ui, self),
+                WizardStep::Summary => steps::summary::draw_summary(ui, self),
             });
         });
 
@@ -497,10 +502,13 @@ fn draw_nav_buttons(ui: &mut egui::Ui, app: &mut InstallerApp) {
                 }
             }
 
-            if !app.is_first_step() && !app.install_running && app.install_result.is_none()
-                && ui.button("< Back").clicked() {
-                    app.go_back();
-                }
+            if !app.is_first_step()
+                && !app.install_running
+                && app.install_result.is_none()
+                && ui.button("< Back").clicked()
+            {
+                app.go_back();
+            }
         });
     });
     ui.add_space(4.0);

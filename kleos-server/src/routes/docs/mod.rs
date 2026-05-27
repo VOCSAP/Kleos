@@ -23,7 +23,6 @@ use serde_json::{json, Map, Value};
 
 use crate::state::AppState;
 
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/openapi.json", get(openapi))

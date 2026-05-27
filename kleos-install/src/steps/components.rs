@@ -5,9 +5,7 @@
 //! checkboxes. Required components cannot be deselected.
 
 use crossterm::event::{KeyCode, KeyEvent};
-use kleos_install_core::{
-    all_components, profile_components, resolve_dependencies, Profile,
-};
+use kleos_install_core::{all_components, profile_components, resolve_dependencies, Profile};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -91,8 +89,9 @@ fn draw_profile_buttons(
     let active_profile = state.selected_profile;
     let button_width = area.width / PROFILE_COUNT as u16;
 
-    let constraints: Vec<Constraint> =
-        (0..PROFILE_COUNT).map(|_| Constraint::Ratio(1, PROFILE_COUNT as u32)).collect();
+    let constraints: Vec<Constraint> = (0..PROFILE_COUNT)
+        .map(|_| Constraint::Ratio(1, PROFILE_COUNT as u32))
+        .collect();
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -109,7 +108,9 @@ fn draw_profile_buttons(
                 .bg(COLOR_ACTIVE)
                 .add_modifier(Modifier::BOLD)
         } else if is_focused {
-            Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(COLOR_ACTIVE)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(COLOR_DIM)
         };
@@ -215,7 +216,10 @@ fn draw_component_list(
 /// Render the selection status bar beneath the component list.
 fn draw_selection_status(f: &mut Frame, area: Rect, state: &WizardState) {
     let count = state.selected_components.len();
-    let text = format!("  {} component(s) selected. Press Enter to continue.", count);
+    let text = format!(
+        "  {} component(s) selected. Press Enter to continue.",
+        count
+    );
     let status = Paragraph::new(text).style(Style::default().fg(COLOR_DIM));
     f.render_widget(status, area);
 }
@@ -260,24 +264,22 @@ pub fn handle_components_input(
                 step_state.profile_focus = Some(0);
             }
         }
-        KeyCode::Left | KeyCode::Right
-            if step_state.on_profiles() => {
-                let current = step_state.profile_focus.unwrap_or(0);
-                let next = if key.code == KeyCode::Right {
-                    (current + 1) % PROFILE_COUNT
-                } else {
-                    current.wrapping_sub(1).min(PROFILE_COUNT - 1)
-                };
-                step_state.profile_focus = Some(next);
+        KeyCode::Left | KeyCode::Right if step_state.on_profiles() => {
+            let current = step_state.profile_focus.unwrap_or(0);
+            let next = if key.code == KeyCode::Right {
+                (current + 1) % PROFILE_COUNT
+            } else {
+                current.wrapping_sub(1).min(PROFILE_COUNT - 1)
+            };
+            step_state.profile_focus = Some(next);
+        }
+        KeyCode::Up if !step_state.on_profiles() => {
+            if step_state.focused_index == 0 {
+                step_state.profile_focus = Some(0);
+            } else {
+                step_state.focused_index -= 1;
             }
-        KeyCode::Up
-            if !step_state.on_profiles() => {
-                if step_state.focused_index == 0 {
-                    step_state.profile_focus = Some(0);
-                } else {
-                    step_state.focused_index -= 1;
-                }
-            }
+        }
         KeyCode::Down => {
             if step_state.on_profiles() {
                 step_state.profile_focus = None;
@@ -343,7 +345,11 @@ fn toggle_component(state: &mut WizardState, index: usize) {
     } else {
         // Select and resolve dependencies.
         state.selected_components.push(comp.id.to_string());
-        let ids: Vec<&str> = state.selected_components.iter().map(|s| s.as_str()).collect();
+        let ids: Vec<&str> = state
+            .selected_components
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
         let resolved = resolve_dependencies(&ids);
         state.selected_components = resolved.into_iter().map(|s| s.to_string()).collect();
     }

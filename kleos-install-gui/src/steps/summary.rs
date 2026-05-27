@@ -38,7 +38,11 @@ pub fn draw_summary(ui: &mut egui::Ui, app: &mut InstallerApp) {
     // -- Progress log (during install) --
     if app.install_running {
         // Check for completion or error sentinels from the background thread.
-        if let Some(done_line) = app.install_progress.iter().find(|l| l.starts_with("INSTALL_DONE:")) {
+        if let Some(done_line) = app
+            .install_progress
+            .iter()
+            .find(|l| l.starts_with("INSTALL_DONE:"))
+        {
             let parts: Vec<&str> = done_line.splitn(3, ':').collect();
             let api_key = parts.get(1).unwrap_or(&"").to_string();
             let server_url = parts.get(2).unwrap_or(&"").to_string();
@@ -56,8 +60,14 @@ pub fn draw_summary(ui: &mut egui::Ui, app: &mut InstallerApp) {
             return;
         }
 
-        if let Some(err_line) = app.install_progress.iter().find(|l| l.starts_with("INSTALL_ERROR:")) {
-            let err_msg = err_line.strip_prefix("INSTALL_ERROR:").unwrap_or("unknown error");
+        if let Some(err_line) = app
+            .install_progress
+            .iter()
+            .find(|l| l.starts_with("INSTALL_ERROR:"))
+        {
+            let err_msg = err_line
+                .strip_prefix("INSTALL_ERROR:")
+                .unwrap_or("unknown error");
             app.install_running = false;
             app.install_result = Some(Err(err_msg.to_string()));
             return;

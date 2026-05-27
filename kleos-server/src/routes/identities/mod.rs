@@ -81,9 +81,7 @@ async fn list_handler(
             let params_ref: Vec<&dyn rusqlite::types::ToSql> =
                 bind_values.iter().map(|b| b.as_ref()).collect();
 
-            let mut stmt = conn
-                .prepare(&sql)
-                ?;
+            let mut stmt = conn.prepare(&sql)?;
 
             let rows = stmt
                 .query_map(params_ref.as_slice(), |row| {
@@ -101,10 +99,8 @@ async fn list_handler(
                         "algo": row.get::<_, String>(10)?,
                         "pubkey_fingerprint": row.get::<_, String>(11)?,
                     }))
-                })
-                ?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             Ok(rows)
         })
@@ -131,15 +127,13 @@ async fn audit_handler(
     let rows = state
         .db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, action, target_type, target_id, tier, created_at
+            let mut stmt = conn.prepare(
+                "SELECT id, action, target_type, target_id, tier, created_at
                      FROM audit_log
                      WHERE identity_id = ?1 AND created_at >= ?2
                      ORDER BY created_at DESC
                      LIMIT ?3",
-                )
-                ?;
+            )?;
 
             let rows = stmt
                 .query_map(params![identity_id, since, limit as i64], |row| {
@@ -151,10 +145,8 @@ async fn audit_handler(
                         "tier": row.get::<_, Option<String>>(4)?,
                         "created_at": row.get::<_, String>(5)?,
                     }))
-                })
-                ?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             Ok(rows)
         })

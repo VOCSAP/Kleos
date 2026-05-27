@@ -290,19 +290,16 @@ async fn create_invite_handler(
                 "INSERT INTO enrollment_invites (user_id, token_hash, method, expires_at)
                  VALUES (?1, ?2, ?3, datetime('now', 'utc', '+24 hours'))",
                 params![user_id, hash_clone, method_clone],
-            )
-            ?;
+            )?;
 
             let id = conn.last_insert_rowid();
 
             // Read back the server-computed expires_at timestamp.
-            let exp: String = conn
-                .query_row(
-                    "SELECT expires_at FROM enrollment_invites WHERE id = ?1",
-                    params![id],
-                    |row| row.get(0),
-                )
-                ?;
+            let exp: String = conn.query_row(
+                "SELECT expires_at FROM enrollment_invites WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
 
             Ok((id, exp))
         })

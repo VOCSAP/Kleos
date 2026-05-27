@@ -17,7 +17,6 @@ pub struct WebhookTarget {
     pub filter_type: Option<String>,
 }
 
-
 /// Queries `axon_subscriptions` for webhook targets matching a channel and event type.
 ///
 /// Returns all subscriptions for `channel` that have a non-NULL `webhook_url`.
@@ -36,9 +35,7 @@ pub async fn get_webhook_targets(
         let sql = "SELECT agent, webhook_url, filter_type FROM axon_subscriptions \
                    WHERE channel = ?1 AND webhook_url IS NOT NULL";
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![channel_s])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![channel_s])?;
 
         let mut targets = Vec::new();
         while let Some(row) = rows.next()? {

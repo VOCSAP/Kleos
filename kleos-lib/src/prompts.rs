@@ -8,7 +8,6 @@ use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptResult {
     pub prompt: String,
@@ -41,23 +40,19 @@ pub async fn generate_prompt(
 
             // Static facts
             {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, content, category, importance \
+                let mut stmt = conn.prepare(
+                    "SELECT id, content, category, importance \
                          FROM memories \
                          WHERE is_static = 1 AND is_forgotten = 0 \
                            AND is_consolidated = 0",
-                    )
-                    ?;
-                let rows = stmt
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    })
-                    ?;
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
                 for row in rows {
                     let (id, content, category) = row?;
                     if seen.insert(id) {
@@ -68,26 +63,22 @@ pub async fn generate_prompt(
 
             // Important memories
             {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, content, category, importance, \
+                let mut stmt = conn.prepare(
+                    "SELECT id, content, category, importance, \
                                 COALESCE(decay_score, importance) AS ds \
                          FROM memories \
                          WHERE is_forgotten = 0 AND is_archived = 0 \
                            AND is_latest = 1 AND is_consolidated = 0 \
                          ORDER BY ds DESC LIMIT 1000",
-                    )
-                    ?;
-                let rows = stmt
-                    .query_map([], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, f64>(4).unwrap_or(5.0),
-                        ))
-                    })
-                    ?;
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, f64>(4).unwrap_or(5.0),
+                    ))
+                })?;
                 for row in rows {
                     let (id, content, category, ds) = row?;
                     if seen.insert(id) {
@@ -155,27 +146,23 @@ pub async fn generate_header(
     // (model, id, source, category, content_start, created_at)
     let rows: Vec<(Option<String>, i64, String, String, String, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, source, model, created_at, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, source, model, created_at, importance \
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
                        AND is_latest = 1 AND is_consolidated = 0 \
                      ORDER BY created_at DESC LIMIT ?1",
-                )
-                ?;
-            let rows = stmt
-                .query_map(params![fetch_limit], |row| {
-                    Ok((
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(3).unwrap_or_default(),
-                        row.get::<_, String>(2).unwrap_or_default(),
-                        row.get::<_, String>(1).unwrap_or_default(),
-                        row.get::<_, String>(5).unwrap_or_default(),
-                    ))
-                })
-                ?;
+            )?;
+            let rows = stmt.query_map(params![fetch_limit], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(3).unwrap_or_default(),
+                    row.get::<_, String>(2).unwrap_or_default(),
+                    row.get::<_, String>(1).unwrap_or_default(),
+                    row.get::<_, String>(5).unwrap_or_default(),
+                ))
+            })?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);

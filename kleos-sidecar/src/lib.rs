@@ -48,6 +48,14 @@ pub fn build_test_state(kleos_url: String, token: Option<String>) -> SidecarStat
         batch_size: 5,
         batch_interval_ms: 0, // disable time-based flush in tests
         max_pending_per_session: 100,
+        retain_every_n: 5,
+        overlap_turns: 2,
+        retain_roles: vec![
+            "user".to_string(),
+            "assistant".to_string(),
+            "tool".to_string(),
+        ],
+        retain_tool_calls: true,
         compress_passthrough_bytes: 100,
         compress_max_input_bytes: 1000,
         compress_timeout_ms: 5000,

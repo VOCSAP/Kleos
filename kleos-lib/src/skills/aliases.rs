@@ -64,12 +64,11 @@ pub async fn add_alias(
         // Return the row id of the matching pair (newly inserted or
         // pre-existing -- INSERT OR IGNORE leaves last_insert_rowid at 0
         // on conflict, so look it up explicitly).
-        let id: i64 = conn
-            .query_row(
-                "SELECT id FROM skill_aliases WHERE alias = ?1 AND skill_id = ?2",
-                params![alias, skill_id],
-                |r| r.get(0),
-            )?;
+        let id: i64 = conn.query_row(
+            "SELECT id FROM skill_aliases WHERE alias = ?1 AND skill_id = ?2",
+            params![alias, skill_id],
+            |r| r.get(0),
+        )?;
         Ok(id)
     })
     .await
@@ -92,8 +91,7 @@ pub async fn add_auto_aliases(
         return Ok(());
     }
     db.write(move |conn| {
-        let tx = conn
-            .unchecked_transaction()?;
+        let tx = conn.unchecked_transaction()?;
         for (a, c) in &aliases {
             tx.execute(
                 "INSERT OR IGNORE INTO skill_aliases (alias, skill_id, confidence, source) \
@@ -111,11 +109,10 @@ pub async fn add_auto_aliases(
 pub async fn remove_alias(db: &Database, skill_id: i64, alias: &str) -> Result<usize> {
     let alias = alias.trim().to_lowercase();
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM skill_aliases WHERE alias = ?1 AND skill_id = ?2",
-                params![alias, skill_id],
-            )?;
+        let n = conn.execute(
+            "DELETE FROM skill_aliases WHERE alias = ?1 AND skill_id = ?2",
+            params![alias, skill_id],
+        )?;
         Ok(n)
     })
     .await
@@ -126,11 +123,10 @@ pub async fn remove_alias(db: &Database, skill_id: i64, alias: &str) -> Result<u
 // aliases (source='user') are preserved.
 pub async fn clear_auto_aliases(db: &Database, skill_id: i64) -> Result<usize> {
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM skill_aliases WHERE skill_id = ?1 AND source = 'auto'",
-                params![skill_id],
-            )?;
+        let n = conn.execute(
+            "DELETE FROM skill_aliases WHERE skill_id = ?1 AND source = 'auto'",
+            params![skill_id],
+        )?;
         Ok(n)
     })
     .await
@@ -139,23 +135,21 @@ pub async fn clear_auto_aliases(db: &Database, skill_id: i64) -> Result<usize> {
 // List every alias attached to a skill, newest first.
 pub async fn list_for_skill(db: &Database, skill_id: i64) -> Result<Vec<SkillAlias>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, alias, skill_id, confidence, source, created_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, alias, skill_id, confidence, source, created_at \
                  FROM skill_aliases WHERE skill_id = ?1 \
                  ORDER BY created_at DESC, id DESC",
-            )?;
-        let rows = stmt
-            .query_map(params![skill_id], |r| {
-                Ok(SkillAlias {
-                    id: r.get(0)?,
-                    alias: r.get(1)?,
-                    skill_id: r.get(2)?,
-                    confidence: r.get(3)?,
-                    source: r.get(4)?,
-                    created_at: r.get(5)?,
-                })
-            })?;
+        )?;
+        let rows = stmt.query_map(params![skill_id], |r| {
+            Ok(SkillAlias {
+                id: r.get(0)?,
+                alias: r.get(1)?,
+                skill_id: r.get(2)?,
+                confidence: r.get(3)?,
+                source: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -178,12 +172,11 @@ pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<V
     db.read(move |conn| {
         // Exact match first; ORDER BY confidence DESC so user-added 1.0
         // aliases win over auto 0.7 prefix-aliases.
-        let mut stmt = conn
-            .prepare(
-                "SELECT skill_id, alias, confidence, source \
+        let mut stmt = conn.prepare(
+            "SELECT skill_id, alias, confidence, source \
                  FROM skill_aliases WHERE alias = ?1 \
                  ORDER BY confidence DESC, id DESC LIMIT ?2",
-            )?;
+        )?;
         let mut hits: Vec<AliasMatch> = stmt
             .query_map(params![q, limit_i], |r| {
                 Ok(AliasMatch {
@@ -200,12 +193,11 @@ pub async fn resolve_alias(db: &Database, query: &str, limit: usize) -> Result<V
         if hits.len() < limit {
             let remaining = (limit - hits.len()) as i64;
             let pattern = format!("{}%", q);
-            let mut stmt2 = conn
-                .prepare(
-                    "SELECT skill_id, alias, confidence, source \
+            let mut stmt2 = conn.prepare(
+                "SELECT skill_id, alias, confidence, source \
                      FROM skill_aliases WHERE alias LIKE ?1 AND alias != ?2 \
                      ORDER BY confidence DESC, length(alias) ASC LIMIT ?3",
-                )?;
+            )?;
             let prefix_hits: Vec<AliasMatch> = stmt2
                 .query_map(params![pattern, q, remaining], |r| {
                     Ok(AliasMatch {

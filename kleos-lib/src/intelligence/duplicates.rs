@@ -5,7 +5,6 @@ use crate::db::Database;
 use crate::Result;
 use tracing::warn;
 
-
 /// Find duplicate memory pairs based on similarity links.
 #[tracing::instrument(skip(db))]
 pub async fn find_duplicates(
@@ -15,9 +14,8 @@ pub async fn find_duplicates(
     limit: i64,
 ) -> Result<Vec<DuplicatePair>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT ml.source_id, ml.target_id, ml.similarity, \
+        let mut stmt = conn.prepare(
+            "SELECT ml.source_id, ml.target_id, ml.similarity, \
                         ms.content, mt.content, ms.importance, mt.importance \
                  FROM memory_links ml \
                  JOIN memories ms ON ms.id = ml.source_id \
@@ -28,8 +26,7 @@ pub async fn find_duplicates(
                    AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
                  ORDER BY ml.similarity DESC \
                  LIMIT ?2",
-            )
-            ?;
+        )?;
 
         let pairs = stmt
             .query_map(rusqlite::params![threshold, limit], |row| {
@@ -42,10 +39,8 @@ pub async fn find_duplicates(
                     importance_a: row.get(5)?,
                     importance_b: row.get(6)?,
                 })
-            })
-            ?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            ?;
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(pairs)
     })
@@ -89,13 +84,11 @@ pub async fn deduplicate(
 
         let affected = db
             .write(move |conn| {
-                let n = conn
-                    .execute(
-                        "UPDATE memories SET is_superseded = 1, updated_at = datetime('now') \
+                let n = conn.execute(
+                    "UPDATE memories SET is_superseded = 1, updated_at = datetime('now') \
                          WHERE id = ?1 AND is_superseded = 0",
-                        rusqlite::params![supersede_id],
-                    )
-                    ?;
+                    rusqlite::params![supersede_id],
+                )?;
                 Ok(n)
             })
             .await?;

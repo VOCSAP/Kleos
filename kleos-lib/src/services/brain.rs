@@ -16,7 +16,6 @@ use crate::db::Database;
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
-
 // --- BrainBackend trait -- unifies subprocess and in-process Hopfield ---
 
 /// Trait that abstracts over different brain implementations. The server
@@ -1103,16 +1102,12 @@ impl BrainBackend for HopfieldBrainManager {
 #[cfg(feature = "brain_hopfield")]
 async fn load_brain_memory(db: &Database, memory_id: i64) -> Result<BrainMemory> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, source, importance, created_at, tags
+        let mut stmt = conn.prepare(
+            "SELECT id, content, category, source, importance, created_at, tags
                  FROM memories WHERE id = ?1",
-            )
-            ?;
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![memory_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![memory_id])?;
 
         if let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
@@ -1268,16 +1263,13 @@ pub async fn get_memory_for_absorb(
         let mut stmt = conn.prepare(sql)?;
 
         let mut rows = if scoped {
-            stmt.query(rusqlite::params![id, user_id])
-                ?
+            stmt.query(rusqlite::params![id, user_id])?
         } else {
-            stmt.query(rusqlite::params![id])
-                ?
+            stmt.query(rusqlite::params![id])?
         };
 
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("memory {}", id)))?;
 
         let mem_id: i64 = row.get(0)?;
@@ -1351,13 +1343,10 @@ pub async fn verify_memory_ownership(
             )
         };
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params_vec.iter().cloned()))
-            ?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(params_vec.iter().cloned()))?;
 
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::Internal("count query failed".into()))?;
         let count: i64 = row.get(0)?;
 
@@ -1365,7 +1354,6 @@ pub async fn verify_memory_ownership(
     })
     .await
 }
-
 
 // --- Tests ---
 

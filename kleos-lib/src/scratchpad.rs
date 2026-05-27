@@ -7,7 +7,6 @@ use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScratchEntry {
     pub session: String,
@@ -122,8 +121,7 @@ pub async fn delete_session(db: &Database, session: &str) -> Result<()> {
         conn.execute(
             "DELETE FROM scratchpad WHERE session = ?1",
             params![session],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -137,8 +135,7 @@ pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Resu
         conn.execute(
             "DELETE FROM scratchpad WHERE session = ?1 AND entry_key = ?2",
             params![session, key],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -147,12 +144,10 @@ pub async fn delete_session_key(db: &Database, session: &str, key: &str) -> Resu
 #[tracing::instrument(skip(db))]
 pub async fn purge_expired(db: &Database) -> Result<i64> {
     db.write(move |conn| {
-        let changes = conn
-            .execute(
-                "DELETE FROM scratchpad WHERE expires_at <= datetime('now')",
-                params![],
-            )
-            ?;
+        let changes = conn.execute(
+            "DELETE FROM scratchpad WHERE expires_at <= datetime('now')",
+            params![],
+        )?;
         Ok(changes as i64)
     })
     .await

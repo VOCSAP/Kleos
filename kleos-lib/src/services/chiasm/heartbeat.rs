@@ -8,7 +8,6 @@
 use crate::db::Database;
 use crate::{EngError, Result};
 
-
 /// Record a heartbeat for the given task.
 ///
 /// Updates `last_heartbeat` and `updated_at` to the current UTC time.
@@ -19,15 +18,13 @@ use crate::{EngError, Result};
 pub async fn record_heartbeat(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let changed = db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "UPDATE chiasm_tasks \
+            let n = conn.execute(
+                "UPDATE chiasm_tasks \
                      SET last_heartbeat = datetime('now'), \
                          updated_at     = datetime('now') \
                      WHERE id = ?1 AND user_id = ?2",
-                    rusqlite::params![id, user_id],
-                )
-                ?;
+                rusqlite::params![id, user_id],
+            )?;
             Ok(n)
         })
         .await?;
@@ -76,18 +73,14 @@ pub async fn mark_stale_tasks(
     // get_task readback below resolves under the correct user.
     let ids: Vec<(i64, i64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, user_id FROM chiasm_tasks \
+            let mut stmt = conn.prepare(
+                "SELECT id, user_id FROM chiasm_tasks \
                      WHERE status IN ('active', 'paused') \
                        AND last_heartbeat IS NOT NULL \
                        AND julianday('now') - julianday(last_heartbeat) \
                            > (heartbeat_interval * ?1 / 86400.0)",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![grace_multiplier])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![grace_multiplier])?;
             let mut ids = Vec::new();
             while let Some(row) = rows.next()? {
                 let id: i64 = row.get(0)?;
@@ -105,25 +98,22 @@ pub async fn mark_stale_tasks(
         let gm = grace_multiplier;
         let affected = db
             .write(move |conn| {
-                let n = conn
-                    .execute(
-                        "UPDATE chiasm_tasks SET status = 'stale', \
+                let n = conn.execute(
+                    "UPDATE chiasm_tasks SET status = 'stale', \
                          summary = 'marked stale: heartbeat overdue', \
                          updated_at = datetime('now') \
                          WHERE id = ?1 \
                            AND status IN ('active', 'paused') \
                            AND julianday('now') - julianday(last_heartbeat) \
                                > (heartbeat_interval * ?2 / 86400.0)",
-                        rusqlite::params![task_id, gm],
-                    )
-                    ?;
+                    rusqlite::params![task_id, gm],
+                )?;
                 if n > 0 {
                     conn.execute(
                         "INSERT INTO chiasm_task_updates (task_id, agent, status, summary) \
                          VALUES (?1, 'system', 'stale', 'marked stale: heartbeat overdue')",
                         rusqlite::params![task_id],
-                    )
-                    ?;
+                    )?;
                 }
                 Ok(n)
             })
@@ -212,8 +202,7 @@ mod tests {
                  SET last_heartbeat = datetime('now', '-600 seconds') \
                  WHERE id = ?1",
                 rusqlite::params![task.id],
-            )
-            ?;
+            )?;
             Ok(0usize)
         })
         .await

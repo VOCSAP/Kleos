@@ -65,7 +65,6 @@ pub struct SyncChange {
     pub updated_at: String,
 }
 
-
 // ---------------------------------------------------------------------------
 // SSRF deny-list helpers
 // ---------------------------------------------------------------------------
@@ -459,13 +458,11 @@ pub async fn delete_webhook(db: &Database, id: i64, user_id: i64) -> Result<()> 
         conn.execute(
             "DELETE FROM webhooks WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
 }
-
 
 /// Dead-letter entry produced when all delivery retries are exhausted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -509,8 +506,7 @@ async fn record_delivery_failure(db: &Database, hook_id: i64) -> Result<i64> {
              is_active = CASE WHEN failure_count + 1 >= ?1 THEN 0 ELSE is_active END \
              WHERE id = ?2",
             rusqlite::params![threshold, hook_id],
-        )
-        ?;
+        )?;
         let count: i64 = conn
             .query_row(
                 "SELECT failure_count FROM webhooks WHERE id = ?1",
@@ -550,19 +546,15 @@ pub async fn list_dead_letters(
     limit: i64,
 ) -> Result<Vec<WebhookDeadLetter>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, webhook_id, event, payload, attempts, \
+        let mut stmt = conn.prepare(
+            "SELECT id, webhook_id, event, payload, attempts, \
                  last_error, last_status_code, created_at \
                  FROM webhook_dead_letters \
                  WHERE webhook_id = ?1 \
                  AND webhook_id IN (SELECT id FROM webhooks WHERE user_id = ?2) \
                  ORDER BY created_at DESC LIMIT ?3",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![webhook_id, user_id, limit])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![webhook_id, user_id, limit])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             result.push(WebhookDeadLetter {
@@ -735,16 +727,12 @@ pub async fn get_changes_since(
 ) -> Result<Vec<SyncChange>> {
     let since_s = since.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, source, importance, tags, confidence, sync_id, \
+        let mut stmt = conn.prepare(
+            "SELECT id, content, category, source, importance, tags, confidence, sync_id, \
                  is_static, is_forgotten, is_archived, version, created_at, updated_at \
                  FROM memories WHERE updated_at > ?1 ORDER BY updated_at ASC LIMIT ?2",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![since_s, limit])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![since_s, limit])?;
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {
             result.push(SyncChange {

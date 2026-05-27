@@ -27,7 +27,11 @@ pub fn draw_embeddings(ui: &mut egui::Ui, app: &mut InstallerApp) {
     // -- Embedding provider radio --
     ui.horizontal(|ui| {
         ui.radio_value(&mut app.embedding_provider_local, true, "Local ONNX");
-        ui.radio_value(&mut app.embedding_provider_local, false, "Remote (OpenAI-compatible)");
+        ui.radio_value(
+            &mut app.embedding_provider_local,
+            false,
+            "Remote (OpenAI-compatible)",
+        );
     });
     ui.add_space(8.0);
 
@@ -103,16 +107,12 @@ fn draw_remote_embedding_fields(ui: &mut egui::Ui, app: &mut InstallerApp) {
 
     ui.label("Model name:");
     ui.add(
-        egui::TextEdit::singleline(&mut app.remote_embed_model)
-            .hint_text("text-embedding-3-small"),
+        egui::TextEdit::singleline(&mut app.remote_embed_model).hint_text("text-embedding-3-small"),
     );
     ui.add_space(6.0);
 
     ui.label("Output dimension:");
-    ui.add(
-        egui::TextEdit::singleline(&mut app.remote_embed_dimension)
-            .hint_text("1024"),
-    );
+    ui.add(egui::TextEdit::singleline(&mut app.remote_embed_dimension).hint_text("1024"));
     let dim_valid = app.remote_embed_dimension.parse::<u32>().is_ok();
     if !dim_valid {
         ui.colored_label(theme::COLOR_ERROR, "Dimension must be a positive integer.");

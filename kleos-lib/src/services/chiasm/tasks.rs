@@ -182,7 +182,6 @@ fn validate_status(status: &str) -> Result<()> {
     }
 }
 
-
 /// Convert a database row to a Task struct. `owner_user_id` fills
 /// `Task.user_id` (the column is not in `TASK_COLUMNS`); correctness comes from
 /// the always-applied `user_id` predicate, so the value is the caller's id.
@@ -280,12 +279,9 @@ pub async fn get_task(db: &Database, id: i64, user_id: i64) -> Result<Task> {
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("task {}", id)))?;
         row_to_task(row, user_id)
     })
@@ -405,15 +401,13 @@ pub async fn update_task(
         params_dyn.push(Box::new(id));
         params_dyn.push(Box::new(user_id));
         let refs: Vec<&dyn rusqlite::ToSql> = params_dyn.iter().map(|b| b.as_ref()).collect();
-        tx.execute(&sql, refs.as_slice())
-            ?;
+        tx.execute(&sql, refs.as_slice())?;
 
         tx.execute(
             "INSERT INTO chiasm_task_updates (task_id, agent, status, summary)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![id, new_agent, new_status, new_summary],
-        )
-        ?;
+        )?;
 
         Ok(())
     })
@@ -444,8 +438,7 @@ pub async fn delete_task(db: &Database, id: i64, user_id: i64) -> Result<()> {
         conn.execute(
             "DELETE FROM chiasm_tasks WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -470,9 +463,7 @@ pub async fn list_task_history(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![task_id, limit as i64, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![task_id, limit as i64, user_id])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(TaskUpdate {
@@ -496,12 +487,10 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<ChiasmStats> {
     db.read(move |conn| {
         let mut by_status = BTreeMap::new();
         let mut total: i64 = 0;
-        let mut stmt = conn
-            .prepare("SELECT status, COUNT(*) FROM chiasm_tasks WHERE user_id = ?1 GROUP BY status")
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut stmt = conn.prepare(
+            "SELECT status, COUNT(*) FROM chiasm_tasks WHERE user_id = ?1 GROUP BY status",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         while let Some(row) = rows.next()? {
             let s: String = row.get(0)?;
             let c: i64 = row.get(1)?;
@@ -530,9 +519,7 @@ pub async fn get_feed(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![limit as i64, offset as i64, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![limit as i64, offset as i64, user_id])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(FeedItem {

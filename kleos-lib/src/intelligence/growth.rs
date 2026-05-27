@@ -15,18 +15,15 @@ use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
 use tracing::{info, warn};
 
-
 #[tracing::instrument(skip(db), fields(limit))]
 pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<GrowthObservation>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, source, importance, created_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, content, source, importance, created_at \
                  FROM memories \
                  WHERE category = 'growth' AND is_forgotten = 0 \
                  ORDER BY created_at DESC LIMIT ?1",
-            )
-            ?;
+        )?;
 
         let observations = stmt
             .query_map(rusqlite::params![limit as i64], |row| {
@@ -37,10 +34,8 @@ pub async fn list_observations(db: &Database, limit: usize) -> Result<Vec<Growth
                     importance: row.get(3)?,
                     created_at: row.get(4)?,
                 })
-            })
-            ?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            ?;
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(observations)
     })
@@ -56,8 +51,7 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
                 rusqlite::params![observation_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()
-            ?;
+            .optional()?;
 
         let (content, source) = result.ok_or_else(|| {
             EngError::NotFound(format!("growth observation {} not found", observation_id))
@@ -70,8 +64,7 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
              VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', \
              datetime('now'), datetime('now'))",
             rusqlite::params![content, source],
-        )
-        ?;
+        )?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -295,8 +288,7 @@ pub async fn reflect(
                  VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, \
                  datetime('now'), datetime('now'))",
                 rusqlite::params![trimmed_for_closure, source_c, user_id],
-            )
-            ?;
+            )?;
 
             let memory_id = conn.last_insert_rowid();
 
@@ -305,8 +297,7 @@ pub async fn reflect(
                  confidence, user_id, created_at) \
                  VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
                 rusqlite::params![trimmed_refl, format!("[{}]", memory_id), user_id],
-            )
-            ?;
+            )?;
 
             let reflection_id = conn.last_insert_rowid();
 

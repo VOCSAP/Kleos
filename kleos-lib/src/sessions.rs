@@ -367,13 +367,11 @@ pub async fn list_sessions(
     let limit = limit.unwrap_or(50).min(500) as i64;
     let offset = offset.unwrap_or(0) as i64;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, agent, status, created_at, updated_at FROM sessions \
+        let mut stmt = conn.prepare(
+            "SELECT id, agent, status, created_at, updated_at FROM sessions \
                  ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
-            )?;
-        let rows = stmt
-            .query_map(params![limit, offset], row_to_session)?;
+        )?;
+        let rows = stmt.query_map(params![limit, offset], row_to_session)?;
         let mut sessions = Vec::new();
         for row in rows {
             sessions.push(row?);
@@ -463,12 +461,10 @@ pub async fn get_session_output(db: &Database, session_id: &str) -> Result<Vec<S
 
     let sid_query = session_id_owned.clone();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT line FROM session_output WHERE session_id = ?1 ORDER BY id ASC LIMIT 10000",
-            )?;
-        let rows = stmt
-            .query_map(params![sid_query], |row| row.get::<_, String>(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT line FROM session_output WHERE session_id = ?1 ORDER BY id ASC LIMIT 10000",
+        )?;
+        let rows = stmt.query_map(params![sid_query], |row| row.get::<_, String>(0))?;
         let mut lines = Vec::new();
         for row in rows {
             lines.push(row?);

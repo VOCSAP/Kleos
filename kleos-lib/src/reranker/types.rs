@@ -71,12 +71,18 @@ pub(super) struct RerankResult {
 
 impl From<CohereRerankResult> for RerankResult {
     fn from(r: CohereRerankResult) -> Self {
-        RerankResult { index: r.index, score: r.relevance_score }
+        RerankResult {
+            index: r.index,
+            score: r.relevance_score,
+        }
     }
 }
 
 impl From<TeiRerankResult> for RerankResult {
     fn from(r: TeiRerankResult) -> Self {
-        RerankResult { index: r.index, score: r.score }
+        RerankResult {
+            index: r.index,
+            score: r.score,
+        }
     }
 }

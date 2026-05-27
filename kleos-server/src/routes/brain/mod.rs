@@ -12,7 +12,6 @@ use kleos_lib::services::brain::{
     FeedbackRequest,
 };
 
-
 // H-R3-001: dream / decay / evolution_train mutate the global brain. Any
 // auth+write user could pin CPU or corrupt the shared model. Gating these
 // behind admin scope keeps the surface available to operators while denying

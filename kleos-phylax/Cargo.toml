@@ -1,0 +1,41 @@
+[package]
+name = "kleos-phylax"
+version = "1.2.1"
+edition = "2021"
+rust-version.workspace = true
+description = "Agent-native credential authority -- approvals, leases, ECDH, namespaces"
+license = "Elastic-2.0"
+
+[dependencies]
+kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
+kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
+kleos-credd = { path = "../kleos-credd", version = "1.2.1" }
+
+axum.workspace = true
+tower.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }
+hkdf = "0.12"
+sha2.workspace = true
+subtle.workspace = true
+zeroize.workspace = true
+rand.workspace = true
+hex.workspace = true
+dashmap = "6"
+rusqlite.workspace = true
+tower-http.workspace = true
+http = "1"
+bytes = "1"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = "0.1"
+tempfile.workspace = true

@@ -3,7 +3,6 @@ pub use super::types::{BrainEdge, EdgeType};
 use crate::db::Database;
 use crate::{EngError, Result};
 
-
 // ---------------------------------------------------------------------------
 // Database CRUD
 // ---------------------------------------------------------------------------
@@ -27,8 +26,7 @@ pub async fn store_edge(
              ON CONFLICT(source_id, target_id, edge_type) \
              DO UPDATE SET weight = MAX(weight, excluded.weight)",
             rusqlite::params![source_id, target_id, weight as f64, edge_type_str, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -38,18 +36,15 @@ pub async fn store_edge(
 #[tracing::instrument(skip(db), fields(source_id, user_id))]
 pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, source_id, target_id, weight, edge_type, user_id, created_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, source_id, target_id, weight, edge_type, user_id, created_at \
                  FROM brain_edges WHERE source_id = ?1 AND user_id = ?2",
-            )
-            ?;
+        )?;
 
         let edges = stmt
             .query_map(rusqlite::params![source_id, user_id], |row| {
                 Ok(row_to_edge_raw(row))
-            })
-            ?
+            })?
             .map(|r| r.map_err(EngError::from).and_then(|inner| inner))
             .collect::<Result<Vec<BrainEdge>>>()?;
 
@@ -62,19 +57,16 @@ pub async fn get_edges_from(db: &Database, source_id: i64, user_id: i64) -> Resu
 #[tracing::instrument(skip(db), fields(pattern_id, user_id))]
 pub async fn get_edges_for(db: &Database, pattern_id: i64, user_id: i64) -> Result<Vec<BrainEdge>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, source_id, target_id, weight, edge_type, user_id, created_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, source_id, target_id, weight, edge_type, user_id, created_at \
                  FROM brain_edges \
                  WHERE (source_id = ?1 OR target_id = ?1) AND user_id = ?2",
-            )
-            ?;
+        )?;
 
         let edges = stmt
             .query_map(rusqlite::params![pattern_id, user_id], |row| {
                 Ok(row_to_edge_raw(row))
-            })
-            ?
+            })?
             .map(|r| r.map_err(EngError::from).and_then(|inner| inner))
             .collect::<Result<Vec<BrainEdge>>>()?;
 
@@ -97,15 +89,13 @@ pub async fn strengthen_edge(
     let edge_type_str = edge_type.to_string();
     let affected = db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "UPDATE brain_edges \
+            let n = conn.execute(
+                "UPDATE brain_edges \
                      SET weight = MIN(1.0, weight + ?1) \
                      WHERE source_id = ?2 AND target_id = ?3 \
                        AND edge_type = ?4 AND user_id = ?5",
-                    rusqlite::params![boost as f64, source_id, target_id, edge_type_str, user_id],
-                )
-                ?;
+                rusqlite::params![boost as f64, source_id, target_id, edge_type_str, user_id],
+            )?;
             Ok(n)
         })
         .await?;
@@ -122,12 +112,10 @@ pub async fn strengthen_edge(
 #[tracing::instrument(skip(db), fields(user_id, rate))]
 pub async fn decay_edges(db: &Database, user_id: i64, rate: f32) -> Result<usize> {
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "UPDATE brain_edges SET weight = weight * ?1 WHERE user_id = ?2",
-                rusqlite::params![rate as f64, user_id],
-            )
-            ?;
+        let n = conn.execute(
+            "UPDATE brain_edges SET weight = weight * ?1 WHERE user_id = ?2",
+            rusqlite::params![rate as f64, user_id],
+        )?;
         Ok(n)
     })
     .await
@@ -138,12 +126,10 @@ pub async fn decay_edges(db: &Database, user_id: i64, rate: f32) -> Result<usize
 #[tracing::instrument(skip(db), fields(user_id, threshold))]
 pub async fn prune_edges(db: &Database, user_id: i64, threshold: f32) -> Result<usize> {
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM brain_edges WHERE weight < ?1 AND user_id = ?2",
-                rusqlite::params![threshold as f64, user_id],
-            )
-            ?;
+        let n = conn.execute(
+            "DELETE FROM brain_edges WHERE weight < ?1 AND user_id = ?2",
+            rusqlite::params![threshold as f64, user_id],
+        )?;
         Ok(n)
     })
     .await
@@ -153,18 +139,15 @@ pub async fn prune_edges(db: &Database, user_id: i64, threshold: f32) -> Result<
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn count_edges(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM brain_edges WHERE user_id = ?1",
-                rusqlite::params![user_id],
-                |row| row.get(0),
-            )
-            ?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM brain_edges WHERE user_id = ?1",
+            rusqlite::params![user_id],
+            |row| row.get(0),
+        )?;
         Ok(count)
     })
     .await
 }
-
 
 // ---------------------------------------------------------------------------
 // Helpers

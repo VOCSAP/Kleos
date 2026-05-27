@@ -30,7 +30,6 @@ use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::db::Database;
 use crate::Result;
 
-
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
@@ -137,8 +136,7 @@ async fn insert_dream_run(db: &Database, user_id: i64) -> Result<i64> {
               discover_count, decorrelate_count, resolve_count) \
              VALUES (?1, datetime('now'), 0, 0, 0, 0, 0, 0)",
             rusqlite::params![user_id],
-        )
-        ?;
+        )?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -180,8 +178,7 @@ async fn finish_dream_run(
                 run_id,
                 user_id
             ],
-        )
-        ?;
+        )?;
 
         Ok(())
     })

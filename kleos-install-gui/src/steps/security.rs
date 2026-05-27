@@ -29,8 +29,7 @@ pub fn draw_security(ui: &mut egui::Ui, app: &mut InstallerApp) {
         let current = app.security_config.initial_api_key.clone();
         let mut display = current.clone();
         if draw_key_row(ui, "initial_api_key", &mut display, &current) {
-            app.security_config.initial_api_key =
-                kleos_install_core::security::generate_api_key();
+            app.security_config.initial_api_key = kleos_install_core::security::generate_api_key();
         }
     }
     ui.add_space(8.0);
@@ -65,8 +64,7 @@ pub fn draw_security(ui: &mut egui::Ui, app: &mut InstallerApp) {
         let current = app.security_config.hmac_secret.clone();
         let mut display = current.clone();
         if draw_key_row(ui, "hmac_secret", &mut display, &current) {
-            app.security_config.hmac_secret =
-                kleos_install_core::security::generate_hmac_secret();
+            app.security_config.hmac_secret = kleos_install_core::security::generate_hmac_secret();
         }
     }
     ui.add_space(16.0);
@@ -103,12 +101,7 @@ pub fn draw_security(ui: &mut egui::Ui, app: &mut InstallerApp) {
 ///
 /// Returns `true` if the Regenerate button was clicked (the caller should
 /// then update the corresponding key field).
-fn draw_key_row(
-    ui: &mut egui::Ui,
-    id: &str,
-    display: &mut String,
-    copy_value: &str,
-) -> bool {
+fn draw_key_row(ui: &mut egui::Ui, id: &str, display: &mut String, copy_value: &str) -> bool {
     let mut regenerate = false;
     ui.horizontal(|ui| {
         let avail = ui.available_width() - 190.0;
@@ -130,4 +123,3 @@ fn draw_key_row(
     });
     regenerate
 }
-

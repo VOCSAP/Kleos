@@ -12,7 +12,6 @@ use tracing::warn;
 
 use super::StageReport;
 
-
 /// Resolve contradictions using full interference resolution.
 ///
 /// Scans all `contradiction` edges. For each pair, computes effective
@@ -32,21 +31,18 @@ pub async fn resolve(
     let edge_type_str = EdgeType::Contradiction.to_string();
     let contradiction_pairs: Vec<(i64, i64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT source_id, target_id FROM brain_edges \
+            let mut stmt = conn.prepare(
+                "SELECT source_id, target_id FROM brain_edges \
                      WHERE edge_type = ?1 \
                      ORDER BY weight DESC",
-                )
-                ?;
+            )?;
 
             let pairs = stmt
                 .query_map(rusqlite::params![edge_type_str], |row| {
                     let src: i64 = row.get(0)?;
                     let tgt: i64 = row.get(1)?;
                     Ok((src, tgt))
-                })
-                ?
+                })?
                 .map(|r| r.map_err(EngError::from))
                 .collect::<Result<Vec<(i64, i64)>>>()?;
 

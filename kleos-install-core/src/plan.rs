@@ -197,9 +197,11 @@ impl InstallPlan {
         )?;
 
         // Step 8: build result.
-        let server_url = self.config.server.as_ref().map(|s| {
-            format!("http://{}:{}", s.host, s.port)
-        });
+        let server_url = self
+            .config
+            .server
+            .as_ref()
+            .map(|s| format!("http://{}:{}", s.host, s.port));
 
         let result = InstallResult {
             installed_components: self.components.clone(),

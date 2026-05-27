@@ -3,9 +3,9 @@
 //! Initialises tracing, configures the eframe window, and launches the
 //! installer application.
 
+mod steps;
 mod theme;
 mod wizard;
-mod steps;
 
 use eframe::egui;
 use eframe::NativeOptions;

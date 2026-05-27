@@ -121,10 +121,7 @@ impl InstallerConfig {
             out.push_str("[server]\n");
             out.push_str(&format!("host = \"{}\"\n", srv.host));
             out.push_str(&format!("port = {}\n", srv.port));
-            out.push_str(&format!(
-                "data_dir = \"{}\"\n",
-                srv.data_dir.display()
-            ));
+            out.push_str(&format!("data_dir = \"{}\"\n", srv.data_dir.display()));
             out.push_str(&format!("db_path = \"{}\"\n", srv.db_path));
             if let Some(origins) = &srv.cors_origins {
                 out.push_str(&format!("cors_origins = \"{origins}\"\n"));
@@ -170,9 +167,7 @@ impl InstallerConfig {
                 out.push('\n');
             }
             Some(RerankerConfig::Remote {
-                endpoint,
-                model,
-                ..
+                endpoint, model, ..
             }) => {
                 out.push_str("[reranker]\n");
                 out.push_str("provider = \"remote\"\n");
@@ -188,10 +183,7 @@ impl InstallerConfig {
         }
 
         out.push_str("[security]\n");
-        out.push_str(&format!(
-            "open_access = {}\n",
-            self.security.open_access
-        ));
+        out.push_str(&format!("open_access = {}\n", self.security.open_access));
         out.push('\n');
 
         Ok(out)
@@ -207,10 +199,7 @@ impl InstallerConfig {
         let mut out = String::new();
 
         out.push_str("# Kleos environment secrets -- keep this file private\n");
-        out.push_str(&format!(
-            "ENGRAM_DB_KEY={}\n",
-            self.security.encryption_key
-        ));
+        out.push_str(&format!("ENGRAM_DB_KEY={}\n", self.security.encryption_key));
         out.push_str(&format!(
             "ENGRAM_API_KEY_PEPPER={}\n",
             self.security.api_key_pepper
@@ -230,7 +219,13 @@ impl InstallerConfig {
             out.push_str(&format!("KLEOS_EMBEDDING_API_KEY={api_key}\n"));
         }
 
-        if let Some(RerankerConfig::Remote { api_key, endpoint, model, .. }) = &self.reranker {
+        if let Some(RerankerConfig::Remote {
+            api_key,
+            endpoint,
+            model,
+            ..
+        }) = &self.reranker
+        {
             out.push_str("ENGRAM_RERANKER_BACKEND=http\n");
             out.push_str(&format!("ENGRAM_RERANKER_HTTP_ENDPOINT={endpoint}\n"));
             out.push_str(&format!("ENGRAM_RERANKER_HTTP_API_KEY={api_key}\n"));

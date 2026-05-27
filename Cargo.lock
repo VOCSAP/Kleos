@@ -5184,6 +5184,56 @@ dependencies = [
 ]
 
 [[package]]
+name = "kleos-phylax"
+version = "1.2.1"
+dependencies = [
+ "axum 0.8.9",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "hex",
+ "hkdf",
+ "http",
+ "http-body-util",
+ "kleos-cred",
+ "kleos-credd",
+ "kleos-lib",
+ "p256",
+ "rand 0.9.4",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tower 0.5.3",
+ "tower-http",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "kleos-phylaxd"
+version = "1.2.1"
+dependencies = [
+ "anyhow",
+ "axum 0.8.9",
+ "clap",
+ "dirs 6.0.0",
+ "kleos-cred",
+ "kleos-credd",
+ "kleos-lib",
+ "kleos-phylax",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zeroize",
+]
+
+[[package]]
 name = "kleos-server"
 version = "1.2.1"
 dependencies = [

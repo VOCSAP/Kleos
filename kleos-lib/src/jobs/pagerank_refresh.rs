@@ -14,7 +14,6 @@ use crate::graph::pagerank::{
     compute_pagerank_for_user, persist_pagerank_with_snapshot, snapshot_pagerank_dirty,
 };
 
-
 /// Check whether the pagerank cache needs refreshing based on dirty_count or
 /// elapsed time since last_refresh. Returns [0] (sentinel user id) if a
 /// refresh is needed, empty vec otherwise. The singleton-row pagerank_dirty
@@ -28,9 +27,8 @@ async fn dirty_users(db: &Database, threshold: u32, interval_secs: u64) -> crate
              WHERE dirty_count >= ?1 \
                 OR last_refresh <= strftime('%s','now') - {interval_i64}",
         );
-        let needs_refresh: i64 = conn
-            .query_row(&sql, rusqlite::params![threshold_i64], |row| row.get(0))
-            ?;
+        let needs_refresh: i64 =
+            conn.query_row(&sql, rusqlite::params![threshold_i64], |row| row.get(0))?;
         if needs_refresh > 0 {
             Ok(vec![0i64]) // sentinel: single-tenant, user_id = 0
         } else {

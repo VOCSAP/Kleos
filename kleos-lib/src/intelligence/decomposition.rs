@@ -73,7 +73,6 @@ struct LlmDecompositionResponse {
     skip: Option<bool>,
 }
 
-
 /// Decompose a memory into atomic facts.
 /// Returns the decomposed memory IDs (newly created child facts).
 #[tracing::instrument(skip(db))]
@@ -81,25 +80,26 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
     // Fetch the memory content - MUST belong to caller
     let row_opt = db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT content, category, source, importance, space_id, \
+            Ok(conn
+                .query_row(
+                    "SELECT content, category, source, importance, space_id, \
                         episode_id, tags, session_id \
                  FROM memories WHERE id = ?1 AND is_forgotten = 0",
-                params![memory_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, Option<i64>>(4)?,
-                        row.get::<_, Option<i64>>(5)?,
-                        row.get::<_, Option<String>>(6)?,
-                        row.get::<_, Option<String>>(7)?,
-                    ))
-                },
-            )
-            .optional()?)
+                    params![memory_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
+                            row.get::<_, Option<i64>>(4)?,
+                            row.get::<_, Option<i64>>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, Option<String>>(7)?,
+                        ))
+                    },
+                )
+                .optional()?)
         })
         .await?;
 
@@ -115,8 +115,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
             conn.execute(
                 "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
                 params![memory_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -141,8 +140,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
                 conn.execute(
                     "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
                     params![memory_id],
-                )
-                ?;
+                )?;
                 Ok(())
             })
             .await?;
@@ -203,8 +201,7 @@ pub async fn decompose(db: &Database, memory_id: i64) -> Result<Vec<i64>> {
             conn.execute(
                 "UPDATE memories SET is_decomposed = 1 WHERE id = ?1",
                 params![memory_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;

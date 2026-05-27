@@ -126,9 +126,7 @@ async fn list_users(
                  FROM users WHERE is_active = 1 ORDER BY id"
             };
 
-            let mut stmt = conn
-                .prepare(sql)
-                ?;
+            let mut stmt = conn.prepare(sql)?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -140,10 +138,8 @@ async fn list_users(
                         "is_active": row.get::<_, bool>(4)?,
                         "created_at": row.get::<_, String>(5)?,
                     }))
-                })
-                ?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             Ok(rows)
         })
@@ -176,12 +172,10 @@ async fn deactivate_user(
     let deactivated = state
         .db
         .write(move |conn| {
-            let affected = conn
-                .execute(
-                    "UPDATE users SET is_active = 0 WHERE id = ?1 AND is_active = 1",
-                    params![user_id],
-                )
-                ?;
+            let affected = conn.execute(
+                "UPDATE users SET is_active = 0 WHERE id = ?1 AND is_active = 1",
+                params![user_id],
+            )?;
             Ok(affected > 0)
         })
         .await?;

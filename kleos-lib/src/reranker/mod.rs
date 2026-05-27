@@ -539,12 +539,11 @@ pub async fn create_reranker(
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
         "http" | "remote" | "cohere" | "jina" | "tei" => {
-            let reranker =
-                HttpReranker::from_env(config.reranker_top_k, db).ok_or_else(|| {
-                    EngError::InvalidInput(
-                        "KLEOS_RERANKER_URL required for http reranker backend".into(),
-                    )
-                })?;
+            let reranker = HttpReranker::from_env(config.reranker_top_k, db).ok_or_else(|| {
+                EngError::InvalidInput(
+                    "KLEOS_RERANKER_URL required for http reranker backend".into(),
+                )
+            })?;
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
         "none" | "disabled" => Ok(None),

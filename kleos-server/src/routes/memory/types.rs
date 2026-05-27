@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+/// JSON body accepted by the hybrid memory search endpoints.
 #[derive(Debug, Deserialize)]
 pub(super) struct SearchBody {
     pub query: String,
@@ -17,6 +18,7 @@ pub(super) struct SearchBody {
     pub include_links: Option<bool>,
     pub latest_only: Option<bool>,
     pub source_filter: Option<String>,
+    pub budget: Option<kleos_lib::memory::types::SearchBudget>,
 }
 
 #[derive(Debug, Deserialize)]

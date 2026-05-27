@@ -83,10 +83,8 @@ pub async fn list_preferences(db: &Database, user_id: i64) -> Result<Vec<UserPre
         PREF_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)?;
-        let rows = stmt
-            .query_map(params![user_id], row_to_preference)?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![user_id], row_to_preference)?;
         let mut prefs = Vec::new();
         for row in rows {
             prefs.push(row?);

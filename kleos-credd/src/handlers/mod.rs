@@ -89,7 +89,7 @@ struct KleosMemoryRow {
 
 /// Resolve a secret from Kleos [CRED:v3] entries.
 /// Fallback for when the local SQLCipher database does not have the entry.
-pub(crate) async fn resolve_from_kleos(
+pub async fn resolve_from_kleos(
     state: &AppState,
     category: &str,
     name: &str,
@@ -212,7 +212,7 @@ pub(crate) async fn resolve_from_kleos(
 }
 
 /// Get a secret, trying local DB first, then falling back to Kleos [CRED:v3].
-pub(crate) async fn get_secret_with_fallback(
+pub async fn get_secret_with_fallback(
     state: &AppState,
     user_id: i64,
     category: &str,

@@ -26,10 +26,7 @@ pub fn draw_server_config(ui: &mut egui::Ui, app: &mut InstallerApp) {
 
     // -- Host --
     ui.label("Bind host:");
-    ui.add(
-        egui::TextEdit::singleline(&mut app.server_host_buf)
-            .hint_text("127.0.0.1"),
-    );
+    ui.add(egui::TextEdit::singleline(&mut app.server_host_buf).hint_text("127.0.0.1"));
     if app.server_host_buf.is_empty() {
         ui.colored_label(theme::COLOR_ERROR, "Host cannot be empty.");
     }
@@ -37,13 +34,13 @@ pub fn draw_server_config(ui: &mut egui::Ui, app: &mut InstallerApp) {
 
     // -- Port --
     ui.label("Port:");
-    ui.add(
-        egui::TextEdit::singleline(&mut app.server_port_buf)
-            .hint_text("4200"),
-    );
+    ui.add(egui::TextEdit::singleline(&mut app.server_port_buf).hint_text("4200"));
     let port_valid = app.server_port_buf.parse::<u16>().is_ok();
     if !port_valid {
-        ui.colored_label(theme::COLOR_ERROR, "Port must be a number between 1 and 65535.");
+        ui.colored_label(
+            theme::COLOR_ERROR,
+            "Port must be a number between 1 and 65535.",
+        );
     }
     ui.add_space(8.0);
 
@@ -68,10 +65,7 @@ pub fn draw_server_config(ui: &mut egui::Ui, app: &mut InstallerApp) {
 
     // -- Database path --
     ui.label("Database file name:");
-    ui.add(
-        egui::TextEdit::singleline(&mut app.server_db_path_buf)
-            .hint_text("kleos.db"),
-    );
+    ui.add(egui::TextEdit::singleline(&mut app.server_db_path_buf).hint_text("kleos.db"));
     if app.server_db_path_buf.is_empty() {
         ui.colored_label(theme::COLOR_ERROR, "Database path cannot be empty.");
     }

@@ -4,7 +4,6 @@ use kleos_lib::db::Database;
 
 use crate::{CredError, Result};
 
-
 /// Audit log entry.
 #[derive(Debug, Clone)]
 pub struct AuditEntry {
@@ -109,10 +108,8 @@ fn collect_audit_rows(
     params: &[&dyn rusqlite::types::ToSql],
 ) -> kleos_lib::Result<Vec<AuditEntry>> {
     let v: Vec<AuditEntry> = stmt
-        .query_map(params, row_to_audit_entry)
-        ?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        ?;
+        .query_map(params, row_to_audit_entry)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(v)
 }
 
@@ -252,12 +249,10 @@ pub async fn prune_audit(db: &Database, user_id: i64, days_to_keep: u32) -> Resu
         .to_string();
 
     db.write(move |conn| {
-        let affected = conn
-            .execute(
-                "DELETE FROM cred_audit WHERE user_id = ?1 AND timestamp < ?2",
-                rusqlite::params![user_id, cutoff],
-            )
-            ?;
+        let affected = conn.execute(
+            "DELETE FROM cred_audit WHERE user_id = ?1 AND timestamp < ?2",
+            rusqlite::params![user_id, cutoff],
+        )?;
         Ok(affected)
     })
     .await
@@ -284,8 +279,7 @@ mod tests {
                     timestamp TEXT NOT NULL
                 )",
                 [],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await

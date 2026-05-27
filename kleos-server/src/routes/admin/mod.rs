@@ -168,9 +168,7 @@ async fn count_rows(state: &AppState, sql: &str) -> Result<i64, AppError> {
     let sql = sql.to_string();
     state
         .db
-        .read(move |conn| {
-            Ok(conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?)
-        })
+        .read(move |conn| Ok(conn.query_row(&sql, [], |row| row.get::<_, i64>(0))?))
         .await
         .map_err(AppError)
 }
@@ -682,7 +680,10 @@ async fn admin_cred_resolve(
         .ok_or_else(|| AppError(kleos_lib::EngError::InvalidInput("key is required".into())))?;
 
     let value = if body.raw {
-        state.credd.get_raw(&state.db, auth.user_id, agent, service, key).await?
+        state
+            .credd
+            .get_raw(&state.db, auth.user_id, agent, service, key)
+            .await?
     } else {
         state
             .credd
@@ -962,9 +963,7 @@ async fn backup_handler(
     let vacuum_sql = format!("VACUUM INTO '{}'", tmp);
     state
         .db
-        .write(move |conn| {
-            Ok(conn.execute(&vacuum_sql, [])?)
-        })
+        .write(move |conn| Ok(conn.execute(&vacuum_sql, [])?))
         .await
         .map_err(AppError)?;
 
@@ -1194,9 +1193,7 @@ async fn reset_user(
     for sql in tables {
         let sql_owned = sql.to_string();
         total += db
-            .write(move |conn| {
-                Ok(conn.execute(&sql_owned, [])?)
-            })
+            .write(move |conn| Ok(conn.execute(&sql_owned, [])?))
             .await
             .map_err(AppError)? as i64;
     }
@@ -1628,14 +1625,12 @@ async fn admin_monolith_status(
     let user_counts: Vec<(i64, i64, i64)> = state
         .db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT user_id, \
+            let mut stmt = conn.prepare(
+                "SELECT user_id, \
                             COUNT(*) AS total, \
                             SUM(CASE WHEN is_forgotten = 0 THEN 1 ELSE 0 END) AS active \
                      FROM memories GROUP BY user_id ORDER BY user_id",
-                )
-                ?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -1643,8 +1638,7 @@ async fn admin_monolith_status(
                         row.get::<_, i64>(1)?,
                         row.get::<_, i64>(2)?,
                     ))
-                })
-                ?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1705,12 +1699,10 @@ async fn admin_monolith_drain(
     let user_ids: Vec<i64> = state
         .db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")
-                ?;
+            let mut stmt =
+                conn.prepare("SELECT DISTINCT user_id FROM memories WHERE is_forgotten = 0")?;
             let rows: Vec<i64> = stmt
-                .query_map([], |row| row.get(0))
-                ?
+                .query_map([], |row| row.get(0))?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -1762,17 +1754,14 @@ async fn admin_monolith_drain(
 
         let existing_keys: std::collections::HashSet<(String, String)> = tenant_db
             .read(|conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT content, created_at FROM memories \
+                let mut stmt = conn.prepare(
+                    "SELECT content, created_at FROM memories \
                          WHERE is_forgotten = 0 AND is_latest = 1",
-                    )
-                    ?;
+                )?;
                 let keys: std::collections::HashSet<_> = stmt
                     .query_map([], |row| {
                         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    ?
+                    })?
                     .filter_map(|r| r.ok())
                     .collect();
                 Ok(keys)
@@ -1784,9 +1773,7 @@ async fn admin_monolith_drain(
         let rows: Vec<Vec<rusqlite::types::Value>> = state
             .db
             .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(&col_select_owned)
-                    ?;
+                let mut stmt = conn.prepare(&col_select_owned)?;
                 let rows: Vec<Vec<rusqlite::types::Value>> = stmt
                     .query_map(rusqlite::params![uid_val], |row| {
                         let mut vals = Vec::with_capacity(col_count);
@@ -1794,8 +1781,7 @@ async fn admin_monolith_drain(
                             vals.push(row.get_ref(i)?.into());
                         }
                         Ok(vals)
-                    })
-                    ?
+                    })?
                     .filter_map(|r| r.ok())
                     .collect();
                 Ok(rows)
@@ -1810,9 +1796,7 @@ async fn admin_monolith_drain(
         let col_insert_owned = col_insert.clone();
         let insert_result = tenant_db
             .write(move |conn| {
-                let tx = conn
-                    .savepoint()
-                    ?;
+                let tx = conn.savepoint()?;
                 for row_vals in &rows {
                     let content = match &row_vals[0] {
                         rusqlite::types::Value::Text(s) => s.clone(),
@@ -1840,8 +1824,7 @@ async fn admin_monolith_drain(
                         }
                     }
                 }
-                tx.commit()
-                    ?;
+                tx.commit()?;
                 Ok((inserted, skipped))
             })
             .await;
@@ -1871,8 +1854,7 @@ async fn admin_monolith_drain(
                          forget_reason = 'drained to tenant shard' \
                          WHERE user_id = ?1 AND is_forgotten = 0",
                         rusqlite::params![uid_val],
-                    )
-                    ?;
+                    )?;
                     Ok(())
                 })
                 .await;

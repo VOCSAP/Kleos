@@ -45,7 +45,6 @@ impl RetryPolicy {
             retry_on: Arc::new(is_transient_error),
         }
     }
-
 }
 
 /// Returns `true` for errors that are likely transient network/infrastructure

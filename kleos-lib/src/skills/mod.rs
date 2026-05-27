@@ -201,10 +201,8 @@ pub async fn get_skill(db: &Database, id: i64, user_id: i64) -> Result<Skill> {
         SKILL_COLUMNS
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)?;
-        let mut rows = stmt
-            .query(params![id, user_id])?;
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params![id, user_id])?;
         rows.next()?
             .map(|row| row_to_skill(row))
             .transpose()?
@@ -236,15 +234,10 @@ pub async fn list_skills(
                  ORDER BY trust_score DESC LIMIT ?3 OFFSET ?4",
                 SKILL_COLUMNS
             );
-            let mut stmt = conn
-                .prepare(&sql)?;
-            let mut rows = stmt
-                .query(params![agent_str, user_id, limit as i64, offset as i64])?;
-            while let Some(row) = rows
-                .next()?
-            {
-                skills
-                    .push(row_to_skill(row)?);
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(params![agent_str, user_id, limit as i64, offset as i64])?;
+            while let Some(row) = rows.next()? {
+                skills.push(row_to_skill(row)?);
             }
         } else {
             let sql = format!(
@@ -253,15 +246,10 @@ pub async fn list_skills(
                  ORDER BY trust_score DESC LIMIT ?2 OFFSET ?3",
                 SKILL_COLUMNS
             );
-            let mut stmt = conn
-                .prepare(&sql)?;
-            let mut rows = stmt
-                .query(params![user_id, limit as i64, offset as i64])?;
-            while let Some(row) = rows
-                .next()?
-            {
-                skills
-                    .push(row_to_skill(row)?);
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(params![user_id, limit as i64, offset as i64])?;
+            while let Some(row) = rows.next()? {
+                skills.push(row_to_skill(row)?);
             }
         };
         Ok(skills)
@@ -560,13 +548,12 @@ pub async fn get_judgments(
     get_skill(db, skill_id, user_id).await?;
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT sj.id, sj.skill_id, sj.judge_agent, sj.score, sj.rationale, sj.created_at \
+        let mut stmt = conn.prepare(
+            "SELECT sj.id, sj.skill_id, sj.judge_agent, sj.score, sj.rationale, sj.created_at \
                  FROM skill_judgments sj \
                  WHERE sj.skill_id = ?1 \
                  ORDER BY sj.id DESC",
-            )?;
+        )?;
 
         let judgments = stmt
             .query_map(params![skill_id], |row| {
@@ -626,22 +613,16 @@ pub async fn get_tool_quality(db: &Database, tool_name: &str) -> Result<serde_js
 
     let result = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
+            let mut stmt = conn.prepare(
+                "SELECT COUNT(*) as total, SUM(CASE WHEN success THEN 1 ELSE 0 END) as successes, \
                      AVG(latency_ms) as avg_latency \
                      FROM tool_quality_records WHERE tool_name = ?1",
-                )?;
-            let mut rows = stmt
-                .query(params![tool_name_owned])?;
+            )?;
+            let mut rows = stmt.query(params![tool_name_owned])?;
             if let Some(row) = rows.next()? {
-                let total: i64 =
-                    row.get(0)?;
-                let successes: i64 = row
-                    .get::<_, Option<i64>>(1)?
-                    .unwrap_or(0);
-                let avg_latency: Option<f64> =
-                    row.get(2)?;
+                let total: i64 = row.get(0)?;
+                let successes: i64 = row.get::<_, Option<i64>>(1)?.unwrap_or(0);
+                let avg_latency: Option<f64> = row.get(2)?;
                 Ok(Some((total, successes, avg_latency)))
             } else {
                 Ok(None)
@@ -670,11 +651,10 @@ pub async fn get_skill_tags(db: &Database, skill_id: i64, user_id: i64) -> Resul
     get_skill(db, skill_id, user_id).await?;
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT st.tag FROM skill_tags st \
+        let mut stmt = conn.prepare(
+            "SELECT st.tag FROM skill_tags st \
                  WHERE st.skill_id = ?1",
-            )?;
+        )?;
         let tags = stmt
             .query_map(params![skill_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -691,11 +671,10 @@ pub async fn get_tool_deps(db: &Database, skill_id: i64, user_id: i64) -> Result
     get_skill(db, skill_id, user_id).await?;
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT std.tool_name FROM skill_tool_deps std \
+        let mut stmt = conn.prepare(
+            "SELECT std.tool_name FROM skill_tool_deps std \
                  WHERE std.skill_id = ?1",
-            )?;
+        )?;
         let deps = stmt
             .query_map(params![skill_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<String>>>()?;
@@ -724,8 +703,7 @@ pub async fn list_recent_evolutions(
                      AND sr.created_at > datetime('now', ?1) \
                    ORDER BY sr.created_at DESC \
                    LIMIT ?2";
-        let mut stmt = conn
-            .prepare(sql)?;
+        let mut stmt = conn.prepare(sql)?;
         let raw: Vec<(i64, String, i32, String, String, String)> = stmt
             .query_map(params![since_clause, limit as i64], |row| {
                 Ok((
@@ -740,11 +718,10 @@ pub async fn list_recent_evolutions(
             .filter_map(|r| r.ok())
             .collect();
 
-        let mut parents_stmt = conn
-            .prepare(
-                "SELECT parent_id FROM skill_lineage_parents \
+        let mut parents_stmt = conn.prepare(
+            "SELECT parent_id FROM skill_lineage_parents \
                  WHERE skill_id = ?1 ORDER BY parent_id",
-            )?;
+        )?;
 
         let mut out = Vec::with_capacity(raw.len());
         for (skill_id, name, version, tag, agent, created_at) in raw {
@@ -776,11 +753,10 @@ pub async fn get_lineage(db: &Database, skill_id: i64, user_id: i64) -> Result<V
     // Only return parents that also belong to the caller; filter out any foreign-tenant ids
     // even if the lineage table ever held one from a pre-patch row.
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT slp.parent_id FROM skill_lineage_parents slp \
+        let mut stmt = conn.prepare(
+            "SELECT slp.parent_id FROM skill_lineage_parents slp \
                  WHERE slp.skill_id = ?1",
-            )?;
+        )?;
         let parents = stmt
             .query_map(params![skill_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;

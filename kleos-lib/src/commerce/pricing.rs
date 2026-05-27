@@ -48,29 +48,26 @@ pub async fn get_service_pricing(db: &Database, service_id: &str) -> Result<Serv
 /// List all active service pricing entries.
 pub async fn list_service_pricing(db: &Database) -> Result<Vec<ServicePricing>> {
     db.read(|conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, service_id, base_amount, currency, chain, chain_id,
+        let mut stmt = conn.prepare(
+            "SELECT id, service_id, base_amount, currency, chain, chain_id,
                         is_active, created_at, updated_at
                  FROM service_pricing WHERE is_active = 1
                  ORDER BY service_id",
-            )?;
+        )?;
 
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(ServicePricing {
-                    id: row.get(0)?,
-                    service_id: row.get(1)?,
-                    base_amount: Decimal::from_str(&row.get::<_, String>(2)?)
-                        .unwrap_or(Decimal::ZERO),
-                    currency: row.get(3)?,
-                    chain: row.get(4)?,
-                    chain_id: row.get(5)?,
-                    is_active: row.get(6)?,
-                    created_at: row.get(7)?,
-                    updated_at: row.get(8)?,
-                })
-            })?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ServicePricing {
+                id: row.get(0)?,
+                service_id: row.get(1)?,
+                base_amount: Decimal::from_str(&row.get::<_, String>(2)?).unwrap_or(Decimal::ZERO),
+                currency: row.get(3)?,
+                chain: row.get(4)?,
+                chain_id: row.get(5)?,
+                is_active: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
@@ -81,22 +78,20 @@ pub async fn list_service_pricing(db: &Database) -> Result<Vec<ServicePricing>> 
 pub async fn get_volume_discounts(db: &Database, service_id: &str) -> Result<Vec<VolumeDiscount>> {
     let sid = service_id.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, service_id, min_calls, amount
+        let mut stmt = conn.prepare(
+            "SELECT id, service_id, min_calls, amount
                  FROM volume_discounts WHERE service_id = ?1
                  ORDER BY min_calls ASC",
-            )?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![sid], |row| {
-                Ok(VolumeDiscount {
-                    id: row.get(0)?,
-                    service_id: row.get(1)?,
-                    min_calls: row.get(2)?,
-                    amount: Decimal::from_str(&row.get::<_, String>(3)?).unwrap_or(Decimal::ZERO),
-                })
-            })?;
+        let rows = stmt.query_map(params![sid], |row| {
+            Ok(VolumeDiscount {
+                id: row.get(0)?,
+                service_id: row.get(1)?,
+                min_calls: row.get(2)?,
+                amount: Decimal::from_str(&row.get::<_, String>(3)?).unwrap_or(Decimal::ZERO),
+            })
+        })?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })

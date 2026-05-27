@@ -11,7 +11,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use tracing::{info, warn};
 
-
 // ============================================================================
 // PATTERN DETECTION CONSTANTS
 // ============================================================================
@@ -63,25 +62,21 @@ pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<Temporal
     // --- 1. Load timestamps grouped by category ---
     let rows: Vec<(i64, String, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, category, created_at \
+            let mut stmt = conn.prepare(
+                "SELECT id, category, created_at \
                      FROM memories \
                      WHERE is_forgotten = 0 \
                      ORDER BY category, created_at \
                      LIMIT ?1",
-                )
-                ?;
+            )?;
 
-            let iter = stmt
-                .query_map(params![DETECT_SCAN_LIMIT], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })
-                ?;
+            let iter = stmt.query_map(params![DETECT_SCAN_LIMIT], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
 
             Ok(iter.collect::<std::result::Result<Vec<_>, _>>()?)
         })
@@ -260,8 +255,7 @@ pub async fn store_pattern(db: &Database, pattern: &TemporalPattern, user_id: i6
                 recurrence,
                 user_id,
             ],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -278,37 +272,33 @@ pub async fn list_patterns(
     limit: i64,
 ) -> Result<Vec<TemporalPattern>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, pattern_type, description, memory_ids, confidence, \
+        let mut stmt = conn.prepare(
+            "SELECT id, pattern_type, description, memory_ids, confidence, \
                         recurrence, created_at \
                  FROM temporal_patterns \
                  WHERE user_id = ?1 \
                  ORDER BY created_at DESC \
                  LIMIT ?2",
-            )
-            ?;
+        )?;
 
-        let iter = stmt
-            .query_map(params![user_id, limit], |row| {
-                let id: i64 = row.get(0)?;
-                let pattern_type: String = row.get(1)?;
-                let description: String = row.get(2)?;
-                let memory_ids_json: Option<String> = row.get(3)?;
-                let confidence: f64 = row.get(4)?;
-                let recurrence: Option<String> = row.get(5)?;
-                let created_at: Option<String> = row.get(6)?;
-                Ok((
-                    id,
-                    pattern_type,
-                    description,
-                    memory_ids_json,
-                    confidence,
-                    recurrence,
-                    created_at,
-                ))
-            })
-            ?;
+        let iter = stmt.query_map(params![user_id, limit], |row| {
+            let id: i64 = row.get(0)?;
+            let pattern_type: String = row.get(1)?;
+            let description: String = row.get(2)?;
+            let memory_ids_json: Option<String> = row.get(3)?;
+            let confidence: f64 = row.get(4)?;
+            let recurrence: Option<String> = row.get(5)?;
+            let created_at: Option<String> = row.get(6)?;
+            Ok((
+                id,
+                pattern_type,
+                description,
+                memory_ids_json,
+                confidence,
+                recurrence,
+                created_at,
+            ))
+        })?;
 
         let mut patterns = Vec::new();
         for row in iter {
@@ -343,7 +333,6 @@ pub async fn list_patterns(
     .await
 }
 
-
 // ============================================================================
 // TIME TRAVEL -- query memories as they existed at a given timestamp
 // ============================================================================
@@ -363,53 +352,45 @@ pub async fn time_travel(
     if let Some(q) = query {
         let pattern = format!("%{}%", q);
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance, created_at \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance, created_at \
                      FROM memories \
                      WHERE created_at <= ?1 AND is_forgotten = 0 \
                        AND content LIKE ?2 \
                      ORDER BY created_at DESC LIMIT ?3",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(params![timestamp, pattern, limit], |row| {
-                    Ok(TimeTravelResult {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                        created_at: row.get(4)?,
-                    })
+            let rows = stmt.query_map(params![timestamp, pattern, limit], |row| {
+                Ok(TimeTravelResult {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
-                ?;
+            })?;
 
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await
     } else {
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance, created_at \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance, created_at \
                      FROM memories \
                      WHERE created_at <= ?1 AND is_forgotten = 0 \
                      ORDER BY created_at DESC LIMIT ?2",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(params![timestamp, limit], |row| {
-                    Ok(TimeTravelResult {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                        created_at: row.get(4)?,
-                    })
+            let rows = stmt.query_map(params![timestamp, limit], |row| {
+                Ok(TimeTravelResult {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    created_at: row.get(4)?,
                 })
-                ?;
+            })?;
 
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
@@ -424,7 +405,6 @@ pub async fn time_travel(
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     // -----------------------------------------------------------------------
     // detect_patterns / store_pattern / list_patterns integration tests
@@ -450,8 +430,7 @@ mod tests {
                 "INSERT INTO memories (content, category, created_at, is_forgotten) \
                  VALUES (?1, ?2, ?3, 0)",
                 rusqlite::params![format!("Memory at {} in {}", ts, cat2), cat2, ts,],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await

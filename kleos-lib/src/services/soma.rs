@@ -155,8 +155,7 @@ pub async fn register_agent(db: &Database, req: RegisterAgentRequest) -> Result<
                 config_str,
                 user_id
             ],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -213,8 +212,7 @@ pub async fn heartbeat(
                          updated_at = datetime('now')
                      WHERE id = ?2 AND user_id = ?3",
                     rusqlite::params![status, agent_id, user_id],
-                )
-                ?;
+                )?;
             }
             None => {
                 conn.execute(
@@ -224,8 +222,7 @@ pub async fn heartbeat(
                          updated_at = datetime('now')
                      WHERE id = ?1 AND user_id = ?2",
                     rusqlite::params![agent_id, user_id],
-                )
-                ?;
+                )?;
             }
         }
         Ok(())
@@ -251,8 +248,7 @@ pub async fn set_status(db: &Database, agent_id: i64, user_id: i64, status: &str
             "UPDATE soma_agents SET status = ?1, updated_at = datetime('now')
              WHERE id = ?2 AND user_id = ?3",
             rusqlite::params![status, agent_id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -311,12 +307,9 @@ pub async fn get_agent(db: &Database, id: i64, user_id: i64) -> Result<Agent> {
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("agent {}", id)))?;
         row_to_agent(row, user_id)
     })
@@ -333,12 +326,9 @@ pub async fn get_agent_by_name(db: &Database, user_id: i64, name: &str) -> Resul
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![name_owned.clone(), user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![name_owned.clone(), user_id])?;
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("agent '{}'", name_owned)))?;
         row_to_agent(row, user_id)
     })
@@ -354,8 +344,7 @@ pub async fn delete_agent(db: &Database, id: i64, user_id: i64) -> Result<()> {
         conn.execute(
             "DELETE FROM soma_agents WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -416,8 +405,7 @@ pub async fn create_group(
             "INSERT INTO soma_groups (name, description, user_id)
              VALUES (?1, ?2, ?3)",
             rusqlite::params![n, d, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -433,12 +421,9 @@ async fn get_group_by_name(db: &Database, name: &str, user_id: i64) -> Result<Gr
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![n.clone(), user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![n.clone(), user_id])?;
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("group '{}'", n)))?;
         Ok(Group {
             id: row.get(0)?,
@@ -459,9 +444,7 @@ pub async fn list_groups(db: &Database, user_id: i64) -> Result<Vec<Group>> {
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(Group {
@@ -485,12 +468,9 @@ pub async fn get_group(db: &Database, id: i64, user_id: i64) -> Result<Group> {
                FROM soma_groups WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("group {}", id)))?;
         Ok(Group {
             id: row.get(0)?,
@@ -516,9 +496,7 @@ pub async fn get_group_members(db: &Database, group_id: i64, user_id: i64) -> Re
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![group_id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![group_id, user_id])?;
         let mut agents = Vec::new();
         while let Some(row) = rows.next()? {
             agents.push(row_to_agent(row, user_id)?);
@@ -542,8 +520,7 @@ pub async fn add_agent_to_group(
             "INSERT OR IGNORE INTO soma_agent_groups (agent_id, group_id, user_id)
              VALUES (?1, ?2, ?3)",
             rusqlite::params![agent_id, group_id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -590,14 +567,12 @@ pub async fn log_event(
     let m = message.to_string();
 
     db.write(move |conn| {
-        let inserted = conn
-            .execute(
-                "INSERT INTO soma_agent_logs (agent_id, level, message, data)
+        let inserted = conn.execute(
+            "INSERT INTO soma_agent_logs (agent_id, level, message, data)
                  SELECT ?1, ?2, ?3, ?4
                  WHERE EXISTS (SELECT 1 FROM soma_agents WHERE id = ?1 AND user_id = ?5)",
-                rusqlite::params![agent_id, l, m, data_str, user_id],
-            )
-            ?;
+            rusqlite::params![agent_id, l, m, data_str, user_id],
+        )?;
         if inserted == 0 {
             return Err(EngError::NotFound(format!("agent {}", agent_id)));
         }
@@ -631,9 +606,7 @@ pub async fn list_agent_logs(
                          AND l.agent_id IN (SELECT id FROM soma_agents WHERE user_id = ?4)
                        ORDER BY l.created_at DESC LIMIT ?3";
             let mut stmt = conn.prepare(sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params![agent_id, lvl, limit, user_id])
-                ?;
+            let mut rows = stmt.query(rusqlite::params![agent_id, lvl, limit, user_id])?;
             while let Some(row) = rows.next()? {
                 let data_str: Option<String> = row.get(4)?;
                 out.push(AgentLog {
@@ -652,9 +625,7 @@ pub async fn list_agent_logs(
                          AND l.agent_id IN (SELECT id FROM soma_agents WHERE user_id = ?3)
                        ORDER BY l.created_at DESC LIMIT ?2";
             let mut stmt = conn.prepare(sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params![agent_id, limit, user_id])
-                ?;
+            let mut rows = stmt.query(rusqlite::params![agent_id, limit, user_id])?;
             while let Some(row) = rows.next()? {
                 let data_str: Option<String> = row.get(4)?;
                 out.push(AgentLog {
@@ -690,9 +661,7 @@ pub async fn get_stale_agents(db: &Database, user_id: i64, minutes: i64) -> Resu
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![capped, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![capped, user_id])?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
             results.push(row_to_agent(row, user_id)?);
@@ -723,9 +692,7 @@ pub async fn find_by_capability(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![like_pattern, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![like_pattern, user_id])?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
             let agent = row_to_agent(row, user_id)?;
@@ -746,34 +713,28 @@ pub async fn find_by_capability(
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_stats(db: &Database, user_id: i64) -> Result<SomaStats> {
     db.read(move |conn| {
-        let row = conn
-            .query_row(
-                "SELECT
+        let row = conn.query_row(
+            "SELECT
                     COUNT(*),
                     SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END),
                     COUNT(DISTINCT type)
                  FROM soma_agents WHERE user_id = ?1",
-                rusqlite::params![user_id],
-                |row| {
-                    let total: i64 = row.get(0)?;
-                    let online: Option<i64> = row.get(1)?;
-                    let types: i64 = row.get(2)?;
-                    Ok((total, online.unwrap_or(0), types))
-                },
-            )
-            ?;
+            rusqlite::params![user_id],
+            |row| {
+                let total: i64 = row.get(0)?;
+                let online: Option<i64> = row.get(1)?;
+                let types: i64 = row.get(2)?;
+                Ok((total, online.unwrap_or(0), types))
+            },
+        )?;
 
         // by_type
         let mut by_type = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT type, COUNT(*) as cnt FROM soma_agents \
+        let mut stmt = conn.prepare(
+            "SELECT type, COUNT(*) as cnt FROM soma_agents \
                  WHERE user_id = ?1 GROUP BY type ORDER BY cnt DESC",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         while let Some(r) = rows.next()? {
             by_type.push(StatBreakdown {
                 name: r.get(0)?,
@@ -783,15 +744,11 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<SomaStats> {
 
         // by_status
         let mut by_status = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT status, COUNT(*) as cnt FROM soma_agents \
+        let mut stmt = conn.prepare(
+            "SELECT status, COUNT(*) as cnt FROM soma_agents \
                  WHERE user_id = ?1 GROUP BY status ORDER BY cnt DESC",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         while let Some(r) = rows.next()? {
             by_status.push(StatBreakdown {
                 name: r.get(0)?,
@@ -905,14 +862,11 @@ pub async fn delete_group(db: &Database, group_id: i64, user_id: i64) -> Result<
             tx.execute(
                 "DELETE FROM soma_agent_groups WHERE group_id = ?1 AND user_id = ?2",
                 rusqlite::params![group_id, user_id],
-            )
-            ?;
-            let n = tx
-                .execute(
-                    "DELETE FROM soma_groups WHERE id = ?1 AND user_id = ?2",
-                    rusqlite::params![group_id, user_id],
-                )
-                ?;
+            )?;
+            let n = tx.execute(
+                "DELETE FROM soma_groups WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![group_id, user_id],
+            )?;
             tx.commit()?;
             Ok(n)
         })

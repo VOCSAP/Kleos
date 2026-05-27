@@ -10,7 +10,6 @@ use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::activity::{process_activity, ActivityReport};
 
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/activity", post(report_activity))

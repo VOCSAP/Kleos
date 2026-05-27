@@ -6,7 +6,6 @@ use crate::crypto::{decrypt_secret, encrypt_secret, KEY_SIZE, NONCE_SIZE};
 use crate::types::{SecretData, SecretType};
 use crate::{CredError, Result};
 
-
 /// A stored secret row from the database.
 #[derive(Debug, Clone)]
 pub struct SecretRow {
@@ -253,22 +252,20 @@ pub async fn update_secret(
 
     let affected = db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "UPDATE cred_secrets
+            let n = conn.execute(
+                "UPDATE cred_secrets
                      SET encrypted_data = ?1, nonce = ?2, secret_type = ?3, updated_at = ?4
                      WHERE user_id = ?5 AND category = ?6 AND name = ?7",
-                    rusqlite::params![
-                        encrypted.as_slice(),
-                        nonce.as_slice(),
-                        secret_type,
-                        now,
-                        user_id,
-                        category,
-                        name
-                    ],
-                )
-                ?;
+                rusqlite::params![
+                    encrypted.as_slice(),
+                    nonce.as_slice(),
+                    secret_type,
+                    now,
+                    user_id,
+                    category,
+                    name
+                ],
+            )?;
             Ok(n)
         })
         .await
@@ -290,12 +287,10 @@ pub async fn delete_secret(db: &Database, user_id: i64, category: &str, name: &s
 
     let affected = db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "DELETE FROM cred_secrets WHERE user_id = ?1 AND category = ?2 AND name = ?3",
-                    rusqlite::params![user_id, category, name],
-                )
-                ?;
+            let n = conn.execute(
+                "DELETE FROM cred_secrets WHERE user_id = ?1 AND category = ?2 AND name = ?3",
+                rusqlite::params![user_id, category, name],
+            )?;
             Ok(n)
         })
         .await

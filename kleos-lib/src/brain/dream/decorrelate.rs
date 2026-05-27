@@ -7,7 +7,6 @@ use crate::Result;
 
 use super::StageReport;
 
-
 /// Similarity threshold above which two patterns are considered redundantly
 /// correlated and eligible for edge weight reduction.
 const DECORRELATE_SIM_THRESHOLD: f32 = 0.80;
@@ -75,22 +74,18 @@ pub async fn decorrelate(
             let decay_rate = 1.0 - DECORRELATE_RATE;
             let affected = db
                 .write(move |conn| {
-                    let affected_ab = conn
-                        .execute(
-                            "UPDATE brain_edges \
+                    let affected_ab = conn.execute(
+                        "UPDATE brain_edges \
                              SET weight = weight * ?1 \
                              WHERE source_id = ?2 AND target_id = ?3",
-                            rusqlite::params![decay_rate as f64, id_a, id_b],
-                        )
-                        ?;
-                    let affected_ba = conn
-                        .execute(
-                            "UPDATE brain_edges \
+                        rusqlite::params![decay_rate as f64, id_a, id_b],
+                    )?;
+                    let affected_ba = conn.execute(
+                        "UPDATE brain_edges \
                              SET weight = weight * ?1 \
                              WHERE source_id = ?2 AND target_id = ?3",
-                            rusqlite::params![decay_rate as f64, id_b, id_a],
-                        )
-                        ?;
+                        rusqlite::params![decay_rate as f64, id_b, id_a],
+                    )?;
                     Ok(affected_ab + affected_ba)
                 })
                 .await?;

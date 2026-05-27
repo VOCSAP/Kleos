@@ -103,12 +103,13 @@ async fn register_token(
     let pubkey_pem = state
         .db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT pubkey_pem FROM identity_keys WHERE id = ?1 AND is_active = 1",
-                params![ik_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?)
+            Ok(conn
+                .query_row(
+                    "SELECT pubkey_pem FROM identity_keys WHERE id = ?1 AND is_active = 1",
+                    params![ik_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
         })
         .await?
         .ok_or_else(|| {
@@ -185,13 +186,11 @@ async fn list_tokens(
     let tokens = state
         .db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT jti, name, scopes, is_active, issued_at, expires_at, last_used_at
+            let mut stmt = conn.prepare(
+                "SELECT jti, name, scopes, is_active, issued_at, expires_at, last_used_at
                      FROM mcp_tokens WHERE user_id = ?1
                      ORDER BY created_at DESC",
-                )
-                ?;
+            )?;
             let rows = stmt
                 .query_map(params![uid], |row| {
                     Ok(json!({
@@ -203,10 +202,8 @@ async fn list_tokens(
                         "expires_at": row.get::<_, String>(5)?,
                         "last_used_at": row.get::<_, Option<String>>(6)?,
                     }))
-                })
-                ?
-                .collect::<Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await?;
@@ -224,27 +221,28 @@ async fn get_token(
     let token = state
         .db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT jti, name, scopes, is_active, issued_at, expires_at,
+            Ok(conn
+                .query_row(
+                    "SELECT jti, name, scopes, is_active, issued_at, expires_at,
                         last_used_at, kid, revoked_at, revoke_reason
                  FROM mcp_tokens WHERE jti = ?1 AND user_id = ?2",
-                params![jti, uid],
-                |row| {
-                    Ok(json!({
-                        "jti": row.get::<_, String>(0)?,
-                        "name": row.get::<_, String>(1)?,
-                        "scopes": row.get::<_, String>(2)?,
-                        "is_active": row.get::<_, bool>(3)?,
-                        "issued_at": row.get::<_, String>(4)?,
-                        "expires_at": row.get::<_, String>(5)?,
-                        "last_used_at": row.get::<_, Option<String>>(6)?,
-                        "kid": row.get::<_, String>(7)?,
-                        "revoked_at": row.get::<_, Option<String>>(8)?,
-                        "revoke_reason": row.get::<_, Option<String>>(9)?,
-                    }))
-                },
-            )
-            .optional()?)
+                    params![jti, uid],
+                    |row| {
+                        Ok(json!({
+                            "jti": row.get::<_, String>(0)?,
+                            "name": row.get::<_, String>(1)?,
+                            "scopes": row.get::<_, String>(2)?,
+                            "is_active": row.get::<_, bool>(3)?,
+                            "issued_at": row.get::<_, String>(4)?,
+                            "expires_at": row.get::<_, String>(5)?,
+                            "last_used_at": row.get::<_, Option<String>>(6)?,
+                            "kid": row.get::<_, String>(7)?,
+                            "revoked_at": row.get::<_, Option<String>>(8)?,
+                            "revoke_reason": row.get::<_, Option<String>>(9)?,
+                        }))
+                    },
+                )
+                .optional()?)
         })
         .await?;
 
@@ -267,13 +265,11 @@ async fn revoke_token(
     let affected = state
         .db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "UPDATE mcp_tokens SET is_active = 0, revoked_at = datetime('now')
+            let n = conn.execute(
+                "UPDATE mcp_tokens SET is_active = 0, revoked_at = datetime('now')
                      WHERE jti = ?1 AND user_id = ?2 AND is_active = 1",
-                    params![jti, uid],
-                )
-                ?;
+                params![jti, uid],
+            )?;
             Ok(n)
         })
         .await?;
@@ -296,13 +292,11 @@ async fn revoke_all(
     let affected = state
         .db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "UPDATE mcp_tokens SET is_active = 0, revoked_at = datetime('now')
+            let n = conn.execute(
+                "UPDATE mcp_tokens SET is_active = 0, revoked_at = datetime('now')
                      WHERE user_id = ?1 AND is_active = 1",
-                    params![uid],
-                )
-                ?;
+                params![uid],
+            )?;
             Ok(n)
         })
         .await?;

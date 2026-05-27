@@ -92,43 +92,44 @@ async fn main() {
         let embedder = Arc::clone(&embedder);
         let config = config.clone();
         tokio::spawn(async move {
-            let provider: Option<Arc<dyn EmbeddingProvider>> =
-                if let Some(p) = OpenAiProvider::from_env(reqwest::Client::new(), config.embedding_dim) {
-                    tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
-                    match p.embed("warmup").await {
-                        Ok(_) => {
-                            tracing::info!("OpenAI-compatible embedding provider ready");
-                            Some(Arc::new(p))
-                        }
-                        Err(e) => {
-                            tracing::warn!("OpenAI-compatible embedding provider probe failed: {}. Vector search disabled.", e);
-                            None
-                        }
+            let provider: Option<Arc<dyn EmbeddingProvider>> = if let Some(p) =
+                OpenAiProvider::from_env(reqwest::Client::new(), config.embedding_dim)
+            {
+                tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
+                match p.embed("warmup").await {
+                    Ok(_) => {
+                        tracing::info!("OpenAI-compatible embedding provider ready");
+                        Some(Arc::new(p))
                     }
-                } else {
-                    tracing::info!("loading ONNX embedding model in background...");
-                    match OnnxProvider::new(&config).await {
-                        Ok(provider) => {
-                            let prewarm_start = std::time::Instant::now();
-                            match provider.embed("warmup").await {
-                                Ok(_) => tracing::info!(
-                                    elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
-                                    "embedder pre-warm complete"
-                                ),
-                                Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
-                            }
-                            tracing::info!("ONNX embedding provider ready");
-                            Some(Arc::new(provider))
+                    Err(e) => {
+                        tracing::warn!("OpenAI-compatible embedding provider probe failed: {}. Vector search disabled.", e);
+                        None
+                    }
+                }
+            } else {
+                tracing::info!("loading ONNX embedding model in background...");
+                match OnnxProvider::new(&config).await {
+                    Ok(provider) => {
+                        let prewarm_start = std::time::Instant::now();
+                        match provider.embed("warmup").await {
+                            Ok(_) => tracing::info!(
+                                elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
+                                "embedder pre-warm complete"
+                            ),
+                            Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
                         }
-                        Err(e) => {
-                            tracing::warn!(
+                        tracing::info!("ONNX embedding provider ready");
+                        Some(Arc::new(provider))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
                                 "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
                                 e
                             );
-                            None
-                        }
+                        None
                     }
-                };
+                }
+            };
 
             let mut guard = embedder.write().await;
             *guard = provider;
@@ -699,15 +700,14 @@ async fn register_job_handlers(
     // deprovision_teardown -- E1 cross-store teardown job.
     // Payload: { "deprovision_id": string, "user_id": i64, "tenant_id": string }
     if let Some(ref registry) = tenant_registry {
-        let data_root = std::path::PathBuf::from(
-            std::env::var("ENGRAM_DATA_DIR").unwrap_or_else(|_| {
+        let data_root =
+            std::path::PathBuf::from(std::env::var("ENGRAM_DATA_DIR").unwrap_or_else(|_| {
                 dirs::data_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join("kleos")
                     .to_string_lossy()
                     .into_owned()
-            }),
-        );
+            }));
         kleos_lib::jobs::deprovision::register_handler(
             registry.registry_db_arc(),
             Arc::clone(&db),

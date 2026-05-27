@@ -3,7 +3,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpisodeRow {
     pub id: i64,
@@ -52,8 +51,7 @@ pub async fn create_episode(
                 "INSERT INTO episodes (title, session_id, agent, summary, user_id)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![req.title, req.session_id, req.agent, req.summary, user_id],
-            )
-            ?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -209,32 +207,27 @@ pub async fn get_episode_memories(
     user_id: i64,
 ) -> Result<Vec<serde_json::Value>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, source, importance, created_at
+        let mut stmt = conn.prepare(
+            "SELECT id, content, category, source, importance, created_at
                  FROM memories
                  WHERE episode_id = ?1 AND user_id = ?2 AND is_forgotten = 0 \
                    AND is_latest = 1 AND is_archived = 0
                  ORDER BY created_at DESC",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![episode_id, user_id], |row| {
-                let id: i64 = row.get(0)?;
-                let content: String = row.get(1)?;
-                let category: String = row.get(2)?;
-                let source: Option<String> = row.get(3)?;
-                let importance: i32 = row.get(4)?;
-                let created_at: String = row.get(5)?;
-                Ok((id, content, category, source, importance, created_at))
-            })
-            ?;
+        let rows = stmt.query_map(params![episode_id, user_id], |row| {
+            let id: i64 = row.get(0)?;
+            let content: String = row.get(1)?;
+            let category: String = row.get(2)?;
+            let source: Option<String> = row.get(3)?;
+            let importance: i32 = row.get(4)?;
+            let created_at: String = row.get(5)?;
+            Ok((id, content, category, source, importance, created_at))
+        })?;
 
         let mut memories = Vec::new();
         for row in rows {
-            let (id, content, category, source, importance, created_at) =
-                row?;
+            let (id, content, category, source, importance, created_at) = row?;
             memories.push(serde_json::json!({
                 "id": id,
                 "content": content,
@@ -268,8 +261,7 @@ pub async fn update_episode_for_user(
                  ended_at = COALESCE(?3, ended_at)
              WHERE id = ?4 AND user_id = ?5",
             params![title, summary, ended_at, id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -286,26 +278,22 @@ pub async fn assign_memories_to_episode(
 
     db.write(move |conn| {
         // The episode must belong to the caller before any memory is linked.
-        let owns_episode: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM episodes WHERE id = ?1 AND user_id = ?2",
-                params![episode_id, user_id],
-                |row| row.get(0),
-            )
-            ?;
+        let owns_episode: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM episodes WHERE id = ?1 AND user_id = ?2",
+            params![episode_id, user_id],
+            |row| row.get(0),
+        )?;
         if owns_episode == 0 {
             return Err(EngError::NotFound(format!("episode {}", episode_id)));
         }
 
         let mut assigned = 0_i64;
         for memory_id in &memory_ids {
-            let count = conn
-                .execute(
-                    "UPDATE memories SET episode_id = ?1 \
+            let count = conn.execute(
+                "UPDATE memories SET episode_id = ?1 \
                      WHERE id = ?2 AND user_id = ?3 AND is_latest = 1 AND is_archived = 0",
-                    params![episode_id, *memory_id, user_id],
-                )
-                ?;
+                params![episode_id, *memory_id, user_id],
+            )?;
             assigned += count as i64;
         }
 
@@ -316,8 +304,7 @@ pub async fn assign_memories_to_episode(
              )
              WHERE id = ?1 AND user_id = ?2",
             params![episode_id, user_id],
-        )
-        ?;
+        )?;
 
         Ok(assigned)
     })
@@ -335,8 +322,7 @@ pub async fn finalize_episode(db: &Database, id: i64, user_id: i64) -> Result<Ep
                  )
              WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;

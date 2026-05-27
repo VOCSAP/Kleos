@@ -7,7 +7,6 @@ use super::edges::{self, EdgeType};
 use super::network::{self, HopfieldNetwork};
 use super::pattern::{self, BrainPattern};
 
-
 // ---------------------------------------------------------------------------
 // Causal keyword tables -- ported from eidolon absorb.rs
 // ---------------------------------------------------------------------------
@@ -281,8 +280,7 @@ async fn load_memory_content(
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 Ok((id, content))
-            })
-            ?
+            })?
             .map(|r| r.map_err(EngError::from))
             .collect::<Result<std::collections::HashMap<i64, String>>>()?;
 

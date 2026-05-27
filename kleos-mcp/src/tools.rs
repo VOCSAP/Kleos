@@ -94,10 +94,12 @@ pub fn registry() -> Vec<Value> {
     DAILY_TOOL_NAMES
         .iter()
         .filter_map(|name| {
-            find_by_name(name).map(|route| registry_entry(name, route)).or_else(|| {
-                tracing::warn!(tool = %name, "daily MCP tool is missing from route registry");
-                None
-            })
+            find_by_name(name)
+                .map(|route| registry_entry(name, route))
+                .or_else(|| {
+                    tracing::warn!(tool = %name, "daily MCP tool is missing from route registry");
+                    None
+                })
         })
         .collect()
 }

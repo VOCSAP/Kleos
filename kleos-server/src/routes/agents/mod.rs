@@ -400,14 +400,12 @@ async fn verify_tool_manifest(
             };
 
             // INSERT OR IGNORE; check affected rows to determine first_seen.
-            let rows = conn
-                .execute(
-                    "INSERT OR IGNORE INTO tool_manifests \
+            let rows = conn.execute(
+                "INSERT OR IGNORE INTO tool_manifests \
                      (agent_identity_id, manifest_hash, declared_tools_json) \
                      VALUES (?1, ?2, ?3)",
-                    rusqlite::params![identity_id, hash, tools_json],
-                )
-                ?;
+                rusqlite::params![identity_id, hash, tools_json],
+            )?;
 
             Ok(rows > 0)
         })

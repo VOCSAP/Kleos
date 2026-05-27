@@ -80,12 +80,7 @@ async fn main() -> anyhow::Result<()> {
 
     if args.non_interactive {
         init_tracing(false);
-        noninteractive::run(
-            args.version,
-            args.install_dir,
-            &args.profile,
-        )
-        .await
+        noninteractive::run(args.version, args.install_dir, &args.profile).await
     } else {
         init_tracing(true);
         install_panic_hook();
@@ -97,12 +92,7 @@ async fn main() -> anyhow::Result<()> {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let result = wizard::run_wizard(
-            &mut terminal,
-            args.version,
-            args.install_dir,
-        )
-        .await;
+        let result = wizard::run_wizard(&mut terminal, args.version, args.install_dir).await;
 
         // Always restore the terminal even if the wizard returned an error.
         disable_raw_mode()?;

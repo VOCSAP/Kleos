@@ -64,6 +64,7 @@ pub async fn create_handler(
     let permissions = AgentKeyPermissions {
         categories: body.categories,
         allow_raw: body.allow_raw,
+        namespaces: Vec::new(),
     };
 
     let (raw_key, key_info) =

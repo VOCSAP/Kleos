@@ -219,7 +219,6 @@ pub fn narrate_from_template(action: &str, payload: &serde_json::Value) -> Optio
 const ACTION_COLUMNS: &str =
     "id, agent, service, action, payload, narrative, axon_event_id, user_id, created_at";
 
-
 /// Map a sqlite `Row` returned by an `ACTION_COLUMNS` SELECT into an
 /// [`ActionEntry`]. Column offsets must match `ACTION_COLUMNS` exactly.
 fn row_to_action_entry(row: &rusqlite::Row<'_>) -> Result<ActionEntry> {
@@ -283,8 +282,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
                     axon_event_id,
                     user_id,
                 ],
-            )
-            ?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -310,8 +308,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
                 conn.execute(
                     "UPDATE broca_actions SET axon_event_id = ?1 WHERE id = ?2",
                     rusqlite::params![axon_id, action_id],
-                )
-                ?;
+                )?;
                 Ok(())
             })
             .await;
@@ -402,12 +399,9 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         let row = rows
-            .next()
-            ?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("action {}", id)))?;
         row_to_action_entry(row)
     })
@@ -422,32 +416,26 @@ pub async fn get_action(db: &Database, id: i64, user_id: i64) -> Result<ActionEn
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
     db.read(move |conn| {
-        let (total_actions, agents, services) = conn
-            .query_row(
-                "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
+        let (total_actions, agents, services) = conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT agent), COUNT(DISTINCT service)
                  FROM broca_actions WHERE user_id = ?1",
-                rusqlite::params![user_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            ?;
+            rusqlite::params![user_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )?;
 
         // by_service
         let mut by_service = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT service, COUNT(*) as cnt FROM broca_actions \
+        let mut stmt = conn.prepare(
+            "SELECT service, COUNT(*) as cnt FROM broca_actions \
                  WHERE user_id = ?1 GROUP BY service ORDER BY cnt DESC LIMIT 20",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         while let Some(row) = rows.next()? {
             by_service.push(StatBreakdown {
                 name: row.get(0)?,
@@ -457,15 +445,11 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
 
         // by_agent
         let mut by_agent = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT agent, COUNT(*) as cnt FROM broca_actions \
+        let mut stmt = conn.prepare(
+            "SELECT agent, COUNT(*) as cnt FROM broca_actions \
                  WHERE user_id = ?1 GROUP BY agent ORDER BY cnt DESC LIMIT 20",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         while let Some(row) = rows.next()? {
             by_agent.push(StatBreakdown {
                 name: row.get(0)?,
@@ -475,15 +459,11 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<BrocaStats> {
 
         // by_action
         let mut by_action = Vec::new();
-        let mut stmt = conn
-            .prepare(
-                "SELECT action, COUNT(*) as cnt FROM broca_actions \
+        let mut stmt = conn.prepare(
+            "SELECT action, COUNT(*) as cnt FROM broca_actions \
                  WHERE user_id = ?1 GROUP BY action ORDER BY cnt DESC LIMIT 20",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         while let Some(row) = rows.next()? {
             by_action.push(StatBreakdown {
                 name: row.get(0)?,
@@ -806,8 +786,7 @@ pub async fn get_or_narrate_action(
         conn.execute(
             "UPDATE broca_actions SET narrative = ?1 WHERE id = ?2",
             rusqlite::params![narrative_clone, action_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -831,9 +810,7 @@ async fn get_action_for_narrate(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![action_id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![action_id, user_id])?;
         match rows.next()? {
             Some(row) => row_to_action_entry(row).map(Some),
             None => Ok(None),

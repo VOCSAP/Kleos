@@ -3,7 +3,6 @@ use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: i64,

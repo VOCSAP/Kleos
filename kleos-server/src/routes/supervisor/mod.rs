@@ -82,27 +82,23 @@ async fn pending_handler(
     let session_id = q.session_id.clone();
     let claimed: Vec<InjectionRow> = db
         .transaction(move |tx| {
-            let mut stmt = tx
-                .prepare(
-                    "UPDATE supervisor_injections
+            let mut stmt = tx.prepare(
+                "UPDATE supervisor_injections
                      SET claimed_at = datetime('now')
                      WHERE user_id = ?1 AND session_id = ?2 AND claimed_at IS NULL
                      RETURNING id, session_id, rule_id, severity, message, created_at",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(params![user_id, session_id], |row| {
-                    Ok(InjectionRow {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        rule_id: row.get(2)?,
-                        severity: row.get(3)?,
-                        message: row.get(4)?,
-                        created_at: row.get(5)?,
-                    })
+            let rows = stmt.query_map(params![user_id, session_id], |row| {
+                Ok(InjectionRow {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    rule_id: row.get(2)?,
+                    severity: row.get(3)?,
+                    message: row.get(4)?,
+                    created_at: row.get(5)?,
                 })
-                ?;
+            })?;
 
             let mut out = Vec::new();
             for r in rows {

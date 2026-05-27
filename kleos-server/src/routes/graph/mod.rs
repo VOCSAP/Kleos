@@ -146,20 +146,18 @@ async fn list_entities_handler(
 
     let results = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, name, entity_type, description, aliases, space_id, \
+            let mut stmt = conn.prepare(
+                "SELECT id, name, entity_type, description, aliases, space_id, \
                      confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
                      FROM entities \
                      WHERE user_id = ?3 \
                      ORDER BY occurrence_count DESC \
                      LIMIT ?1 OFFSET ?2",
-                )?;
+            )?;
 
-            let rows = stmt
-                .query_map(params![limit, offset, user_id], |row| {
-                    row_to_entity_json(row, user_id)
-                })?;
+            let rows = stmt.query_map(params![limit, offset, user_id], |row| {
+                row_to_entity_json(row, user_id)
+            })?;
 
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
@@ -180,14 +178,15 @@ async fn get_entity_handler(
 
     let entity = db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT id, name, entity_type, description, aliases, space_id, \
+            Ok(conn
+                .query_row(
+                    "SELECT id, name, entity_type, description, aliases, space_id, \
                  confidence, occurrence_count, first_seen_at, last_seen_at, created_at \
                  FROM entities WHERE id = ?1 AND user_id = ?2",
-                params![id, user_id],
-                |row| row_to_entity_json(row, user_id),
-            )
-            .optional()?)
+                    params![id, user_id],
+                    |row| row_to_entity_json(row, user_id),
+                )
+                .optional()?)
         })
         .await?;
 
@@ -351,16 +350,14 @@ async fn entity_memories_handler(
 
     let memory_ids = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT me.memory_id FROM memory_entities me \
+            let mut stmt = conn.prepare(
+                "SELECT me.memory_id FROM memory_entities me \
                      JOIN memories m ON m.id = me.memory_id \
                      WHERE me.entity_id = ?1 AND m.user_id = ?2 \
                        AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?2)",
-                )?;
+            )?;
 
-            let rows = stmt
-                .query_map(params![id, user_id], |row| row.get::<_, i64>(0))?;
+            let rows = stmt.query_map(params![id, user_id], |row| row.get::<_, i64>(0))?;
 
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
@@ -640,30 +637,28 @@ async fn memory_entities_handler(
 
     let entities = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT e.id, e.name, e.entity_type, me.salience \
+            let mut stmt = conn.prepare(
+                "SELECT e.id, e.name, e.entity_type, me.salience \
                      FROM memory_entities me \
                      JOIN entities e ON e.id = me.entity_id \
                      JOIN memories m ON m.id = me.memory_id \
                      WHERE me.memory_id = ?1 AND m.user_id = ?3 AND e.user_id = ?3 \
                      ORDER BY me.salience DESC \
                      LIMIT ?2",
-                )?;
+            )?;
 
-            let rows = stmt
-                .query_map(params![id, MAX_MEMORY_ENTITY_FANOUT, user_id], |row| {
-                    let eid: i64 = row.get(0)?;
-                    let name: String = row.get(1)?;
-                    let entity_type: String = row.get(2)?;
-                    let salience: f64 = row.get(3)?;
-                    Ok(json!({
-                        "id": eid,
-                        "name": name,
-                        "entity_type": entity_type,
-                        "salience": salience,
-                    }))
-                })?;
+            let rows = stmt.query_map(params![id, MAX_MEMORY_ENTITY_FANOUT, user_id], |row| {
+                let eid: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                let entity_type: String = row.get(2)?;
+                let salience: f64 = row.get(3)?;
+                Ok(json!({
+                    "id": eid,
+                    "name": name,
+                    "entity_type": entity_type,
+                    "salience": salience,
+                }))
+            })?;
 
             Ok(rows.collect::<Result<Vec<_>, _>>()?)
         })
@@ -686,29 +681,24 @@ async fn communities_handler(
     // Scoped to the caller's memories so communities never expose another user's rows.
     let communities: Vec<Value> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT community_id, id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT community_id, id FROM memories \
                      WHERE community_id IS NOT NULL \
                        AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND user_id = ?1 \
                      ORDER BY community_id, importance DESC",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
-                    let cid: i64 = row.get(0)?;
-                    let mid: i64 = row.get(1)?;
-                    Ok((cid, mid))
-                })
-                ?;
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                let cid: i64 = row.get(0)?;
+                let mid: i64 = row.get(1)?;
+                Ok((cid, mid))
+            })?;
 
             let mut comm_map: std::collections::BTreeMap<i64, Vec<i64>> =
                 std::collections::BTreeMap::new();
             for row in rows {
-                let (cid, mid) =
-                    row?;
+                let (cid, mid) = row?;
                 comm_map.entry(cid).or_default().push(mid);
             }
 

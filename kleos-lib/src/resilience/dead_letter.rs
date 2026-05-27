@@ -55,8 +55,7 @@ pub async fn record_dead_letter(
              (service, operation, payload_json, error, retry_count) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![svc, op, payload_s, err_s, retries],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -95,11 +94,9 @@ pub async fn list_dead_letters(
         };
 
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(
-                params_vec.iter().map(|b| b.as_ref()),
-            ))
-            ?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(
+            params_vec.iter().map(|b| b.as_ref()),
+        ))?;
 
         let mut result = Vec::new();
         while let Some(row) = rows.next()? {

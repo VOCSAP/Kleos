@@ -6,7 +6,6 @@ use crate::memory::types::Memory;
 use crate::{EngError, Result};
 use tracing::info;
 
-
 /// Consolidate a set of similar memories into a single merged memory.
 ///
 /// Merges content from the candidate memories, computes new importance
@@ -53,9 +52,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params![user_id])
-                ?;
+            let mut rows = stmt.query(rusqlite::params![user_id])?;
             let mut result = Vec::new();
             while let Some(row) = rows.next()? {
                 result.push((
@@ -207,9 +204,8 @@ pub async fn find_consolidation_candidates(
     // Collect all similar pairs from the database.
     let pairs: Vec<(i64, i64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT ml.source_id, ml.target_id \
+            let mut stmt = conn.prepare(
+                "SELECT ml.source_id, ml.target_id \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
                      JOIN memories mt ON mt.id = ml.target_id \
@@ -221,11 +217,8 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![threshold as f64])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![threshold as f64])?;
             let mut pairs = Vec::new();
             while let Some(row) = rows.next()? {
                 let source_id: i64 = row.get(0)?;
@@ -357,19 +350,15 @@ pub async fn list_consolidations(
     limit: usize,
 ) -> Result<Vec<ConsolidationRecord>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.id, m.content \
+        let mut stmt = conn.prepare(
+            "SELECT c.id, m.content \
                  FROM consolidations c \
                  JOIN memories m ON m.id = c.result_memory_id \
                  WHERE c.user_id = ?1 \
                  ORDER BY c.created_at DESC \
                  LIMIT ?2",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id, limit as i64])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id, limit as i64])?;
         let mut records = Vec::new();
         while let Some(row) = rows.next()? {
             records.push(ConsolidationRecord {

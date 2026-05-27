@@ -124,9 +124,8 @@ pub async fn generate_reflections(
 
     let candidates: Vec<Candidate> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
@@ -137,19 +136,18 @@ pub async fn generate_reflections(
                        AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
                      LIMIT ?3",
-                )?;
-            let rows = stmt
-                .query_map(
-                    params![min_importance, age_cutoff, fetch_limit, user_id],
-                    |row| {
-                        Ok(Candidate {
-                            id: row.get(0)?,
-                            content: row.get(1)?,
-                            category: row.get(2)?,
-                            importance: row.get(3)?,
-                        })
-                    },
-                )?;
+            )?;
+            let rows = stmt.query_map(
+                params![min_importance, age_cutoff, fetch_limit, user_id],
+                |row| {
+                    Ok(Candidate {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                },
+            )?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -273,9 +271,8 @@ pub async fn generate_reflections_with_llm(
 
     let candidates: Vec<Candidate> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
@@ -286,19 +283,18 @@ pub async fn generate_reflections_with_llm(
                        AND created_at <= datetime('now', ?2) \
                      ORDER BY importance DESC, created_at ASC \
                      LIMIT ?3",
-                )?;
-            let rows = stmt
-                .query_map(
-                    params![min_importance, age_cutoff, fetch_limit, user_id],
-                    |row| {
-                        Ok(Candidate {
-                            id: row.get(0)?,
-                            content: row.get(1)?,
-                            category: row.get(2)?,
-                            importance: row.get(3)?,
-                        })
-                    },
-                )?;
+            )?;
+            let rows = stmt.query_map(
+                params![min_importance, age_cutoff, fetch_limit, user_id],
+                |row| {
+                    Ok(Candidate {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        category: row.get(2)?,
+                        importance: row.get(3)?,
+                    })
+                },
+            )?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -360,28 +356,26 @@ pub async fn list_reflections(
     limit: usize,
 ) -> Result<Vec<Reflection>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, reflection_type, source_memory_ids, confidence, created_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, content, reflection_type, source_memory_ids, confidence, created_at \
                  FROM reflections WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-            )?;
-        let rows = stmt
-            .query_map(params![user_id, limit as i64], |row| {
-                let ids_json: Option<String> = row.get(3)?;
-                let source_memory_ids: Vec<i64> = ids_json
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str(s).ok())
-                    .unwrap_or_default();
-                Ok(Reflection {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    reflection_type: row.get(2)?,
-                    source_memory_ids,
-                    confidence: row.get(4)?,
-                    user_id,
-                    created_at: row.get(5)?,
-                })
-            })?;
+        )?;
+        let rows = stmt.query_map(params![user_id, limit as i64], |row| {
+            let ids_json: Option<String> = row.get(3)?;
+            let source_memory_ids: Vec<i64> = ids_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            Ok(Reflection {
+                id: row.get(0)?,
+                content: row.get(1)?,
+                reflection_type: row.get(2)?,
+                source_memory_ids,
+                confidence: row.get(4)?,
+                user_id,
+                created_at: row.get(5)?,
+            })
+        })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     })
     .await

@@ -7,7 +7,6 @@ use crate::memory;
 use crate::memory::types::StoreRequest;
 use crate::Result;
 
-
 #[derive(Debug, Deserialize)]
 pub struct SyncReceiveChange {
     pub sync_id: String,
@@ -47,12 +46,9 @@ pub async fn receive_sync(
                 let sync_id = change.sync_id.clone();
                 let exists = db
                     .read(move |conn| {
-                        let mut stmt = conn
-                            .prepare("SELECT id FROM memories WHERE sync_id = ?1")
-                            ?;
-                        let mut rows = stmt
-                            .query(rusqlite::params![sync_id])
-                            ?;
+                        let mut stmt =
+                            conn.prepare("SELECT id FROM memories WHERE sync_id = ?1")?;
+                        let mut rows = stmt.query(rusqlite::params![sync_id])?;
                         Ok(rows.next()?.is_some())
                     })
                     .await?;

@@ -33,7 +33,6 @@ pub struct CreatedKey {
     pub warning: String,
 }
 
-
 /// Hash a bearer key into the lookup form used by the table.
 pub fn hash_key(key: &str) -> String {
     let digest = Sha256::digest(key.as_bytes());
@@ -81,16 +80,13 @@ pub async fn create_key(db: &Database, agent: &str) -> Result<CreatedKey> {
                 "INSERT INTO chiasm_agent_keys (agent, key_hash, key_prefix) \
                  VALUES (?1, ?2, ?3)",
                 rusqlite::params![agent_owned, hash_for_insert, prefix_for_insert],
-            )
-            ?;
+            )?;
             let id = conn.last_insert_rowid();
-            let created_at: String = conn
-                .query_row(
-                    "SELECT created_at FROM chiasm_agent_keys WHERE id = ?1",
-                    rusqlite::params![id],
-                    |row| row.get(0),
-                )
-                ?;
+            let created_at: String = conn.query_row(
+                "SELECT created_at FROM chiasm_agent_keys WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )?;
             Ok((id, created_at))
         })
         .await?;
@@ -109,24 +105,20 @@ pub async fn create_key(db: &Database, agent: &str) -> Result<CreatedKey> {
 #[tracing::instrument(skip(db))]
 pub async fn list_keys(db: &Database) -> Result<Vec<AgentKey>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, agent, key_prefix, created_at, last_used_at, revoked \
+        let mut stmt = conn.prepare(
+            "SELECT id, agent, key_prefix, created_at, last_used_at, revoked \
                  FROM chiasm_agent_keys ORDER BY id ASC",
-            )
-            ?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(AgentKey {
-                    id: row.get(0)?,
-                    agent: row.get(1)?,
-                    key_prefix: row.get(2)?,
-                    created_at: row.get(3)?,
-                    last_used_at: row.get(4)?,
-                    revoked: row.get::<_, i64>(5)? != 0,
-                })
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(AgentKey {
+                id: row.get(0)?,
+                agent: row.get(1)?,
+                key_prefix: row.get(2)?,
+                created_at: row.get(3)?,
+                last_used_at: row.get(4)?,
+                revoked: row.get::<_, i64>(5)? != 0,
             })
-            ?;
+        })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -159,16 +151,12 @@ pub async fn verify_bearer(db: &Database, token: &str) -> Result<Option<AgentKey
     let lookup_hash = hash.clone();
     let found: Option<AgentKey> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, agent, key_prefix, created_at, last_used_at, revoked \
+            let mut stmt = conn.prepare(
+                "SELECT id, agent, key_prefix, created_at, last_used_at, revoked \
                      FROM chiasm_agent_keys \
                      WHERE key_hash = ?1 AND revoked = 0",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![lookup_hash])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![lookup_hash])?;
             if let Some(row) = rows.next()? {
                 Ok(Some(AgentKey {
                     id: row.get(0)?,

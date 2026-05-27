@@ -29,8 +29,7 @@ pub async fn record_cooccurrence(
                count = count + 1, \
                last_seen_at = datetime('now')",
             rusqlite::params![lo, hi, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -49,8 +48,7 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
              WHERE entity_a_id IN (SELECT id FROM entities WHERE user_id = ?1) \
                 OR entity_b_id IN (SELECT id FROM entities WHERE user_id = ?1)",
             rusqlite::params![user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -58,24 +56,20 @@ pub async fn rebuild_cooccurrences(db: &Database, user_id: i64) -> Result<i64> {
     // Fetch all memory -> entity links for this user's memories
     let memory_entities: HashMap<i64, Vec<i64>> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT m.id, me.entity_id \
+            let mut stmt = conn.prepare(
+                "SELECT m.id, me.entity_id \
                      FROM memories m \
                      JOIN memory_entities me ON me.memory_id = m.id \
                      WHERE m.is_forgotten = 0 AND m.is_archived = 0 \
                        AND m.user_id = ?1 \
                      ORDER BY m.created_at DESC",
-                )
-                ?;
+            )?;
 
             let mut memory_entities: HashMap<i64, Vec<i64>> = HashMap::new();
 
-            let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-                })
-                ?;
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?;
 
             for row in rows {
                 let (memory_id, entity_id) = row?;
@@ -118,9 +112,8 @@ pub async fn get_cooccurring_entities(
     limit: usize,
 ) -> Result<Vec<Entity>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT e.id, e.name, e.entity_type, e.description, e.aliases, \
+        let mut stmt = conn.prepare(
+            "SELECT e.id, e.name, e.entity_type, e.description, e.aliases, \
                         e.space_id, e.confidence, e.occurrence_count, \
                         e.first_seen_at, e.last_seen_at, e.created_at, \
                         co.count as cooccurrence_count \
@@ -134,27 +127,24 @@ pub async fn get_cooccurring_entities(
                    AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?3) \
                  ORDER BY co.count DESC \
                  LIMIT ?2",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(rusqlite::params![entity_id, limit as i64, user_id], |row| {
-                Ok(Entity {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    entity_type: row.get(2)?,
-                    description: row.get(3)?,
-                    aliases: row.get(4)?,
-                    user_id,
-                    space_id: row.get(5)?,
-                    confidence: row.get(6)?,
-                    occurrence_count: row.get(7)?,
-                    first_seen_at: row.get(8)?,
-                    last_seen_at: row.get(9)?,
-                    created_at: row.get(10)?,
-                })
+        let rows = stmt.query_map(rusqlite::params![entity_id, limit as i64, user_id], |row| {
+            Ok(Entity {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                entity_type: row.get(2)?,
+                description: row.get(3)?,
+                aliases: row.get(4)?,
+                user_id,
+                space_id: row.get(5)?,
+                confidence: row.get(6)?,
+                occurrence_count: row.get(7)?,
+                first_seen_at: row.get(8)?,
+                last_seen_at: row.get(9)?,
+                created_at: row.get(10)?,
             })
-            ?;
+        })?;
 
         let mut entities = Vec::new();
         for row in rows {

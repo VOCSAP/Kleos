@@ -136,12 +136,13 @@ async fn revoke_key(
         let owner: Option<i64> = state
             .db
             .read(move |conn| {
-                Ok(conn.query_row(
-                    "SELECT user_id FROM api_keys WHERE id = ?1",
-                    params![id],
-                    |row| row.get(0),
-                )
-                .optional()?)
+                Ok(conn
+                    .query_row(
+                        "SELECT user_id FROM api_keys WHERE id = ?1",
+                        params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?)
             })
             .await?;
 
@@ -324,12 +325,13 @@ async fn delete_space(
     let row: Option<(i64, String)> = state
         .db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT user_id, name FROM spaces WHERE id = ?1",
-                params![id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?)
+            Ok(conn
+                .query_row(
+                    "SELECT user_id, name FROM spaces WHERE id = ?1",
+                    params![id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?)
         })
         .await?;
 
@@ -348,9 +350,7 @@ async fn delete_space(
 
     state
         .db
-        .write(move |conn| {
-            Ok(conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])?)
-        })
+        .write(move |conn| Ok(conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])?))
         .await?;
 
     Ok(Json(json!({ "deleted": true, "id": id })))

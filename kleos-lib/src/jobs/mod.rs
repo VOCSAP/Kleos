@@ -182,18 +182,13 @@ pub async fn retry_job(db: &Database, id: i64, err_msg: &str, delay_sec: i64) ->
 #[tracing::instrument(skip(db))]
 pub async fn get_job_stats(db: &Database) -> Result<JobStats> {
     db.read(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT status, COUNT(*) as count FROM jobs GROUP BY status")?;
+        let mut stmt =
+            conn.prepare("SELECT status, COUNT(*) as count FROM jobs GROUP BY status")?;
         let mut stats = JobStats::default();
-        let mut rows = stmt
-            .query([])?;
-        while let Some(row) = rows
-            .next()?
-        {
-            let s: String = row
-                .get(0)?;
-            let n: i64 = row
-                .get(1)?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let s: String = row.get(0)?;
+            let n: i64 = row.get(1)?;
             match s.as_str() {
                 "pending" => stats.pending = n,
                 "running" => stats.running = n,
@@ -228,11 +223,10 @@ pub async fn cleanup_jobs(db: &Database, older_than_days: i64) -> Result<u64> {
     let days = older_than_days.max(0);
     let modifier = format!("-{} days", days);
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', ?1)",
-                params![modifier],
-            )?;
+        let n = conn.execute(
+            "DELETE FROM jobs WHERE status = 'completed' AND completed_at < datetime('now', ?1)",
+            params![modifier],
+        )?;
         Ok(n as u64)
     })
     .await
@@ -254,35 +248,24 @@ pub async fn recover_stuck_jobs(db: &Database) -> Result<u64> {
 #[tracing::instrument(skip(db))]
 pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<Vec<Job>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, type, payload, attempts, max_attempts, error, created_at, completed_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, type, payload, attempts, max_attempts, error, created_at, completed_at \
                  FROM jobs WHERE status = 'failed' ORDER BY completed_at DESC LIMIT ?1 OFFSET ?2",
-            )?;
-        let mut rows = stmt
-            .query(params![limit, offset])?;
+        )?;
+        let mut rows = stmt.query(params![limit, offset])?;
         let mut jobs = Vec::new();
-        while let Some(r) = rows
-            .next()?
-        {
+        while let Some(r) = rows.next()? {
             jobs.push(Job {
-                id: r
-                    .get(0)?,
-                job_type: r
-                    .get(1)?,
-                payload: r
-                    .get(2)?,
+                id: r.get(0)?,
+                job_type: r.get(1)?,
+                payload: r.get(2)?,
                 status: JobStatus::Failed,
-                attempts: r
-                    .get(3)?,
-                max_attempts: r
-                    .get(4)?,
-                error: r
-                    .get(5)?,
+                attempts: r.get(3)?,
+                max_attempts: r.get(4)?,
+                error: r.get(5)?,
                 created_at: r.get::<_, String>(6).unwrap_or_default(),
                 claimed_at: None,
-                completed_at: r
-                    .get(7)?,
+                completed_at: r.get(7)?,
                 next_retry_at: None,
             });
         }
@@ -294,35 +277,25 @@ pub async fn list_failed_jobs(db: &Database, limit: i64, offset: i64) -> Result<
 #[tracing::instrument(skip(db))]
 pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result<Vec<Job>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, type, payload, attempts, max_attempts, created_at, next_retry_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, type, payload, attempts, max_attempts, created_at, next_retry_at \
                  FROM jobs WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?1 OFFSET ?2",
-            )?;
-        let mut rows = stmt
-            .query(params![limit, offset])?;
+        )?;
+        let mut rows = stmt.query(params![limit, offset])?;
         let mut jobs = Vec::new();
-        while let Some(r) = rows
-            .next()?
-        {
+        while let Some(r) = rows.next()? {
             jobs.push(Job {
-                id: r
-                    .get(0)?,
-                job_type: r
-                    .get(1)?,
-                payload: r
-                    .get(2)?,
+                id: r.get(0)?,
+                job_type: r.get(1)?,
+                payload: r.get(2)?,
                 status: JobStatus::Pending,
-                attempts: r
-                    .get(3)?,
-                max_attempts: r
-                    .get(4)?,
+                attempts: r.get(3)?,
+                max_attempts: r.get(4)?,
                 error: None,
                 created_at: r.get::<_, String>(5).unwrap_or_default(),
                 claimed_at: None,
                 completed_at: None,
-                next_retry_at: r
-                    .get(6)?,
+                next_retry_at: r.get(6)?,
             });
         }
         Ok(jobs)
@@ -333,33 +306,23 @@ pub async fn list_pending_jobs(db: &Database, limit: i64, offset: i64) -> Result
 #[tracing::instrument(skip(db))]
 pub async fn list_running_jobs(db: &Database) -> Result<Vec<Job>> {
     db.read(|conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, type, payload, attempts, max_attempts, created_at, claimed_at \
+        let mut stmt = conn.prepare(
+            "SELECT id, type, payload, attempts, max_attempts, created_at, claimed_at \
                  FROM jobs WHERE status = 'running' ORDER BY claimed_at ASC",
-            )?;
-        let mut rows = stmt
-            .query([])?;
+        )?;
+        let mut rows = stmt.query([])?;
         let mut jobs = Vec::new();
-        while let Some(r) = rows
-            .next()?
-        {
+        while let Some(r) = rows.next()? {
             jobs.push(Job {
-                id: r
-                    .get(0)?,
-                job_type: r
-                    .get(1)?,
-                payload: r
-                    .get(2)?,
+                id: r.get(0)?,
+                job_type: r.get(1)?,
+                payload: r.get(2)?,
                 status: JobStatus::Running,
-                attempts: r
-                    .get(3)?,
-                max_attempts: r
-                    .get(4)?,
+                attempts: r.get(3)?,
+                max_attempts: r.get(4)?,
                 error: None,
                 created_at: r.get::<_, String>(5).unwrap_or_default(),
-                claimed_at: r
-                    .get(6)?,
+                claimed_at: r.get(6)?,
                 completed_at: None,
                 next_retry_at: None,
             });
@@ -401,11 +364,10 @@ pub async fn purge_failed_jobs(db: &Database, older_than_days: i64) -> Result<u6
     let days = older_than_days.max(0);
     let modifier = format!("-{} days", days);
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM jobs WHERE status = 'failed' AND completed_at < datetime('now', ?1)",
-                params![modifier],
-            )?;
+        let n = conn.execute(
+            "DELETE FROM jobs WHERE status = 'failed' AND completed_at < datetime('now', ?1)",
+            params![modifier],
+        )?;
         Ok(n as u64)
     })
     .await
@@ -497,17 +459,16 @@ pub async fn acquire_lease(
     let holder_id = holder_id.to_string();
     let modifier = format!("+{} seconds", ttl_sec);
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "INSERT INTO scheduler_leases (job_name, holder_id, expires_at) \
+        let n = conn.execute(
+            "INSERT INTO scheduler_leases (job_name, holder_id, expires_at) \
                  VALUES (?1, ?2, datetime('now', ?3)) \
                  ON CONFLICT(job_name) DO UPDATE SET \
                    holder_id = ?2, \
                    acquired_at = datetime('now'), \
                    expires_at = datetime('now', ?3) \
                  WHERE expires_at < datetime('now') OR holder_id = ?2",
-                params![job_name, holder_id, modifier],
-            )?;
+            params![job_name, holder_id, modifier],
+        )?;
         Ok(n > 0)
     })
     .await

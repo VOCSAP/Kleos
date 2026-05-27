@@ -8,7 +8,6 @@
 use crate::db::Database;
 use crate::Result;
 
-
 /// Prune expired events from every channel according to each channel's
 /// `retain_hours` value.
 ///
@@ -25,17 +24,13 @@ pub async fn prune_expired_events(db: &Database) -> Result<usize> {
         // drop the statement before opening any DELETE statements. rusqlite
         // does not allow two active statements on the same connection.
         let channels: Vec<(String, i64)> = {
-            let mut stmt = conn
-                .prepare("SELECT name, retain_hours FROM axon_channels")
-                ?;
+            let mut stmt = conn.prepare("SELECT name, retain_hours FROM axon_channels")?;
 
-            let rows = stmt
-                .query_map([], |row| {
-                    let name: String = row.get(0)?;
-                    let retain_hours: i64 = row.get(1)?;
-                    Ok((name, retain_hours))
-                })
-                ?;
+            let rows = stmt.query_map([], |row| {
+                let name: String = row.get(0)?;
+                let retain_hours: i64 = row.get(1)?;
+                Ok((name, retain_hours))
+            })?;
 
             let mut collected = Vec::new();
             for row in rows {
@@ -49,12 +44,10 @@ pub async fn prune_expired_events(db: &Database) -> Result<usize> {
         let mut total_deleted: usize = 0;
         for (name, retain_hours) in channels {
             let interval = format!("-{} hours", retain_hours);
-            let deleted = conn
-                .execute(
-                    "DELETE FROM axon_events WHERE channel = ?1 AND created_at < datetime('now', ?2)",
-                    rusqlite::params![name, interval],
-                )
-                ?;
+            let deleted = conn.execute(
+                "DELETE FROM axon_events WHERE channel = ?1 AND created_at < datetime('now', ?2)",
+                rusqlite::params![name, interval],
+            )?;
             total_deleted += deleted;
         }
 
@@ -97,8 +90,7 @@ mod tests {
             conn.execute(
                 "UPDATE axon_events SET created_at = datetime('now', '-200 hours') WHERE id = ?1",
                 rusqlite::params![ev.id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await

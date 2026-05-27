@@ -9,7 +9,6 @@ use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use tracing::info;
 
-
 fn edge_weight(link_type: &str, similarity: f64) -> f64 {
     let tw = match link_type {
         "caused_by" | "causes" => 2.0,
@@ -30,15 +29,11 @@ pub async fn compute_pagerank(
 ) -> Result<PageRankResult> {
     let memory_ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT id FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
-                )
-                ?;
-            let rows = stmt
-                .query_map(rusqlite::params![], |row| row.get(0))
-                ?;
+            )?;
+            let rows = stmt.query_map(rusqlite::params![], |row| row.get(0))?;
             Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
         })
         .await?;
@@ -56,27 +51,23 @@ pub async fn compute_pagerank(
     // in_links, distorting PageRank scores (RB-L8).
     let edges: Vec<(i64, i64, f64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT ml.source_id, ml.target_id, MAX(ml.similarity), MAX(ml.type) \
+            let mut stmt = conn.prepare(
+                "SELECT ml.source_id, ml.target_id, MAX(ml.similarity), MAX(ml.type) \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
                      JOIN memories mt ON mt.id = ml.target_id \
                      WHERE ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
                      GROUP BY ml.source_id, ml.target_id",
-                )
-                ?;
-            let rows = stmt
-                .query_map(rusqlite::params![], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, f64>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
-                ?;
+            )?;
+            let rows = stmt.query_map(rusqlite::params![], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
@@ -172,15 +163,11 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
         // Fetch memory ages in one query (julianday diff).
         let ages: HashMap<i64, f64> = db
             .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, julianday('now') - julianday(created_at) \
+                let mut stmt = conn.prepare(
+                    "SELECT id, julianday('now') - julianday(created_at) \
                          FROM memories",
-                    )
-                    ?;
-                let mut rows = stmt
-                    .query(rusqlite::params![])
-                    ?;
+                )?;
+                let mut rows = stmt.query(rusqlite::params![])?;
                 let mut m = HashMap::new();
                 while let Some(row) = rows.next()? {
                     let id: i64 = row.get(0)?;
@@ -211,12 +198,10 @@ pub async fn update_pagerank_scores(db: &Database, user_id: i64) -> Result<PageR
     // Wrap batch UPDATEs in transaction for atomicity (S1-5/S1-6 fix).
     // Use prepare_cached so the statement is parsed once and reused across N rows.
     db.transaction(move |tx| {
-        let mut stmt = tx
-            .prepare_cached("UPDATE memories SET pagerank_score = ?1 WHERE id = ?2")
-            ?;
+        let mut stmt =
+            tx.prepare_cached("UPDATE memories SET pagerank_score = ?1 WHERE id = ?2")?;
         for (id, normalized) in &scores_vec {
-            stmt.execute(rusqlite::params![normalized, id])
-                ?;
+            stmt.execute(rusqlite::params![normalized, id])?;
         }
         Ok(())
     })
@@ -270,8 +255,7 @@ pub async fn snapshot_pagerank_dirty(db: &Database) -> Result<i64> {
                 [],
                 |row| row.get::<_, i64>(0),
             )
-            .optional()
-            ?;
+            .optional()?;
         Ok(result.unwrap_or(0))
     })
     .await
@@ -299,8 +283,7 @@ pub async fn persist_pagerank_with_snapshot(
                    score = excluded.score, \
                    computed_at = excluded.computed_at",
                 rusqlite::params![memory_id, score, now],
-            )
-            ?;
+            )?;
         }
         // Subtract only the increments we compensated for. Any concurrent
         // mark_pagerank_dirty that fired while compute was running remains in
@@ -313,8 +296,7 @@ pub async fn persist_pagerank_with_snapshot(
                dirty_count = MAX(0, dirty_count - ?2), \
                last_refresh = excluded.last_refresh",
             rusqlite::params![now, dirty_snapshot],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -346,8 +328,7 @@ pub async fn mark_pagerank_dirty(db: &Database, delta: i64) -> Result<()> {
              VALUES (1, ?1, 0) \
              ON CONFLICT(id) DO UPDATE SET dirty_count = dirty_count + ?1",
             rusqlite::params![delta],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -388,8 +369,7 @@ pub async fn incremental_add_memory(db: &Database, memory_id: i64) -> Result<()>
              ON CONFLICT(memory_id) DO UPDATE SET \
                score = excluded.score, computed_at = excluded.computed_at",
             rusqlite::params![memory_id, base_rank, now],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -411,17 +391,13 @@ pub async fn incremental_add_link(
     // Get current scores for source and target
     let scores: HashMap<i64, f64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT memory_id, score FROM memory_pagerank \
+            let mut stmt = conn.prepare(
+                "SELECT memory_id, score FROM memory_pagerank \
                      WHERE memory_id IN (?1, ?2)",
-                )
-                ?;
-            let rows = stmt
-                .query_map(rusqlite::params![source_id, target_id], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
-                })
-                ?;
+            )?;
+            let rows = stmt.query_map(rusqlite::params![source_id, target_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            })?;
             Ok(rows.collect::<std::result::Result<HashMap<i64, f64>, _>>()?)
         })
         .await?;
@@ -445,8 +421,7 @@ pub async fn incremental_add_link(
                     rusqlite::params![source_id],
                     |row| row.get::<_, Option<f64>>(0),
                 )
-                .optional()
-                ?;
+                .optional()?;
             Ok(result.flatten().unwrap_or(1.0))
         })
         .await?;
@@ -466,8 +441,7 @@ pub async fn incremental_add_link(
              ON CONFLICT(memory_id) DO UPDATE SET \
                score = excluded.score, computed_at = excluded.computed_at",
             rusqlite::params![target_id, new_target, now],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -475,21 +449,17 @@ pub async fn incremental_add_link(
     // Propagate to target's neighbors (1-hop)
     let neighbors: Vec<(i64, f64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT target_id, similarity, type FROM memory_links \
+            let mut stmt = conn.prepare(
+                "SELECT target_id, similarity, type FROM memory_links \
                      WHERE source_id = ?1",
-                )
-                ?;
-            let rows = stmt
-                .query_map(rusqlite::params![target_id], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, f64>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })
-                ?;
+            )?;
+            let rows = stmt.query_map(rusqlite::params![target_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
@@ -507,8 +477,7 @@ pub async fn incremental_add_link(
                     "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2 \
                      WHERE memory_id = ?3",
                     rusqlite::params![neighbor_contribution, now, neighbor_id],
-                )
-                ?;
+                )?;
                 Ok(())
             })
             .await?;
@@ -534,13 +503,14 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64) -> Result<
     // Get the score being removed
     let removed_score: Option<f64> = db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT score FROM memory_pagerank \
+            Ok(conn
+                .query_row(
+                    "SELECT score FROM memory_pagerank \
                  WHERE memory_id = ?1",
-                rusqlite::params![memory_id],
-                |row| row.get::<_, f64>(0),
-            )
-            .optional()?)
+                    rusqlite::params![memory_id],
+                    |row| row.get::<_, f64>(0),
+                )
+                .optional()?)
         })
         .await?;
 
@@ -554,8 +524,7 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64) -> Result<
         conn.execute(
             "DELETE FROM memory_pagerank WHERE memory_id = ?1",
             rusqlite::params![memory_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -576,8 +545,7 @@ pub async fn incremental_remove_memory(db: &Database, memory_id: i64) -> Result<
             conn.execute(
                 "UPDATE memory_pagerank SET score = score + ?1, computed_at = ?2",
                 rusqlite::params![redistribution, now],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -608,8 +576,7 @@ pub async fn needs_full_recompute(
                 [],
                 |row| Ok((row.get::<_, Option<f64>>(0)?, row.get::<_, i64>(1)?)),
             )
-            .optional()
-            ?;
+            .optional()?;
         match result {
             Some((sum_opt, count)) => {
                 let sum: f64 = sum_opt.unwrap_or(0.0);
@@ -643,16 +610,12 @@ pub async fn compute_pagerank_for_community(
 ) -> Result<PageRankResult> {
     let memory_ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT id FROM memories \
                      WHERE community_id = ?1 \
                        AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1",
-                )
-                ?;
-            let rows = stmt
-                .query_map(rusqlite::params![community_id], |row| row.get(0))
-                ?;
+            )?;
+            let rows = stmt.query_map(rusqlite::params![community_id], |row| row.get(0))?;
             Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
         })
         .await?;
@@ -674,37 +637,29 @@ pub async fn compute_pagerank_for_community(
     let ids_for_sql = memory_ids.clone();
     let edges: Vec<(i64, i64, f64, String)> = db
         .read(move |conn| {
-            conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS _pr_ids (id INTEGER PRIMARY KEY)")
-                ?;
-            conn.execute("DELETE FROM temp._pr_ids", [])
-                ?;
+            conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS _pr_ids (id INTEGER PRIMARY KEY)")?;
+            conn.execute("DELETE FROM temp._pr_ids", [])?;
             {
-                let mut ins = conn
-                    .prepare("INSERT OR IGNORE INTO temp._pr_ids (id) VALUES (?1)")
-                    ?;
+                let mut ins =
+                    conn.prepare("INSERT OR IGNORE INTO temp._pr_ids (id) VALUES (?1)")?;
                 for id in &ids_for_sql {
-                    ins.execute(rusqlite::params![id])
-                        ?;
+                    ins.execute(rusqlite::params![id])?;
                 }
             }
-            let mut stmt = conn
-                .prepare(
-                    "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+            let mut stmt = conn.prepare(
+                "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                  FROM memory_links ml \
                  INNER JOIN temp._pr_ids s ON ml.source_id = s.id \
                  INNER JOIN temp._pr_ids t ON ml.target_id = t.id",
-                )
-                ?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, f64>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                })
-                ?;
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })?;
             Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
@@ -787,16 +742,12 @@ pub async fn compute_pagerank_by_communities(
     // Get all distinct community IDs
     let community_ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT DISTINCT community_id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT community_id FROM memories \
                      WHERE community_id IS NOT NULL \
                        AND is_forgotten = 0 AND is_latest = 1",
-                )
-                ?;
-            let rows = stmt
-                .query_map([], |row| row.get(0))
-                ?;
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
             Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
         })
         .await?;
@@ -804,16 +755,12 @@ pub async fn compute_pagerank_by_communities(
     // Also handle memories without community (community_id IS NULL)
     let orphan_ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT id FROM memories \
                      WHERE community_id IS NULL \
                        AND is_forgotten = 0 AND is_latest = 1",
-                )
-                ?;
-            let rows = stmt
-                .query_map([], |row| row.get(0))
-                ?;
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
             Ok(rows.collect::<std::result::Result<Vec<i64>, _>>()?)
         })
         .await?;
@@ -851,9 +798,11 @@ pub async fn compute_pagerank_by_communities(
 pub async fn ensure_pagerank_for_user(db: &Database, _user_id: i64) -> Result<()> {
     let count: i64 = db
         .read(move |conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM memory_pagerank LIMIT 1", [], |row| {
-                row.get(0)
-            })?)
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM memory_pagerank LIMIT 1", [], |row| {
+                    row.get(0)
+                })?,
+            )
         })
         .await?;
 
