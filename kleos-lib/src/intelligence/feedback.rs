@@ -8,7 +8,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use std::collections::HashMap;
 
-
 const VALID_RATINGS: &[&str] = &["helpful", "irrelevant", "off-topic", "outdated"];
 
 /// Record user feedback on a memory and adjust its importance accordingly.
@@ -36,8 +35,7 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
             "INSERT INTO memory_feedback (memory_id, user_id, rating, context) \
              VALUES (?1, ?2, ?3, ?4)",
             params![memory_id, user_id, rating, context],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -71,24 +69,20 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap<String, f64>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT m.category, f.rating, COUNT(*) \
+        let mut stmt = conn.prepare(
+            "SELECT m.category, f.rating, COUNT(*) \
                  FROM memory_feedback f \
                  JOIN memories m ON m.id = f.memory_id \
                  WHERE f.user_id = ?1 \
                  GROUP BY m.category, f.rating",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![user_id], |row| {
-                let cat: String = row.get(0)?;
-                let rating: String = row.get(1)?;
-                let count: i64 = row.get(2)?;
-                Ok((cat, rating, count))
-            })
-            ?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            let cat: String = row.get(0)?;
+            let rating: String = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            Ok((cat, rating, count))
+        })?;
 
         let mut totals: HashMap<String, (f64, f64)> = HashMap::new();
         for row in rows {
@@ -121,21 +115,17 @@ pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn feedback_stats(db: &Database, user_id: i64) -> Result<FeedbackStats> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT rating, COUNT(*) FROM memory_feedback \
+        let mut stmt = conn.prepare(
+            "SELECT rating, COUNT(*) FROM memory_feedback \
                  WHERE user_id = ?1 \
                  GROUP BY rating",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![user_id], |row| {
-                let rating: String = row.get(0)?;
-                let count: i64 = row.get(1)?;
-                Ok((rating, count))
-            })
-            ?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            let rating: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((rating, count))
+        })?;
 
         let mut stats = FeedbackStats {
             helpful: 0,

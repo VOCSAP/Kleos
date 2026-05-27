@@ -31,11 +31,7 @@ pub struct InstalledComponent {
 ///
 /// Checked in order; the first directory containing at least one known binary
 /// is treated as the installation root.
-const PROBE_DIRS: &[&str] = &[
-    "~/.local/bin",
-    "/usr/local/bin",
-    "/opt/kleos/bin",
-];
+const PROBE_DIRS: &[&str] = &["~/.local/bin", "/usr/local/bin", "/opt/kleos/bin"];
 
 /// Known binary names to look for when probing an installation directory.
 const KNOWN_BINARIES: &[&str] = &[
@@ -117,25 +113,27 @@ pub fn read_existing_config(config_path: &Path) -> Result<InstallerConfig, Insta
         .parse()
         .map_err(|e| InstallError::Upgrade(format!("failed to parse engram.toml: {e}")))?;
 
-    let server = table.get("server").map(|s| {
-        ServerConfig {
-            host: string_field(s, "host").unwrap_or_else(|| "127.0.0.1".to_string()),
-            port: s.get("port").and_then(|v| v.as_integer()).map(|v| v as u16).unwrap_or(4200),
-            data_dir: string_field(s, "data_dir")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("./data")),
-            db_path: string_field(s, "db_path").unwrap_or_else(|| "kleos.db".to_string()),
-            cors_origins: string_field(s, "cors_origins"),
-        }
+    let server = table.get("server").map(|s| ServerConfig {
+        host: string_field(s, "host").unwrap_or_else(|| "127.0.0.1".to_string()),
+        port: s
+            .get("port")
+            .and_then(|v| v.as_integer())
+            .map(|v| v as u16)
+            .unwrap_or(4200),
+        data_dir: string_field(s, "data_dir")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("./data")),
+        db_path: string_field(s, "db_path").unwrap_or_else(|| "kleos.db".to_string()),
+        cors_origins: string_field(s, "cors_origins"),
     });
 
-    let reranker = table.get("reranker").map(|r| {
-        match string_field(r, "provider").as_deref() {
+    let reranker = table
+        .get("reranker")
+        .map(|r| match string_field(r, "provider").as_deref() {
             Some("disabled") | None => RerankerConfig::Disabled,
             Some("local_onnx") => RerankerConfig::LocalOnnx,
             _ => RerankerConfig::Disabled,
-        }
-    });
+        });
 
     // Security secrets are not written to TOML -- return empty placeholders.
     let security = SecurityConfig {

@@ -77,7 +77,9 @@ impl AgentKeyPermissions {
             if pattern == "*" {
                 true
             } else if let Some(prefix) = pattern.strip_suffix("/*") {
-                ns.starts_with(prefix) && ns.len() > prefix.len() && ns.as_bytes()[prefix.len()] == b'/'
+                ns.starts_with(prefix)
+                    && ns.len() > prefix.len()
+                    && ns.as_bytes()[prefix.len()] == b'/'
             } else {
                 pattern == ns
             }
@@ -113,7 +115,11 @@ impl AgentKeyPermissions {
         let namespaces = value
             .get("namespaces")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
             categories,
@@ -192,13 +198,12 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
     let key = db
         .read(move |conn| {
             // Look up by hash (single-row scan) then verify with constant-time eq.
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
+            let mut stmt = conn.prepare(
+                "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
                      FROM cred_agent_keys
                      WHERE revoked_at IS NULL AND key_hash = ?1
                      LIMIT 1",
-                )?;
+            )?;
 
             let mut rows = stmt.query(rusqlite::params![key_hash])?;
 
@@ -242,13 +247,12 @@ pub async fn validate_agent_key(db: &Database, raw_key: &[u8]) -> Result<AgentKe
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn list_agent_keys(db: &Database, user_id: i64) -> Result<Vec<AgentKey>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, key_hash, name, permissions, created_at, revoked_at
                  FROM cred_agent_keys
                  WHERE user_id = ?1
                  ORDER BY created_at DESC",
-            )?;
+        )?;
 
         let rows = stmt.query_map(params![user_id], |row| {
             let id: i64 = row.get(0)?;

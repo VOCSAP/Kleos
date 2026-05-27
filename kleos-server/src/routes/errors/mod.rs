@@ -8,7 +8,6 @@ use serde_json::Value;
 use crate::{error::AppError, extractors::Auth, state::AppState};
 use kleos_lib::errors_log::{self, ListErrorsRequest, LogErrorRequest};
 
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/errors", post(post_error))

@@ -367,7 +367,10 @@ impl Client {
                 signer.clear_session();
             }
             let (retry_status, retry_val) = self.post_mcp_once(body).await?;
-            if retry_status.is_success() || retry_status.as_u16() == 202 || retry_status.as_u16() == 204 {
+            if retry_status.is_success()
+                || retry_status.as_u16() == 202
+                || retry_status.as_u16() == 204
+            {
                 return Ok(retry_val);
             }
             if let Some(v) = retry_val {
@@ -375,7 +378,9 @@ impl Client {
                     return Err(err.to_string());
                 }
             }
-            return Err(format!("POST /mcp (HTTP {retry_status}): auth failed after retry"));
+            return Err(format!(
+                "POST /mcp (HTTP {retry_status}): auth failed after retry"
+            ));
         }
 
         if status.as_u16() == 202 || status.as_u16() == 204 {
@@ -393,7 +398,10 @@ impl Client {
     }
 
     /// Sends a single POST /mcp request and interprets the response.
-    async fn post_mcp_once(&self, body: &Value) -> Result<(reqwest::StatusCode, Option<Value>), String> {
+    async fn post_mcp_once(
+        &self,
+        body: &Value,
+    ) -> Result<(reqwest::StatusCode, Option<Value>), String> {
         let body_bytes = serde_json::to_vec(body).unwrap_or_default();
         let resp = self
             .execute(
@@ -428,7 +436,12 @@ impl Client {
                         .map(ToOwned::to_owned)
                 })
                 .unwrap_or_else(|| body_excerpt(&bytes));
-            Ok((status, Some(serde_json::json!({"_mcp_error": format!("POST /mcp (HTTP {status}): {msg}")}))))
+            Ok((
+                status,
+                Some(
+                    serde_json::json!({"_mcp_error": format!("POST /mcp (HTTP {status}): {msg}")}),
+                ),
+            ))
         }
     }
 

@@ -152,22 +152,24 @@ fn draw_embedding_provider(f: &mut Frame, area: Rect, step_state: &EmbeddingsSte
         Style::default().fg(COLOR_DIM)
     };
 
-    let options = vec![
-        Line::from(vec![
-            Span::raw(if step_state.provider_selection == EmbeddingProviderSelection::LocalOnnx {
+    let options = vec![Line::from(vec![
+        Span::raw(
+            if step_state.provider_selection == EmbeddingProviderSelection::LocalOnnx {
                 " (o) "
             } else {
                 " ( ) "
-            }),
-            Span::raw("Local ONNX  "),
-            Span::raw(if step_state.provider_selection == EmbeddingProviderSelection::Remote {
+            },
+        ),
+        Span::raw("Local ONNX  "),
+        Span::raw(
+            if step_state.provider_selection == EmbeddingProviderSelection::Remote {
                 " (o) "
             } else {
                 " ( ) "
-            }),
-            Span::raw("Remote (OpenAI-compatible)"),
-        ]),
-    ];
+            },
+        ),
+        Span::raw("Remote (OpenAI-compatible)"),
+    ])];
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -181,7 +183,12 @@ fn draw_embedding_provider(f: &mut Frame, area: Rect, step_state: &EmbeddingsSte
 fn draw_embedding_fields(f: &mut Frame, area: Rect, step_state: &EmbeddingsStepState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
         .split(area);
 
     let focused_field = if step_state.focus == EmbeddingsFocus::EmbeddingFields {
@@ -191,16 +198,31 @@ fn draw_embedding_fields(f: &mut Frame, area: Rect, step_state: &EmbeddingsStepS
     };
 
     draw_input_field(
-        f, chunks[0], &step_state.embed_url.label, &step_state.embed_url.value,
-        &step_state.embed_url.placeholder, focused_field == Some(0), step_state.embed_url.error.as_deref(),
+        f,
+        chunks[0],
+        &step_state.embed_url.label,
+        &step_state.embed_url.value,
+        &step_state.embed_url.placeholder,
+        focused_field == Some(0),
+        step_state.embed_url.error.as_deref(),
     );
     draw_input_field(
-        f, chunks[1], &step_state.embed_api_key.label, &step_state.embed_api_key.value,
-        &step_state.embed_api_key.placeholder, focused_field == Some(1), None,
+        f,
+        chunks[1],
+        &step_state.embed_api_key.label,
+        &step_state.embed_api_key.value,
+        &step_state.embed_api_key.placeholder,
+        focused_field == Some(1),
+        None,
     );
     draw_input_field(
-        f, chunks[2], &step_state.embed_model.label, &step_state.embed_model.value,
-        &step_state.embed_model.placeholder, focused_field == Some(2), None,
+        f,
+        chunks[2],
+        &step_state.embed_model.label,
+        &step_state.embed_model.value,
+        &step_state.embed_model.placeholder,
+        focused_field == Some(2),
+        None,
     );
 }
 
@@ -215,11 +237,23 @@ fn draw_reranker_provider(f: &mut Frame, area: Rect, step_state: &EmbeddingsStep
 
     let sel = &step_state.reranker_selection;
     let line = Line::from(vec![
-        Span::raw(if *sel == RerankerProviderSelection::LocalOnnx { " (o) " } else { " ( ) " }),
+        Span::raw(if *sel == RerankerProviderSelection::LocalOnnx {
+            " (o) "
+        } else {
+            " ( ) "
+        }),
         Span::raw("Local ONNX  "),
-        Span::raw(if *sel == RerankerProviderSelection::Remote { " (o) " } else { " ( ) " }),
+        Span::raw(if *sel == RerankerProviderSelection::Remote {
+            " (o) "
+        } else {
+            " ( ) "
+        }),
         Span::raw("Remote  "),
-        Span::raw(if *sel == RerankerProviderSelection::Disabled { " (o) " } else { " ( ) " }),
+        Span::raw(if *sel == RerankerProviderSelection::Disabled {
+            " (o) "
+        } else {
+            " ( ) "
+        }),
         Span::raw("Disabled"),
     ]);
 
@@ -235,7 +269,12 @@ fn draw_reranker_provider(f: &mut Frame, area: Rect, step_state: &EmbeddingsStep
 fn draw_reranker_fields(f: &mut Frame, area: Rect, step_state: &EmbeddingsStepState) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
         .split(area);
 
     let focused_field = if step_state.focus == EmbeddingsFocus::RerankerFields {
@@ -245,16 +284,31 @@ fn draw_reranker_fields(f: &mut Frame, area: Rect, step_state: &EmbeddingsStepSt
     };
 
     draw_input_field(
-        f, chunks[0], &step_state.reranker_url.label, &step_state.reranker_url.value,
-        &step_state.reranker_url.placeholder, focused_field == Some(0), None,
+        f,
+        chunks[0],
+        &step_state.reranker_url.label,
+        &step_state.reranker_url.value,
+        &step_state.reranker_url.placeholder,
+        focused_field == Some(0),
+        None,
     );
     draw_input_field(
-        f, chunks[1], &step_state.reranker_api_key.label, &step_state.reranker_api_key.value,
-        &step_state.reranker_api_key.placeholder, focused_field == Some(1), None,
+        f,
+        chunks[1],
+        &step_state.reranker_api_key.label,
+        &step_state.reranker_api_key.value,
+        &step_state.reranker_api_key.placeholder,
+        focused_field == Some(1),
+        None,
     );
     draw_input_field(
-        f, chunks[2], &step_state.reranker_model.label, &step_state.reranker_model.value,
-        &step_state.reranker_model.placeholder, focused_field == Some(2), None,
+        f,
+        chunks[2],
+        &step_state.reranker_model.label,
+        &step_state.reranker_model.value,
+        &step_state.reranker_model.placeholder,
+        focused_field == Some(2),
+        None,
     );
 }
 
@@ -287,116 +341,104 @@ pub fn handle_embeddings_input(
             };
             step_state.focused_field = 0;
         }
-        KeyCode::Enter | KeyCode::Tab | KeyCode::Down => {
-            match step_state.focus {
-                EmbeddingsFocus::EmbeddingProvider => {
-                    if step_state.provider_selection == EmbeddingProviderSelection::Remote {
-                        step_state.focus = EmbeddingsFocus::EmbeddingFields;
-                        step_state.focused_field = 0;
-                    } else {
-                        step_state.focus = EmbeddingsFocus::RerankerProvider;
-                    }
-                }
-                EmbeddingsFocus::EmbeddingFields => {
-                    if step_state.focused_field + 1 < step_state.embed_field_count() {
-                        step_state.focused_field += 1;
-                    } else {
-                        step_state.focus = EmbeddingsFocus::RerankerProvider;
-                        step_state.focused_field = 0;
-                    }
-                }
-                EmbeddingsFocus::RerankerProvider => {
-                    if step_state.reranker_selection == RerankerProviderSelection::Remote {
-                        step_state.focus = EmbeddingsFocus::RerankerFields;
-                        step_state.focused_field = 0;
-                    } else if key.code == KeyCode::Enter {
-                        apply_to_state(state, step_state);
-                        return StepResult::Next;
-                    }
-                }
-                EmbeddingsFocus::RerankerFields => {
-                    if step_state.focused_field + 1 < step_state.reranker_field_count() {
-                        step_state.focused_field += 1;
-                    } else if key.code == KeyCode::Enter {
-                        apply_to_state(state, step_state);
-                        return StepResult::Next;
-                    }
+        KeyCode::Enter | KeyCode::Tab | KeyCode::Down => match step_state.focus {
+            EmbeddingsFocus::EmbeddingProvider => {
+                if step_state.provider_selection == EmbeddingProviderSelection::Remote {
+                    step_state.focus = EmbeddingsFocus::EmbeddingFields;
+                    step_state.focused_field = 0;
+                } else {
+                    step_state.focus = EmbeddingsFocus::RerankerProvider;
                 }
             }
-        }
-        KeyCode::Up | KeyCode::BackTab => {
-            match step_state.focus {
-                EmbeddingsFocus::EmbeddingFields if step_state.focused_field > 0 => {
-                    step_state.focused_field -= 1;
-                }
-                EmbeddingsFocus::RerankerFields if step_state.focused_field > 0 => {
-                    step_state.focused_field -= 1;
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Left => {
-            match step_state.focus {
-                EmbeddingsFocus::EmbeddingProvider => {
-                    step_state.provider_selection = EmbeddingProviderSelection::LocalOnnx;
-                }
-                EmbeddingsFocus::RerankerProvider => {
-                    step_state.reranker_selection = match step_state.reranker_selection {
-                        RerankerProviderSelection::Remote => RerankerProviderSelection::LocalOnnx,
-                        RerankerProviderSelection::Disabled => RerankerProviderSelection::Remote,
-                        RerankerProviderSelection::LocalOnnx => RerankerProviderSelection::LocalOnnx,
-                    };
-                }
-                EmbeddingsFocus::EmbeddingFields => {
-                    focused_field_mut(step_state).move_left();
-                }
-                EmbeddingsFocus::RerankerFields => {
-                    focused_reranker_field_mut(step_state).move_left();
+            EmbeddingsFocus::EmbeddingFields => {
+                if step_state.focused_field + 1 < step_state.embed_field_count() {
+                    step_state.focused_field += 1;
+                } else {
+                    step_state.focus = EmbeddingsFocus::RerankerProvider;
+                    step_state.focused_field = 0;
                 }
             }
-        }
-        KeyCode::Right => {
-            match step_state.focus {
-                EmbeddingsFocus::EmbeddingProvider => {
-                    step_state.provider_selection = EmbeddingProviderSelection::Remote;
-                }
-                EmbeddingsFocus::RerankerProvider => {
-                    step_state.reranker_selection = match step_state.reranker_selection {
-                        RerankerProviderSelection::LocalOnnx => RerankerProviderSelection::Remote,
-                        RerankerProviderSelection::Remote => RerankerProviderSelection::Disabled,
-                        RerankerProviderSelection::Disabled => RerankerProviderSelection::Disabled,
-                    };
-                }
-                EmbeddingsFocus::EmbeddingFields => {
-                    focused_field_mut(step_state).move_right();
-                }
-                EmbeddingsFocus::RerankerFields => {
-                    focused_reranker_field_mut(step_state).move_right();
+            EmbeddingsFocus::RerankerProvider => {
+                if step_state.reranker_selection == RerankerProviderSelection::Remote {
+                    step_state.focus = EmbeddingsFocus::RerankerFields;
+                    step_state.focused_field = 0;
+                } else if key.code == KeyCode::Enter {
+                    apply_to_state(state, step_state);
+                    return StepResult::Next;
                 }
             }
-        }
-        KeyCode::Backspace => {
-            match step_state.focus {
-                EmbeddingsFocus::EmbeddingFields => {
-                    focused_field_mut(step_state).delete_char_before();
+            EmbeddingsFocus::RerankerFields => {
+                if step_state.focused_field + 1 < step_state.reranker_field_count() {
+                    step_state.focused_field += 1;
+                } else if key.code == KeyCode::Enter {
+                    apply_to_state(state, step_state);
+                    return StepResult::Next;
                 }
-                EmbeddingsFocus::RerankerFields => {
-                    focused_reranker_field_mut(step_state).delete_char_before();
-                }
-                _ => {}
             }
-        }
-        KeyCode::Char(c) => {
-            match step_state.focus {
-                EmbeddingsFocus::EmbeddingFields => {
-                    focused_field_mut(step_state).insert_char(c);
-                }
-                EmbeddingsFocus::RerankerFields => {
-                    focused_reranker_field_mut(step_state).insert_char(c);
-                }
-                _ => {}
+        },
+        KeyCode::Up | KeyCode::BackTab => match step_state.focus {
+            EmbeddingsFocus::EmbeddingFields if step_state.focused_field > 0 => {
+                step_state.focused_field -= 1;
             }
-        }
+            EmbeddingsFocus::RerankerFields if step_state.focused_field > 0 => {
+                step_state.focused_field -= 1;
+            }
+            _ => {}
+        },
+        KeyCode::Left => match step_state.focus {
+            EmbeddingsFocus::EmbeddingProvider => {
+                step_state.provider_selection = EmbeddingProviderSelection::LocalOnnx;
+            }
+            EmbeddingsFocus::RerankerProvider => {
+                step_state.reranker_selection = match step_state.reranker_selection {
+                    RerankerProviderSelection::Remote => RerankerProviderSelection::LocalOnnx,
+                    RerankerProviderSelection::Disabled => RerankerProviderSelection::Remote,
+                    RerankerProviderSelection::LocalOnnx => RerankerProviderSelection::LocalOnnx,
+                };
+            }
+            EmbeddingsFocus::EmbeddingFields => {
+                focused_field_mut(step_state).move_left();
+            }
+            EmbeddingsFocus::RerankerFields => {
+                focused_reranker_field_mut(step_state).move_left();
+            }
+        },
+        KeyCode::Right => match step_state.focus {
+            EmbeddingsFocus::EmbeddingProvider => {
+                step_state.provider_selection = EmbeddingProviderSelection::Remote;
+            }
+            EmbeddingsFocus::RerankerProvider => {
+                step_state.reranker_selection = match step_state.reranker_selection {
+                    RerankerProviderSelection::LocalOnnx => RerankerProviderSelection::Remote,
+                    RerankerProviderSelection::Remote => RerankerProviderSelection::Disabled,
+                    RerankerProviderSelection::Disabled => RerankerProviderSelection::Disabled,
+                };
+            }
+            EmbeddingsFocus::EmbeddingFields => {
+                focused_field_mut(step_state).move_right();
+            }
+            EmbeddingsFocus::RerankerFields => {
+                focused_reranker_field_mut(step_state).move_right();
+            }
+        },
+        KeyCode::Backspace => match step_state.focus {
+            EmbeddingsFocus::EmbeddingFields => {
+                focused_field_mut(step_state).delete_char_before();
+            }
+            EmbeddingsFocus::RerankerFields => {
+                focused_reranker_field_mut(step_state).delete_char_before();
+            }
+            _ => {}
+        },
+        KeyCode::Char(c) => match step_state.focus {
+            EmbeddingsFocus::EmbeddingFields => {
+                focused_field_mut(step_state).insert_char(c);
+            }
+            EmbeddingsFocus::RerankerFields => {
+                focused_reranker_field_mut(step_state).insert_char(c);
+            }
+            _ => {}
+        },
         _ => {}
     }
 

@@ -197,13 +197,11 @@ async fn validate_mcp_token(
     let key_row = state
         .db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, user_id, pubkey_pem, scopes
+            let mut stmt = conn.prepare(
+                "SELECT id, user_id, pubkey_pem, scopes
                      FROM identity_keys
                      WHERE pubkey_fingerprint = ?1 AND is_active = 1",
-                )
-                ?;
+            )?;
             let row = stmt
                 .query_row(rusqlite::params![kid], |row| {
                     Ok((
@@ -213,8 +211,7 @@ async fn validate_mcp_token(
                         row.get::<_, Option<String>>(3)?,
                     ))
                 })
-                .optional()
-                ?;
+                .optional()?;
             Ok(row)
         })
         .await
@@ -251,19 +248,20 @@ async fn validate_mcp_token(
     let revocation_row = state
         .db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT id, is_active, name FROM mcp_tokens
+            Ok(conn
+                .query_row(
+                    "SELECT id, is_active, name FROM mcp_tokens
                  WHERE jti = ?1 AND user_id = ?2",
-                rusqlite::params![jti, uid],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, bool>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?)
+                    rusqlite::params![jti, uid],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?)
         })
         .await
         .map_err(|e| format!("revocation check failed (fail closed): {}", e))?;
@@ -318,8 +316,7 @@ async fn validate_mcp_token(
                 conn.execute(
                     "UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE jti = ?1",
                     rusqlite::params![jti_w],
-                )
-                ?;
+                )?;
                 Ok(())
             })
             .await;
@@ -603,20 +600,21 @@ pub async fn auth_middleware(
         let identity_result = state
             .db
             .read(move |conn| {
-                Ok(conn.query_row(
-                    "SELECT id, host_label, agent_label, model_label
+                Ok(conn
+                    .query_row(
+                        "SELECT id, host_label, agent_label, model_label
                      FROM identities WHERE identity_hash = ?1",
-                    params![identity_hash_for_lookup],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    },
-                )
-                .optional()?)
+                        params![identity_hash_for_lookup],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()?)
             })
             .await;
 
@@ -635,8 +633,7 @@ pub async fn auth_middleware(
                             "UPDATE identities SET last_seen_at = datetime('now'), \
                              request_count = request_count + 1 WHERE identity_hash = ?1",
                             params![hash],
-                        )
-                        ?;
+                        )?;
                         Ok(())
                     })
                     .await;
@@ -747,8 +744,7 @@ pub async fn auth_middleware(
                 conn.execute(
                     "UPDATE identity_keys SET last_seen_at = datetime('now') WHERE id = ?1",
                     params![ik_id],
-                )
-                ?;
+                )?;
                 Ok(())
             })
             .await;

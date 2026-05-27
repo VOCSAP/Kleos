@@ -55,19 +55,14 @@ pub async fn vector_search(
 
     match db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(sql)?;
-            let mut rows = stmt
-                .query(rusqlite::params![embedding_json, limit as i64, user_id])?;
+            let mut stmt = conn.prepare(sql)?;
+            let mut rows = stmt.query(rusqlite::params![embedding_json, limit as i64, user_id])?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.
             let mut hits = Vec::with_capacity(limit);
             let mut rank: usize = 0;
-            while let Some(row) = rows
-                .next()?
-            {
-                let memory_id: i64 = row
-                    .get(0)?;
+            while let Some(row) = rows.next()? {
+                let memory_id: i64 = row.get(0)?;
                 hits.push(VectorHit {
                     memory_id,
                     distance: None,
@@ -147,7 +142,6 @@ async fn fetch_chunk_texts_batch(
     db: &Database,
     winners: &[(i64, usize)],
 ) -> Result<std::collections::HashMap<i64, String>> {
-    
     if winners.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
@@ -155,11 +149,10 @@ async fn fetch_chunk_texts_batch(
     let winners_owned: Vec<(i64, usize)> = winners.to_vec();
     db.read(move |conn| {
         let mut map = std::collections::HashMap::with_capacity(winners_owned.len());
-        let mut stmt = conn
-            .prepare(
-                "SELECT content FROM memory_chunks \
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memory_chunks \
                  WHERE memory_id = ?1 AND chunk_idx = ?2",
-            )?;
+        )?;
         for (memory_id, chunk_idx) in &winners_owned {
             if let Ok(text) = stmt
                 .query_row(rusqlite::params![memory_id, *chunk_idx as i64], |row| {

@@ -8,7 +8,6 @@ use crate::db::Database;
 use crate::{EngError, Result};
 use serde::{Deserialize, Serialize};
 
-
 /// A dependency edge: task `task_id` depends on task `depends_on`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dependency {
@@ -43,12 +42,9 @@ pub async fn has_circular_dependency(db: &Database, task_id: i64, target_id: i64
             if !visited.insert(current) {
                 continue;
             }
-            let mut stmt = conn
-                .prepare("SELECT depends_on FROM chiasm_task_dependencies WHERE task_id = ?1")
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![current])
-                ?;
+            let mut stmt =
+                conn.prepare("SELECT depends_on FROM chiasm_task_dependencies WHERE task_id = ?1")?;
+            let mut rows = stmt.query(rusqlite::params![current])?;
             while let Some(row) = rows.next()? {
                 let dep: i64 = row.get(0)?;
                 queue.push_back(dep);
@@ -83,8 +79,7 @@ pub async fn add_dependencies(db: &Database, task_id: i64, depends_on: &[i64]) -
                 "INSERT OR IGNORE INTO chiasm_task_dependencies (task_id, depends_on) \
                  VALUES (?1, ?2)",
                 rusqlite::params![task_id, dep_id],
-            )
-            ?;
+            )?;
         }
         Ok(())
     })
@@ -94,18 +89,14 @@ pub async fn add_dependencies(db: &Database, task_id: i64, depends_on: &[i64]) -
 /// List all dependencies for a task, joining the depended-on task's title and status.
 pub async fn get_dependencies(db: &Database, task_id: i64) -> Result<Vec<Dependency>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT d.id, d.task_id, d.depends_on, t.title, t.status, d.created_at \
+        let mut stmt = conn.prepare(
+            "SELECT d.id, d.task_id, d.depends_on, t.title, t.status, d.created_at \
                  FROM chiasm_task_dependencies d \
                  LEFT JOIN chiasm_tasks t ON t.id = d.depends_on \
                  WHERE d.task_id = ?1 \
                  ORDER BY d.id ASC",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![task_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![task_id])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(Dependency {
@@ -145,14 +136,10 @@ pub async fn check_and_unblock(
     // Find all tasks that have a dependency on the completed task
     let dependents: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT DISTINCT task_id FROM chiasm_task_dependencies WHERE depends_on = ?1",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![completed_task_id])
-                ?;
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT task_id FROM chiasm_task_dependencies WHERE depends_on = ?1",
+            )?;
+            let mut rows = stmt.query(rusqlite::params![completed_task_id])?;
             let mut ids = Vec::new();
             while let Some(row) = rows.next()? {
                 ids.push(row.get(0)?);
@@ -169,18 +156,15 @@ pub async fn check_and_unblock(
         // committing the status change to the DB.
         let all_complete: bool = db
             .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT COUNT(*) FROM chiasm_task_dependencies d \
+                let mut stmt = conn.prepare(
+                    "SELECT COUNT(*) FROM chiasm_task_dependencies d \
                          JOIN chiasm_tasks t ON t.id = d.depends_on \
                          WHERE d.task_id = ?1 \
                            AND d.depends_on != ?2 \
                            AND t.status != 'completed'",
-                    )
-                    ?;
-                let count: i64 = stmt
-                    .query_row(rusqlite::params![task_id, completed_task_id], |r| r.get(0))
-                    ?;
+                )?;
+                let count: i64 =
+                    stmt.query_row(rusqlite::params![task_id, completed_task_id], |r| r.get(0))?;
                 Ok(count == 0)
             })
             .await?;

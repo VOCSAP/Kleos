@@ -8,7 +8,6 @@ use crate::Result;
 use rusqlite::params;
 use tracing::{info, warn};
 
-
 /// Detect contradictions between a new memory and existing facts.
 ///
 /// Extracts SVO triples from the memory's structured_facts and compares
@@ -22,13 +21,11 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
     // Get structured facts for this memory (tenant-scoped)
     let new_facts: Vec<(i64, String, String, String, f64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, subject, predicate, object, confidence \
+            let mut stmt = conn.prepare(
+                "SELECT id, subject, predicate, object, confidence \
                      FROM structured_facts \
                      WHERE memory_id = ?1",
-                )
-                ?;
+            )?;
             let rows = stmt
                 .query_map(params![memory_id], |row| {
                     Ok((
@@ -38,10 +35,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                         row.get::<_, String>(3)?,
                         row.get::<_, f64>(4)?,
                     ))
-                })
-                ?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await?;
@@ -57,16 +52,14 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 
         let existing: Vec<(i64, String, i64, f64)> = db
             .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
+                let mut stmt = conn.prepare(
+                    "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
                          FROM structured_facts sf \
                          WHERE sf.subject = ?1 AND sf.predicate = ?2 \
                            AND sf.memory_id != ?3 \
                            AND sf.id != ?4 \
                          ORDER BY sf.confidence DESC",
-                    )
-                    ?;
+                )?;
                 let rows = stmt
                     .query_map(params![subject_c, predicate_c, memory_id, nfid], |row| {
                         Ok((
@@ -75,10 +68,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                             row.get::<_, i64>(2)?,
                             row.get::<_, f64>(3)?,
                         ))
-                    })
-                    ?
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    ?;
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -121,8 +112,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                              (source_id, target_id, similarity, type) \
                              VALUES (?1, ?2, ?3, 'contradicts')",
                             params![memory_id, mem_b_id, conf_f64],
-                        )
-                        ?;
+                        )?;
                         Ok(())
                     })
                     .await
@@ -145,9 +135,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec<Contradiction>> {
     let rows: Vec<(i64, i64, String, String, String, String, f64, f64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT sf1.memory_id, sf2.memory_id, \
+            let mut stmt = conn.prepare(
+                "SELECT sf1.memory_id, sf2.memory_id, \
                             sf1.subject, sf1.predicate, sf1.object, sf2.object, \
                             sf1.confidence, sf2.confidence \
                      FROM structured_facts sf1 \
@@ -156,8 +145,7 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                        AND sf1.id < sf2.id \
                        AND sf1.memory_id != sf2.memory_id \
                      LIMIT 500",
-                )
-                ?;
+            )?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
@@ -170,10 +158,8 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                         row.get::<_, f64>(6)?,
                         row.get::<_, f64>(7)?,
                     ))
-                })
-                ?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await?;

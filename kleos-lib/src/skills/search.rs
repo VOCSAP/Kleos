@@ -47,8 +47,7 @@ pub async fn search_skills(
     );
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let skills = stmt
             .query_map(params![sanitized, limit as i64, user_id], row_to_skill)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -230,17 +229,15 @@ async fn fts_candidates(db: &Database, sanitized: &str, limit: usize) -> Result<
     let q = sanitized.to_string();
     let limit_i = limit as i64;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT sr.id FROM skill_records sr \
+        let mut stmt = conn.prepare(
+            "SELECT sr.id FROM skill_records sr \
                  JOIN (SELECT rowid FROM skills_fts WHERE skills_fts MATCH ?1) fts \
                  ON fts.rowid = sr.id \
                  WHERE sr.is_active = 1 \
                  ORDER BY sr.trust_score DESC \
                  LIMIT ?2",
-            )?;
-        let rows = stmt
-            .query_map(params![q, limit_i], |r| r.get::<_, i64>(0))?;
+        )?;
+        let rows = stmt.query_map(params![q, limit_i], |r| r.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for (idx, r) in rows.enumerate() {
             let id = r?;
@@ -273,12 +270,10 @@ async fn fetch_by_ids(db: &Database, ids: &[i64], include_deprecated: bool) -> R
         dep = dep_clause
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let bound: Vec<&dyn rusqlite::ToSql> =
             ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        let rows = stmt
-            .query_map(bound.as_slice(), row_to_skill)?;
+        let rows = stmt.query_map(bound.as_slice(), row_to_skill)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -303,15 +298,13 @@ async fn ids_with_tag(
         ph = placeholders
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + ids.len());
         bound.push(&tag);
         for id in &ids {
             bound.push(id);
         }
-        let rows = stmt
-            .query_map(bound.as_slice(), |r| r.get::<_, i64>(0))?;
+        let rows = stmt.query_map(bound.as_slice(), |r| r.get::<_, i64>(0))?;
         let mut out = std::collections::HashSet::new();
         for r in rows {
             out.insert(r?);

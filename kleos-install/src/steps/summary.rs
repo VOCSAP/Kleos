@@ -82,7 +82,7 @@ fn draw_plan_summary(
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
-            Constraint::Min(10), // summary text
+            Constraint::Min(10),   // summary text
             Constraint::Length(3), // install button
         ])
         .split(area);
@@ -92,7 +92,9 @@ fn draw_plan_summary(
     // Components section.
     lines.push(Line::from(vec![Span::styled(
         "Components to install:",
-        Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(COLOR_ACTIVE)
+            .add_modifier(Modifier::BOLD),
     )]));
     for comp in &state.selected_components {
         lines.push(Line::from(vec![
@@ -105,7 +107,9 @@ fn draw_plan_summary(
     // Install paths section.
     lines.push(Line::from(vec![Span::styled(
         "Installation paths:",
-        Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(COLOR_ACTIVE)
+            .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(vec![
         Span::raw("  Binaries:  "),
@@ -124,11 +128,17 @@ fn draw_plan_summary(
     lines.push(Line::from(""));
 
     // Server config section (if server selected).
-    if state.selected_components.iter().any(|c| c == "kleos-server") {
+    if state
+        .selected_components
+        .iter()
+        .any(|c| c == "kleos-server")
+    {
         let sc = &state.server_config;
         lines.push(Line::from(vec![Span::styled(
             "Server configuration:",
-            Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(COLOR_ACTIVE)
+                .add_modifier(Modifier::BOLD),
         )]));
         lines.push(Line::from(vec![
             Span::raw("  Listen: "),
@@ -150,12 +160,18 @@ fn draw_plan_summary(
     // Security section.
     lines.push(Line::from(vec![Span::styled(
         "Security:",
-        Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(COLOR_ACTIVE)
+            .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(vec![
         Span::raw("  Open access: "),
         Span::styled(
-            if state.security_config.open_access { "YES (insecure)" } else { "No (recommended)" },
+            if state.security_config.open_access {
+                "YES (insecure)"
+            } else {
+                "No (recommended)"
+            },
             if state.security_config.open_access {
                 Style::default().fg(COLOR_ERROR)
             } else {
@@ -180,7 +196,9 @@ fn draw_plan_summary(
     };
     lines.push(Line::from(vec![Span::styled(
         "System integration:",
-        Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(COLOR_ACTIVE)
+            .add_modifier(Modifier::BOLD),
     )]));
     lines.push(Line::from(vec![
         Span::raw("  "),
@@ -264,11 +282,19 @@ fn draw_post_install(f: &mut Frame, area: Rect, step_state: &SummaryStepState) {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         "Next steps:",
-        Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(COLOR_ACTIVE)
+            .add_modifier(Modifier::BOLD),
     )]));
-    lines.push(Line::from("  1. Save the API key shown above in a secure location."));
-    lines.push(Line::from("  2. Run `kleos-cli status` to verify the server is running."));
-    lines.push(Line::from("  3. See the docs for MCP and agent configuration."));
+    lines.push(Line::from(
+        "  1. Save the API key shown above in a secure location.",
+    ));
+    lines.push(Line::from(
+        "  2. Run `kleos-cli status` to verify the server is running.",
+    ));
+    lines.push(Line::from(
+        "  3. See the docs for MCP and agent configuration.",
+    ));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![Span::styled(
         "  Press q or Esc to exit the installer.",
@@ -371,11 +397,12 @@ pub async fn handle_summary_input(
         KeyCode::Enter => {
             // Run installation.
             step_state.installing = true;
-            step_state.progress_lines.push("Starting installation...".to_string());
+            step_state
+                .progress_lines
+                .push("Starting installation...".to_string());
 
             let plan = state.build_plan();
-            let lines_arc =
-                std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let lines_arc = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let progress = CollectingProgress {
                 lines: lines_arc.clone(),
             };

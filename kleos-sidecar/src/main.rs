@@ -260,26 +260,14 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
             cfg.max_pending_per_session,
             5000_usize
         ),
-        retain_every_n_turns: pick!(
-            cli.retain_every_n_turns,
-            cfg.retain_every_n_turns,
-            10_usize
-        ),
-        retain_overlap_turns: pick!(
-            cli.retain_overlap_turns,
-            cfg.retain_overlap_turns,
-            2_usize
-        ),
+        retain_every_n_turns: pick!(cli.retain_every_n_turns, cfg.retain_every_n_turns, 10_usize),
+        retain_overlap_turns: pick!(cli.retain_overlap_turns, cfg.retain_overlap_turns, 2_usize),
         retain_roles: pick!(
             cli.retain_roles,
             cfg.retain_roles,
             String::from("user,assistant,tool")
         ),
-        retain_tool_calls: pick!(
-            cli.retain_tool_calls,
-            cfg.retain_tool_calls,
-            true
-        ),
+        retain_tool_calls: pick!(cli.retain_tool_calls, cfg.retain_tool_calls, true),
         compress_enabled: pick!(cli.compress_enabled, cfg.compress_enabled, true),
         compress_model: cli.compress_model.or(cfg.compress_model),
         gate_model: cli.gate_model.or(cfg.gate_model),

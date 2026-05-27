@@ -144,8 +144,7 @@ async fn upload_init(
                 chunk_size,
                 expires_at_db
             ],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -170,25 +169,26 @@ async fn load_session(
     let id = upload_id.to_string();
     let row: Option<UploadSession> = db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT user_id, status, source, filename, content_type,
+            Ok(conn
+                .query_row(
+                    "SELECT user_id, status, source, filename, content_type,
                         total_chunks, total_size, expires_at
                    FROM upload_sessions WHERE upload_id = ?1",
-                params![id],
-                |row| {
-                    Ok(UploadSession {
-                        user_id: row.get(0)?,
-                        status: row.get(1)?,
-                        source: row.get(2)?,
-                        filename: row.get(3)?,
-                        content_type: row.get(4)?,
-                        total_chunks: row.get(5)?,
-                        total_size: row.get(6)?,
-                        expires_at: row.get(7)?,
-                    })
-                },
-            )
-            .optional()?)
+                    params![id],
+                    |row| {
+                        Ok(UploadSession {
+                            user_id: row.get(0)?,
+                            status: row.get(1)?,
+                            source: row.get(2)?,
+                            filename: row.get(3)?,
+                            content_type: row.get(4)?,
+                            total_chunks: row.get(5)?,
+                            total_size: row.get(6)?,
+                            expires_at: row.get(7)?,
+                        })
+                    },
+                )
+                .optional()?)
         })
         .await?;
     row.ok_or_else(|| kleos_lib::EngError::NotFound("upload session not found".into()))
@@ -279,16 +279,13 @@ async fn upload_chunk(
                     params![upload_id, chunk_index],
                     |row| row.get(0),
                 )
-                .optional()
-                ?;
+                .optional()?;
 
-            let projected_total: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(SUM(size), 0) FROM upload_chunks WHERE upload_id = ?1",
-                    params![upload_id],
-                    |row| row.get(0),
-                )
-                ?;
+            let projected_total: i64 = conn.query_row(
+                "SELECT COALESCE(SUM(size), 0) FROM upload_chunks WHERE upload_id = ?1",
+                params![upload_id],
+                |row| row.get(0),
+            )?;
             let adjusted = projected_total - existing_size.unwrap_or(0) + size;
             if adjusted > MAX_UPLOAD_TOTAL_BYTES {
                 return Err(kleos_lib::EngError::InvalidInput(format!(
@@ -306,16 +303,13 @@ async fn upload_chunk(
                      data = excluded.data,
                      created_at = datetime('now')",
                 params![upload_id, chunk_index, chunk_hash, size, raw_for_db],
-            )
-            ?;
+            )?;
 
-            let (count, bytes): (i64, i64) = conn
-                .query_row(
-                    "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM upload_chunks WHERE upload_id = ?1",
-                    params![upload_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                ?;
+            let (count, bytes): (i64, i64) = conn.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM upload_chunks WHERE upload_id = ?1",
+                params![upload_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
             Ok((count, bytes))
         })
         .await?;
@@ -342,21 +336,17 @@ async fn upload_complete(
     let upload_id = body.upload_id.clone();
     let chunks: Vec<(i64, String, Vec<u8>)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT chunk_index, chunk_hash, data FROM upload_chunks
+            let mut stmt = conn.prepare(
+                "SELECT chunk_index, chunk_hash, data FROM upload_chunks
                        WHERE upload_id = ?1 ORDER BY chunk_index ASC",
-                )
-                ?;
-            let rows = stmt
-                .query_map(params![upload_id], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Vec<u8>>(2)?,
-                    ))
-                })
-                ?;
+            )?;
+            let rows = stmt.query_map(params![upload_id], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
@@ -501,13 +491,11 @@ async fn upload_complete(
                completed_at = datetime('now'), final_sha256 = ?1
                WHERE upload_id = ?2",
             params![final_hash_db, upload_id_db],
-        )
-        ?;
+        )?;
         conn.execute(
             "DELETE FROM upload_chunks WHERE upload_id = ?1",
             params![upload_id_db],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -542,13 +530,11 @@ async fn upload_abort(
             "UPDATE upload_sessions SET status = 'aborted',
                completed_at = datetime('now') WHERE upload_id = ?1",
             params![upload_id],
-        )
-        ?;
+        )?;
         conn.execute(
             "DELETE FROM upload_chunks WHERE upload_id = ?1",
             params![upload_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -573,21 +559,16 @@ async fn upload_status(
     let id = upload_id.clone();
     let (chunks_received, bytes_received, received_indices): (i64, i64, Vec<i64>) = db
         .read(move |conn| {
-            let (count, bytes): (i64, i64) = conn
-                .query_row(
-                    "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM upload_chunks WHERE upload_id = ?1",
-                    params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                ?;
-            let mut stmt = conn
-                .prepare(
-                    "SELECT chunk_index FROM upload_chunks WHERE upload_id = ?1 ORDER BY chunk_index",
-                )
-                ?;
+            let (count, bytes): (i64, i64) = conn.query_row(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM upload_chunks WHERE upload_id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let mut stmt = conn.prepare(
+                "SELECT chunk_index FROM upload_chunks WHERE upload_id = ?1 ORDER BY chunk_index",
+            )?;
             let indices: Vec<i64> = stmt
-                .query_map(params![id], |row| row.get::<_, i64>(0))
-                ?
+                .query_map(params![id], |row| row.get::<_, i64>(0))?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok((count, bytes, indices))

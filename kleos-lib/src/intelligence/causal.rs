@@ -60,8 +60,8 @@ pub async fn add_link(
     // in a single-owner shard.
     let chain_exists = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2")?;
+            let mut stmt =
+                conn.prepare("SELECT id FROM causal_chains WHERE id = ?1 AND user_id = ?2")?;
             let found = stmt
                 .query_map(params![chain_id, user_id], |_row| Ok(()))?
                 .next()
@@ -82,11 +82,10 @@ pub async fn add_link(
     // no-op in a single-owner shard.
     let count: i64 = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT COUNT(*) FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT COUNT(*) FROM memories \
                      WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0",
-                )?;
+            )?;
             let c: i64 = stmt
                 .query_row(params![cause_memory_id, effect_memory_id, user_id], |row| {
                     row.get(0)
@@ -128,23 +127,21 @@ pub async fn add_link(
 pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<CausalChain> {
     let mut chain = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, root_memory_id, description, confidence, created_at \
+            let mut stmt = conn.prepare(
+                "SELECT id, root_memory_id, description, confidence, created_at \
                      FROM causal_chains WHERE id = ?1 AND user_id = ?2",
-                )?;
-            let mut rows = stmt
-                .query_map(params![chain_id, user_id], |row| {
-                    Ok(CausalChain {
-                        id: row.get(0)?,
-                        root_memory_id: row.get(1)?,
-                        description: row.get(2)?,
-                        confidence: row.get(3)?,
-                        user_id,
-                        created_at: row.get(4)?,
-                        links: Vec::new(),
-                    })
-                })?;
+            )?;
+            let mut rows = stmt.query_map(params![chain_id, user_id], |row| {
+                Ok(CausalChain {
+                    id: row.get(0)?,
+                    root_memory_id: row.get(1)?,
+                    description: row.get(2)?,
+                    confidence: row.get(3)?,
+                    user_id,
+                    created_at: row.get(4)?,
+                    links: Vec::new(),
+                })
+            })?;
             rows.next()
                 .transpose()?
                 .ok_or_else(|| EngError::NotFound(format!("causal chain {} not found", chain_id)))
@@ -184,12 +181,11 @@ pub async fn get_chain(db: &Database, chain_id: i64, user_id: i64) -> Result<Cau
 pub async fn list_chains(db: &Database, user_id: i64, limit: usize) -> Result<Vec<CausalChain>> {
     let ids = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
-                )?;
-            let rows = stmt
-                .query_map(params![user_id, limit as i64], |row| row.get::<_, i64>(0))?;
+            let mut stmt = conn.prepare(
+                "SELECT id FROM causal_chains WHERE user_id = ?1 ORDER BY id DESC LIMIT ?2",
+            )?;
+            let rows =
+                stmt.query_map(params![user_id, limit as i64], |row| row.get::<_, i64>(0))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -234,17 +230,15 @@ pub async fn backward_chain(
         }
         let rows: Vec<(i64, f64)> = db
             .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT l.cause_memory_id, l.strength \
+                let mut stmt = conn.prepare(
+                    "SELECT l.cause_memory_id, l.strength \
                          FROM causal_links l \
                          JOIN causal_chains c ON c.id = l.chain_id \
                          WHERE l.effect_memory_id = ?1 AND c.user_id = ?2",
-                    )?;
-                let iter = stmt
-                    .query_map(params![current_effect, user_id], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
-                    })?;
+                )?;
+                let iter = stmt.query_map(params![current_effect, user_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+                })?;
                 Ok(iter.collect::<rusqlite::Result<Vec<_>>>()?)
             })
             .await?;

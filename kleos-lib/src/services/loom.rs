@@ -143,7 +143,6 @@ pub struct LoomStats {
 
 // --- Error helper ---
 
-
 // --- Row mapping helpers ---
 
 fn row_to_workflow(row: &rusqlite::Row<'_>) -> Result<Workflow> {
@@ -311,8 +310,7 @@ pub async fn add_log(
             "INSERT INTO loom_run_logs (run_id, step_id, level, message, data)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             rusqlite::params![run_id, step_id, level, message, data_str],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -339,54 +337,38 @@ pub async fn get_logs(
 
         if let Some(sid) = step_id {
             if let Some(ref lvl) = level {
-                stmt = conn
-                    .prepare(
-                        "SELECT id, run_id, step_id, level, message, data, created_at
+                stmt = conn.prepare(
+                    "SELECT id, run_id, step_id, level, message, data, created_at
                          FROM loom_run_logs
                          WHERE run_id = ?1 AND step_id = ?2 AND level = ?3
                          ORDER BY id ASC LIMIT ?4",
-                    )
-                    ?;
-                rows = stmt
-                    .query(rusqlite::params![run_id, sid, lvl, limit_i64])
-                    ?;
+                )?;
+                rows = stmt.query(rusqlite::params![run_id, sid, lvl, limit_i64])?;
             } else {
-                stmt = conn
-                    .prepare(
-                        "SELECT id, run_id, step_id, level, message, data, created_at
+                stmt = conn.prepare(
+                    "SELECT id, run_id, step_id, level, message, data, created_at
                          FROM loom_run_logs
                          WHERE run_id = ?1 AND step_id = ?2
                          ORDER BY id ASC LIMIT ?3",
-                    )
-                    ?;
-                rows = stmt
-                    .query(rusqlite::params![run_id, sid, limit_i64])
-                    ?;
+                )?;
+                rows = stmt.query(rusqlite::params![run_id, sid, limit_i64])?;
             }
         } else if let Some(ref lvl) = level {
-            stmt = conn
-                .prepare(
-                    "SELECT id, run_id, step_id, level, message, data, created_at
+            stmt = conn.prepare(
+                "SELECT id, run_id, step_id, level, message, data, created_at
                      FROM loom_run_logs
                      WHERE run_id = ?1 AND level = ?2
                      ORDER BY id ASC LIMIT ?3",
-                )
-                ?;
-            rows = stmt
-                .query(rusqlite::params![run_id, lvl, limit_i64])
-                ?;
+            )?;
+            rows = stmt.query(rusqlite::params![run_id, lvl, limit_i64])?;
         } else {
-            stmt = conn
-                .prepare(
-                    "SELECT id, run_id, step_id, level, message, data, created_at
+            stmt = conn.prepare(
+                "SELECT id, run_id, step_id, level, message, data, created_at
                      FROM loom_run_logs
                      WHERE run_id = ?1
                      ORDER BY id ASC LIMIT ?2",
-                )
-                ?;
-            rows = stmt
-                .query(rusqlite::params![run_id, limit_i64])
-                ?;
+            )?;
+            rows = stmt.query(rusqlite::params![run_id, limit_i64])?;
         }
 
         let mut entries = Vec::new();
@@ -422,16 +404,13 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
             "INSERT INTO loom_workflows (name, description, steps)
              VALUES (?1, ?2, ?3)",
             rusqlite::params![name, description, steps_json],
-        )
-        ?;
+        )?;
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, description, steps, created_at, updated_at
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, steps, created_at, updated_at
                  FROM loom_workflows
                  WHERE rowid = last_insert_rowid()",
-            )
-            ?;
+        )?;
         let mut rows = stmt.query(())?;
 
         if let Some(row) = rows.next()? {
@@ -451,16 +430,12 @@ pub async fn create_workflow(db: &Database, req: CreateWorkflowRequest) -> Resul
 #[tracing::instrument(skip(db))]
 pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, description, steps, created_at, updated_at
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, steps, created_at, updated_at
                  FROM loom_workflows
                  WHERE id = ?1",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![id])?;
 
         if let Some(row) = rows.next()? {
             Ok(row_to_workflow(row)?)
@@ -476,16 +451,12 @@ pub async fn get_workflow(db: &Database, id: i64) -> Result<Workflow> {
 pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow> {
     let name = name.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, description, steps, created_at, updated_at
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, steps, created_at, updated_at
                  FROM loom_workflows
                  WHERE name = ?1",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![name])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![name])?;
 
         if let Some(row) = rows.next()? {
             Ok(row_to_workflow(row)?)
@@ -500,13 +471,11 @@ pub async fn get_workflow_by_name(db: &Database, name: &str) -> Result<Workflow>
 #[tracing::instrument(skip(db))]
 pub async fn list_workflows(db: &Database) -> Result<Vec<Workflow>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, description, steps, created_at, updated_at
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, steps, created_at, updated_at
                  FROM loom_workflows
                  ORDER BY name ASC",
-            )
-            ?;
+        )?;
         let mut rows = stmt.query(())?;
 
         let mut workflows = Vec::new();
@@ -590,8 +559,7 @@ pub async fn update_workflow(
         let params_refs: Vec<&dyn rusqlite::ToSql> =
             params_dyn.iter().map(|b| b.as_ref()).collect();
 
-        conn.execute(&sql, params_refs.as_slice())
-            ?;
+        conn.execute(&sql, params_refs.as_slice())?;
         Ok(())
     })
     .await?;
@@ -603,12 +571,10 @@ pub async fn update_workflow(
 #[tracing::instrument(skip(db))]
 pub async fn delete_workflow(db: &Database, id: i64) -> Result<bool> {
     db.write(move |conn| {
-        let affected = conn
-            .execute(
-                "DELETE FROM loom_workflows WHERE id = ?1",
-                rusqlite::params![id],
-            )
-            ?;
+        let affected = conn.execute(
+            "DELETE FROM loom_workflows WHERE id = ?1",
+            rusqlite::params![id],
+        )?;
         Ok(affected > 0)
     })
     .await
@@ -637,15 +603,11 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
     };
     let workflow = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, name, description, steps, created_at, updated_at
+            let mut stmt = conn.prepare(
+                "SELECT id, name, description, steps, created_at, updated_at
                      FROM loom_workflows WHERE id = ?1",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![workflow_id])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![workflow_id])?;
             if let Some(row) = rows.next()? {
                 Ok(Some(row_to_workflow(row)?))
             } else {
@@ -667,16 +629,13 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
                 "INSERT INTO loom_runs (workflow_id, status, input, output)
                  VALUES (?1, 'pending', ?2, '{}')",
                 rusqlite::params![workflow_id, input_str],
-            )
-            ?;
+            )?;
 
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, workflow_id, status, input, output, error,
+            let mut stmt = conn.prepare(
+                "SELECT id, workflow_id, status, input, output, error,
                             started_at, completed_at, created_at, updated_at
                      FROM loom_runs WHERE rowid = last_insert_rowid()",
-                )
-                ?;
+            )?;
             let mut rows = stmt.query(())?;
 
             if let Some(row) = rows.next()? {
@@ -716,8 +675,7 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
                     max_retries,
                     timeout_ms
                 ],
-            )
-            ?;
+            )?;
         }
         Ok(())
     })
@@ -754,17 +712,13 @@ pub async fn create_run(db: &Database, req: CreateRunRequest) -> Result<Run> {
 #[tracing::instrument(skip(db), fields(run_id = id, user_id))]
 pub async fn get_run(db: &Database, id: i64) -> Result<Run> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, workflow_id, status, input, output, error,
+        let mut stmt = conn.prepare(
+            "SELECT id, workflow_id, status, input, output, error,
                         started_at, completed_at, created_at, updated_at
                  FROM loom_runs
                  WHERE id = ?1",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![id])?;
 
         if let Some(row) = rows.next()? {
             Ok(row_to_run(row)?)
@@ -791,59 +745,43 @@ pub async fn list_runs(
 
         match (workflow_id, &status) {
             (Some(wid), Some(st)) => {
-                stmt = conn
-                    .prepare(
-                        "SELECT id, workflow_id, status, input, output, error,
+                stmt = conn.prepare(
+                    "SELECT id, workflow_id, status, input, output, error,
                             started_at, completed_at, created_at, updated_at
                          FROM loom_runs
                          WHERE workflow_id = ?1 AND status = ?2
                          ORDER BY id DESC LIMIT ?3",
-                    )
-                    ?;
-                rows = stmt
-                    .query(rusqlite::params![wid, st, limit_i64])
-                    ?;
+                )?;
+                rows = stmt.query(rusqlite::params![wid, st, limit_i64])?;
             }
             (Some(wid), None) => {
-                stmt = conn
-                    .prepare(
-                        "SELECT id, workflow_id, status, input, output, error,
+                stmt = conn.prepare(
+                    "SELECT id, workflow_id, status, input, output, error,
                             started_at, completed_at, created_at, updated_at
                          FROM loom_runs
                          WHERE workflow_id = ?1
                          ORDER BY id DESC LIMIT ?2",
-                    )
-                    ?;
-                rows = stmt
-                    .query(rusqlite::params![wid, limit_i64])
-                    ?;
+                )?;
+                rows = stmt.query(rusqlite::params![wid, limit_i64])?;
             }
             (None, Some(st)) => {
-                stmt = conn
-                    .prepare(
-                        "SELECT id, workflow_id, status, input, output, error,
+                stmt = conn.prepare(
+                    "SELECT id, workflow_id, status, input, output, error,
                             started_at, completed_at, created_at, updated_at
                          FROM loom_runs
                          WHERE status = ?1
                          ORDER BY id DESC LIMIT ?2",
-                    )
-                    ?;
-                rows = stmt
-                    .query(rusqlite::params![st, limit_i64])
-                    ?;
+                )?;
+                rows = stmt.query(rusqlite::params![st, limit_i64])?;
             }
             (None, None) => {
-                stmt = conn
-                    .prepare(
-                        "SELECT id, workflow_id, status, input, output, error,
+                stmt = conn.prepare(
+                    "SELECT id, workflow_id, status, input, output, error,
                             started_at, completed_at, created_at, updated_at
                          FROM loom_runs
                          ORDER BY id DESC LIMIT ?1",
-                    )
-                    ?;
-                rows = stmt
-                    .query(rusqlite::params![limit_i64])
-                    ?;
+                )?;
+                rows = stmt.query(rusqlite::params![limit_i64])?;
             }
         }
 
@@ -873,16 +811,14 @@ pub async fn cancel_run(db: &Database, id: i64, _user_id: i64) -> Result<bool> {
              SET status = 'cancelled', updated_at = datetime('now')
              WHERE id = ?1",
             rusqlite::params![id],
-        )
-        ?;
+        )?;
 
         conn.execute(
             "UPDATE loom_steps
              SET status = 'skipped'
              WHERE run_id = ?1 AND status IN ('pending', 'running')",
             rusqlite::params![id],
-        )
-        ?;
+        )?;
 
         Ok(())
     })
@@ -912,19 +848,15 @@ pub async fn get_steps(db: &Database, run_id: i64, _user_id: i64) -> Result<Vec<
     // Verify run ownership
     get_run(db, run_id).await?;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, run_id, name, type, config, status, input, output,
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, name, type, config, status, input, output,
                         error, depends_on, retry_count, max_retries, timeout_ms,
                         started_at, completed_at, created_at
                  FROM loom_steps
                  WHERE run_id = ?1
                  ORDER BY id ASC",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![run_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![run_id])?;
 
         let mut steps = Vec::new();
         while let Some(row) = rows.next()? {
@@ -939,18 +871,14 @@ pub async fn get_steps(db: &Database, run_id: i64, _user_id: i64) -> Result<Vec<
 #[tracing::instrument(skip(db), fields(step_id = id))]
 pub async fn get_step(db: &Database, id: i64) -> Result<Step> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, run_id, name, type, config, status, input, output,
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, name, type, config, status, input, output,
                         error, depends_on, retry_count, max_retries, timeout_ms,
                         started_at, completed_at, created_at
                  FROM loom_steps
                  WHERE id = ?1",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![id])?;
 
         if let Some(row) = rows.next()? {
             Ok(row_to_step(row)?)
@@ -989,8 +917,7 @@ pub async fn complete_step(
                  completed_at = datetime('now')
              WHERE id = ?2",
             rusqlite::params![output_str, step_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -1029,8 +956,7 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
                      error = ?1, started_at = NULL
                  WHERE id = ?2",
                 rusqlite::params![err_clone, step_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -1064,8 +990,7 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
                      completed_at = datetime('now')
                  WHERE id = ?2",
                 rusqlite::params![err_step, step_id],
-            )
-            ?;
+            )?;
 
             conn.execute(
                 "UPDATE loom_runs
@@ -1074,8 +999,7 @@ pub async fn fail_step(db: &Database, step_id: i64, error: &str, _user_id: i64) 
                      updated_at = datetime('now')
                  WHERE id = ?2",
                 rusqlite::params![err_run, run_id],
-            )
-            ?;
+            )?;
 
             Ok(())
         })
@@ -1119,16 +1043,12 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
     // Fetch run (internal function)
     let run = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, workflow_id, status, input, output, error,
+            let mut stmt = conn.prepare(
+                "SELECT id, workflow_id, status, input, output, error,
                             started_at, completed_at, created_at, updated_at
                      FROM loom_runs WHERE id = ?1",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![run_id])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![run_id])?;
 
             if let Some(row) = rows.next()? {
                 Ok(Some(row_to_run(row)?))
@@ -1153,8 +1073,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
                      updated_at = datetime('now')
                  WHERE id = ?1",
                 rusqlite::params![run_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -1192,8 +1111,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
                      updated_at = datetime('now')
                  WHERE id = ?2",
                 rusqlite::params![output_str, run_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -1289,8 +1207,7 @@ pub async fn advance_run(db: &Database, run_id: i64) -> Result<()> {
                      started_at = datetime('now')
                  WHERE id = ?2",
                 rusqlite::params![input_str, ready_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -1424,15 +1341,13 @@ pub async fn execute_transform_step(
 pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats> {
     let (workflows, runs, active_runs, steps, runs_by_status) = if let Some(_uid) = user_id {
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT
+            let mut stmt = conn.prepare(
+                "SELECT
                         (SELECT COUNT(*) FROM loom_workflows),
                         (SELECT COUNT(*) FROM loom_runs),
                         (SELECT COUNT(*) FROM loom_runs WHERE status IN ('pending','running')),
                         (SELECT COUNT(*) FROM loom_steps)",
-                )
-                ?;
+            )?;
             let mut rows = stmt.query(())?;
 
             let (w, ru, ar, s) = if let Some(row) = rows.next()? {
@@ -1446,12 +1361,10 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
             };
 
             let mut runs_by_status = Vec::new();
-            let mut stmt = conn
-                .prepare(
-                    "SELECT status, COUNT(*) as cnt FROM loom_runs \
+            let mut stmt = conn.prepare(
+                "SELECT status, COUNT(*) as cnt FROM loom_runs \
                      GROUP BY status ORDER BY cnt DESC",
-                )
-                ?;
+            )?;
             let mut rows = stmt.query(())?;
             while let Some(r) = rows.next()? {
                 runs_by_status.push(StatBreakdown {
@@ -1465,15 +1378,13 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
         .await?
     } else {
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT
+            let mut stmt = conn.prepare(
+                "SELECT
                         (SELECT COUNT(*) FROM loom_workflows),
                         (SELECT COUNT(*) FROM loom_runs),
                         (SELECT COUNT(*) FROM loom_runs WHERE status IN ('pending','running')),
                         (SELECT COUNT(*) FROM loom_steps)",
-                )
-                ?;
+            )?;
             let mut rows = stmt.query(())?;
 
             let (w, ru, ar, s) = if let Some(row) = rows.next()? {
@@ -1487,12 +1398,10 @@ pub async fn get_stats(db: &Database, user_id: Option<i64>) -> Result<LoomStats>
             };
 
             let mut runs_by_status = Vec::new();
-            let mut stmt = conn
-                .prepare(
-                    "SELECT status, COUNT(*) as cnt FROM loom_runs \
+            let mut stmt = conn.prepare(
+                "SELECT status, COUNT(*) as cnt FROM loom_runs \
                      GROUP BY status ORDER BY cnt DESC",
-                )
-                ?;
+            )?;
             let mut rows = stmt.query(())?;
             while let Some(r) = rows.next()? {
                 runs_by_status.push(StatBreakdown {

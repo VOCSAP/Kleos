@@ -46,9 +46,7 @@ async fn fetch_embeddings_batch(
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
 
-        let mut rows = stmt
-            .query(param_refs.as_slice())
-            ?;
+        let mut rows = stmt.query(param_refs.as_slice())?;
         let mut map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(owned.len());
         while let Some(row) = rows.next()? {
             let id: i64 = row.get(0)?;
@@ -73,8 +71,7 @@ async fn delete_pending_batch(db: &Database, ledger_ids: Vec<i64>) -> Result<()>
             ledger_ids.iter().map(|id| Box::new(*id) as _).collect();
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
-        stmt.execute(param_refs.as_slice())
-            ?;
+        stmt.execute(param_refs.as_slice())?;
         Ok(())
     })
     .await
@@ -98,20 +95,17 @@ pub async fn build_lance_index_from_existing(db: &Database, _owner_user_id: i64)
 
     let rows: Vec<(i64, Vec<u8>)> = db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, embedding_vec_1024
+            let mut stmt = conn.prepare(
+                "SELECT id, embedding_vec_1024
                      FROM memories
                      WHERE embedding_vec_1024 IS NOT NULL
                        AND is_forgotten = 0
                        AND is_latest = 1",
-                )
-                ?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-                })
-                ?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -152,12 +146,10 @@ pub async fn replay_vector_sync_pending(
     // Tuple: (ledger_id, memory_id, op)
     let pending: Vec<(i64, i64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, memory_id, op FROM vector_sync_pending \
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
-                )
-                ?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map(params![limit as i64], |row| {
                     Ok((
@@ -165,8 +157,7 @@ pub async fn replay_vector_sync_pending(
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
                     ))
-                })
-                ?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -237,8 +228,7 @@ async fn process_pending_batch(
                              last_attempt_at = datetime('now') \
                          WHERE id = ?2",
                         params![e_clone, ledger_id],
-                    )
-                    ?;
+                    )?;
                     Ok(())
                 })
                 .await?;
@@ -262,9 +252,11 @@ async fn process_pending_batch(
 pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
     let count: i64 = db
         .read(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
-                row.get(0)
-            })?)
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
+                    row.get(0)
+                })?,
+            )
         })
         .await?;
     // Return a single synthetic entry so the background round-robin fires.
@@ -293,12 +285,10 @@ pub async fn replay_vector_sync_pending_for_user(
     // Tuple: (ledger_id, memory_id, op)
     let pending: Vec<(i64, i64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, memory_id, op FROM vector_sync_pending \
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
-                )
-                ?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map(params![limit as i64], |row| {
                     Ok((
@@ -306,8 +296,7 @@ pub async fn replay_vector_sync_pending_for_user(
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
                     ))
-                })
-                ?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -477,8 +466,7 @@ async fn persist_primary_db_only(db: &Database, memory_id: i64, emb: &[f32]) -> 
         conn.execute(
             "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
             params![blob, memory_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -493,16 +481,14 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
 
     let rows: Vec<(i64, usize, Vec<u8>)> = db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT mc.memory_id, mc.chunk_idx, mc.embedding_vec_1024
+            let mut stmt = conn.prepare(
+                "SELECT mc.memory_id, mc.chunk_idx, mc.embedding_vec_1024
                      FROM memory_chunks mc
                      JOIN memories m ON m.id = mc.memory_id
                      WHERE mc.embedding_vec_1024 IS NOT NULL
                        AND m.is_forgotten = 0
                        AND m.is_latest = 1",
-                )
-                ?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -510,8 +496,7 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
                         row.get::<_, usize>(1)?,
                         row.get::<_, Vec<u8>>(2)?,
                     ))
-                })
-                ?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)

@@ -1,7 +1,6 @@
 use crate::tenant::pool::TenantPools;
 use crate::Result;
 
-
 // z11-007: the in-memory per-process RateLimiter that used to live here was a
 // dead duplicate of `crate::ratelimit::RateLimiter` (the live one, used by
 // kleos-credd). Nothing constructed this one outside its own tests, so it was
@@ -26,13 +25,10 @@ pub async fn check_rate_limit(
 
     let row = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")
-                ?;
+            let mut stmt =
+                conn.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")?;
 
-            let mut rows = stmt
-                .query(rusqlite::params![key_owned])
-                ?;
+            let mut rows = stmt.query(rusqlite::params![key_owned])?;
 
             match rows.next()? {
                 Some(r) => {
@@ -67,8 +63,7 @@ pub async fn check_rate_limit(
                      SET count = 0, window_start = datetime('now'), updated_at = datetime('now')
                      WHERE key = ?1",
                     rusqlite::params![key_owned2],
-                )
-                ?;
+                )?;
                 Ok(())
             })
             .await?;
@@ -97,8 +92,7 @@ pub async fn increment_counter(db: &TenantPools, key: &str) -> Result<()> {
                  count = count + 1,
                  updated_at = datetime('now')",
             rusqlite::params![key_owned],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;

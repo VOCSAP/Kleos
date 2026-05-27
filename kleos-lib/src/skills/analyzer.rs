@@ -36,8 +36,7 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 pub async fn correct_skill_id(db: &Database, name: &str, _user_id: i64) -> Result<Option<String>> {
     let name = name.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT name FROM skill_records WHERE is_active = 1")?;
+        let mut stmt = conn.prepare("SELECT name FROM skill_records WHERE is_active = 1")?;
 
         let names: Vec<String> = stmt
             .query_map(params![], |row| row.get(0))?
@@ -218,8 +217,7 @@ pub async fn get_failing_skill_candidates(
                    ORDER BY (CAST(sr.success_count AS REAL) / sr.execution_count) ASC, \
                             sr.trust_score ASC \
                    LIMIT ?4";
-        let mut stmt = conn
-            .prepare(sql)?;
+        let mut stmt = conn.prepare(sql)?;
         let ids: Vec<i64> = stmt
             .query_map(
                 params![
@@ -312,21 +310,19 @@ pub async fn get_derive_candidates(
     db.read(move |conn| {
         // Load tag sets for every active skill the user owns. Skills with no
         // tags are excluded; there is nothing for Jaccard to work with.
-        let mut stmt = conn
-            .prepare(
-                "SELECT sr.id, sr.name, st.tag \
+        let mut stmt = conn.prepare(
+            "SELECT sr.id, sr.name, st.tag \
                  FROM skill_records sr \
                  INNER JOIN skill_tags st ON st.skill_id = sr.id \
                  WHERE sr.is_active = 1 AND sr.is_deprecated = 0",
-            )?;
-        let rows = stmt
-            .query_map(params![], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })?;
+        )?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
         let mut tags_by_skill: std::collections::BTreeMap<
             i64,
             (String, std::collections::BTreeSet<String>),
@@ -340,12 +336,11 @@ pub async fn get_derive_candidates(
 
         // Pull every (skill_id, parent_id) pair so we can reject pairs whose
         // derived child already exists.
-        let mut parents_stmt = conn
-            .prepare("SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp")?;
-        let parent_rows = parents_stmt
-            .query_map(params![], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })?;
+        let mut parents_stmt =
+            conn.prepare("SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp")?;
+        let parent_rows = parents_stmt.query_map(params![], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut lineage: std::collections::HashMap<i64, std::collections::BTreeSet<i64>> =
             std::collections::HashMap::new();
         for r in parent_rows.flatten() {

@@ -45,11 +45,11 @@ impl ServerStepState {
                     None
                 }
             }),
-            InputField::with_value("Port", sc.port.to_string(), "4200").with_validator(|v| {
-                match v.parse::<u16>() {
-                    Ok(p) if p > 0 => None,
-                    _ => Some("Port must be a number between 1 and 65535".to_string()),
-                }
+            InputField::with_value("Port", sc.port.to_string(), "4200").with_validator(|v| match v
+                .parse::<u16>(
+            ) {
+                Ok(p) if p > 0 => None,
+                _ => Some("Port must be a number between 1 and 65535".to_string()),
             }),
             InputField::with_value(
                 "Data directory",
@@ -77,9 +77,7 @@ impl ServerStepState {
 
     /// Return `true` if all required fields pass validation.
     pub fn is_valid(&self) -> bool {
-        self.fields[..FIELD_CORS]
-            .iter()
-            .all(|f| f.error.is_none())
+        self.fields[..FIELD_CORS].iter().all(|f| f.error.is_none())
     }
 }
 
@@ -136,16 +134,14 @@ pub fn handle_server_input(
             // Tab/Down: advance to next field or step.
             if step_state.focused_field + 1 < field_count {
                 step_state.focused_field += 1;
-            } else if key.code == KeyCode::Enter
-                && step_state.is_valid() {
-                    apply_to_state(state, step_state);
-                    return StepResult::Next;
-                }
-        }
-        KeyCode::BackTab | KeyCode::Up
-            if step_state.focused_field > 0 => {
-                step_state.focused_field -= 1;
+            } else if key.code == KeyCode::Enter && step_state.is_valid() {
+                apply_to_state(state, step_state);
+                return StepResult::Next;
             }
+        }
+        KeyCode::BackTab | KeyCode::Up if step_state.focused_field > 0 => {
+            step_state.focused_field -= 1;
+        }
         KeyCode::Esc | KeyCode::Backspace if step_state.focused_field == 0 => {
             return StepResult::Back;
         }
@@ -180,7 +176,9 @@ fn apply_to_state(state: &mut WizardState, step_state: &ServerStepState) {
         .parse()
         .unwrap_or(4200);
     sc.data_dir = PathBuf::from(step_state.fields[FIELD_DATA_DIR].effective_value());
-    sc.db_path = step_state.fields[FIELD_DB_PATH].effective_value().to_string();
+    sc.db_path = step_state.fields[FIELD_DB_PATH]
+        .effective_value()
+        .to_string();
 
     let cors = step_state.fields[FIELD_CORS].effective_value();
     sc.cors_origins = if cors.is_empty() {

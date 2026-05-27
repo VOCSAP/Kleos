@@ -42,7 +42,6 @@ pub struct PathConflict {
     pub expires_at: String,
 }
 
-
 /// Read a `PathClaim` from an indexed rusqlite row.
 ///
 /// Column order: id, task_id, agent, project, path, claimed_at, expires_at, released
@@ -61,18 +60,13 @@ fn row_to_claim(row: &rusqlite::Row<'_>) -> Result<PathClaim> {
 
 /// Fetch a single claim by its ID.
 fn get_claim(conn: &rusqlite::Connection, id: i64) -> Result<PathClaim> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
              FROM chiasm_path_claims WHERE id = ?1",
-        )
-        ?;
-    let mut rows = stmt
-        .query(rusqlite::params![id])
-        ?;
+    )?;
+    let mut rows = stmt.query(rusqlite::params![id])?;
     let row = rows
-        .next()
-        ?
+        .next()?
         .ok_or_else(|| EngError::NotFound(format!("path claim {}", id)))?;
     row_to_claim(row)
 }
@@ -109,8 +103,7 @@ pub async fn create_claims(
                         path,
                         format!("+{} seconds", ttl_seconds)
                     ],
-                )
-                ?;
+                )?;
                 ids.push(conn.last_insert_rowid());
             }
             Ok(ids)
@@ -171,9 +164,7 @@ pub async fn check_conflicts(
             let mut stmt = conn.prepare(&sql)?;
 
             let rows_result: Result<Vec<PathConflict>> = if let Some(excl) = exclude_task_id {
-                let mut rows = stmt
-                    .query(rusqlite::params![project_s, path, excl])
-                    ?;
+                let mut rows = stmt.query(rusqlite::params![project_s, path, excl])?;
                 let mut out = Vec::new();
                 while let Some(row) = rows.next()? {
                     out.push(PathConflict {
@@ -185,9 +176,7 @@ pub async fn check_conflicts(
                 }
                 Ok(out)
             } else {
-                let mut rows = stmt
-                    .query(rusqlite::params![project_s, path])
-                    ?;
+                let mut rows = stmt.query(rusqlite::params![project_s, path])?;
                 let mut out = Vec::new();
                 while let Some(row) = rows.next()? {
                     out.push(PathConflict {
@@ -210,19 +199,15 @@ pub async fn check_conflicts(
 /// List all active (non-released, non-expired) claims for a task.
 pub async fn get_claims_for_task(db: &Database, task_id: i64) -> Result<Vec<PathClaim>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
                  FROM chiasm_path_claims \
                  WHERE task_id = ?1 \
                    AND released = 0 \
                    AND expires_at > datetime('now') \
                  ORDER BY id ASC",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![task_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![task_id])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(row_to_claim(row)?);
@@ -236,19 +221,15 @@ pub async fn get_claims_for_task(db: &Database, task_id: i64) -> Result<Vec<Path
 pub async fn get_claims_for_project(db: &Database, project: &str) -> Result<Vec<PathClaim>> {
     let project_s = project.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id, agent, project, path, claimed_at, expires_at, released \
                  FROM chiasm_path_claims \
                  WHERE project = ?1 \
                    AND released = 0 \
                    AND expires_at > datetime('now') \
                  ORDER BY id ASC",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![project_s])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![project_s])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
             out.push(row_to_claim(row)?);
@@ -264,12 +245,10 @@ pub async fn get_claims_for_project(db: &Database, project: &str) -> Result<Vec<
 pub async fn release_claims(db: &Database, task_id: i64) -> Result<usize> {
     let count = db
         .write(move |conn| {
-            let count = conn
-                .execute(
-                    "UPDATE chiasm_path_claims SET released = 1 WHERE task_id = ?1",
-                    rusqlite::params![task_id],
-                )
-                ?;
+            let count = conn.execute(
+                "UPDATE chiasm_path_claims SET released = 1 WHERE task_id = ?1",
+                rusqlite::params![task_id],
+            )?;
             Ok(count)
         })
         .await?;

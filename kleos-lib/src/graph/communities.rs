@@ -8,7 +8,6 @@ use crate::Result;
 use std::collections::HashMap;
 use tracing::info;
 
-
 /// Compute the edge weight used by the Louvain community detector for a
 /// memory_links row. Causal links carry the most weight, corrective and
 /// extending links carry slightly less, consolidation edges are dampened
@@ -47,19 +46,15 @@ pub async fn detect_communities(
     // --- Load memory ids ---
     let memory_ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT id FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND user_id = ?2 \
                      ORDER BY importance DESC, id DESC LIMIT ?1",
-                )
-                ?;
+            )?;
             let ids = stmt
-                .query_map(rusqlite::params![MAX_NODES, user_id], |row| row.get(0))
-                ?
-                .collect::<std::result::Result<Vec<i64>, _>>()
-                ?;
+                .query_map(rusqlite::params![MAX_NODES, user_id], |row| row.get(0))?
+                .collect::<std::result::Result<Vec<i64>, _>>()?;
             Ok(ids)
         })
         .await?;
@@ -81,16 +76,14 @@ pub async fn detect_communities(
 
     let edges: Vec<EdgeRow> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
+            let mut stmt = conn.prepare(
+                "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
                      JOIN memories mt ON mt.id = ml.target_id \
                      WHERE ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0",
-                )
-                ?;
+            )?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok(EdgeRow {
@@ -99,10 +92,8 @@ pub async fn detect_communities(
                         similarity: row.get(2)?,
                         link_type: row.get(3)?,
                     })
-                })
-                ?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                ?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await?;
@@ -142,8 +133,7 @@ pub async fn detect_communities(
                 tx.execute(
                     "UPDATE memories SET community_id = ?1 WHERE id = ?2",
                     rusqlite::params![idx as i64, id],
-                )
-                ?;
+                )?;
             }
             Ok(())
         })
@@ -236,8 +226,7 @@ pub async fn detect_communities(
             tx.execute(
                 "UPDATE memories SET community_id = ?1 WHERE id = ?2",
                 rusqlite::params![cid, node_id],
-            )
-            ?;
+            )?;
         }
         Ok(())
     })
@@ -276,14 +265,12 @@ pub async fn get_community_members(
     limit: usize,
 ) -> Result<Vec<CommunityMember>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, importance, created_at FROM memories \
+        let mut stmt = conn.prepare(
+            "SELECT id, content, category, importance, created_at FROM memories \
                  WHERE community_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                    AND user_id = ?3 \
                  ORDER BY importance DESC, created_at DESC LIMIT ?2",
-            )
-            ?;
+        )?;
         let members = stmt
             .query_map(
                 rusqlite::params![community_id, limit as i64, user_id],
@@ -296,10 +283,8 @@ pub async fn get_community_members(
                         created_at: row.get(4)?,
                     })
                 },
-            )
-            ?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            ?;
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(members)
     })
     .await

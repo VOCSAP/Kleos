@@ -90,8 +90,13 @@ pub async fn update_policy(
         return Err(CredError::PermissionDenied("master key required".into()).into());
     }
 
-    policy::update_policy(&state.inner.db, id, body.require_approval, &body.allowed_modes)
-        .await?;
+    policy::update_policy(
+        &state.inner.db,
+        id,
+        body.require_approval,
+        &body.allowed_modes,
+    )
+    .await?;
 
     Ok(Json(json!({ "ok": true })))
 }

@@ -134,13 +134,11 @@ async fn onboard(
     let uid = auth.user_id;
     let space_count: i64 = db
         .read(move |conn| {
-            let count = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
-                    params![uid],
-                    |row| row.get::<_, i64>(0),
-                )
-                ?;
+            let count = conn.query_row(
+                "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
+                params![uid],
+                |row| row.get::<_, i64>(0),
+            )?;
             Ok(count)
         })
         .await

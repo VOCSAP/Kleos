@@ -8,7 +8,6 @@ pub use types::*;
 /// Default approval window in seconds.
 pub const DEFAULT_APPROVAL_WINDOW_SECS: i64 = 120;
 
-
 /// Create a new approval request with a 120s (or custom) window.
 #[tracing::instrument(skip(db, req), fields(action = %req.action))]
 pub async fn create_approval(
@@ -69,17 +68,13 @@ pub async fn create_approval(
 pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Option<Approval>> {
     let id = id.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, action, context, requester, status, decision_by, decision_reason,
+        let mut stmt = conn.prepare(
+            "SELECT id, action, context, requester, status, decision_by, decision_reason,
                         created_at, expires_at, decided_at
                  FROM approvals WHERE id = ?1 AND user_id = ?2",
-            )
-            ?;
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
 
         match rows.next()? {
             Some(row) => Ok(Some(row_to_approval(row, user_id)?)),
@@ -93,22 +88,18 @@ pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Optio
 #[tracing::instrument(skip(db))]
 pub async fn list_pending(db: &Database, user_id: i64) -> Result<Vec<Approval>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, action, context, requester, status, decision_by, decision_reason,
+        let mut stmt = conn.prepare(
+            "SELECT id, action, context, requester, status, decision_by, decision_reason,
                         created_at, expires_at, decided_at
                  FROM approvals
                  WHERE status = 'pending' AND user_id = ?1
                  ORDER BY expires_at ASC",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(rusqlite::params![user_id], |row| {
-                // query_map requires a rusqlite::Result return; we map inside
-                Ok(row_to_approval(row, user_id))
-            })
-            ?;
+        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+            // query_map requires a rusqlite::Result return; we map inside
+            Ok(row_to_approval(row, user_id))
+        })?;
 
         let mut approvals = Vec::new();
         for item in rows {
@@ -147,8 +138,7 @@ pub async fn decide(
             conn.execute(
                 "UPDATE approvals SET status = 'expired' WHERE id = ?1 AND user_id = ?2",
                 rusqlite::params![id_str, user_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -175,8 +165,7 @@ pub async fn decide(
              SET status = ?1, decision_by = ?2, decision_reason = ?3, decided_at = ?4
              WHERE id = ?5 AND user_id = ?6",
             rusqlite::params![new_status, decided_by, reason, decided_str, id_str, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -198,13 +187,11 @@ pub async fn decide(
 pub async fn expire_stale(db: &Database) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     db.write(move |conn| {
-        let rows = conn
-            .execute(
-                "UPDATE approvals SET status = 'expired'
+        let rows = conn.execute(
+            "UPDATE approvals SET status = 'expired'
                  WHERE status = 'pending' AND expires_at < ?1",
-                rusqlite::params![now],
-            )
-            ?;
+            rusqlite::params![now],
+        )?;
         Ok(rows as u64)
     })
     .await

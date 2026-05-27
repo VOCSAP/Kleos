@@ -56,12 +56,11 @@ pub async fn create_bundle(
              VALUES (?1, ?2, ?3)",
             params![name, description, auto_flag],
         )?;
-        let id: i64 = conn
-            .query_row(
-                "SELECT id FROM skill_bundles WHERE name = ?1",
-                params![name],
-                |r| r.get(0),
-            )?;
+        let id: i64 = conn.query_row(
+            "SELECT id FROM skill_bundles WHERE name = ?1",
+            params![name],
+            |r| r.get(0),
+        )?;
         Ok(id)
     })
     .await
@@ -110,28 +109,26 @@ pub async fn get_bundle_by_name(db: &Database, name: &str) -> Result<SkillBundle
 pub async fn list_bundles(db: &Database, limit: usize) -> Result<Vec<BundleSummary>> {
     let limit_i = limit as i64;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT b.id, b.name, b.description, b.auto_generated, b.created_at, \
+        let mut stmt = conn.prepare(
+            "SELECT b.id, b.name, b.description, b.auto_generated, b.created_at, \
                         b.updated_at, \
                         (SELECT COUNT(*) FROM skill_bundle_members m WHERE m.bundle_id = b.id) \
                  FROM skill_bundles b \
                  ORDER BY b.created_at DESC, b.id DESC LIMIT ?1",
-            )?;
-        let rows = stmt
-            .query_map(params![limit_i], |r| {
-                Ok(BundleSummary {
-                    bundle: SkillBundle {
-                        id: r.get(0)?,
-                        name: r.get(1)?,
-                        description: r.get(2)?,
-                        auto_generated: r.get::<_, i32>(3)? != 0,
-                        created_at: r.get(4)?,
-                        updated_at: r.get(5)?,
-                    },
-                    member_count: r.get(6)?,
-                })
-            })?;
+        )?;
+        let rows = stmt.query_map(params![limit_i], |r| {
+            Ok(BundleSummary {
+                bundle: SkillBundle {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    description: r.get(2)?,
+                    auto_generated: r.get::<_, i32>(3)? != 0,
+                    created_at: r.get(4)?,
+                    updated_at: r.get(5)?,
+                },
+                member_count: r.get(6)?,
+            })
+        })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -162,8 +159,7 @@ pub async fn add_members(db: &Database, bundle_id: i64, skill_ids: &[i64]) -> Re
     }
     let ids = skill_ids.to_vec();
     db.write(move |conn| {
-        let tx = conn
-            .unchecked_transaction()?;
+        let tx = conn.unchecked_transaction()?;
         for sid in &ids {
             tx.execute(
                 "INSERT OR IGNORE INTO skill_bundle_members (bundle_id, skill_id) \
@@ -180,11 +176,10 @@ pub async fn add_members(db: &Database, bundle_id: i64, skill_ids: &[i64]) -> Re
 // Remove one skill from a bundle. Returns rows deleted (0 or 1).
 pub async fn remove_member(db: &Database, bundle_id: i64, skill_id: i64) -> Result<usize> {
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM skill_bundle_members WHERE bundle_id = ?1 AND skill_id = ?2",
-                params![bundle_id, skill_id],
-            )?;
+        let n = conn.execute(
+            "DELETE FROM skill_bundle_members WHERE bundle_id = ?1 AND skill_id = ?2",
+            params![bundle_id, skill_id],
+        )?;
         Ok(n)
     })
     .await
@@ -193,13 +188,11 @@ pub async fn remove_member(db: &Database, bundle_id: i64, skill_id: i64) -> Resu
 // List all skill ids in a bundle, ordered by when they were added.
 pub async fn list_members(db: &Database, bundle_id: i64) -> Result<Vec<i64>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT skill_id FROM skill_bundle_members \
+        let mut stmt = conn.prepare(
+            "SELECT skill_id FROM skill_bundle_members \
                  WHERE bundle_id = ?1 ORDER BY added_at ASC, skill_id ASC",
-            )?;
-        let rows = stmt
-            .query_map(params![bundle_id], |r| r.get::<_, i64>(0))?;
+        )?;
+        let rows = stmt.query_map(params![bundle_id], |r| r.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);

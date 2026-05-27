@@ -95,25 +95,23 @@ pub async fn get_skill_stats(
     let limit = limit as i64;
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)?;
-        let rows = stmt
-            .query_map(params![limit, user_id], |row| {
-                let updated: String = row.get(6)?;
-                let ec: i32 = row.get(2)?;
-                let sc: i32 = row.get(3)?;
-                let fc: i32 = row.get(4)?;
-                let ds = days_since(&updated);
-                Ok(SkillStats {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    execution_count: ec,
-                    success_count: sc,
-                    failure_count: fc,
-                    trust_score: row.get(5)?,
-                    computed_score: compute_skill_score(sc, fc, ec, ds),
-                })
-            })?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit, user_id], |row| {
+            let updated: String = row.get(6)?;
+            let ec: i32 = row.get(2)?;
+            let sc: i32 = row.get(3)?;
+            let fc: i32 = row.get(4)?;
+            let ds = days_since(&updated);
+            Ok(SkillStats {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                execution_count: ec,
+                success_count: sc,
+                failure_count: fc,
+                trust_score: row.get(5)?,
+                computed_score: compute_skill_score(sc, fc, ec, ds),
+            })
+        })?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })

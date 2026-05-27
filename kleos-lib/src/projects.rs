@@ -38,7 +38,6 @@ pub struct UpdateProjectBody {
     pub metadata: Option<serde_json::Value>,
 }
 
-
 #[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status, user_id))]
 pub async fn create_project(
     db: &Database,
@@ -54,12 +53,10 @@ pub async fn create_project(
     let metadata = metadata.map(|s| s.to_string());
 
     db.write(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO projects (name, description, status, metadata, user_id) \
+        let mut stmt = conn.prepare(
+            "INSERT INTO projects (name, description, status, metadata, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id, created_at",
-            )
-            ?;
+        )?;
         let (id, created_at) = stmt
             .query_row(
                 rusqlite::params![name, description, status, metadata, user_id],
@@ -74,17 +71,13 @@ pub async fn create_project(
 #[tracing::instrument(skip(db), fields(project_id = id, user_id))]
 pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<ProjectRow>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT p.id, p.name, p.description, p.status, p.metadata, \
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, p.description, p.status, p.metadata, \
                  p.user_id, p.created_at, p.updated_at, \
                  (SELECT COUNT(*) FROM memory_projects WHERE project_id = p.id) as memory_count \
                  FROM projects p WHERE p.id = ?1 AND p.user_id = ?2",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_project(row)?)),
             None => Ok(None),
@@ -166,8 +159,7 @@ pub async fn update_project(
              updated_at = datetime('now') \
              WHERE id = ?5 AND user_id = ?6",
             rusqlite::params![name, description, status, metadata, id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -179,8 +171,7 @@ pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> 
         conn.execute(
             "DELETE FROM projects WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -201,8 +192,7 @@ pub async fn link_memory(
                 rusqlite::params![project_id, user_id],
                 |_| Ok(true),
             )
-            .optional()
-            ?
+            .optional()?
             .unwrap_or(false);
 
         if !project_exists {
@@ -218,8 +208,7 @@ pub async fn link_memory(
                 rusqlite::params![memory_id],
                 |_| Ok(true),
             )
-            .optional()
-            ?
+            .optional()?
             .unwrap_or(false);
 
         if !memory_exists {
@@ -231,8 +220,7 @@ pub async fn link_memory(
         conn.execute(
             "INSERT OR IGNORE INTO memory_projects (memory_id, project_id) VALUES (?1, ?2)",
             rusqlite::params![memory_id, project_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -253,8 +241,7 @@ pub async fn unlink_memory(
                 rusqlite::params![project_id, user_id],
                 |_| Ok(true),
             )
-            .optional()
-            ?
+            .optional()?
             .unwrap_or(false);
 
         if !project_exists {
@@ -266,8 +253,7 @@ pub async fn unlink_memory(
         conn.execute(
             "DELETE FROM memory_projects WHERE memory_id = ?1 AND project_id = ?2",
             rusqlite::params![memory_id, project_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -287,23 +273,18 @@ pub async fn get_project_memory_ids(
                 rusqlite::params![project_id, user_id],
                 |_| Ok(true),
             )
-            .optional()
-            ?
+            .optional()?
             .unwrap_or(false);
         if !owned {
             return Ok(Vec::new());
         }
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT mp.memory_id FROM memory_projects mp \
+        let mut stmt = conn.prepare(
+            "SELECT mp.memory_id FROM memory_projects mp \
                  JOIN memories m ON m.id = mp.memory_id \
                  WHERE mp.project_id = ?1",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![project_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![project_id])?;
         let mut ids = Vec::new();
         while let Some(row) = rows.next()? {
             ids.push(row.get::<_, i64>(0)?);

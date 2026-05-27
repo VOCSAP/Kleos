@@ -361,7 +361,6 @@ fn split_sentences(content: &str) -> Vec<&str> {
 // Error conversion helper
 // ============================================================================
 
-
 // ============================================================================
 // Tier 3 -- Template-based signal extraction
 // Pattern match explicit signals only. Quality: ~25%% of LLM.
@@ -970,25 +969,21 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Gather all personality signals
     let signals = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT signal_type, subject, valence, intensity, reasoning, source_text
+            let mut stmt = conn.prepare(
+                "SELECT signal_type, subject, valence, intensity, reasoning, source_text
              FROM personality_signals WHERE user_id = ?1 ORDER BY intensity DESC",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
-                    Ok(SignalRow {
-                        signal_type: row.get(0)?,
-                        subject: row.get(1)?,
-                        valence: row.get(2)?,
-                        intensity: row.get(3)?,
-                        reasoning: row.get(4)?,
-                        source_text: row.get(5)?,
-                    })
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                Ok(SignalRow {
+                    signal_type: row.get(0)?,
+                    subject: row.get(1)?,
+                    valence: row.get(2)?,
+                    intensity: row.get(3)?,
+                    reasoning: row.get(4)?,
+                    source_text: row.get(5)?,
                 })
-                ?;
+            })?;
 
             let mut signals = Vec::new();
             for row in rows {
@@ -1009,22 +1004,18 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // InvalidColumnType error.
     let preferences = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT domain, preference, strength FROM user_preferences \
+            let mut stmt = conn.prepare(
+                "SELECT domain, preference, strength FROM user_preferences \
              WHERE user_id = ?1 ORDER BY strength DESC LIMIT 50",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
-                    Ok(PreferenceRow {
-                        domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                        preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                        strength: row.get(2)?,
-                    })
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                Ok(PreferenceRow {
+                    domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    strength: row.get(2)?,
                 })
-                ?;
+            })?;
 
             let mut preferences = Vec::new();
             for row in rows {
@@ -1037,19 +1028,16 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Gather facts
     let facts = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT subject, verb, object FROM structured_facts LIMIT 50")
-                ?;
+            let mut stmt =
+                conn.prepare("SELECT subject, verb, object FROM structured_facts LIMIT 50")?;
 
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(FactRow {
-                        subject: row.get(0)?,
-                        verb: row.get(1)?,
-                        object: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    })
+            let rows = stmt.query_map([], |row| {
+                Ok(FactRow {
+                    subject: row.get(0)?,
+                    verb: row.get(1)?,
+                    object: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 })
-                ?;
+            })?;
 
             let mut facts = Vec::new();
             for row in rows {
@@ -1112,13 +1100,11 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_cached_profile(db: &Database, user_id: i64) -> Result<Option<String>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT profile FROM personality_profiles WHERE user_id = ?1 AND is_stale = 0")
-            ?;
+        let mut stmt = conn.prepare(
+            "SELECT profile FROM personality_profiles WHERE user_id = ?1 AND is_stale = 0",
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
 
         match rows.next()? {
             Some(row) => {
@@ -1138,8 +1124,7 @@ pub async fn invalidate_profile(db: &Database, user_id: i64) -> Result<()> {
         conn.execute(
             "UPDATE personality_profiles SET is_stale = 1 WHERE user_id = ?1",
             rusqlite::params![user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -1152,13 +1137,10 @@ pub async fn get_profile_for_injection(
     user_id: i64,
 ) -> Result<Option<(String, bool)>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT profile, is_stale FROM personality_profiles WHERE user_id = ?1")
-            ?;
+        let mut stmt =
+            conn.prepare("SELECT profile, is_stale FROM personality_profiles WHERE user_id = ?1")?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
 
         match rows.next()? {
             Some(row) => {
@@ -1212,30 +1194,26 @@ pub async fn store_signal(
     let agent = agent.map(|v| v.to_string());
 
     db.write(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
+        let mut stmt = conn.prepare(
+            "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
              VALUES (?1, ?2, ?3, ?4, ?5)
              RETURNING id, signal_type, value, evidence, user_id, agent, created_at",
-            )
-            ?;
+        )?;
 
-        let row = stmt
-            .query_row(
-                rusqlite::params![signal_type, value, evidence, user_id, agent],
-                |row| {
-                    Ok(StoredSignal {
-                        id: row.get(0)?,
-                        signal_type: row.get(1)?,
-                        value: row.get(2)?,
-                        evidence: row.get(3)?,
-                        user_id: row.get(4)?,
-                        agent: row.get(5)?,
-                        created_at: row.get(6)?,
-                    })
-                },
-            )
-            ?;
+        let row = stmt.query_row(
+            rusqlite::params![signal_type, value, evidence, user_id, agent],
+            |row| {
+                Ok(StoredSignal {
+                    id: row.get(0)?,
+                    signal_type: row.get(1)?,
+                    value: row.get(2)?,
+                    evidence: row.get(3)?,
+                    user_id: row.get(4)?,
+                    agent: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )?;
 
         Ok(row)
     })
@@ -1246,29 +1224,25 @@ pub async fn store_signal(
 pub async fn list_signals(db: &Database, user_id: i64, limit: usize) -> Result<Vec<StoredSignal>> {
     let limit = limit as i64;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, signal_type, value, evidence, user_id, agent, created_at
+        let mut stmt = conn.prepare(
+            "SELECT id, signal_type, value, evidence, user_id, agent, created_at
              FROM personality_signals
              WHERE user_id = ?1
              ORDER BY created_at DESC
              LIMIT ?2",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map(rusqlite::params![user_id, limit], |row| {
-                Ok(StoredSignal {
-                    id: row.get(0)?,
-                    signal_type: row.get(1)?,
-                    value: row.get(2)?,
-                    evidence: row.get(3)?,
-                    user_id: row.get(4)?,
-                    agent: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
+        let rows = stmt.query_map(rusqlite::params![user_id, limit], |row| {
+            Ok(StoredSignal {
+                id: row.get(0)?,
+                signal_type: row.get(1)?,
+                value: row.get(2)?,
+                evidence: row.get(3)?,
+                user_id: row.get(4)?,
+                agent: row.get(5)?,
+                created_at: row.get(6)?,
             })
-            ?;
+        })?;
 
         let mut signals = Vec::new();
         for row in rows {
@@ -1325,17 +1299,13 @@ pub async fn update_profile(db: &Database, user_id: i64) -> Result<StoredProfile
 
 async fn get_existing_profile(db: &Database, user_id: i64) -> Result<Option<StoredProfile>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT user_id, traits, last_updated_at, created_at
+        let mut stmt = conn.prepare(
+            "SELECT user_id, traits, last_updated_at, created_at
              FROM personality_profiles
              WHERE user_id = ?1",
-            )
-            ?;
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
 
         match rows.next()? {
             Some(row) => {

@@ -59,29 +59,17 @@ pub async fn record(
 // been written to disk (or the row was cleared).
 pub async fn get(db: &Database, skill_id: i64) -> Result<Option<SkillMaterialization>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
+        let mut stmt = conn.prepare(
+            "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
                  FROM skill_materializations WHERE skill_id = ?1",
-            )?;
-        let mut rows = stmt
-            .query(params![skill_id])?;
-        if let Some(row) = rows
-            .next()?
-        {
+        )?;
+        let mut rows = stmt.query(params![skill_id])?;
+        if let Some(row) = rows.next()? {
             Ok(Some(SkillMaterialization {
-                skill_id: row
-                    .get(0)
-                    ?,
-                target_path: row
-                    .get(1)
-                    ?,
-                materialized_at: row
-                    .get(2)
-                    ?,
-                content_hash_at_materialize: row
-                    .get(3)
-                    ?,
+                skill_id: row.get(0)?,
+                target_path: row.get(1)?,
+                materialized_at: row.get(2)?,
+                content_hash_at_materialize: row.get(3)?,
             }))
         } else {
             Ok(None)
@@ -94,20 +82,18 @@ pub async fn get(db: &Database, skill_id: i64) -> Result<Option<SkillMaterializa
 // flag which agent skills are currently on disk.
 pub async fn list_all(db: &Database) -> Result<Vec<SkillMaterialization>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
+        let mut stmt = conn.prepare(
+            "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
                  FROM skill_materializations ORDER BY materialized_at DESC",
-            )?;
-        let rows = stmt
-            .query_map(params![], |r| {
-                Ok(SkillMaterialization {
-                    skill_id: r.get(0)?,
-                    target_path: r.get(1)?,
-                    materialized_at: r.get(2)?,
-                    content_hash_at_materialize: r.get(3)?,
-                })
-            })?;
+        )?;
+        let rows = stmt.query_map(params![], |r| {
+            Ok(SkillMaterialization {
+                skill_id: r.get(0)?,
+                target_path: r.get(1)?,
+                materialized_at: r.get(2)?,
+                content_hash_at_materialize: r.get(3)?,
+            })
+        })?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -122,11 +108,10 @@ pub async fn list_all(db: &Database) -> Result<Vec<SkillMaterialization>> {
 // testable and lets the CLI handle real-world filesystem errors.
 pub async fn forget(db: &Database, skill_id: i64) -> Result<usize> {
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM skill_materializations WHERE skill_id = ?1",
-                params![skill_id],
-            )?;
+        let n = conn.execute(
+            "DELETE FROM skill_materializations WHERE skill_id = ?1",
+            params![skill_id],
+        )?;
         Ok(n)
     })
     .await

@@ -7,7 +7,6 @@ use crate::memory::types::Memory;
 use crate::memory::{row_to_memory, MEMORY_COLUMNS};
 use crate::Result;
 
-
 #[derive(Debug, Clone)]
 pub struct VersionChainEntry {
     pub id: i64,
@@ -71,9 +70,7 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         // 6.9 capacity hint: static-memory sets are typically small per-user.
         let mut memories = Vec::with_capacity(16);
         while let Some(row) = rows.next()? {
@@ -96,9 +93,7 @@ pub async fn get_memory_without_embedding(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_memory(row, user_id)?)),
             None => Ok(None),
@@ -121,9 +116,7 @@ pub async fn get_version_chain(
                ORDER BY version ASC";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![root_id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![root_id, user_id])?;
         let mut chain = Vec::with_capacity(8);
         while let Some(row) = rows.next()? {
             chain.push(VersionChainEntry {
@@ -149,18 +142,12 @@ pub async fn get_episode_summary(
     let sql = "SELECT id, summary, started_at FROM episodes WHERE id = ?1 AND user_id = ?2";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![ep_id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![ep_id, user_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(EpisodeSummary {
                 id: row.get::<_, i64>(0)?,
-                summary: row
-                    .get::<_, Option<String>>(1)
-                    ?,
-                started_at: row
-                    .get::<_, Option<String>>(2)
-                    ?,
+                summary: row.get::<_, Option<String>>(1)?,
+                started_at: row.get::<_, Option<String>>(2)?,
             })),
             None => Ok(None),
         }
@@ -181,9 +168,7 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
                ORDER BY ml.similarity DESC LIMIT 10";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![mem_id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![mem_id, user_id])?;
         let mut linked = Vec::with_capacity(10);
         while let Some(row) = rows.next()? {
             linked.push(LinkedMemory {
@@ -192,12 +177,8 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
                 category: row.get::<_, String>(2)?,
                 similarity: row.get::<_, f64>(3)?,
                 is_forgotten: row.get::<_, i32>(4)? != 0,
-                model: row
-                    .get::<_, Option<String>>(5)
-                    ?,
-                source: row
-                    .get::<_, Option<String>>(6)
-                    ?,
+                model: row.get::<_, Option<String>>(5)?,
+                source: row.get::<_, Option<String>>(6)?,
             });
         }
         Ok(linked)
@@ -215,9 +196,7 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id, limit as i64])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id, limit as i64])?;
         let mut memories = Vec::with_capacity(limit);
         while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, user_id)?);
@@ -237,9 +216,7 @@ pub async fn get_current_state(db: &Database, user_id: i64) -> Result<Vec<StateE
                ORDER BY updated_at DESC LIMIT 30";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         let mut entries = Vec::with_capacity(30);
         while let Some(row) = rows.next()? {
             entries.push(StateEntry {
@@ -259,9 +236,7 @@ pub async fn get_user_preferences(db: &Database, user_id: i64) -> Result<Vec<Pre
                WHERE user_id = ?1 AND strength >= 1.5 ORDER BY strength DESC LIMIT 15";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
         let mut prefs = Vec::with_capacity(15);
         while let Some(row) = rows.next()? {
             prefs.push(PreferenceEntry {
@@ -302,27 +277,13 @@ pub async fn get_structured_facts(
             facts.push(StructuredFact {
                 subject: row.get::<_, String>(0)?,
                 verb: row.get::<_, String>(1)?,
-                object: row
-                    .get::<_, Option<String>>(2)
-                    ?,
-                quantity: row
-                    .get::<_, Option<f64>>(3)
-                    ?,
-                unit: row
-                    .get::<_, Option<String>>(4)
-                    ?,
-                date_ref: row
-                    .get::<_, Option<String>>(5)
-                    ?,
-                date_approx: row
-                    .get::<_, Option<String>>(6)
-                    ?,
-                valid_at: row
-                    .get::<_, Option<String>>(7)
-                    ?,
-                invalid_at: row
-                    .get::<_, Option<String>>(8)
-                    ?,
+                object: row.get::<_, Option<String>>(2)?,
+                quantity: row.get::<_, Option<f64>>(3)?,
+                unit: row.get::<_, Option<String>>(4)?,
+                date_ref: row.get::<_, Option<String>>(5)?,
+                date_approx: row.get::<_, Option<String>>(6)?,
+                valid_at: row.get::<_, Option<String>>(7)?,
+                invalid_at: row.get::<_, Option<String>>(8)?,
             });
         }
         Ok(facts)

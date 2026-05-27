@@ -54,12 +54,7 @@ pub fn draw_title(f: &mut Frame, area: Rect) {
 /// Each step is shown as a labelled box. The current step is highlighted in
 /// cyan. Completed steps (those before the current step in the ordered list)
 /// are shown in green with a checkmark prefix. Future steps are shown dimmed.
-pub fn draw_step_indicator(
-    f: &mut Frame,
-    area: Rect,
-    steps: &[WizardStep],
-    current: WizardStep,
-) {
+pub fn draw_step_indicator(f: &mut Frame, area: Rect, steps: &[WizardStep], current: WizardStep) {
     let current_idx = steps.iter().position(|s| *s == current).unwrap_or(0);
 
     let mut spans: Vec<Span> = Vec::new();
@@ -107,11 +102,17 @@ pub fn draw_navigation_bar(f: &mut Frame, area: Rect, can_go_back: bool) {
     hints.push(Span::raw("Next  "));
 
     if can_go_back {
-        hints.push(Span::styled(" [Esc/Backspace] ", Style::default().fg(COLOR_ACTIVE)));
+        hints.push(Span::styled(
+            " [Esc/Backspace] ",
+            Style::default().fg(COLOR_ACTIVE),
+        ));
         hints.push(Span::raw("Back  "));
     }
 
-    hints.push(Span::styled(" [Tab/Arrow] ", Style::default().fg(COLOR_ACTIVE)));
+    hints.push(Span::styled(
+        " [Tab/Arrow] ",
+        Style::default().fg(COLOR_ACTIVE),
+    ));
     hints.push(Span::raw("Navigate  "));
 
     hints.push(Span::styled(" [Space] ", Style::default().fg(COLOR_ACTIVE)));
@@ -136,7 +137,12 @@ pub fn draw_quit_confirm(f: &mut Frame, area: Rect) {
     let popup_height = 5u16;
     let x = area.x + area.width.saturating_sub(popup_width) / 2;
     let y = area.y + area.height.saturating_sub(popup_height) / 2;
-    let popup_rect = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+    let popup_rect = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
 
     f.render_widget(Clear, popup_rect);
 
@@ -144,9 +150,19 @@ pub fn draw_quit_confirm(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::raw("  Really quit? "),
-            Span::styled("[y]", Style::default().fg(COLOR_ERROR).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[y]",
+                Style::default()
+                    .fg(COLOR_ERROR)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Yes  "),
-            Span::styled("[n]", Style::default().fg(COLOR_COMPLETE).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[n]",
+                Style::default()
+                    .fg(COLOR_COMPLETE)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" No"),
         ]),
         Line::from(""),
@@ -201,9 +217,13 @@ pub fn draw_input_field(
     // Draw error message below the field if present.
     if let Some(err) = error {
         if area.y + area.height + 1 < f.area().height {
-            let err_area = Rect::new(area.x + 2, area.y + area.height, area.width.saturating_sub(2), 1);
-            let err_widget =
-                Paragraph::new(err).style(Style::default().fg(COLOR_ERROR));
+            let err_area = Rect::new(
+                area.x + 2,
+                area.y + area.height,
+                area.width.saturating_sub(2),
+                1,
+            );
+            let err_widget = Paragraph::new(err).style(Style::default().fg(COLOR_ERROR));
             f.render_widget(err_widget, err_area);
         }
     }

@@ -14,7 +14,6 @@ use crate::{extractors::Auth, state::AppState};
 use kleos_lib::auth::Scope;
 use kleos_lib::jobs;
 
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(get_health))
@@ -90,8 +89,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
     let embedding_model = std::env::var("KLEOS_EMBEDDING_URL")
         .ok()
         .map(|_| {
-            std::env::var("KLEOS_EMBEDDING_MODEL")
-                .unwrap_or_else(|_| "openai-compat".to_string())
+            std::env::var("KLEOS_EMBEDDING_MODEL").unwrap_or_else(|_| "openai-compat".to_string())
         })
         .or_else(|| {
             state
@@ -138,9 +136,7 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     // DB ping: required. Run a trivial query to verify the connection pool.
     let db_ok = state
         .db
-        .read(|conn| {
-            Ok(conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
-        })
+        .read(|conn| Ok(conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
         .await
         .is_ok();
 

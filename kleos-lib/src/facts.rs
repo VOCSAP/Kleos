@@ -3,7 +3,6 @@ use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-
 // -- Types ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,8 +96,7 @@ pub async fn create_fact(
                         params![mid, user_id],
                         |_| Ok(()),
                     )
-                    .optional()
-                    ?;
+                    .optional()?;
                 Ok(result.is_some())
             })
             .await?;
@@ -122,8 +120,7 @@ pub async fn create_fact(
                  (memory_id, subject, predicate, object, confidence, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![memory_id, subject, predicate, object, confidence, user_id],
-            )
-            ?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -137,8 +134,7 @@ pub async fn create_fact(
     );
     db.read(move |conn| {
         conn.query_row(&sql, params![new_id, user_id], row_to_fact)
-            .optional()
-            ?
+            .optional()?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created fact".to_string()))
     })
     .await
@@ -175,9 +171,7 @@ pub async fn list_facts(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(params![user_id], row_to_fact)
-            ?;
+        let rows = stmt.query_map(params![user_id], row_to_fact)?;
         let mut facts = Vec::new();
         for row in rows {
             facts.push(row?);
@@ -213,8 +207,7 @@ pub async fn set_state(
                  value = excluded.value, \
                  updated_at = datetime('now')",
             params![agent_owned, key_owned, value_owned, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -239,8 +232,7 @@ pub async fn get_state(
     );
     db.read(move |conn| {
         conn.query_row(&sql, params![agent, key, user_id], row_to_state)
-            .optional()
-            ?
+            .optional()?
             .ok_or_else(|| EngError::NotFound("state not found".to_string()))
     })
     .await
@@ -257,9 +249,7 @@ pub async fn list_state(db: &Database, agent: &str, user_id: i64) -> Result<Vec<
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(params![agent, user_id], row_to_state)
-            ?;
+        let rows = stmt.query_map(params![agent, user_id], row_to_state)?;
         let mut entries = Vec::new();
         for row in rows {
             entries.push(row?);

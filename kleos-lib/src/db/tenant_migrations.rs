@@ -24,7 +24,11 @@ pub struct TenantMigration {
 /// Shorthand for TenantMigration entries in the registry.
 macro_rules! tenant_migration {
     ($ver:expr, $desc:expr, $up:expr) => {
-        TenantMigration { version: $ver, description: $desc, up: $up }
+        TenantMigration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+        }
     };
 }
 
@@ -33,13 +37,21 @@ macro_rules! tenant_migration {
 /// Append-only. Never renumber, never edit a past entry.
 pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(1, "initial_tenant_schema", apply_schema_v1),
-    tenant_migration!(2, "scratchpad_user_id_shim", apply_schema_v2_scratchpad_shim),
+    tenant_migration!(
+        2,
+        "scratchpad_user_id_shim",
+        apply_schema_v2_scratchpad_shim
+    ),
     tenant_migration!(3, "sessions_user_id_shim", apply_schema_v3_sessions_shim),
     tenant_migration!(4, "chiasm_tasks_shim", apply_schema_v4_chiasm_shim),
     tenant_migration!(5, "approvals_shim", apply_schema_v5_approvals_shim),
     tenant_migration!(6, "broca_actions_shim", apply_schema_v6_broca_shim),
     tenant_migration!(7, "projects_shim", apply_schema_v7_projects_shim),
-    tenant_migration!(8, "axon_events_and_soma_agents_shim", apply_schema_v8_activity_shim),
+    tenant_migration!(
+        8,
+        "axon_events_and_soma_agents_shim",
+        apply_schema_v8_activity_shim
+    ),
     tenant_migration!(9, "webhooks_shim", apply_schema_v9_webhooks_shim),
     tenant_migration!(10, "ingestion_shim", apply_schema_v10_ingestion_shim),
     tenant_migration!(11, "axon_family_shim", apply_schema_v11_axon_shim),
@@ -47,41 +59,89 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(13, "loom_family_shim", apply_schema_v13_loom_shim),
     tenant_migration!(14, "graph_family_shim", apply_schema_v14_graph_shim),
     tenant_migration!(15, "thymus_family_shim", apply_schema_v15_thymus_shim),
-    tenant_migration!(16, "portability_family_shim", apply_schema_v16_portability_shim),
+    tenant_migration!(
+        16,
+        "portability_family_shim",
+        apply_schema_v16_portability_shim
+    ),
     tenant_migration!(17, "growth_reflections_shim", apply_schema_v17_growth_shim),
-    tenant_migration!(18, "intelligence_family_shim", apply_schema_v18_intelligence_shim),
+    tenant_migration!(
+        18,
+        "intelligence_family_shim",
+        apply_schema_v18_intelligence_shim
+    ),
     tenant_migration!(19, "skills_family_shim", apply_schema_v19_skills_shim),
-    tenant_migration!(20, "episodes_user_id_and_fts_shim", apply_schema_v20_episodes_shim),
+    tenant_migration!(
+        20,
+        "episodes_user_id_and_fts_shim",
+        apply_schema_v20_episodes_shim
+    ),
     tenant_migration!(21, "messages_and_fts_shim", apply_schema_v21_messages_shim),
     tenant_migration!(22, "memories_user_id_drop", apply_schema_v22_memories_drop),
-    tenant_migration!(23, "scratchpad_user_id_drop", apply_schema_v23_scratchpad_drop),
+    tenant_migration!(
+        23,
+        "scratchpad_user_id_drop",
+        apply_schema_v23_scratchpad_drop
+    ),
     tenant_migration!(24, "sessions_user_id_drop", apply_schema_v24_sessions_drop),
     tenant_migration!(25, "chiasm_user_id_drop", apply_schema_v25_chiasm_drop),
-    tenant_migration!(26, "approvals_user_id_drop", apply_schema_v26_approvals_drop),
+    tenant_migration!(
+        26,
+        "approvals_user_id_drop",
+        apply_schema_v26_approvals_drop
+    ),
     tenant_migration!(27, "broca_user_id_drop", apply_schema_v27_broca_drop),
     tenant_migration!(28, "projects_user_id_drop", apply_schema_v28_projects_drop),
     tenant_migration!(29, "activity_user_id_drop", apply_schema_v29_activity_drop),
     tenant_migration!(30, "webhooks_user_id_drop", apply_schema_v30_webhooks_drop),
     tenant_migration!(31, "axon_user_id_drop", apply_schema_v31_axon_drop),
     tenant_migration!(32, "growth_user_id_drop", apply_schema_v32_growth_drop),
-    tenant_migration!(33, "ingestion_hashes_user_id_drop", apply_schema_v33_ingestion_hashes_drop),
+    tenant_migration!(
+        33,
+        "ingestion_hashes_user_id_drop",
+        apply_schema_v33_ingestion_hashes_drop
+    ),
     tenant_migration!(34, "loom_user_id_drop", apply_schema_v34_loom_drop),
-    tenant_migration!(35, "graph_cluster_user_id_drop", apply_schema_v35_graph_drop),
+    tenant_migration!(
+        35,
+        "graph_cluster_user_id_drop",
+        apply_schema_v35_graph_drop
+    ),
     tenant_migration!(36, "thymus_user_id_drop", apply_schema_v36_thymus_drop),
-    tenant_migration!(37, "portability_user_id_drop", apply_schema_v37_portability_drop),
-    tenant_migration!(38, "intelligence_user_id_drop", apply_schema_v38_intelligence_drop),
+    tenant_migration!(
+        37,
+        "portability_user_id_drop",
+        apply_schema_v37_portability_drop
+    ),
+    tenant_migration!(
+        38,
+        "intelligence_user_id_drop",
+        apply_schema_v38_intelligence_drop
+    ),
     tenant_migration!(39, "skills_user_id_drop", apply_schema_v39_skills_drop),
     tenant_migration!(40, "episodes_user_id_drop", apply_schema_v40_episodes_drop),
     // C-R3-004 / H-R3-006: re-add user_id to projects + broca_actions on
     // shard DBs so the same helper SQL works on shard and monolith. Each
     // shard still belongs to one tenant; the column is redundant per row
     // but keeps schema parity and supports defense-in-depth filtering.
-    tenant_migration!(41, "projects_user_id_readd", apply_schema_v41_projects_readd),
-    tenant_migration!(42, "broca_actions_user_id_readd", apply_schema_v42_broca_readd),
+    tenant_migration!(
+        41,
+        "projects_user_id_readd",
+        apply_schema_v41_projects_readd
+    ),
+    tenant_migration!(
+        42,
+        "broca_actions_user_id_readd",
+        apply_schema_v42_broca_readd
+    ),
     // Fold session-handoff storage into the tenant shard. The reserved
     // tenant id "handoffs" backs /handoffs/* for every user; other tenants
     // get the table too (harmless, idempotent).
-    tenant_migration!(43, "handoffs_table_in_tenant_shard", apply_schema_v43_handoffs),
+    tenant_migration!(
+        43,
+        "handoffs_table_in_tenant_shard",
+        apply_schema_v43_handoffs
+    ),
     // Full schema parity with monolith. Creates every table that
     // ResolvedDb-backed routes query but that was never in the tenant
     // migration chain. Without this, removing the user_id==1 monolith
@@ -89,18 +149,42 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // personality, tasks, events, and several supporting tables.
     tenant_migration!(44, "monolith_schema_parity", apply_schema_v44_parity),
     tenant_migration!(45, "memory_chunks", apply_schema_v45_memory_chunks),
-    tenant_migration!(46, "supervisor_injections", apply_schema_v46_supervisor_injections),
-    tenant_migration!(47, "gate_requests_session_id", apply_schema_v47_gate_requests_session_id),
-    tenant_migration!(48, "supervisor_injections_fix_schema", apply_schema_v48_supervisor_injections_fix),
+    tenant_migration!(
+        46,
+        "supervisor_injections",
+        apply_schema_v46_supervisor_injections
+    ),
+    tenant_migration!(
+        47,
+        "gate_requests_session_id",
+        apply_schema_v47_gate_requests_session_id
+    ),
+    tenant_migration!(
+        48,
+        "supervisor_injections_fix_schema",
+        apply_schema_v48_supervisor_injections_fix
+    ),
     tenant_migration!(49, "activity_log_table", apply_schema_v49_activity_log),
     // Skills Cloud: kind discrimination, source provenance for idempotent
     // re-import of plugin content, fuzzy aliases, named bundles, and
     // agent materialization tracking.
-    tenant_migration!(50, "skills_cloud_kind_aliases_bundles", apply_schema_v50_skills_cloud),
-    tenant_migration!(51, "memories_community_id", apply_schema_v51_memories_community_id),
+    tenant_migration!(
+        50,
+        "skills_cloud_kind_aliases_bundles",
+        apply_schema_v50_skills_cloud
+    ),
+    tenant_migration!(
+        51,
+        "memories_community_id",
+        apply_schema_v51_memories_community_id
+    ),
     // Syntheos parity: task dependency DAG, path claims for resource locking,
     // and extended chiasm_tasks columns to match the standalone TypeScript stack.
-    tenant_migration!(52, "syntheos_parity_chiasm_extended", apply_schema_v52_syntheos_parity),
+    tenant_migration!(
+        52,
+        "syntheos_parity_chiasm_extended",
+        apply_schema_v52_syntheos_parity
+    ),
     // Per-agent bearer keys for Chiasm, mirroring the standalone agent_keys
     // surface so per-agent token issuance / listing / revocation has a
     // tenant-scoped backing store.
@@ -109,43 +193,87 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // Re-add user_id to shard memory core tables (reverses v22). The runner
     // backfills existing rows to the shard owner's id after this runs; see
     // TENANT_MIGRATION_READD_USER_ID and run_tenant_migrations.
-    tenant_migration!(55, "memories_user_id_readd", apply_schema_v55_memories_readd),
+    tenant_migration!(
+        55,
+        "memories_user_id_readd",
+        apply_schema_v55_memories_readd
+    ),
     // Re-add user_id to the shard webhooks table (reverses v30). The runner
     // backfills existing webhook rows to the shard owner after this runs; see
     // backfill_owner_tables_for_version.
-    tenant_migration!(56, "webhooks_user_id_readd", apply_schema_v56_webhooks_readd),
+    tenant_migration!(
+        56,
+        "webhooks_user_id_readd",
+        apply_schema_v56_webhooks_readd
+    ),
     // Re-add user_id to the shard approvals table (reverses v26). The runner
     // backfills existing approval rows to the shard owner after this runs.
-    tenant_migration!(57, "approvals_user_id_readd", apply_schema_v57_approvals_readd),
+    tenant_migration!(
+        57,
+        "approvals_user_id_readd",
+        apply_schema_v57_approvals_readd
+    ),
     // Re-add user_id to the shard soma_agents table with UNIQUE(name, user_id)
     // via the 12-step rebuild (reverses v29's drop, mirrors monolith v67). The
     // runner backfills existing rows to the shard owner after this runs.
-    tenant_migration!(58, "soma_agents_user_id_readd", apply_schema_v58_soma_agents_readd),
+    tenant_migration!(
+        58,
+        "soma_agents_user_id_readd",
+        apply_schema_v58_soma_agents_readd
+    ),
     // Re-add user_id to the shard axon_events table (reverses v29). The runner
     // backfills existing event rows to the shard owner after this runs.
-    tenant_migration!(59, "axon_events_user_id_readd", apply_schema_v59_axon_events_readd),
+    tenant_migration!(
+        59,
+        "axon_events_user_id_readd",
+        apply_schema_v59_axon_events_readd
+    ),
     // Re-add user_id to the shard chiasm_tasks table (reverses v25). The runner
     // backfills existing task rows to the shard owner after this runs.
-    tenant_migration!(60, "chiasm_tasks_user_id_readd", apply_schema_v60_chiasm_tasks_readd),
+    tenant_migration!(
+        60,
+        "chiasm_tasks_user_id_readd",
+        apply_schema_v60_chiasm_tasks_readd
+    ),
     // Re-add user_id to the shard conversations table (reverses v37). The runner
     // backfills existing conversation rows to the shard owner after this runs.
-    tenant_migration!(61, "conversations_user_id_readd", apply_schema_v61_conversations_readd),
+    tenant_migration!(
+        61,
+        "conversations_user_id_readd",
+        apply_schema_v61_conversations_readd
+    ),
     // Re-add user_id to the shard intelligence tables -- reflections,
     // consolidations, causal_chains (reverses v32 and v38). The runner backfills
     // existing rows to the shard owner after this runs.
-    tenant_migration!(62, "intelligence_user_id_readd", apply_schema_v62_intelligence_readd),
+    tenant_migration!(
+        62,
+        "intelligence_user_id_readd",
+        apply_schema_v62_intelligence_readd
+    ),
     // Rebuild the shard entities table to re-add user_id with
     // UNIQUE(name, entity_type, user_id) (reverses v35). The runner backfills
     // the copied DEFAULT-1 rows to the shard owner after this runs.
-    tenant_migration!(63, "graph_entities_user_id_readd", apply_schema_v63_graph_entities_readd),
+    tenant_migration!(
+        63,
+        "graph_entities_user_id_readd",
+        apply_schema_v63_graph_entities_readd
+    ),
     // Re-add user_id to the shard episodes table (reverses v40). The runner
     // backfills existing rows to the shard owner after this runs.
-    tenant_migration!(64, "episodes_user_id_readd", apply_schema_v64_episodes_readd),
+    tenant_migration!(
+        64,
+        "episodes_user_id_readd",
+        apply_schema_v64_episodes_readd
+    ),
     // Re-add user_id to the shard intelligence remainder tables -- current_state
     // (UNIQUE rebuild), reconsolidations, temporal_patterns, digests,
     // memory_feedback (reverses v38 for these 5 tables). The runner backfills
     // existing rows to the shard owner after this runs.
-    tenant_migration!(65, "intelligence_remainder_user_id_readd", apply_schema_v65_intelligence_remainder_readd),
+    tenant_migration!(
+        65,
+        "intelligence_remainder_user_id_readd",
+        apply_schema_v65_intelligence_remainder_readd
+    ),
     // Re-add user_id to the five shard thymus tables -- rubrics (UNIQUE
     // rebuild from UNIQUE(name) to UNIQUE(user_id, name)), evaluations,
     // quality_metrics, session_quality, behavioral_drift_events (reverses v36).
@@ -155,11 +283,19 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // shards. Both were dropped by tenant v35. structured_facts got user_id
     // re-added on the monolith side by v64 but never on the tenant side.
     // entity_cooccurrences never got it re-added on either side.
-    tenant_migration!(67, "graph_remainder_user_id_readd", apply_schema_v67_graph_remainder_readd),
+    tenant_migration!(
+        67,
+        "graph_remainder_user_id_readd",
+        apply_schema_v67_graph_remainder_readd
+    ),
     // Re-add user_id to user_preferences in tenant shards via REBUILD.
     // v37 dropped it; UNIQUE changes from (key) back to (user_id, key).
     // The runner backfills existing rows to the shard owner.
-    tenant_migration!(68, "user_preferences_user_id_readd", apply_schema_v68_user_preferences_readd),
+    tenant_migration!(
+        68,
+        "user_preferences_user_id_readd",
+        apply_schema_v68_user_preferences_readd
+    ),
     // Re-add user_id to skill_records in tenant shards via REBUILD.
     // v39 dropped it; UNIQUE changes from (name, agent, version) back to
     // (name, agent, version, user_id). Also drops/recreates FTS triggers.
@@ -251,8 +387,9 @@ macro_rules! tenant_migration_sql {
     ($fn_name:ident, $ver:expr, $sql_path:expr) => {
         /// Pure-SQL tenant migration loaded from an external `.sql` file.
         fn $fn_name(conn: &Connection) -> Result<()> {
-            conn.execute_batch(include_str!($sql_path))
-                .map_err(|e| EngError::DatabaseMessage(format!("tenant schema {} failed: {e}", $ver)))
+            conn.execute_batch(include_str!($sql_path)).map_err(|e| {
+                EngError::DatabaseMessage(format!("tenant schema {} failed: {e}", $ver))
+            })
         }
     };
 }
@@ -261,64 +398,296 @@ macro_rules! tenant_migration_sql {
 // Pure-SQL migrations (loaded from external .sql files via macro)
 // ---------------------------------------------------------------------------
 tenant_migration_sql!(apply_schema_v1, "v1", "../tenant/schema_v1.sql");
-tenant_migration_sql!(apply_schema_v2_scratchpad_shim, "v2", "../tenant/schema_v2_scratchpad.sql");
-tenant_migration_sql!(apply_schema_v3_sessions_shim, "v3", "../tenant/schema_v3_sessions.sql");
-tenant_migration_sql!(apply_schema_v4_chiasm_shim, "v4", "../tenant/schema_v4_chiasm.sql");
-tenant_migration_sql!(apply_schema_v5_approvals_shim, "v5", "../tenant/schema_v5_approvals.sql");
-tenant_migration_sql!(apply_schema_v6_broca_shim, "v6", "../tenant/schema_v6_broca.sql");
-tenant_migration_sql!(apply_schema_v7_projects_shim, "v7", "../tenant/schema_v7_projects.sql");
-tenant_migration_sql!(apply_schema_v8_activity_shim, "v8", "../tenant/schema_v8_activity.sql");
-tenant_migration_sql!(apply_schema_v9_webhooks_shim, "v9", "../tenant/schema_v9_webhooks.sql");
-tenant_migration_sql!(apply_schema_v10_ingestion_shim, "v10", "../tenant/schema_v10_ingestion.sql");
-tenant_migration_sql!(apply_schema_v11_axon_shim, "v11", "../tenant/schema_v11_axon.sql");
-tenant_migration_sql!(apply_schema_v12_soma_shim, "v12", "../tenant/schema_v12_soma.sql");
-tenant_migration_sql!(apply_schema_v13_loom_shim, "v13", "../tenant/schema_v13_loom.sql");
-tenant_migration_sql!(apply_schema_v14_graph_shim, "v14", "../tenant/schema_v14_graph.sql");
-tenant_migration_sql!(apply_schema_v15_thymus_shim, "v15", "../tenant/schema_v15_thymus.sql");
-tenant_migration_sql!(apply_schema_v16_portability_shim, "v16", "../tenant/schema_v16_portability.sql");
-tenant_migration_sql!(apply_schema_v17_growth_shim, "v17", "../tenant/schema_v17_growth.sql");
-tenant_migration_sql!(apply_schema_v18_intelligence_shim, "v18", "../tenant/schema_v18_intelligence.sql");
-tenant_migration_sql!(apply_schema_v19_skills_shim, "v19", "../tenant/schema_v19_skills.sql");
-tenant_migration_sql!(apply_schema_v20_episodes_shim, "v20", "../tenant/schema_v20_episodes.sql");
-tenant_migration_sql!(apply_schema_v21_messages_shim, "v21", "../tenant/schema_v21_messages.sql");
-tenant_migration_sql!(apply_schema_v22_memories_drop, "v22", "../tenant/schema_v22_memories_drop.sql");
-tenant_migration_sql!(apply_schema_v23_scratchpad_drop, "v23", "../tenant/schema_v23_scratchpad.sql");
-tenant_migration_sql!(apply_schema_v24_sessions_drop, "v24", "../tenant/schema_v24_sessions_drop.sql");
-tenant_migration_sql!(apply_schema_v25_chiasm_drop, "v25", "../tenant/schema_v25_chiasm_drop.sql");
-tenant_migration_sql!(apply_schema_v26_approvals_drop, "v26", "../tenant/schema_v26_approvals_drop.sql");
-tenant_migration_sql!(apply_schema_v27_broca_drop, "v27", "../tenant/schema_v27_broca_drop.sql");
-tenant_migration_sql!(apply_schema_v28_projects_drop, "v28", "../tenant/schema_v28_projects_drop.sql");
-tenant_migration_sql!(apply_schema_v29_activity_drop, "v29", "../tenant/schema_v29_activity_drop.sql");
-tenant_migration_sql!(apply_schema_v30_webhooks_drop, "v30", "../tenant/schema_v30_webhooks_drop.sql");
-tenant_migration_sql!(apply_schema_v31_axon_drop, "v31", "../tenant/schema_v31_axon_drop.sql");
-tenant_migration_sql!(apply_schema_v32_growth_drop, "v32", "../tenant/schema_v32_growth_drop.sql");
-tenant_migration_sql!(apply_schema_v33_ingestion_hashes_drop, "v33", "../tenant/schema_v33_ingestion_hashes_drop.sql");
-tenant_migration_sql!(apply_schema_v34_loom_drop, "v34", "../tenant/schema_v34_loom_drop.sql");
-tenant_migration_sql!(apply_schema_v35_graph_drop, "v35", "../tenant/schema_v35_graph_drop.sql");
-tenant_migration_sql!(apply_schema_v36_thymus_drop, "v36", "../tenant/schema_v36_thymus_drop.sql");
-tenant_migration_sql!(apply_schema_v38_intelligence_drop, "v38", "../tenant/schema_v38_intelligence_drop.sql");
-tenant_migration_sql!(apply_schema_v39_skills_drop, "v39", "../tenant/schema_v39_skills_drop.sql");
-tenant_migration_sql!(apply_schema_v40_episodes_drop, "v40", "../tenant/schema_v40_episodes_drop.sql");
-tenant_migration_sql!(apply_schema_v41_projects_readd, "v41", "../tenant/schema_v41_projects_readd.sql");
-tenant_migration_sql!(apply_schema_v43_handoffs, "v43", "../tenant/schema_v43_handoffs.sql");
-tenant_migration_sql!(apply_schema_v44_parity, "v44", "../tenant/schema_v44_parity.sql");
-tenant_migration_sql!(apply_schema_v53_chiasm_agent_keys, "v53", "../tenant/schema_v53_chiasm_agent_keys.sql");
-tenant_migration_sql!(apply_schema_v71_artifacts_fts, "v71", "../tenant/schema_v55_artifacts_fts.sql");
-tenant_migration_sql!(apply_schema_v55_memories_readd, "v55", "../tenant/schema_v55_memories_readd.sql");
-tenant_migration_sql!(apply_schema_v56_webhooks_readd, "v56", "../tenant/schema_v56_webhooks_readd.sql");
-tenant_migration_sql!(apply_schema_v57_approvals_readd, "v57", "../tenant/schema_v57_approvals_readd.sql");
-tenant_migration_sql!(apply_schema_v58_soma_agents_readd, "v58", "../tenant/schema_v58_soma_agents_readd.sql");
-tenant_migration_sql!(apply_schema_v59_axon_events_readd, "v59", "../tenant/schema_v59_axon_events_readd.sql");
-tenant_migration_sql!(apply_schema_v60_chiasm_tasks_readd, "v60", "../tenant/schema_v60_chiasm_tasks_readd.sql");
-tenant_migration_sql!(apply_schema_v61_conversations_readd, "v61", "../tenant/schema_v61_conversations_readd.sql");
-tenant_migration_sql!(apply_schema_v62_intelligence_readd, "v62", "../tenant/schema_v62_intelligence_readd.sql");
-tenant_migration_sql!(apply_schema_v63_graph_entities_readd, "v63", "../tenant/schema_v63_graph_entities_readd.sql");
-tenant_migration_sql!(apply_schema_v64_episodes_readd, "v64", "../tenant/schema_v64_episodes_readd.sql");
-tenant_migration_sql!(apply_schema_v65_intelligence_remainder_readd, "v65", "../tenant/schema_v65_intelligence_remainder_readd.sql");
-tenant_migration_sql!(apply_schema_v66_thymus_readd, "v66", "../tenant/schema_v66_thymus_readd.sql");
-tenant_migration_sql!(apply_schema_v67_graph_remainder_readd, "v67", "../tenant/schema_v67_graph_remainder_readd.sql");
-tenant_migration_sql!(apply_schema_v68_user_preferences_readd, "v68", "../tenant/schema_v68_user_preferences_readd.sql");
-tenant_migration_sql!(apply_schema_v69_skills_readd, "v69", "../tenant/schema_v69_skills_readd.sql");
+tenant_migration_sql!(
+    apply_schema_v2_scratchpad_shim,
+    "v2",
+    "../tenant/schema_v2_scratchpad.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v3_sessions_shim,
+    "v3",
+    "../tenant/schema_v3_sessions.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v4_chiasm_shim,
+    "v4",
+    "../tenant/schema_v4_chiasm.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v5_approvals_shim,
+    "v5",
+    "../tenant/schema_v5_approvals.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v6_broca_shim,
+    "v6",
+    "../tenant/schema_v6_broca.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v7_projects_shim,
+    "v7",
+    "../tenant/schema_v7_projects.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v8_activity_shim,
+    "v8",
+    "../tenant/schema_v8_activity.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v9_webhooks_shim,
+    "v9",
+    "../tenant/schema_v9_webhooks.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v10_ingestion_shim,
+    "v10",
+    "../tenant/schema_v10_ingestion.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v11_axon_shim,
+    "v11",
+    "../tenant/schema_v11_axon.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v12_soma_shim,
+    "v12",
+    "../tenant/schema_v12_soma.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v13_loom_shim,
+    "v13",
+    "../tenant/schema_v13_loom.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v14_graph_shim,
+    "v14",
+    "../tenant/schema_v14_graph.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v15_thymus_shim,
+    "v15",
+    "../tenant/schema_v15_thymus.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v16_portability_shim,
+    "v16",
+    "../tenant/schema_v16_portability.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v17_growth_shim,
+    "v17",
+    "../tenant/schema_v17_growth.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v18_intelligence_shim,
+    "v18",
+    "../tenant/schema_v18_intelligence.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v19_skills_shim,
+    "v19",
+    "../tenant/schema_v19_skills.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v20_episodes_shim,
+    "v20",
+    "../tenant/schema_v20_episodes.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v21_messages_shim,
+    "v21",
+    "../tenant/schema_v21_messages.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v22_memories_drop,
+    "v22",
+    "../tenant/schema_v22_memories_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v23_scratchpad_drop,
+    "v23",
+    "../tenant/schema_v23_scratchpad.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v24_sessions_drop,
+    "v24",
+    "../tenant/schema_v24_sessions_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v25_chiasm_drop,
+    "v25",
+    "../tenant/schema_v25_chiasm_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v26_approvals_drop,
+    "v26",
+    "../tenant/schema_v26_approvals_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v27_broca_drop,
+    "v27",
+    "../tenant/schema_v27_broca_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v28_projects_drop,
+    "v28",
+    "../tenant/schema_v28_projects_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v29_activity_drop,
+    "v29",
+    "../tenant/schema_v29_activity_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v30_webhooks_drop,
+    "v30",
+    "../tenant/schema_v30_webhooks_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v31_axon_drop,
+    "v31",
+    "../tenant/schema_v31_axon_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v32_growth_drop,
+    "v32",
+    "../tenant/schema_v32_growth_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v33_ingestion_hashes_drop,
+    "v33",
+    "../tenant/schema_v33_ingestion_hashes_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v34_loom_drop,
+    "v34",
+    "../tenant/schema_v34_loom_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v35_graph_drop,
+    "v35",
+    "../tenant/schema_v35_graph_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v36_thymus_drop,
+    "v36",
+    "../tenant/schema_v36_thymus_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v38_intelligence_drop,
+    "v38",
+    "../tenant/schema_v38_intelligence_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v39_skills_drop,
+    "v39",
+    "../tenant/schema_v39_skills_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v40_episodes_drop,
+    "v40",
+    "../tenant/schema_v40_episodes_drop.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v41_projects_readd,
+    "v41",
+    "../tenant/schema_v41_projects_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v43_handoffs,
+    "v43",
+    "../tenant/schema_v43_handoffs.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v44_parity,
+    "v44",
+    "../tenant/schema_v44_parity.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v53_chiasm_agent_keys,
+    "v53",
+    "../tenant/schema_v53_chiasm_agent_keys.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v71_artifacts_fts,
+    "v71",
+    "../tenant/schema_v55_artifacts_fts.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v55_memories_readd,
+    "v55",
+    "../tenant/schema_v55_memories_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v56_webhooks_readd,
+    "v56",
+    "../tenant/schema_v56_webhooks_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v57_approvals_readd,
+    "v57",
+    "../tenant/schema_v57_approvals_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v58_soma_agents_readd,
+    "v58",
+    "../tenant/schema_v58_soma_agents_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v59_axon_events_readd,
+    "v59",
+    "../tenant/schema_v59_axon_events_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v60_chiasm_tasks_readd,
+    "v60",
+    "../tenant/schema_v60_chiasm_tasks_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v61_conversations_readd,
+    "v61",
+    "../tenant/schema_v61_conversations_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v62_intelligence_readd,
+    "v62",
+    "../tenant/schema_v62_intelligence_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v63_graph_entities_readd,
+    "v63",
+    "../tenant/schema_v63_graph_entities_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v64_episodes_readd,
+    "v64",
+    "../tenant/schema_v64_episodes_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v65_intelligence_remainder_readd,
+    "v65",
+    "../tenant/schema_v65_intelligence_remainder_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v66_thymus_readd,
+    "v66",
+    "../tenant/schema_v66_thymus_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v67_graph_remainder_readd,
+    "v67",
+    "../tenant/schema_v67_graph_remainder_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v68_user_preferences_readd,
+    "v68",
+    "../tenant/schema_v68_user_preferences_readd.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v69_skills_readd,
+    "v69",
+    "../tenant/schema_v69_skills_readd.sql"
+);
 
 /// Tenant v37: drops user_id from portability tables including conversations.
 fn apply_schema_v37_portability_drop(conn: &Connection) -> Result<()> {
@@ -690,8 +1059,7 @@ fn apply_schema_v52_syntheos_parity(conn: &Connection) -> Result<()> {
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let table = table.replace('\'', "''");
     let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1");
-    let count: i64 = conn
-        .query_row(&sql, [column], |row| row.get(0))?;
+    let count: i64 = conn.query_row(&sql, [column], |row| row.get(0))?;
     Ok(count > 0)
 }
 
@@ -728,12 +1096,11 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
         );",
     )?;
 
-    let current: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        )?;
+    let current: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
 
     for m in TENANT_MIGRATIONS.iter() {
         if m.version <= current {

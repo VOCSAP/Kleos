@@ -101,7 +101,15 @@ pub async fn create_policy(
                  (user_id, namespace, category, secret_name,
                   require_approval, allowed_modes, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![user_id, ns, cat, sec, require_approval as i32, modes_json, now2],
+                params![
+                    user_id,
+                    ns,
+                    cat,
+                    sec,
+                    require_approval as i32,
+                    modes_json,
+                    now2
+                ],
             )?;
             Ok(conn.last_insert_rowid())
         })

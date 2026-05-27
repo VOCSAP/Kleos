@@ -5,7 +5,6 @@ use crate::memory;
 use crate::memory::types::{Memory, StoreRequest};
 use crate::Result;
 
-
 /// Correct a memory: create a new version with corrected content, link it to
 /// the original via 'supersedes', and mark the original as superseded.
 #[tracing::instrument(skip(db, corrected_content, reason))]
@@ -53,8 +52,7 @@ pub async fn correct_memory(
             "UPDATE memories SET is_superseded = 1, updated_at = datetime('now') \
              WHERE id = ?1",
             rusqlite::params![memory_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;
@@ -69,8 +67,7 @@ pub async fn correct_memory(
              (memory_id, old_content, new_content, reason, user_id, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))",
             rusqlite::params![memory_id, old_content, new_content, reason_text, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await?;

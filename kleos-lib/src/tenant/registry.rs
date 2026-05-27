@@ -329,13 +329,12 @@ impl TenantRegistry {
         let db = handle.database();
         let (bytes, count) = db
             .write(|conn| {
-                let (b, c): (i64, i64) = conn
-                    .query_row(
-                        "SELECT COALESCE(SUM(length(content)), 0), COUNT(*) \
+                let (b, c): (i64, i64) = conn.query_row(
+                    "SELECT COALESCE(SUM(length(content)), 0), COUNT(*) \
                          FROM memories WHERE is_latest = 1",
-                        [],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )?;
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
                 conn.execute(
                     "UPDATE tenant_state SET value = ?1, updated_at = datetime('now') \
                      WHERE key = 'content_bytes'",
@@ -357,7 +356,6 @@ impl TenantRegistry {
     pub fn get_quota_row(&self, user_id: &str) -> Result<crate::tenant::types::TenantQuotaRow> {
         self.registry_db.get_quota_row(user_id)
     }
-
 }
 
 impl std::fmt::Debug for TenantRegistry {

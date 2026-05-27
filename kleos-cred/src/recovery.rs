@@ -115,8 +115,8 @@ pub async fn recover_master_key(
 ) -> Result<[u8; KEY_SIZE]> {
     let encrypted_blob: Option<Vec<u8>> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")?;
+            let mut stmt =
+                conn.prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")?;
 
             let mut rows = stmt.query(params![user_id])?;
 
@@ -167,8 +167,7 @@ pub async fn recover_master_key(
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")?;
+        let mut stmt = conn.prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")?;
 
         let mut rows = stmt.query(params![user_id])?;
 
@@ -184,10 +183,9 @@ pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<RecoveryInfo>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
-            )?;
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
+        )?;
 
         let mut rows = stmt.query(params![user_id])?;
 
@@ -217,11 +215,10 @@ pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<Rec
 pub async fn delete_recovery_key(db: &Database, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "DELETE FROM cred_recovery WHERE user_id = ?1",
-                    params![user_id],
-                )?;
+            let n = conn.execute(
+                "DELETE FROM cred_recovery WHERE user_id = ?1",
+                params![user_id],
+            )?;
             Ok(n)
         })
         .await
@@ -251,8 +248,7 @@ mod tests {
                     created_at TEXT NOT NULL
                 )",
                 [],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await

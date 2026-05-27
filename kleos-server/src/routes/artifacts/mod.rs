@@ -58,12 +58,13 @@ async fn list_for_memory(
 ) -> Result<Json<Value>, AppError> {
     // Verify the memory exists in this tenant DB
     db.read(move |conn| {
-        Ok(conn.query_row(
-            "SELECT 1 FROM memories WHERE id = ?1",
-            rusqlite::params![memory_id],
-            |_| Ok(()),
-        )
-        .optional()?)
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM memories WHERE id = ?1",
+                rusqlite::params![memory_id],
+                |_| Ok(()),
+            )
+            .optional()?)
     })
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;
@@ -339,12 +340,13 @@ async fn download_artifact(
 
     // Verify the owning memory exists in this tenant DB
     db.read(move |conn| {
-        Ok(conn.query_row(
-            "SELECT 1 FROM memories WHERE id = ?1",
-            rusqlite::params![memory_id],
-            |_| Ok(()),
-        )
-        .optional()?)
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM memories WHERE id = ?1",
+                rusqlite::params![memory_id],
+                |_| Ok(()),
+            )
+            .optional()?)
     })
     .await?
     .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Memory not found".into())))?;

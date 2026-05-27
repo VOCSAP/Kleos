@@ -26,7 +26,6 @@ pub const TOOLS_REQUIRING_APPROVAL: &[&str] = &["Bash", "Write", "Edit", "WebFet
 /// Seconds to wait for a human approval before timing out and blocking.
 pub const APPROVAL_TIMEOUT_SECS: u64 = 120;
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateCheckRequest {
     pub command: String,
@@ -246,13 +245,11 @@ pub async fn respond_to_gate(
     let approved_copy = approved;
 
     db.write(move |conn| {
-        let rows_affected = conn
-            .execute(
-                "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
+        let rows_affected = conn.execute(
+            "UPDATE gate_requests SET status = ?1, reason = ?2, updated_at = datetime('now')
              WHERE id = ?3 AND user_id = ?4 AND status = 'pending'",
-                rusqlite::params![status, reason_str, gate_id, user_id],
-            )
-            ?;
+            rusqlite::params![status, reason_str, gate_id, user_id],
+        )?;
 
         if rows_affected == 0 {
             // Distinguish "never existed" from "already decided" so the caller
@@ -264,8 +261,7 @@ pub async fn respond_to_gate(
                     rusqlite::params![gate_id, user_id],
                     |row| row.get(0),
                 )
-                .optional()
-                ?;
+                .optional()?;
             return match existing {
                 None => Err(EngError::NotFound(format!(
                     "gate request {} not found",
@@ -279,13 +275,11 @@ pub async fn respond_to_gate(
         }
 
         if approved_copy {
-            let mut stmt = conn
-                .prepare("SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2")
-                ?;
+            let mut stmt =
+                conn.prepare("SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2")?;
             let command: Option<String> = stmt
                 .query_row(rusqlite::params![gate_id, user_id], |row| row.get(0))
-                .optional()
-                ?;
+                .optional()?;
             if let Some(cmd) = command {
                 return Ok(serde_json::json!({ "ok": true, "approved": true, "command": cmd }));
             }
@@ -311,13 +305,11 @@ pub struct GateDecision {
 pub async fn mark_gate_timed_out(db: &Database, gate_id: i64, user_id: i64) -> Result<bool> {
     let reason = "approval timed out";
     db.write(move |conn| {
-        let rows_affected = conn
-            .execute(
-                "UPDATE gate_requests SET status = 'denied', reason = ?1, updated_at = datetime('now')
+        let rows_affected = conn.execute(
+            "UPDATE gate_requests SET status = 'denied', reason = ?1, updated_at = datetime('now')
              WHERE id = ?2 AND user_id = ?3 AND status = 'pending'",
-                rusqlite::params![reason, gate_id, user_id],
-            )
-            ?;
+            rusqlite::params![reason, gate_id, user_id],
+        )?;
         Ok(rows_affected > 0)
     })
     .await
@@ -331,18 +323,19 @@ pub async fn read_gate_decision(
     user_id: i64,
 ) -> Result<Option<GateDecision>> {
     db.read(move |conn| {
-        Ok(conn.query_row(
-            "SELECT status, reason, command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![gate_id, user_id],
-            |row| {
-                Ok(GateDecision {
-                    status: row.get(0)?,
-                    reason: row.get(1)?,
-                    command: row.get(2)?,
-                })
-            },
-        )
-        .optional()?)
+        Ok(conn
+            .query_row(
+                "SELECT status, reason, command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![gate_id, user_id],
+                |row| {
+                    Ok(GateDecision {
+                        status: row.get(0)?,
+                        reason: row.get(1)?,
+                        command: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
     })
     .await
 }
@@ -394,14 +387,15 @@ pub async fn complete_latest_gate(
     // Step 1: find the most recent open gate for this session
     let row: Option<(i64, String, String)> = db
         .read(move |conn| {
-            Ok(conn.query_row(
-                "SELECT id, agent, created_at FROM gate_requests
+            Ok(conn
+                .query_row(
+                    "SELECT id, agent, created_at FROM gate_requests
                  WHERE user_id = ?1 AND session_id = ?2 AND output IS NULL
                  ORDER BY id DESC LIMIT 1",
-                rusqlite::params![uid, sid],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?)
+                    rusqlite::params![uid, sid],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?)
         })
         .await?;
 

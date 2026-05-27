@@ -95,8 +95,14 @@ pub async fn call_llm(
     let body = OpenAiRequest {
         model,
         messages: vec![
-            OpenAiMessage { role: "system", content: system.to_string() },
-            OpenAiMessage { role: "user", content: user.to_string() },
+            OpenAiMessage {
+                role: "system",
+                content: system.to_string(),
+            },
+            OpenAiMessage {
+                role: "user",
+                content: user.to_string(),
+            },
         ],
         temperature: opts.temperature,
         max_tokens: opts.max_tokens,

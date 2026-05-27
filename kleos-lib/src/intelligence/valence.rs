@@ -198,45 +198,41 @@ pub async fn store_valence(db: &Database, memory_id: i64, content: &str) -> Resu
 pub async fn get_emotional_profile(db: &Database) -> Result<EmotionalProfile> {
     let emotions = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT dominant_emotion, COUNT(*) as count, AVG(valence), AVG(arousal) \
+            let mut stmt = conn.prepare(
+                "SELECT dominant_emotion, COUNT(*) as count, AVG(valence), AVG(arousal) \
                      FROM memories WHERE dominant_emotion IS NOT NULL AND is_forgotten = 0 \
                      GROUP BY dominant_emotion ORDER BY count DESC",
-                )?;
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(EmotionStat {
-                        dominant_emotion: row.get(0)?,
-                        count: row.get(1)?,
-                        avg_valence: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
-                        avg_arousal: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-                    })
-                })?;
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(EmotionStat {
+                    dominant_emotion: row.get(0)?,
+                    count: row.get(1)?,
+                    avg_valence: row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                    avg_arousal: row.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+                })
+            })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
 
     let overall = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT AVG(valence), AVG(arousal), \
+            let mut stmt = conn.prepare(
+                "SELECT AVG(valence), AVG(arousal), \
                      SUM(CASE WHEN valence > 0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence < -0.2 THEN 1 ELSE 0 END), \
                      SUM(CASE WHEN valence BETWEEN -0.2 AND 0.2 THEN 1 ELSE 0 END) \
                      FROM memories WHERE valence IS NOT NULL AND is_forgotten = 0",
-                )?;
-            let result = stmt
-                .query_row([], |row| {
-                    Ok(OverallEmotionStats {
-                        avg_valence: row.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
-                        avg_arousal: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
-                        positive_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
-                        negative_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
-                        neutral_count: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
-                    })
-                })?;
+            )?;
+            let result = stmt.query_row([], |row| {
+                Ok(OverallEmotionStats {
+                    avg_valence: row.get::<_, Option<f64>>(0)?.unwrap_or(0.0),
+                    avg_arousal: row.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
+                    positive_count: row.get::<_, Option<i64>>(2)?.unwrap_or(0),
+                    negative_count: row.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    neutral_count: row.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                })
+            })?;
             Ok(result)
         })
         .await?;

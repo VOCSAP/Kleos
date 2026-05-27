@@ -6,7 +6,6 @@ use crate::{EngError, Result};
 
 const ENTITY_COLUMNS: &str = "id, name, entity_type, description, aliases, space_id, confidence, occurrence_count, first_seen_at, last_seen_at, created_at";
 
-
 // `ENTITY_COLUMNS` deliberately omits user_id; every read scopes by it in the
 // WHERE clause, so the returned row is known to belong to `owner_user_id` and
 // the field is filled from that param rather than re-selected.
@@ -99,9 +98,7 @@ async fn find_entity_by_name_type(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query)?;
-        let mut rows = stmt
-            .query(rusqlite::params![name, entity_type, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![name, entity_type, user_id])?;
         match rows.next()? {
             Some(row) => Ok(Some(row_to_entity(row, user_id)?)),
             None => Ok(None),
@@ -119,9 +116,7 @@ pub async fn get_entity(db: &Database, id: i64, user_id: i64) -> Result<Entity> 
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query)?;
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
         match rows.next()? {
             Some(row) => row_to_entity(row, user_id),
             None => Err(EngError::NotFound(format!("entity {}", id))),
@@ -148,9 +143,7 @@ pub async fn list_entities(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(&query)?;
-        let mut rows = stmt
-            .query(rusqlite::params![user_id, limit as i64, offset as i64])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![user_id, limit as i64, offset as i64])?;
         let mut entities = Vec::new();
         while let Some(row) = rows.next()? {
             entities.push(row_to_entity(row, user_id)?);
@@ -160,16 +153,13 @@ pub async fn list_entities(
     .await
 }
 
-
 #[tracing::instrument(skip(db))]
 pub async fn delete_entity(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
-        let affected = conn
-            .execute(
-                "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
-                rusqlite::params![id, user_id],
-            )
-            ?;
+        let affected = conn.execute(
+            "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![id, user_id],
+        )?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("entity {}", id)));
         }
@@ -229,9 +219,7 @@ pub async fn update_entity(
     params.push(user_id.into());
 
     db.write(move |conn| {
-        let affected = conn
-            .execute(&sql, rusqlite::params_from_iter(params.iter()))
-            ?;
+        let affected = conn.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
         if affected == 0 {
             return Err(EngError::NotFound(format!("entity {}", id)));
         }
@@ -259,17 +247,13 @@ pub async fn link_memory_entity(
     // predicates make that real in single-DB mode.
     let count: i64 = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT COUNT(*) \
+            let mut stmt = conn.prepare(
+                "SELECT COUNT(*) \
                      FROM entities e \
                      JOIN memories m ON m.id = ?1 \
                      WHERE e.id = ?2 AND e.user_id = ?3 AND m.user_id = ?3",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![memory_id, entity_id, user_id])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![memory_id, entity_id, user_id])?;
             match rows.next()? {
                 Some(row) => Ok(row.get(0)?),
                 None => Ok(0i64),
@@ -289,8 +273,7 @@ pub async fn link_memory_entity(
             "INSERT OR IGNORE INTO memory_entities (memory_id, entity_id, salience, created_at) \
              VALUES (?1, ?2, ?3, datetime('now'))",
             rusqlite::params![memory_id, entity_id, salience],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -304,15 +287,13 @@ pub async fn unlink_memory_entity(
     user_id: i64,
 ) -> Result<()> {
     db.write(move |conn| {
-        let affected = conn
-            .execute(
-                "DELETE FROM memory_entities \
+        let affected = conn.execute(
+            "DELETE FROM memory_entities \
                  WHERE memory_id = ?1 AND entity_id = ?2 \
                    AND EXISTS (SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?3) \
                    AND EXISTS (SELECT 1 FROM entities WHERE id = ?2 AND user_id = ?3)",
-                rusqlite::params![memory_id, entity_id, user_id],
-            )
-            ?;
+            rusqlite::params![memory_id, entity_id, user_id],
+        )?;
         if affected == 0 {
             return Err(EngError::NotFound(format!(
                 "entity {} not linked to memory {}",
@@ -323,7 +304,6 @@ pub async fn unlink_memory_entity(
     })
     .await
 }
-
 
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
 pub async fn search_entity_memories(
@@ -340,9 +320,8 @@ pub async fn search_entity_memories(
     }
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT m.id, m.content, m.category, m.source, m.importance, m.created_at \
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.content, m.category, m.source, m.importance, m.created_at \
                  FROM memories m \
                  JOIN memory_entities me ON me.memory_id = m.id \
                  WHERE me.entity_id = ?1 AND m.is_forgotten = 0 \
@@ -351,11 +330,8 @@ pub async fn search_entity_memories(
                    AND m.id IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?2) \
                  ORDER BY m.importance DESC, m.created_at DESC \
                  LIMIT ?3",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![entity_id, sanitized, limit, user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![entity_id, sanitized, limit, user_id])?;
         let mut results = Vec::new();
         while let Some(row) = rows.next()? {
             results.push(EntityMemorySearchResult {
@@ -401,9 +377,7 @@ pub async fn delete_relationship(
     };
 
     db.write(move |conn| {
-        let affected = conn
-            .execute(&sql, rusqlite::params_from_iter(params.iter()))
-            ?;
+        let affected = conn.execute(&sql, rusqlite::params_from_iter(params.iter()))?;
         if affected == 0 {
             return Err(EngError::NotFound(format!(
                 "relationship {} -> {} not found",

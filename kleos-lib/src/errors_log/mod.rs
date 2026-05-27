@@ -5,27 +5,24 @@ pub use types::*;
 
 use crate::{db::Database, Result};
 
-
 /// Log an error event to the database. Returns the new row id.
 #[tracing::instrument(skip(db, req), fields(source = %req.source, level = %req.level, message_len = req.message.len(), user_id = ?user_id))]
 pub async fn log_error(db: &Database, req: LogErrorRequest, user_id: Option<&str>) -> Result<i64> {
     let user_id_owned = user_id.map(|s| s.to_string());
 
     db.write(move |conn| {
-        let id: i64 = conn
-            .query_row(
-                "INSERT INTO error_events (source, level, message, context, user_id) \
+        let id: i64 = conn.query_row(
+            "INSERT INTO error_events (source, level, message, context, user_id) \
                  VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-                rusqlite::params![
-                    req.source,
-                    req.level,
-                    req.message,
-                    req.context,
-                    user_id_owned
-                ],
-                |row| row.get(0),
-            )
-            ?;
+            rusqlite::params![
+                req.source,
+                req.level,
+                req.message,
+                req.context,
+                user_id_owned
+            ],
+            |row| row.get(0),
+        )?;
         Ok(id)
     })
     .await
@@ -51,26 +48,22 @@ pub async fn list_errors(
     let user_id_owned = user_id.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, source, level, message, context, created_at, user_id \
+        let mut stmt = conn.prepare(
+            "SELECT id, source, level, message, context, created_at, user_id \
                  FROM error_events \
                  WHERE user_id = ?1 \
                    AND (?2 IS NULL OR level = ?2) \
                    AND (?3 IS NULL OR source = ?3) \
                  ORDER BY created_at DESC \
                  LIMIT ?4 OFFSET ?5",
-            )
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![
-                user_id_owned,
-                level,
-                source,
-                limit,
-                offset
-            ])
-            ?;
+        )?;
+        let mut rows = stmt.query(rusqlite::params![
+            user_id_owned,
+            level,
+            source,
+            limit,
+            offset
+        ])?;
         let mut events = Vec::new();
         while let Some(row) = rows.next()? {
             events.push(ErrorEvent {

@@ -9,7 +9,6 @@
 use crate::db::Database;
 use crate::Result;
 
-
 /// Enqueue a new task for any agent to pick up.
 ///
 /// Creates a task with status `"queued"` and `assigned = 0` (unassigned).
@@ -37,8 +36,7 @@ pub async fn enqueue_task(
                  output_format, heartbeat_interval, assigned, user_id) \
                  VALUES ('unassigned', ?1, ?2, 'queued', ?3, 'raw', 300, 0, ?4)",
                 rusqlite::params![project_s, title_s, summary_s, user_id],
-            )
-            ?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;

@@ -60,15 +60,18 @@ impl SystemStepState {
 
         // Match existing system_integration to select the right option.
         let selected = match &state.system_integration {
-            SystemIntegration::Systemd { .. } => {
-                options.iter().position(|o| *o == SystemOption::Systemd).unwrap_or(0)
-            }
-            SystemIntegration::Launchd { .. } => {
-                options.iter().position(|o| *o == SystemOption::Launchd).unwrap_or(0)
-            }
-            SystemIntegration::None | SystemIntegration::WindowsService => {
-                options.iter().position(|o| *o == SystemOption::None).unwrap_or(0)
-            }
+            SystemIntegration::Systemd { .. } => options
+                .iter()
+                .position(|o| *o == SystemOption::Systemd)
+                .unwrap_or(0),
+            SystemIntegration::Launchd { .. } => options
+                .iter()
+                .position(|o| *o == SystemOption::Launchd)
+                .unwrap_or(0),
+            SystemIntegration::None | SystemIntegration::WindowsService => options
+                .iter()
+                .position(|o| *o == SystemOption::None)
+                .unwrap_or(0),
         };
 
         let auto_start = match &state.system_integration {
@@ -88,7 +91,11 @@ impl SystemStepState {
 
     /// Return the system integration value corresponding to the current selection.
     pub fn to_integration(&self) -> SystemIntegration {
-        let option = self.options.get(self.selected).copied().unwrap_or(SystemOption::None);
+        let option = self
+            .options
+            .get(self.selected)
+            .copied()
+            .unwrap_or(SystemOption::None);
         match option {
             SystemOption::Systemd => SystemIntegration::Systemd {
                 auto_start: self.auto_start,
@@ -113,8 +120,8 @@ pub fn draw_system_step(
         .margin(1)
         .constraints([
             Constraint::Length(step_state.options.len() as u16 + 2), // options
-            Constraint::Length(3),  // auto-start toggle
-            Constraint::Min(5),     // preview
+            Constraint::Length(3),                                   // auto-start toggle
+            Constraint::Min(5),                                      // preview
         ])
         .split(area);
 
@@ -148,7 +155,9 @@ fn draw_options(f: &mut Frame, area: Rect, step_state: &SystemStepState) {
                 Span::styled(
                     label,
                     if is_selected {
-                        Style::default().fg(COLOR_ACTIVE).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(COLOR_ACTIVE)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(ratatui::style::Color::White)
                     },
@@ -189,28 +198,19 @@ fn draw_auto_start(f: &mut Frame, area: Rect, step_state: &SystemStepState) {
 }
 
 /// Render the generated unit file / plist preview.
-fn draw_preview(
-    f: &mut Frame,
-    area: Rect,
-    state: &WizardState,
-    step_state: &SystemStepState,
-) {
+fn draw_preview(f: &mut Frame, area: Rect, state: &WizardState, step_state: &SystemStepState) {
     let integration = step_state.to_integration();
     let preview = match &integration {
-        SystemIntegration::Systemd { .. } => {
-            kleos_install_core::system::generate_systemd_unit(
-                &build_installer_config(state),
-                &state.install_dir,
-                &state.config_dir,
-            )
-        }
-        SystemIntegration::Launchd { .. } => {
-            kleos_install_core::system::generate_launchd_plist(
-                &build_installer_config(state),
-                &state.install_dir,
-                &state.config_dir,
-            )
-        }
+        SystemIntegration::Systemd { .. } => kleos_install_core::system::generate_systemd_unit(
+            &build_installer_config(state),
+            &state.install_dir,
+            &state.config_dir,
+        ),
+        SystemIntegration::Launchd { .. } => kleos_install_core::system::generate_launchd_plist(
+            &build_installer_config(state),
+            &state.install_dir,
+            &state.config_dir,
+        ),
         _ => String::from("No service file will be generated."),
     };
 
@@ -227,12 +227,17 @@ fn draw_preview(
 }
 
 /// Build a minimal `InstallerConfig` from wizard state for unit file generation.
-fn build_installer_config(
-    state: &WizardState,
-) -> kleos_install_core::config::InstallerConfig {
-    let has_server = state.selected_components.iter().any(|c| c == "kleos-server");
+fn build_installer_config(state: &WizardState) -> kleos_install_core::config::InstallerConfig {
+    let has_server = state
+        .selected_components
+        .iter()
+        .any(|c| c == "kleos-server");
     kleos_install_core::config::InstallerConfig {
-        server: if has_server { Some(state.server_config.clone()) } else { None },
+        server: if has_server {
+            Some(state.server_config.clone())
+        } else {
+            None
+        },
         embedding: state.embedding_config.clone(),
         reranker: state.reranker_config.clone(),
         security: state.security_config.clone(),
@@ -275,10 +280,9 @@ pub fn handle_system_input(
                 step_state.selected -= 1;
             }
         }
-        KeyCode::Char(' ')
-            if step_state.focused_item == 1 => {
-                step_state.auto_start = !step_state.auto_start;
-            }
+        KeyCode::Char(' ') if step_state.focused_item == 1 => {
+            step_state.auto_start = !step_state.auto_start;
+        }
         KeyCode::PageDown => {
             step_state.preview_scroll = step_state.preview_scroll.saturating_add(3);
         }

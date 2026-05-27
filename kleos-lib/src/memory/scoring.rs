@@ -568,5 +568,4 @@ mod tests {
             s.vector_weight
         );
     }
-
 }

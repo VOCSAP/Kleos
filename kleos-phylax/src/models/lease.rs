@@ -84,7 +84,17 @@ pub async fn mint_lease(
                  (user_id, approval_id, agent_name, category, secret_name,
                   jti, correlation_id, created_at, expires_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![user_id, approval_id, agent, cat, sec, jti2, corr, created2, expires2],
+                params![
+                    user_id,
+                    approval_id,
+                    agent,
+                    cat,
+                    sec,
+                    jti2,
+                    corr,
+                    created2,
+                    expires2
+                ],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -135,9 +145,9 @@ pub async fn redeem_lease(db: &Database, jti: &str) -> Result<Lease> {
             let lease = stmt.query_row(params![jti3], row_to_lease).ok();
             return match lease {
                 None => Err(kleos_lib::EngError::NotFound("lease not found".into())),
-                Some(l) if l.used_at.is_some() => {
-                    Err(kleos_lib::EngError::Conflict("lease already redeemed".into()))
-                }
+                Some(l) if l.used_at.is_some() => Err(kleos_lib::EngError::Conflict(
+                    "lease already redeemed".into(),
+                )),
                 Some(_) => Err(kleos_lib::EngError::InvalidInput("lease expired".into())),
             };
         }

@@ -6,7 +6,6 @@ use crate::sessions::scrub::scrub_message;
 use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 
-
 const CONVERSATION_COLUMNS: &str = "id, agent, session_id, title, metadata, started_at, updated_at";
 
 const CONVERSATION_LIST_COLUMNS: &str =
@@ -210,8 +209,7 @@ pub async fn get_conversation_for_user(
     );
     db.read(move |conn| {
         conn.query_row(&sql, params![id, user_id], row_to_conversation)
-            .optional()
-            ?
+            .optional()?
             .ok_or_else(|| EngError::NotFound(format!("conversation {} not found", id)))
     })
     .await
@@ -231,10 +229,11 @@ pub async fn get_conversation_by_session(
         CONVERSATION_COLUMNS
     );
     db.read(move |conn| {
-        Ok(conn.query_row(&sql, params![agent, session_id, user_id], |row| {
-            row_to_conversation(row)
-        })
-        .optional()?)
+        Ok(conn
+            .query_row(&sql, params![agent, session_id, user_id], |row| {
+                row_to_conversation(row)
+            })
+            .optional()?)
     })
     .await
 }
@@ -251,11 +250,9 @@ pub async fn list_conversations(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(params![limit as i64, user_id], |row| {
-                row_to_conversation_list_item(row)
-            })
-            ?;
+        let rows = stmt.query_map(params![limit as i64, user_id], |row| {
+            row_to_conversation_list_item(row)
+        })?;
         let mut convs = Vec::new();
         for row in rows {
             convs.push(row?);
@@ -279,11 +276,9 @@ pub async fn list_conversations_by_agent(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(params![agent, limit as i64, user_id], |row| {
-                row_to_conversation_list_item(row)
-            })
-            ?;
+        let rows = stmt.query_map(params![agent, limit as i64, user_id], |row| {
+            row_to_conversation_list_item(row)
+        })?;
         let mut convs = Vec::new();
         for row in rows {
             convs.push(row?);
@@ -337,8 +332,7 @@ pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<
         conn.execute(
             "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
             params![id, user_id],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -388,8 +382,7 @@ pub async fn add_message(
     );
     db.read(move |conn| {
         conn.query_row(&sql, params![new_id], row_to_message)
-            .optional()
-            ?
+            .optional()?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created message".into()))
     })
     .await
@@ -420,12 +413,10 @@ pub async fn list_messages(
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(
-                params![conversation_id, limit as i64, offset as i64, user_id],
-                row_to_message,
-            )
-            ?;
+        let rows = stmt.query_map(
+            params![conversation_id, limit as i64, offset as i64, user_id],
+            row_to_message,
+        )?;
         let mut msgs = Vec::new();
         for row in rows {
             msgs.push(row?);
@@ -458,11 +449,9 @@ pub async fn search_messages(
     match db
         .read(move |conn| {
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt
-                .query_map(params![sanitized, limit as i64, user_id], |row| {
-                    row_to_message_search_result(row)
-                })
-                ?;
+            let rows = stmt.query_map(params![sanitized, limit as i64, user_id], |row| {
+                row_to_message_search_result(row)
+            })?;
             let mut results = Vec::new();
             for row in rows {
                 results.push(row?);

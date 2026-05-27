@@ -253,20 +253,11 @@ async fn init_backfill(
     // rows.
     let ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL")
-                ?;
-            let mut rows = stmt
-                .query(params![])
-                ?;
+            let mut stmt = conn.prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL")?;
+            let mut rows = stmt.query(params![])?;
             let mut results = Vec::new();
-            while let Some(row) = rows
-                .next()
-                ?
-            {
-                let id: i64 = row
-                    .get(0)
-                    ?;
+            while let Some(row) = rows.next()? {
+                let id: i64 = row.get(0)?;
                 results.push(id);
             }
             Ok(results)

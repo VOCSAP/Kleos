@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use crate::db::Database;
 use crate::Result;
 
-
 // ---------------------------------------------------------------------------
 // In-memory rate limiter (sliding window with burst support, per process)
 // ---------------------------------------------------------------------------
@@ -301,25 +300,20 @@ pub async fn check_rate_limit(
     let key_owned = key.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")
-            ?;
-        let mut rows = stmt
-            .query(rusqlite::params![key_owned.clone()])
-            ?;
+        let mut stmt =
+            conn.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key_owned.clone()])?;
 
         if let Some(row) = rows.next()? {
             let count: i64 = row.get(0)?;
             let window_start: String = row.get(1)?;
 
             // Check if window expired
-            let expired: i64 = conn
-                .query_row(
-                    "SELECT (strftime('%s', 'now') - strftime('%s', ?1)) > ?2",
-                    rusqlite::params![window_start, window_seconds],
-                    |r| r.get(0),
-                )
-                ?;
+            let expired: i64 = conn.query_row(
+                "SELECT (strftime('%s', 'now') - strftime('%s', ?1)) > ?2",
+                rusqlite::params![window_start, window_seconds],
+                |r| r.get(0),
+            )?;
 
             if expired != 0 {
                 // Window has expired -- will reset on next write
@@ -350,8 +344,7 @@ pub async fn increment_counter(db: &Database, key: &str) -> Result<()> {
                  count = count + 1,
                  updated_at = datetime('now')",
             rusqlite::params![key_owned],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -449,13 +442,11 @@ pub async fn check_and_increment_by(
 #[tracing::instrument(skip(db), fields(grace_seconds))]
 pub async fn cleanup_expired_rows(db: &Database, grace_seconds: i64) -> Result<u64> {
     db.write(move |conn| {
-        let deleted = conn
-            .execute(
-                "DELETE FROM rate_limits
+        let deleted = conn.execute(
+            "DELETE FROM rate_limits
                  WHERE (strftime('%s', 'now') - strftime('%s', window_start)) > ?1",
-                rusqlite::params![grace_seconds],
-            )
-            ?;
+            rusqlite::params![grace_seconds],
+        )?;
         Ok(deleted as u64)
     })
     .await

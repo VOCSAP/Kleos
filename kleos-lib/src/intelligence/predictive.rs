@@ -12,7 +12,6 @@ use rusqlite::params;
 use std::collections::HashMap;
 use tracing::info;
 
-
 /// Track that a memory category was accessed at this time, scoped to the
 /// given user. Builds the temporal pattern database over time.
 /// Generate proactive context for the current moment.
@@ -48,21 +47,15 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     let pattern_query = format!("%dow:{},hour:{}%", dow, hour);
     let predicted_categories: Vec<String> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT description FROM temporal_patterns \
+            let mut stmt = conn.prepare(
+                "SELECT description FROM temporal_patterns \
                      WHERE description LIKE ?1 AND user_id = ?2 \
                      ORDER BY created_at DESC LIMIT 20",
-                )
-                ?;
-            let rows = stmt
-                .query_map(params![pattern_query, user_id], |row| {
-                    row.get::<_, String>(0)
-                })
-                ?;
-            let descs: Vec<String> = rows
-                .collect::<rusqlite::Result<Vec<_>>>()
-                ?;
+            )?;
+            let rows = stmt.query_map(params![pattern_query, user_id], |row| {
+                row.get::<_, String>(0)
+            })?;
+            let descs: Vec<String> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(descs)
         })
         .await?
@@ -87,26 +80,22 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
 
     let task_rows: Vec<MemRow> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND category = 'task' AND is_static = 0 \
                        AND created_at > datetime('now', '-3 days') \
                      ORDER BY importance DESC, created_at DESC LIMIT 5",
-                )
-                ?;
-            let rows = stmt
-                .query_map(params![user_id], |row| {
-                    Ok(MemRow {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                    })
+            )?;
+            let rows = stmt.query_map(params![user_id], |row| {
+                Ok(MemRow {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
                 })
-                ?;
+            })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -136,26 +125,22 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     // Get active issues
     let issue_rows: Vec<MemRow> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND category = 'issue' \
                        AND created_at > datetime('now', '-7 days') \
                      ORDER BY importance DESC LIMIT 3",
-                )
-                ?;
-            let rows = stmt
-                .query_map(params![user_id], |row| {
-                    Ok(MemRow {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                    })
+            )?;
+            let rows = stmt.query_map(params![user_id], |row| {
+                Ok(MemRow {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
                 })
-                ?;
+            })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -182,24 +167,20 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
     // Get recent memories for session continuity
     let recent_rows: Vec<MemRow> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                      ORDER BY created_at DESC LIMIT 3",
-                )
-                ?;
-            let rows = stmt
-                .query_map(params![user_id], |row| {
-                    Ok(MemRow {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                    })
+            )?;
+            let rows = stmt.query_map(params![user_id], |row| {
+                Ok(MemRow {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
                 })
-                ?;
+            })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -278,21 +259,17 @@ pub async fn detect_sequence_patterns(
 
     let rows: Vec<(String, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT category, created_at \
+            let mut stmt = conn.prepare(
+                "SELECT category, created_at \
                      FROM memories \
                      WHERE is_latest = 1 \
                        AND is_forgotten = 0 \
                        AND is_archived = 0 \
                      ORDER BY created_at ASC, id ASC",
-                )
-                ?;
-            let iter = stmt
-                .query_map(params![], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                ?;
+            )?;
+            let iter = stmt.query_map(params![], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
             Ok(iter.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await?;
@@ -374,9 +351,8 @@ fn parse_sql_timestamp(ts: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// Predict which project the user is likely working on based on recent memory-project links.
 async fn predict_project(db: &Database, user_id: i64) -> Result<Option<PredictedProject>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT p.id, p.name, COUNT(*) as cnt \
+        let mut stmt = conn.prepare(
+            "SELECT p.id, p.name, COUNT(*) as cnt \
                  FROM memory_projects mp \
                  JOIN projects p ON p.id = mp.project_id \
                  JOIN memories m ON m.id = mp.memory_id \
@@ -384,11 +360,8 @@ async fn predict_project(db: &Database, user_id: i64) -> Result<Option<Predicted
                  GROUP BY p.id, p.name \
                  ORDER BY cnt DESC \
                  LIMIT 1",
-            )
-            ?;
-        let mut rows = stmt
-            .query(params![user_id])
-            ?;
+        )?;
+        let mut rows = stmt.query(params![user_id])?;
         if let Some(row) = rows.next()? {
             Ok(Some(PredictedProject {
                 id: row.get(0)?,

@@ -13,7 +13,6 @@ use std::collections::HashMap;
 use crate::db::Database;
 use crate::{EngError, Result};
 
-
 // ----------------------------------------------------------------------------
 // Core structs
 // ----------------------------------------------------------------------------
@@ -153,8 +152,7 @@ impl EvolutionState {
                 "INSERT OR REPLACE INTO brain_meta (key, value) \
                  VALUES ('evolution_state', ?1)",
                 rusqlite::params![json_str],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await

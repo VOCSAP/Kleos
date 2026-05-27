@@ -18,7 +18,6 @@ fn default_storage_bytes_limit() -> i64 {
     DEFAULT_STORAGE_BYTES_LIMIT
 }
 
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -108,8 +107,7 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
                 storage_bytes_limit,
                 rate_limit_override,
             ],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await
@@ -119,33 +117,29 @@ pub async fn upsert_quota(db: &Database, quota: &TenantQuota) -> Result<()> {
 #[tracing::instrument(skip(db))]
 pub async fn list_quotas(db: &Database) -> Result<Vec<(TenantQuota, String)>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT tq.user_id, tq.max_memories, tq.max_conversations, tq.max_api_keys, \
+        let mut stmt = conn.prepare(
+            "SELECT tq.user_id, tq.max_memories, tq.max_conversations, tq.max_api_keys, \
                  tq.max_spaces, tq.max_memory_size_bytes, tq.storage_bytes_limit, \
                  tq.rate_limit_override, u.username \
                  FROM tenant_quotas tq \
                  JOIN users u ON tq.user_id = u.id",
-            )
-            ?;
+        )?;
 
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    TenantQuota {
-                        user_id: row.get(0).unwrap_or(0),
-                        max_memories: row.get(1).unwrap_or(10000),
-                        max_conversations: row.get(2).unwrap_or(1000),
-                        max_api_keys: row.get(3).unwrap_or(10),
-                        max_spaces: row.get(4).unwrap_or(5),
-                        max_memory_size_bytes: row.get(5).unwrap_or(102400),
-                        storage_bytes_limit: row.get(6).unwrap_or(DEFAULT_STORAGE_BYTES_LIMIT),
-                        rate_limit_override: row.get(7).ok(),
-                    },
-                    row.get::<_, String>(8).unwrap_or_default(),
-                ))
-            })
-            ?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                TenantQuota {
+                    user_id: row.get(0).unwrap_or(0),
+                    max_memories: row.get(1).unwrap_or(10000),
+                    max_conversations: row.get(2).unwrap_or(1000),
+                    max_api_keys: row.get(3).unwrap_or(10),
+                    max_spaces: row.get(4).unwrap_or(5),
+                    max_memory_size_bytes: row.get(5).unwrap_or(102400),
+                    storage_bytes_limit: row.get(6).unwrap_or(DEFAULT_STORAGE_BYTES_LIMIT),
+                    rate_limit_override: row.get(7).ok(),
+                },
+                row.get::<_, String>(8).unwrap_or_default(),
+            ))
+        })?;
 
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
@@ -165,16 +159,12 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
     db.read(move |conn| {
         // Fetch quota limits (or use defaults).
         let (memory_limit, spaces_limit, stor_limit): (i64, i64, i64) = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT max_memories, max_spaces, storage_bytes_limit \
+            let mut stmt = conn.prepare(
+                "SELECT max_memories, max_spaces, storage_bytes_limit \
                      FROM tenant_quotas WHERE user_id = ?1",
-                )
-                ?;
+            )?;
 
-            let mut rows = stmt
-                .query(params![user_id])
-                ?;
+            let mut rows = stmt.query(params![user_id])?;
 
             match rows.next()? {
                 Some(row) => {
@@ -192,32 +182,26 @@ pub async fn check_quota(db: &Database, user_id: i64) -> Result<QuotaStatus> {
         };
 
         // Count active memories (user_id dropped from memories table in Phase 5.1).
-        let memory_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM memories \
+        let memory_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memories \
                  WHERE is_forgotten = 0 AND is_latest = 1",
-                params![],
-                |row| row.get(0),
-            )
-            ?;
+            params![],
+            |row| row.get(0),
+        )?;
 
         // Count spaces.
-        let spaces_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
-                params![user_id],
-                |row| row.get(0),
-            )
-            ?;
+        let spaces_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
+            params![user_id],
+            |row| row.get(0),
+        )?;
 
         // Sum artifact storage bytes.
-        let storage_bytes_used: i64 = conn
-            .query_row(
-                "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts",
-                params![],
-                |row| row.get(0),
-            )
-            ?;
+        let storage_bytes_used: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts",
+            params![],
+            |row| row.get(0),
+        )?;
 
         let within_limits = memory_count < memory_limit
             && spaces_count <= spaces_limit
@@ -355,8 +339,7 @@ pub async fn record_usage(
             "INSERT INTO usage_events (user_id, agent_id, event_type, quantity) \
              VALUES (?1, ?2, ?3, ?4)",
             params![user_id, agent_id, event_type, quantity],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await

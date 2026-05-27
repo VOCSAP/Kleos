@@ -60,28 +60,23 @@ pub fn apply_theme(ctx: &egui::Context) {
 
     // -- Widget normal state --
     style.visuals.widgets.noninteractive.bg_fill = COLOR_SURFACE;
-    style.visuals.widgets.noninteractive.fg_stroke =
-        egui::Stroke::new(1.0, COLOR_TEXT_DIM);
+    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, COLOR_TEXT_DIM);
     style.visuals.widgets.noninteractive.corner_radius = cr;
 
     // -- Widget inactive --
     style.visuals.widgets.inactive.bg_fill = COLOR_SURFACE;
-    style.visuals.widgets.inactive.fg_stroke =
-        egui::Stroke::new(1.0, COLOR_TEXT);
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, COLOR_TEXT);
     style.visuals.widgets.inactive.corner_radius = cr;
 
     // -- Widget hovered --
     style.visuals.widgets.hovered.bg_fill = COLOR_ACCENT_DIM;
-    style.visuals.widgets.hovered.fg_stroke =
-        egui::Stroke::new(1.5, COLOR_TEXT);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.5, COLOR_TEXT);
     style.visuals.widgets.hovered.corner_radius = cr;
-    style.visuals.widgets.hovered.bg_stroke =
-        egui::Stroke::new(1.0, COLOR_ACCENT);
+    style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, COLOR_ACCENT);
 
     // -- Widget active (pressed) --
     style.visuals.widgets.active.bg_fill = COLOR_ACCENT;
-    style.visuals.widgets.active.fg_stroke =
-        egui::Stroke::new(1.5, egui::Color32::BLACK);
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::BLACK);
     style.visuals.widgets.active.corner_radius = cr;
 
     // -- Spacing --

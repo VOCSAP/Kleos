@@ -70,31 +70,61 @@ pub struct MigrationInfo {
 macro_rules! migration {
     // No down, not transactional (most common)
     ($ver:expr, $desc:expr, $up:expr) => {
-        Migration { version: $ver, description: $desc, up: $up, down: None, transactional: false }
+        Migration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            down: None,
+            transactional: false,
+        }
     };
     // No down, transactional
     ($ver:expr, $desc:expr, $up:expr, tx) => {
-        Migration { version: $ver, description: $desc, up: $up, down: None, transactional: true }
+        Migration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            down: None,
+            transactional: true,
+        }
     };
     // With down, not transactional
     ($ver:expr, $desc:expr, $up:expr, down: $down:expr) => {
-        Migration { version: $ver, description: $desc, up: $up, down: Some($down), transactional: false }
+        Migration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            down: Some($down),
+            transactional: false,
+        }
     };
     // With down, transactional
     ($ver:expr, $desc:expr, $up:expr, down: $down:expr, tx) => {
-        Migration { version: $ver, description: $desc, up: $up, down: Some($down), transactional: true }
+        Migration {
+            version: $ver,
+            description: $desc,
+            up: $up,
+            down: Some($down),
+            transactional: true,
+        }
     };
 }
 
 pub static MIGRATIONS: &[Migration] = &[
     // Dropping the initial schema would destroy all data; no inverse.
-    migration!(1, "create_tables", |conn| super::schema::create_tables(conn)),
+    migration!(1, "create_tables", |conn| super::schema::create_tables(
+        conn
+    )),
     migration!(2, "add_missing_indexes", run_migration_add_missing_indexes),
     migration!(3, "add_pagerank_tables", run_migration_pagerank_tables),
     migration!(4, "thymus_tenant_scope", run_migration_thymus_tenant_scope),
     migration!(5, "app_state_table", run_migration_app_state_table),
     // Data update; original values cannot be recovered.
-    migration!(6, "backfill_thymus_user_id", run_migration_backfill_thymus_user_id),
+    migration!(
+        6,
+        "backfill_thymus_user_id",
+        run_migration_backfill_thymus_user_id
+    ),
     migration!(7, "vector_sync_pending", run_migration_vector_sync_pending),
     migration!(8, "add_community_id", run_migration_add_community_id),
     // DROP COLUMN is destructive; there is no way to recover the original data without a backup.
@@ -116,23 +146,55 @@ pub static MIGRATIONS: &[Migration] = &[
     migration!(23, "memories_list_covering_index", run_migration_memories_list_covering_index, down: down_migration_memories_list_covering_index, tx),
     migration!(24, "commerce_tables", run_migration_commerce_tables, down: down_migration_commerce_tables, tx),
     // DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(25, "drop_user_id_memory_core", run_migration_drop_user_id_memory_core),
+    migration!(
+        25,
+        "drop_user_id_memory_core",
+        run_migration_drop_user_id_memory_core
+    ),
     // 12-step table rebuild; no safe inverse.
-    migration!(26, "drop_user_id_scratchpad", run_migration_drop_user_id_scratchpad),
+    migration!(
+        26,
+        "drop_user_id_scratchpad",
+        run_migration_drop_user_id_scratchpad
+    ),
     // DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(27, "drop_user_id_sessions", run_migration_drop_user_id_sessions),
+    migration!(
+        27,
+        "drop_user_id_sessions",
+        run_migration_drop_user_id_sessions
+    ),
     migration!(28, "drop_user_id_chiasm", run_migration_drop_user_id_chiasm),
-    migration!(29, "drop_user_id_approvals", run_migration_drop_user_id_approvals),
+    migration!(
+        29,
+        "drop_user_id_approvals",
+        run_migration_drop_user_id_approvals
+    ),
     migration!(30, "drop_user_id_broca", run_migration_drop_user_id_broca),
     // 12-step table rebuild; no safe inverse.
-    migration!(31, "drop_user_id_projects", run_migration_drop_user_id_projects),
+    migration!(
+        31,
+        "drop_user_id_projects",
+        run_migration_drop_user_id_projects
+    ),
     // DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(32, "drop_user_id_activity", run_migration_drop_user_id_activity),
-    migration!(33, "drop_user_id_webhooks", run_migration_drop_user_id_webhooks),
+    migration!(
+        32,
+        "drop_user_id_activity",
+        run_migration_drop_user_id_activity
+    ),
+    migration!(
+        33,
+        "drop_user_id_webhooks",
+        run_migration_drop_user_id_webhooks
+    ),
     migration!(34, "drop_user_id_axon", run_migration_drop_user_id_axon),
     migration!(35, "drop_user_id_growth", run_migration_drop_user_id_growth),
     // DROP COLUMN / PK rebuild is destructive; no safe inverse without a backup.
-    migration!(36, "drop_user_id_ingestion_hashes", run_migration_drop_user_id_ingestion_hashes),
+    migration!(
+        36,
+        "drop_user_id_ingestion_hashes",
+        run_migration_drop_user_id_ingestion_hashes
+    ),
     // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
     migration!(37, "drop_user_id_loom", run_migration_drop_user_id_loom),
     // UNIQUE/PK rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
@@ -140,21 +202,50 @@ pub static MIGRATIONS: &[Migration] = &[
     // DROP COLUMN + index swap is destructive; no safe inverse without a backup.
     migration!(39, "drop_user_id_thymus", run_migration_drop_user_id_thymus),
     // UNIQUE rebuild + DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(40, "drop_user_id_portability", run_migration_drop_user_id_portability),
-    migration!(41, "drop_user_id_intelligence", run_migration_drop_user_id_intelligence),
+    migration!(
+        40,
+        "drop_user_id_portability",
+        run_migration_drop_user_id_portability
+    ),
+    migration!(
+        41,
+        "drop_user_id_intelligence",
+        run_migration_drop_user_id_intelligence
+    ),
     // Shape B + FTS shadow rebuild is destructive; no safe inverse without a backup.
     migration!(42, "drop_user_id_skills", run_migration_drop_user_id_skills),
     // DROP INDEX + DROP COLUMN is destructive; no safe inverse without a backup.
-    migration!(43, "drop_user_id_episodes", run_migration_drop_user_id_episodes),
+    migration!(
+        43,
+        "drop_user_id_episodes",
+        run_migration_drop_user_id_episodes
+    ),
     // C-R3-004: re-add user_id to monolith projects + broca_actions so
     // single-DB deployments are safe even when tenant sharding is disabled.
     // Tenant shards remain user_id-free; only the monolith carries these.
-    migration!(44, "readd_user_id_projects", run_migration_readd_user_id_projects),
+    migration!(
+        44,
+        "readd_user_id_projects",
+        run_migration_readd_user_id_projects
+    ),
     migration!(45, "readd_user_id_broca", run_migration_readd_user_id_broca),
     // Sparkling Fairy Stage 1: identity tables for PIV-Everywhere auth.
-    migration!(46, "identity_keys_and_identities", run_migration_identity_tables, tx),
-    migration!(47, "audit_log_identity_columns", run_migration_audit_identity_columns),
-    migration!(48, "drop_api_keys_agent_fk", run_migration_drop_api_keys_agent_fk),
+    migration!(
+        46,
+        "identity_keys_and_identities",
+        run_migration_identity_tables,
+        tx
+    ),
+    migration!(
+        47,
+        "audit_log_identity_columns",
+        run_migration_audit_identity_columns
+    ),
+    migration!(
+        48,
+        "drop_api_keys_agent_fk",
+        run_migration_drop_api_keys_agent_fk
+    ),
     migration!(49, "supervisor_injections", run_migration_supervisor_injections, down: down_migration_supervisor_injections, tx),
     migration!(50, "gate_requests_session_id", run_migration_gate_requests_session_id, down: down_migration_gate_requests_session_id, tx),
     migration!(51, "memory_chunks", run_migration_memory_chunks, down: down_migration_memory_chunks, tx),
@@ -166,10 +257,30 @@ pub static MIGRATIONS: &[Migration] = &[
     // for controlled FIDO2 enrollment of new coworkers.
     migration!(56, "user_active_and_enrollment_invites", run_migration_user_active_and_invites, down: down_migration_user_active_and_invites, tx),
     migration!(57, "skill_dispatch_configs", run_migration_skill_dispatch_configs, down: down_migration_skill_dispatch_configs, tx),
-    migration!(58, "api_key_hash_version_fixup", run_migration_api_key_hash_version_fixup, tx),
-    migration!(59, "broca_narrative_columns", run_migration_broca_narrative_columns, tx),
-    migration!(60, "chiasm_extended_fields", run_migration_chiasm_extended_fields, tx),
-    migration!(61, "chiasm_path_claims", run_migration_chiasm_path_claims, tx),
+    migration!(
+        58,
+        "api_key_hash_version_fixup",
+        run_migration_api_key_hash_version_fixup,
+        tx
+    ),
+    migration!(
+        59,
+        "broca_narrative_columns",
+        run_migration_broca_narrative_columns,
+        tx
+    ),
+    migration!(
+        60,
+        "chiasm_extended_fields",
+        run_migration_chiasm_extended_fields,
+        tx
+    ),
+    migration!(
+        61,
+        "chiasm_path_claims",
+        run_migration_chiasm_path_claims,
+        tx
+    ),
     migration!(62, "chiasm_agent_keys", run_migration_chiasm_agent_keys, tx),
     migration!(63, "handoff_atoms", run_migration_handoff_atoms, tx),
     migration!(64, "readd_user_id_memory_core", run_migration_readd_user_id_memory_core, down: down_migration_readd_user_id_memory_core, tx),
@@ -179,7 +290,11 @@ pub static MIGRATIONS: &[Migration] = &[
     // UNIQUE(name, user_id), which requires the 12-step rebuild (migration 44
     // pattern). transactional:false because the rebuild toggles
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
-    migration!(67, "readd_user_id_soma_agents", run_migration_readd_user_id_soma_agents),
+    migration!(
+        67,
+        "readd_user_id_soma_agents",
+        run_migration_readd_user_id_soma_agents
+    ),
     migration!(68, "readd_user_id_axon_events", run_migration_readd_user_id_axon_events, down: down_migration_readd_user_id_axon_events, tx),
     migration!(69, "readd_user_id_chiasm_tasks", run_migration_readd_user_id_chiasm_tasks, down: down_migration_readd_user_id_chiasm_tasks, tx),
     migration!(70, "readd_user_id_conversations", run_migration_readd_user_id_conversations, down: down_migration_readd_user_id_conversations, tx),
@@ -188,50 +303,88 @@ pub static MIGRATIONS: &[Migration] = &[
     // UNIQUE(name, entity_type, user_id), which requires a table rebuild (the
     // reverse of migration 38). transactional:false because the rebuild toggles
     // PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
-    migration!(72, "readd_user_id_graph_entities", run_migration_readd_user_id_graph_entities),
+    migration!(
+        72,
+        "readd_user_id_graph_entities",
+        run_migration_readd_user_id_graph_entities
+    ),
     migration!(73, "readd_user_id_episodes", run_migration_readd_user_id_episodes, down: down_migration_readd_user_id_episodes, tx),
     // Re-adds user_id to the remaining 5 intelligence tables that v71 skipped:
     // current_state (UNIQUE rebuild), reconsolidations, temporal_patterns,
     // digests, and memory_feedback. transactional:false because the
     // current_state rebuild toggles PRAGMA foreign_keys, which SQLite forbids
     // inside a SAVEPOINT.
-    migration!(74, "readd_user_id_intelligence_remainder", run_migration_readd_user_id_intelligence_remainder),
+    migration!(
+        74,
+        "readd_user_id_intelligence_remainder",
+        run_migration_readd_user_id_intelligence_remainder
+    ),
     // Re-adds user_id to the 5 thymus tables that migration 39 dropped:
     // rubrics (UNIQUE rebuild -- index changes from name to (user_id, name)),
     // evaluations, quality_metrics, session_quality, behavioral_drift_events.
     // transactional:false because the rubrics rebuild toggles PRAGMA
     // foreign_keys (evaluations holds a FK to rubrics.id) and SQLite forbids
     // that inside a SAVEPOINT.
-    migration!(75, "readd_user_id_thymus", run_migration_readd_user_id_thymus),
+    migration!(
+        75,
+        "readd_user_id_thymus",
+        run_migration_readd_user_id_thymus
+    ),
     // Re-adds user_id to entity_cooccurrences that v38 dropped.
     // structured_facts already got user_id from v64 (memory-core).
     // Simple ADD COLUMN -- UNIQUE(entity_a_id, entity_b_id) does not need
     // user_id since co-occurrence pairs are global but queried per-user via
     // entity joins.
-    migration!(76, "readd_user_id_graph_remainder", run_migration_readd_user_id_graph_remainder),
+    migration!(
+        76,
+        "readd_user_id_graph_remainder",
+        run_migration_readd_user_id_graph_remainder
+    ),
     // Re-adds user_id to user_preferences that v40 dropped via REBUILD.
     // UNIQUE constraint changes from (key) back to (user_id, key).
     // Also re-adds the domain+preference+user_id UNIQUE INDEX that v40 dropped.
     // transactional:false because the rebuild toggles PRAGMA foreign_keys.
-    migration!(77, "readd_user_id_user_preferences", run_migration_readd_user_id_user_preferences),
+    migration!(
+        77,
+        "readd_user_id_user_preferences",
+        run_migration_readd_user_id_user_preferences
+    ),
     // Re-adds user_id to skill_records that v42 dropped via REBUILD.
     // UNIQUE changes from (name, agent, version) to (name, agent, version, user_id).
     // FTS triggers must be dropped before the rename and recreated after.
     // transactional:false because the rebuild toggles PRAGMA foreign_keys.
-    migration!(78, "readd_user_id_skills", run_migration_readd_user_id_skills),
+    migration!(
+        78,
+        "readd_user_id_skills",
+        run_migration_readd_user_id_skills
+    ),
     // Re-adds user_id to brain_edges that v38 dropped.
     // Simple ADD COLUMN -- UNIQUE(source_id, target_id, edge_type) does not include user_id.
-    migration!(79, "readd_user_id_brain_edges", run_migration_readd_user_id_brain_edges),
+    migration!(
+        79,
+        "readd_user_id_brain_edges",
+        run_migration_readd_user_id_brain_edges
+    ),
     // C3: convert legacy JSON-array scopes in identity_keys.scopes to the
     // canonical CSV format used by api_keys.scopes. Rows whose value is
     // already CSV (or empty) are left alone -- the migration is idempotent.
     // No table rebuild: the column remains TEXT NOT NULL and the v53
     // default lingers on disk for any column never explicitly inserted,
     // but production paths always pass a value via enroll_handler.
-    migration!(80, "identity_keys_scopes_json_to_csv", run_migration_identity_keys_scopes_json_to_csv, tx),
+    migration!(
+        80,
+        "identity_keys_scopes_json_to_csv",
+        run_migration_identity_keys_scopes_json_to_csv,
+        tx
+    ),
     migration!(81, "mcp_tokens", run_migration_mcp_tokens, tx),
     migration!(82, "phylax_tables", run_migration_phylax_tables, tx),
-    migration!(83, "cred_audit_attribution_columns", run_migration_cred_audit_attribution_columns, tx),
+    migration!(
+        83,
+        "cred_audit_attribution_columns",
+        run_migration_cred_audit_attribution_columns,
+        tx
+    ),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -433,12 +586,11 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         ",
     )?;
 
-    let current_version: i64 = conn
-        .query_row(
-            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-            [],
-            |row| row.get(0),
-        )?;
+    let current_version: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |row| row.get(0),
+    )?;
 
     if current_version < MIGRATION_CREATE_SCHEMA {
         info!("Running migration 1: create_tables");
@@ -1168,12 +1320,13 @@ pub async fn migrate_down(
     // Read current version.
     let current_version: u32 = db
         .read(|conn| {
-            Ok(conn.query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|v| v as u32)?)
+            Ok(conn
+                .query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|v| v as u32)?)
         })
         .await?;
 
@@ -1228,12 +1381,13 @@ pub async fn migrate_down(
 pub async fn migration_status(db: &super::Database) -> Result<MigrationStatus> {
     let current_version: u32 = db
         .read(|conn| {
-            Ok(conn.query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_version",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .map(|v| v as u32)?)
+            Ok(conn
+                .query_row(
+                    "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|v| v as u32)?)
         })
         .await?;
 
@@ -1406,12 +1560,11 @@ fn run_migration_add_community_id(conn: &rusqlite::Connection) -> Result<()> {
 /// Idempotent: only runs DROP COLUMN if the column still exists.
 /// Requires SQLite 3.35+ (bundled rusqlite is 3.44+).
 fn run_migration_drop_is_inference(conn: &rusqlite::Connection) -> Result<()> {
-    let exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
-            rusqlite::params!["is_inference"],
-            |row| row.get(0),
-        )?;
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = ?1",
+        rusqlite::params!["is_inference"],
+        |row| row.get(0),
+    )?;
     if exists > 0 {
         conn.execute("ALTER TABLE memories DROP COLUMN is_inference", [])?;
         info!("Dropped memories.is_inference column");
@@ -1499,8 +1652,7 @@ fn add_column_if_not_exists(
         "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = ?1",
         table
     );
-    let exists: i64 = conn
-        .query_row(&check_sql, rusqlite::params![column], |row| row.get(0))?;
+    let exists: i64 = conn.query_row(&check_sql, rusqlite::params![column], |row| row.get(0))?;
     if exists == 0 {
         let alter_sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, column_def);
         conn.execute(&alter_sql, [])?;
@@ -1695,12 +1847,11 @@ fn run_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()>
 /// Down for migration 19: drop the hash_version column. Requires SQLite 3.35+.
 fn down_migration_api_key_hash_version(conn: &rusqlite::Connection) -> Result<()> {
     // Only drop if the column still exists (idempotent).
-    let exists: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'hash_version'",
-            [],
-            |row| row.get(0),
-        )?;
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('api_keys') WHERE name = 'hash_version'",
+        [],
+        |row| row.get(0),
+    )?;
     if exists > 0 {
         conn.execute_batch("ALTER TABLE api_keys DROP COLUMN hash_version;")?;
         info!("Dropped api_keys.hash_version column (migration 19 down)");
@@ -1978,48 +2129,44 @@ fn run_migration_drop_user_id_memory_core(conn: &rusqlite::Connection) -> Result
     )?;
 
     // Drop user_id from memories if still present.
-    let mem_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let mem_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if mem_has_user_id > 0 {
         conn.execute("ALTER TABLE memories DROP COLUMN user_id", [])?;
         info!("Dropped memories.user_id (migration 25)");
     }
 
     // Drop user_id from artifacts if still present.
-    let art_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('artifacts') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let art_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('artifacts') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if art_has_user_id > 0 {
         conn.execute("ALTER TABLE artifacts DROP COLUMN user_id", [])?;
         info!("Dropped artifacts.user_id (migration 25)");
     }
 
     // Drop user_id from vector_sync_pending if still present.
-    let vsp_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('vector_sync_pending') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let vsp_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('vector_sync_pending') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if vsp_has_user_id > 0 {
         conn.execute("ALTER TABLE vector_sync_pending DROP COLUMN user_id", [])?;
         info!("Dropped vector_sync_pending.user_id (migration 25)");
     }
 
     // Drop user_id from structured_facts if still present.
-    let sf_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let sf_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if sf_has_user_id > 0 {
         conn.execute("ALTER TABLE structured_facts DROP COLUMN user_id", [])?;
         info!("Dropped structured_facts.user_id (migration 25)");
@@ -2062,12 +2209,11 @@ fn run_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resul
         "vector_sync_pending",
         "structured_facts",
     ] {
-        let has_user_id: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
-                rusqlite::params![table],
-                |row| row.get(0),
-            )?;
+        let has_user_id: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
+            rusqlite::params![table],
+            |row| row.get(0),
+        )?;
         if has_user_id == 0 {
             conn.execute(
                 &format!("ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"),
@@ -2132,12 +2278,11 @@ fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resu
         "vector_sync_pending",
         "structured_facts",
     ] {
-        let has_user_id: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
-                rusqlite::params![table],
-                |row| row.get(0),
-            )?;
+        let has_user_id: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = 'user_id'",
+            rusqlite::params![table],
+            |row| row.get(0),
+        )?;
         if has_user_id > 0 {
             conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])?;
         }
@@ -2160,12 +2305,11 @@ fn down_migration_readd_user_id_memory_core(conn: &rusqlite::Connection) -> Resu
 /// Idempotent: the `ADD COLUMN` is guarded by `pragma_table_info` and the index
 /// uses `IF NOT EXISTS`.
 fn run_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE webhooks ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2182,12 +2326,11 @@ fn run_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<(
 /// column from `webhooks`.
 fn down_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("DROP INDEX IF EXISTS idx_webhooks_user;")?;
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         conn.execute("ALTER TABLE webhooks DROP COLUMN user_id", [])?;
     }
@@ -2205,12 +2348,11 @@ fn down_migration_readd_user_id_webhooks(conn: &rusqlite::Connection) -> Result<
 ///
 /// Idempotent: the `ADD COLUMN` is guarded and indexes use `IF NOT EXISTS`.
 fn run_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE approvals ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2232,12 +2374,11 @@ fn down_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result
         "DROP INDEX IF EXISTS idx_approvals_user;
          DROP INDEX IF EXISTS idx_approvals_user_status;",
     )?;
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         conn.execute("ALTER TABLE approvals DROP COLUMN user_id", [])?;
     }
@@ -2259,12 +2400,11 @@ fn down_migration_readd_user_id_approvals(conn: &rusqlite::Connection) -> Result
 /// backfill to `user_id = 1` (the system owner). Idempotent: no-op if `user_id`
 /// is already present.
 fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         info!("soma_agents.user_id already present, migration 67 is a no-op");
         return Ok(());
@@ -2327,12 +2467,11 @@ fn run_migration_readd_user_id_soma_agents(conn: &rusqlite::Connection) -> Resul
 ///
 /// Idempotent: the `ADD COLUMN` is guarded and the index uses `IF NOT EXISTS`.
 fn run_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE axon_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2351,12 +2490,11 @@ fn run_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Resul
 /// `user_id` column from `axon_events`.
 fn down_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")?;
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])?;
     }
@@ -2373,12 +2511,11 @@ fn down_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Resu
 ///
 /// Idempotent: the `ADD COLUMN` is guarded and the index uses `IF NOT EXISTS`.
 fn run_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE chiasm_tasks ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2397,12 +2534,11 @@ fn run_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Resu
 /// `user_id` column from `chiasm_tasks`.
 fn down_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")?;
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('chiasm_tasks') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         conn.execute("ALTER TABLE chiasm_tasks DROP COLUMN user_id", [])?;
     }
@@ -2420,12 +2556,11 @@ fn down_migration_readd_user_id_chiasm_tasks(conn: &rusqlite::Connection) -> Res
 ///
 /// Idempotent: the `ADD COLUMN` is guarded and the index uses `IF NOT EXISTS`.
 fn run_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE conversations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2444,12 +2579,11 @@ fn run_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Res
 /// `user_id` column from `conversations`.
 fn down_migration_readd_user_id_conversations(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("DROP INDEX IF EXISTS idx_conversations_user;")?;
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         conn.execute("ALTER TABLE conversations DROP COLUMN user_id", [])?;
     }
@@ -2475,14 +2609,11 @@ fn run_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Resu
         ("consolidations", "idx_consolidations_user"),
         ("causal_chains", "idx_causal_chains_user"),
     ] {
-        let has_user_id: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'user_id'"
-                ),
-                [],
-                |row| row.get(0),
-            )?;
+        let has_user_id: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'user_id'"),
+            [],
+            |row| row.get(0),
+        )?;
         if has_user_id == 0 {
             conn.execute(
                 &format!("ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1"),
@@ -2507,14 +2638,11 @@ fn down_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Res
         ("causal_chains", "idx_causal_chains_user"),
     ] {
         conn.execute_batch(&format!("DROP INDEX IF EXISTS {index};"))?;
-        let has_user_id: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'user_id'"
-                ),
-                [],
-                |row| row.get(0),
-            )?;
+        let has_user_id: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = 'user_id'"),
+            [],
+            |row| row.get(0),
+        )?;
         if has_user_id > 0 {
             conn.execute(&format!("ALTER TABLE {table} DROP COLUMN user_id"), [])?;
         }
@@ -2536,12 +2664,11 @@ fn down_migration_readd_user_id_intelligence(conn: &rusqlite::Connection) -> Res
 /// a no-op when `user_id` is already present (fresh databases created from the
 /// core schema, which already carries the column and constraint).
 fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         info!("entities.user_id already present, migration 72 is a no-op");
         return Ok(());
@@ -2605,12 +2732,11 @@ fn run_migration_readd_user_id_graph_entities(conn: &rusqlite::Connection) -> Re
 /// creator's id. Idempotent: a no-op when the column is already present (fresh
 /// databases created from the core schema, which already carries it).
 fn run_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         conn.execute(
             "ALTER TABLE episodes ADD COLUMN user_id INTEGER DEFAULT 1",
@@ -2641,12 +2767,11 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
     // Adds user_id NOT NULL DEFAULT 1 and changes UNIQUE(agent, key) to
     // UNIQUE(agent, key, user_id).
     // -----------------------------------------------------------------------
-    let cs_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let cs_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if cs_has_user_id == 0 {
         conn.execute_batch(
@@ -2704,12 +2829,11 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
     }
 
     // --- reconsolidations: ADD COLUMN user_id + index ---
-    let recons_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('reconsolidations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let recons_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('reconsolidations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if recons_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE reconsolidations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2722,12 +2846,11 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
     )?;
 
     // --- temporal_patterns: ADD COLUMN user_id + index ---
-    let tp_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('temporal_patterns') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let tp_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('temporal_patterns') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if tp_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE temporal_patterns ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2740,12 +2863,11 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
     )?;
 
     // --- digests: ADD COLUMN user_id + index ---
-    let dig_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('digests') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let dig_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('digests') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if dig_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE digests ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2756,12 +2878,11 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_digests_user ON digests(user_id);")?;
 
     // --- memory_feedback: ADD COLUMN user_id + index ---
-    let mf_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memory_feedback') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let mf_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memory_feedback') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if mf_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE memory_feedback ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2769,7 +2890,9 @@ fn run_migration_readd_user_id_intelligence_remainder(conn: &rusqlite::Connectio
         )?;
         info!("Re-added memory_feedback.user_id (migration 74)");
     }
-    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_feedback_user ON memory_feedback(user_id);",
+    )?;
 
     info!("Migration 74 complete: user_id re-added to intelligence remainder tables");
     Ok(())
@@ -2792,12 +2915,11 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     // UNIQUE(user_id, name). evaluations references rubrics(id) so
     // foreign_keys must be toggled off for the rename/recreate.
     // -----------------------------------------------------------------------
-    let rubrics_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let rubrics_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if rubrics_has_user_id == 0 {
         conn.execute_batch(
@@ -2841,12 +2963,11 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     }
 
     // --- evaluations: ADD COLUMN user_id + index ---
-    let eval_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let eval_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if eval_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE evaluations ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2857,12 +2978,11 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_evaluations_user ON evaluations(user_id);")?;
 
     // --- quality_metrics: ADD COLUMN user_id + index ---
-    let qm_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let qm_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if qm_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE quality_metrics ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2875,12 +2995,11 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     )?;
 
     // --- session_quality: ADD COLUMN user_id + index ---
-    let sq_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let sq_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if sq_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE session_quality ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -2893,12 +3012,11 @@ fn run_migration_readd_user_id_thymus(conn: &rusqlite::Connection) -> Result<()>
     )?;
 
     // --- behavioral_drift_events: ADD COLUMN user_id + index ---
-    let bde_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let bde_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if bde_has_user_id == 0 {
         conn.execute(
             "ALTER TABLE behavioral_drift_events ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1",
@@ -3161,12 +3279,11 @@ fn run_migration_readd_user_id_brain_edges(conn: &rusqlite::Connection) -> Resul
 /// column from `episodes`.
 fn down_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute_batch("DROP INDEX IF EXISTS idx_episodes_user;")?;
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         conn.execute("ALTER TABLE episodes DROP COLUMN user_id", [])?;
     }
@@ -3182,12 +3299,11 @@ fn down_migration_readd_user_id_episodes(conn: &rusqlite::Connection) -> Result<
 /// UNIQUE(session, agent, entry_key) constraint. Idempotent: if scratchpad
 /// already lacks user_id the migration is a no-op.
 fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('scratchpad') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("scratchpad.user_id already absent, migration 26 is a no-op");
         return Ok(());
@@ -3239,12 +3355,11 @@ fn run_migration_drop_user_id_scratchpad(conn: &rusqlite::Connection) -> Result<
 /// the column, so ALTER TABLE DROP COLUMN is safe. session_output never had
 /// user_id, so it is not touched. Idempotent: no-op if user_id already absent.
 fn run_migration_drop_user_id_sessions(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("sessions.user_id already absent, migration 27 is a no-op");
         return Ok(());
@@ -3269,15 +3384,14 @@ fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> 
     conn.execute_batch("DROP INDEX IF EXISTS idx_chiasm_tasks_user;")?;
 
     for table in &["chiasm_tasks", "chiasm_task_updates"] {
-        let has_user_id: i64 = conn
-            .query_row(
-                &format!(
-                    "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = 'user_id'",
-                    table
-                ),
-                [],
-                |row| row.get(0),
-            )?;
+        let has_user_id: i64 = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name = 'user_id'",
+                table
+            ),
+            [],
+            |row| row.get(0),
+        )?;
         if has_user_id == 0 {
             info!("{}.user_id already absent, skipping", table);
             continue;
@@ -3297,12 +3411,11 @@ fn run_migration_drop_user_id_chiasm(conn: &rusqlite::Connection) -> Result<()> 
 /// indexes are dropped before the column goes. No UNIQUE or FK references
 /// the column. Idempotent: skips if user_id already absent.
 fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('approvals') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("approvals.user_id already absent, migration 29 is a no-op");
         return Ok(());
@@ -3324,12 +3437,11 @@ fn run_migration_drop_user_id_approvals(conn: &rusqlite::Connection) -> Result<(
 /// Migration 30: drop user_id shim from broca_actions. No UNIQUE or FK
 /// references the column. Idempotent: skips if user_id already absent.
 fn run_migration_drop_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("broca_actions.user_id already absent, migration 30 is a no-op");
         return Ok(());
@@ -3353,12 +3465,11 @@ fn run_migration_drop_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
 /// table. Idempotent: if projects already lacks user_id the migration is
 /// a no-op.
 fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("projects.user_id already absent, migration 31 is a no-op");
         return Ok(());
@@ -3406,12 +3517,11 @@ fn run_migration_drop_user_id_projects(conn: &rusqlite::Connection) -> Result<()
 /// or FK references the column on either table. Idempotent: each table is
 /// checked independently before its DROP INDEX + DROP COLUMN pair.
 fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()> {
-    let axon_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let axon_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_events') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if axon_has_user_id > 0 {
         conn.execute_batch("DROP INDEX IF EXISTS idx_axon_events_user;")?;
         conn.execute("ALTER TABLE axon_events DROP COLUMN user_id", [])?;
@@ -3420,12 +3530,11 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
         info!("axon_events.user_id already absent, skipping");
     }
 
-    let soma_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let soma_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('soma_agents') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if soma_has_user_id > 0 {
         conn.execute_batch("DROP INDEX IF EXISTS idx_soma_agents_user;")?;
         conn.execute("ALTER TABLE soma_agents DROP COLUMN user_id", [])?;
@@ -3444,12 +3553,11 @@ fn run_migration_drop_user_id_activity(conn: &rusqlite::Connection) -> Result<()
 /// column (the tenant shard dropped the FK in v9). Idempotent: skips if
 /// user_id already absent.
 fn run_migration_drop_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('webhooks') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("webhooks.user_id already absent, migration 33 is a no-op");
         return Ok(());
@@ -3471,12 +3579,11 @@ fn run_migration_drop_user_id_webhooks(conn: &rusqlite::Connection) -> Result<()
 /// No idx_*_user indexes exist on either table. Idempotent: each table
 /// checked independently.
 fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
-    let subs_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('axon_subscriptions') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let subs_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_subscriptions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if subs_has_user_id > 0 {
         conn.execute("ALTER TABLE axon_subscriptions DROP COLUMN user_id", [])?;
         info!("Migration 34: user_id dropped from axon_subscriptions");
@@ -3484,12 +3591,11 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
         info!("axon_subscriptions.user_id already absent, skipping");
     }
 
-    let cursors_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('axon_cursors') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let cursors_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_cursors') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if cursors_has_user_id > 0 {
         conn.execute("ALTER TABLE axon_cursors DROP COLUMN user_id", [])?;
         info!("Migration 34: user_id dropped from axon_cursors");
@@ -3507,12 +3613,11 @@ fn run_migration_drop_user_id_axon(conn: &rusqlite::Connection) -> Result<()> {
 /// references the column. idx_reflections_user must drop first;
 /// idx_reflections_type and idx_reflections_period stay. Idempotent.
 fn run_migration_drop_user_id_growth(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('reflections') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('reflections') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("reflections.user_id already absent, migration 35 is a no-op");
         return Ok(());
@@ -3536,12 +3641,11 @@ fn run_migration_drop_user_id_growth(conn: &rusqlite::Connection) -> Result<()> 
 /// Idempotent: if ingestion_hashes already lacks user_id the migration is
 /// a no-op.
 fn run_migration_drop_user_id_ingestion_hashes(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('ingestion_hashes') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('ingestion_hashes') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id == 0 {
         info!("ingestion_hashes.user_id already absent, migration 36 is a no-op");
         return Ok(());
@@ -3577,19 +3681,17 @@ fn run_migration_drop_user_id_ingestion_hashes(conn: &rusqlite::Connection) -> R
 /// Migration 37: drops user_id from loom_workflows (Shape B rebuild) and loom_runs.
 fn run_migration_drop_user_id_loom(conn: &rusqlite::Connection) -> Result<()> {
     // Idempotent guard: check loom_workflows first (Shape B rebuild).
-    let wf_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('loom_workflows') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let wf_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('loom_workflows') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let runs_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('loom_runs') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let runs_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('loom_runs') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if wf_has_user_id == 0 && runs_has_user_id == 0 {
         info!("loom_workflows and loom_runs user_id already absent, migration 37 is a no-op");
@@ -3640,40 +3742,35 @@ fn run_migration_drop_user_id_graph(conn: &rusqlite::Connection) -> Result<()> {
     // NOTE: structured_facts.user_id was already dropped by migration 25
     // (run_migration_drop_user_id_memory_core) so we do NOT attempt to drop
     // it here. Migration 38 only handles the remaining 5 tables.
-    let entities_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let entities_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('entities') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let ec_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let ec_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('entity_cooccurrences') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let mp_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('memory_pagerank') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let mp_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('memory_pagerank') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let pd_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('pagerank_dirty') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let pd_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('pagerank_dirty') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let be_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('brain_edges') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let be_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('brain_edges') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if entities_has_user_id == 0
         && ec_has_user_id == 0
@@ -3788,40 +3885,35 @@ fn run_migration_drop_user_id_thymus(conn: &rusqlite::Connection) -> Result<()> 
     // Idempotent guard: check rubrics (Shape A with index swap) as sentinel.
     // If rubrics.user_id is already gone, all 5 thymus tables have been
     // processed by a prior run.
-    let rubrics_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let rubrics_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('rubrics') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let evals_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let evals_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('evaluations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let qm_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let qm_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('quality_metrics') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let sq_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let sq_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('session_quality') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let bde_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let bde_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('behavioral_drift_events') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if rubrics_has_user_id == 0
         && evals_has_user_id == 0
@@ -3872,19 +3964,17 @@ fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result
     // Idempotent guard: check both tables. user_preferences is Shape B (table
     // rebuild required due to in-table UNIQUE constraint); conversations is
     // Shape A (simple DROP COLUMN).
-    let up_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let up_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('user_preferences') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let conv_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let conv_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if up_has_user_id == 0 && conv_has_user_id == 0 {
         info!("user_preferences and conversations user_id already absent, migration 40 is a no-op");
@@ -3943,19 +4033,17 @@ fn run_migration_drop_user_id_portability(conn: &rusqlite::Connection) -> Result
 fn run_migration_drop_user_id_intelligence(conn: &rusqlite::Connection) -> Result<()> {
     // Idempotent guard: check current_state (Shape B) and consolidations (Shape A).
     // If both already lack user_id, the migration already ran.
-    let cs_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let cs_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('current_state') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
-    let consolidations_has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('consolidations') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let consolidations_has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('consolidations') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if cs_has_user_id == 0 && consolidations_has_user_id == 0 {
         info!("intelligence tables user_id already absent, migration 41 is a no-op");
@@ -4037,12 +4125,11 @@ fn run_migration_drop_user_id_intelligence(conn: &rusqlite::Connection) -> Resul
 fn run_migration_drop_user_id_skills(conn: &rusqlite::Connection) -> Result<()> {
     // Idempotent guard: check skill_records. If user_id is already absent,
     // the migration already ran.
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('skill_records') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('skill_records') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if has_user_id == 0 {
         info!("skill_records user_id already absent, migration 42 is a no-op");
@@ -4239,12 +4326,11 @@ pub fn validate_post_import(conn: &rusqlite::Connection) -> Result<PostImportVal
 /// Migration 43: drops user_id from the episodes table (Shape A, simple DROP COLUMN).
 fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()> {
     // Idempotent guard: if user_id is already absent from episodes, skip.
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('episodes') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if has_user_id == 0 {
         info!("episodes user_id already absent, migration 43 is a no-op");
@@ -4283,12 +4369,11 @@ fn run_migration_drop_user_id_episodes(conn: &rusqlite::Connection) -> Result<()
 /// The new column is `NOT NULL DEFAULT 1` so legacy rows backfill to the
 /// system user, which matches the pre-Phase-5 ownership.
 fn run_migration_readd_user_id_projects(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         info!("projects.user_id already present, migration 44 is a no-op");
         return Ok(());
@@ -4340,12 +4425,11 @@ fn run_migration_readd_user_id_projects(conn: &rusqlite::Connection) -> Result<(
 /// backfill to the system user. An idx_broca_actions_user index is added so
 /// per-user queries do not full-scan.
 fn run_migration_readd_user_id_broca(conn: &rusqlite::Connection) -> Result<()> {
-    let has_user_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('broca_actions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
     if has_user_id > 0 {
         info!("broca_actions.user_id already present, migration 45 is a no-op");
         return Ok(());
@@ -4512,12 +4596,11 @@ fn run_migration_identity_tables(conn: &rusqlite::Connection) -> Result<()> {
 
 /// Migration 47: adds identity_id and identity_tier columns to the audit_log table.
 fn run_migration_audit_identity_columns(conn: &rusqlite::Connection) -> Result<()> {
-    let has_identity_id: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('audit_log') WHERE name = 'identity_id'",
-            [],
-            |row| row.get(0),
-        )?;
+    let has_identity_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('audit_log') WHERE name = 'identity_id'",
+        [],
+        |row| row.get(0),
+    )?;
 
     if has_identity_id > 0 {
         info!("audit_log.identity_id already present, migration 47 is a no-op");
@@ -4719,8 +4802,7 @@ fn run_migration_identity_keys_scopes_json_to_csv(conn: &rusqlite::Connection) -
 
     // Collect (id, raw_scopes) pairs first so we can iterate without holding
     // a prepared-statement borrow while we issue UPDATEs on the same conn.
-    let mut select = conn
-        .prepare("SELECT id, scopes FROM identity_keys")?;
+    let mut select = conn.prepare("SELECT id, scopes FROM identity_keys")?;
     let rows: Vec<(i64, String)> = select
         .query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
@@ -5525,12 +5607,11 @@ mod tests {
         run_migrations(&conn)?;
         run_migrations(&conn)?;
 
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
-                rusqlite::params![MIGRATION_CREATE_SCHEMA],
-                |row| row.get(0),
-            )?;
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_version WHERE version = ?1",
+            rusqlite::params![MIGRATION_CREATE_SCHEMA],
+            |row| row.get(0),
+        )?;
         assert_eq!(count, 1);
 
         Ok(())

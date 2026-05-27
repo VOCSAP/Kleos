@@ -15,7 +15,7 @@ use kleos_install_core::plan::{InstallPlan, InstallResult};
 use kleos_install_core::security;
 use kleos_install_core::system::SystemIntegration;
 use kleos_install_core::upgrade::ExistingInstall;
-use kleos_install_core::{profile_components, Profile, PlatformInfo};
+use kleos_install_core::{profile_components, PlatformInfo, Profile};
 use ratatui::{
     backend::Backend,
     layout::{Constraint, Direction, Layout},
@@ -136,8 +136,7 @@ impl WizardState {
         version: Option<String>,
         install_dir: Option<PathBuf>,
     ) -> Self {
-        let install_dir = install_dir
-            .unwrap_or_else(|| platform_info.default_install_dir.clone());
+        let install_dir = install_dir.unwrap_or_else(|| platform_info.default_install_dir.clone());
         let config_dir = platform_info.default_config_dir.clone();
         let version = version.unwrap_or_else(|| "latest".to_string());
 
@@ -160,8 +159,7 @@ impl WizardState {
 
         // Seed component selection from Server profile.
         let profile_ids = profile_components(Profile::Server);
-        let selected_components: Vec<String> =
-            profile_ids.iter().map(|s| s.to_string()).collect();
+        let selected_components: Vec<String> = profile_ids.iter().map(|s| s.to_string()).collect();
 
         let system_integration = auto_detect_system_integration(&platform_info);
 
@@ -197,10 +195,7 @@ impl WizardState {
     /// selected. SystemIntegration is only shown on Unix platforms when the
     /// server is selected.
     pub fn rebuild_steps(&mut self) {
-        let has_server = self
-            .selected_components
-            .iter()
-            .any(|c| c == "kleos-server");
+        let has_server = self.selected_components.iter().any(|c| c == "kleos-server");
         let has_systemd_or_launchd =
             self.platform_info.has_systemd || self.platform_info.has_launchd;
 
@@ -258,11 +253,7 @@ impl WizardState {
     /// Assemble the final `InstallPlan` from all collected wizard state.
     pub fn build_plan(&self) -> InstallPlan {
         let config = InstallerConfig {
-            server: if self
-                .selected_components
-                .iter()
-                .any(|c| c == "kleos-server")
-            {
+            server: if self.selected_components.iter().any(|c| c == "kleos-server") {
                 Some(self.server_config.clone())
             } else {
                 None
@@ -382,9 +373,7 @@ where
                             KeyCode::Char('y') | KeyCode::Char('Y') => {
                                 return Ok(None);
                             }
-                            KeyCode::Char('n')
-                            | KeyCode::Char('N')
-                            | KeyCode::Esc => {
+                            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                 state.show_quit_confirm = false;
                             }
                             _ => {}

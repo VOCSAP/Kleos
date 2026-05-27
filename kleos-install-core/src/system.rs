@@ -149,9 +149,7 @@ pub fn install_launchd_plist(plist_content: &str, auto_start: bool) -> Result<()
             .map_err(|e| InstallError::Upgrade(format!("failed to run launchctl: {e}")))?;
 
         if !status.success() {
-            return Err(InstallError::Upgrade(
-                "launchctl load failed".to_string(),
-            ));
+            return Err(InstallError::Upgrade("launchctl load failed".to_string()));
         }
     }
 
@@ -160,16 +158,14 @@ pub fn install_launchd_plist(plist_content: &str, auto_start: bool) -> Result<()
 
 /// Resolve the systemd user unit directory (`~/.config/systemd/user/`).
 fn systemd_user_unit_dir() -> Result<PathBuf, InstallError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        InstallError::Platform("cannot determine home directory".to_string())
-    })?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| InstallError::Platform("cannot determine home directory".to_string()))?;
     Ok(home.join(".config").join("systemd").join("user"))
 }
 
 /// Resolve the launchd LaunchAgents directory (`~/Library/LaunchAgents/`).
 fn launch_agents_dir() -> Result<PathBuf, InstallError> {
-    let home = dirs::home_dir().ok_or_else(|| {
-        InstallError::Platform("cannot determine home directory".to_string())
-    })?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| InstallError::Platform("cannot determine home directory".to_string()))?;
     Ok(home.join("Library").join("LaunchAgents"))
 }

@@ -20,7 +20,6 @@ use crate::{
 };
 use kleos_lib::db::Database;
 
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/export", get(export_handler))

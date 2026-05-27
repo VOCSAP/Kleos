@@ -5,9 +5,7 @@
 //! at the bottom shows how many optional components are selected.
 
 use eframe::egui;
-use kleos_install_core::{
-    all_components, profile_components, resolve_dependencies, Profile,
-};
+use kleos_install_core::{all_components, profile_components, resolve_dependencies, Profile};
 
 use crate::theme;
 use crate::wizard::InstallerApp;
@@ -60,25 +58,18 @@ pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
                 ui.colored_label(theme::COLOR_TEXT_DIM, component.display_name);
                 ui.colored_label(theme::COLOR_WARN, "(required)");
             } else {
-                let changed = ui
-                    .checkbox(&mut selected, component.display_name)
-                    .changed();
+                let changed = ui.checkbox(&mut selected, component.display_name).changed();
                 if changed {
                     if selected {
                         if !app.selected_components.contains(&id) {
                             app.selected_components.push(id.clone());
                         }
                         // Resolve and add dependencies.
-                        let refs: Vec<&str> = app
-                            .selected_components
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect();
+                        let refs: Vec<&str> =
+                            app.selected_components.iter().map(|s| s.as_str()).collect();
                         let resolved = resolve_dependencies(&refs);
-                        app.selected_components = resolved
-                            .into_iter()
-                            .map(|s| s.to_string())
-                            .collect();
+                        app.selected_components =
+                            resolved.into_iter().map(|s| s.to_string()).collect();
                         // Selecting anything manually switches to Custom.
                         app.selected_profile = Some(Profile::Custom);
                     } else {
@@ -89,7 +80,10 @@ pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
             }
         });
 
-        ui.colored_label(theme::COLOR_TEXT_DIM, format!("    {}", component.description));
+        ui.colored_label(
+            theme::COLOR_TEXT_DIM,
+            format!("    {}", component.description),
+        );
         ui.add_space(2.0);
     }
 
@@ -125,18 +119,11 @@ pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
 /// Highlights the button with the accent colour when the given `profile`
 /// matches the app's currently active profile. Clicking the button updates the
 /// component selection to match the profile.
-fn draw_profile_button(
-    ui: &mut egui::Ui,
-    app: &mut InstallerApp,
-    profile: Profile,
-    label: &str,
-) {
+fn draw_profile_button(ui: &mut egui::Ui, app: &mut InstallerApp, profile: Profile, label: &str) {
     let is_active = app.selected_profile == Some(profile);
     let button = if is_active {
-        egui::Button::new(
-            egui::RichText::new(label).color(egui::Color32::BLACK),
-        )
-        .fill(theme::COLOR_ACCENT)
+        egui::Button::new(egui::RichText::new(label).color(egui::Color32::BLACK))
+            .fill(theme::COLOR_ACCENT)
     } else {
         egui::Button::new(label)
     };

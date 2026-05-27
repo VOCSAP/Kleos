@@ -25,7 +25,6 @@ use crate::brain::hopfield::types::EdgeType;
 use crate::db::Database;
 use crate::{EngError, Result};
 
-
 // ---- Constants ----
 
 pub const GHOST_STRENGTH: f32 = 0.3;
@@ -184,12 +183,8 @@ fn instincts_bin_path() -> std::path::PathBuf {
 async fn is_seeded(db: &Database, user_id: i64) -> Result<bool> {
     let key = format!("instincts_seeded_{}", user_id);
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT value FROM brain_meta WHERE key = ?1")
-            ?;
-        let exists = stmt
-            .exists(rusqlite::params![key])
-            ?;
+        let mut stmt = conn.prepare("SELECT value FROM brain_meta WHERE key = ?1")?;
+        let exists = stmt.exists(rusqlite::params![key])?;
         Ok(exists)
     })
     .await
@@ -203,8 +198,7 @@ async fn mark_seeded(db: &Database, user_id: i64) -> Result<()> {
         conn.execute(
             "INSERT OR REPLACE INTO brain_meta (key, value) VALUES (?1, ?2)",
             rusqlite::params![key, now],
-        )
-        ?;
+        )?;
         Ok(())
     })
     .await

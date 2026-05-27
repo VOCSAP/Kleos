@@ -50,15 +50,11 @@ impl OllamaConfig {
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         // URL: KLEOS_LLM_URL -> OLLAMA_URL -> default
-        if let Ok(v) = std::env::var("KLEOS_LLM_URL")
-            .or_else(|_| std::env::var("OLLAMA_URL"))
-        {
+        if let Ok(v) = std::env::var("KLEOS_LLM_URL").or_else(|_| std::env::var("OLLAMA_URL")) {
             cfg.url = v;
         }
         // Model: KLEOS_LLM_MODEL -> OLLAMA_MODEL -> default
-        if let Ok(v) = std::env::var("KLEOS_LLM_MODEL")
-            .or_else(|_| std::env::var("OLLAMA_MODEL"))
-        {
+        if let Ok(v) = std::env::var("KLEOS_LLM_MODEL").or_else(|_| std::env::var("OLLAMA_MODEL")) {
             cfg.model = v;
         }
         if let Ok(v) = std::env::var("OLLAMA_TIMEOUT_BG_MS") {
@@ -77,8 +73,7 @@ impl OllamaConfig {
             }
         }
         // API key: KLEOS_LLM_API_KEY -> LLM_API_KEY -> None
-        if let Ok(v) = std::env::var("KLEOS_LLM_API_KEY")
-            .or_else(|_| std::env::var("LLM_API_KEY"))
+        if let Ok(v) = std::env::var("KLEOS_LLM_API_KEY").or_else(|_| std::env::var("LLM_API_KEY"))
         {
             let trimmed = v.trim();
             if !trimmed.is_empty() {

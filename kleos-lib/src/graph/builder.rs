@@ -4,7 +4,6 @@ use crate::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
 use tracing::info;
 
-
 /// Build the full graph for the default user.
 #[tracing::instrument(skip(db))]
 pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge>)> {
@@ -27,9 +26,8 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
     // -- Phase 1: Collect top-scored memory nodes ---------------------------------
     let (nodes, memory_ids) = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance, pagerank_score, \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance, pagerank_score, \
                             source, created_at, is_static, source_count, \
                             decay_score, community_id \
                      FROM memories \
@@ -37,39 +35,34 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                        AND user_id = ?2 \
                      ORDER BY COALESCE(decay_score, importance) DESC \
                      LIMIT ?1",
-                )
-                ?;
+            )?;
 
-            let rows = stmt
-                .query_map(rusqlite::params![limit, user_id], |row| {
-                    let id: i64 = row.get(0)?;
-                    let content: String = row.get(1)?;
-                    let category: String =
-                        row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
-                    let importance: i64 = row.get(3)?;
-                    let pagerank: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
-                    let source: String =
-                        row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
-                    let created_at: String = row.get::<_, String>(6).unwrap_or_default();
-                    let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
-                    let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
-                    let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
-                    let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
-                    Ok((
-                        id,
-                        content,
-                        category,
-                        importance,
-                        pagerank,
-                        source,
-                        created_at,
-                        is_static,
-                        source_count,
-                        decay_score,
-                        community_id,
-                    ))
-                })
-                ?;
+            let rows = stmt.query_map(rusqlite::params![limit, user_id], |row| {
+                let id: i64 = row.get(0)?;
+                let content: String = row.get(1)?;
+                let category: String = row.get::<_, String>(2).unwrap_or_else(|_| "general".into());
+                let importance: i64 = row.get(3)?;
+                let pagerank: f64 = row.get::<_, f64>(4).unwrap_or(0.0);
+                let source: String = row.get::<_, String>(5).unwrap_or_else(|_| "unknown".into());
+                let created_at: String = row.get::<_, String>(6).unwrap_or_default();
+                let is_static: bool = row.get::<_, bool>(7).unwrap_or(false);
+                let source_count: i64 = row.get::<_, i64>(8).unwrap_or(1);
+                let decay_score: Option<f64> = row.get::<_, f64>(9).ok();
+                let community_id: Option<u32> = row.get::<_, i64>(10).ok().map(|v| v as u32);
+                Ok((
+                    id,
+                    content,
+                    category,
+                    importance,
+                    pagerank,
+                    source,
+                    created_at,
+                    is_static,
+                    source_count,
+                    decay_score,
+                    community_id,
+                ))
+            })?;
 
             let mut nodes: Vec<GraphNode> = Vec::new();
             let mut memory_ids: Vec<i64> = Vec::new();
@@ -166,23 +159,20 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
 
             let mut stmt = conn.prepare(&query)?;
 
-            let rows = stmt
-                .query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                    let source_id: i64 = row.get(0)?;
-                    let target_id: i64 = row.get(1)?;
-                    let similarity: f64 = row.get(2)?;
-                    let link_type_str: String = row
-                        .get::<_, String>(3)
-                        .unwrap_or_else(|_| "cite".to_string());
-                    Ok((source_id, target_id, similarity, link_type_str))
-                })
-                ?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                let source_id: i64 = row.get(0)?;
+                let target_id: i64 = row.get(1)?;
+                let similarity: f64 = row.get(2)?;
+                let link_type_str: String = row
+                    .get::<_, String>(3)
+                    .unwrap_or_else(|_| "cite".to_string());
+                Ok((source_id, target_id, similarity, link_type_str))
+            })?;
 
             let mut edges: Vec<GraphEdge> = Vec::new();
 
             for row in rows {
-                let (source_id, target_id, similarity, link_type_str) =
-                    row?;
+                let (source_id, target_id, similarity, link_type_str) = row?;
 
                 if !valid_set.contains(&source_id) || !valid_set.contains(&target_id) {
                     continue;

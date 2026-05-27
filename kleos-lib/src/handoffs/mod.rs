@@ -1007,7 +1007,6 @@ impl HandoffsDb {
         .await
         .map_err(|e| EngError::Internal(format!("apply_session_decay interact failed: {e}")))?
     }
-
 }
 
 fn compute_content_hash(content: &str, handoff_type: &str) -> String {

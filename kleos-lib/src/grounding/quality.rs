@@ -64,13 +64,11 @@ impl ToolQualityManager {
     pub async fn get_quality_score(&self, db: &Database, tool_name: &str) -> Result<f64> {
         let tool_name_owned = tool_name.to_string();
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT quality_score FROM tool_quality_records \
+            let mut stmt = conn.prepare(
+                "SELECT quality_score FROM tool_quality_records \
                      WHERE tool_key = ?1 OR tool_name = ?1 ORDER BY updated_at DESC LIMIT 1",
-                )?;
-            let mut rows = stmt
-                .query_map(params![tool_name_owned], |row| row.get::<_, f64>(0))?;
+            )?;
+            let mut rows = stmt.query_map(params![tool_name_owned], |row| row.get::<_, f64>(0))?;
             match rows.next() {
                 Some(r) => Ok(r?),
                 None => Ok(1.0),
@@ -82,15 +80,13 @@ impl ToolQualityManager {
     pub async fn get_degraded_tools(&self, db: &Database) -> Result<Vec<(String, f64)>> {
         let threshold = self.degradation_threshold;
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT tool_name, quality_score FROM tool_quality_records \
+            let mut stmt = conn.prepare(
+                "SELECT tool_name, quality_score FROM tool_quality_records \
                      WHERE quality_score < ?1 ORDER BY quality_score ASC",
-                )?;
-            let rows = stmt
-                .query_map(params![threshold], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
-                })?;
+            )?;
+            let rows = stmt.query_map(params![threshold], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?))
+            })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
@@ -102,35 +98,32 @@ impl ToolQualityManager {
         limit: i64,
     ) -> Result<Vec<ToolQualityRecord>> {
         db.read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT tool_key, backend, server, tool_name, description_hash, total_calls, \
+            let mut stmt = conn.prepare(
+                "SELECT tool_key, backend, server, tool_name, description_hash, total_calls, \
                      total_successes, total_failures, avg_execution_ms, llm_flagged_count, \
                      quality_score, last_execution_at \
                      FROM tool_quality_records \
                      ORDER BY total_calls DESC, updated_at DESC \
                      LIMIT ?1",
-                )?;
-            let rows = stmt
-                .query_map(params![limit], |row| {
-                    Ok(ToolQualityRecord {
-                        tool_key: row.get(0)?,
-                        backend: row.get(1)?,
-                        server: row.get(2)?,
-                        tool_name: row.get(3)?,
-                        description_hash: row.get(4)?,
-                        total_calls: row.get(5)?,
-                        total_successes: row.get(6)?,
-                        total_failures: row.get(7)?,
-                        avg_execution_ms: row.get(8)?,
-                        llm_flagged_count: row.get(9)?,
-                        quality_score: row.get(10)?,
-                        last_execution_at: row.get(11)?,
-                    })
-                })?;
+            )?;
+            let rows = stmt.query_map(params![limit], |row| {
+                Ok(ToolQualityRecord {
+                    tool_key: row.get(0)?,
+                    backend: row.get(1)?,
+                    server: row.get(2)?,
+                    tool_name: row.get(3)?,
+                    description_hash: row.get(4)?,
+                    total_calls: row.get(5)?,
+                    total_successes: row.get(6)?,
+                    total_failures: row.get(7)?,
+                    avg_execution_ms: row.get(8)?,
+                    llm_flagged_count: row.get(9)?,
+                    quality_score: row.get(10)?,
+                    last_execution_at: row.get(11)?,
+                })
+            })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
-
 }

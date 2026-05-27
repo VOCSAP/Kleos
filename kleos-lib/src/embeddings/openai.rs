@@ -34,7 +34,13 @@ impl OpenAiProvider {
         model: Option<String>,
         dim: usize,
     ) -> Self {
-        OpenAiProvider { http, url, api_key, model, dim }
+        OpenAiProvider {
+            http,
+            url,
+            api_key,
+            model,
+            dim,
+        }
     }
 
     /// Construct from environment variables.
@@ -74,7 +80,9 @@ impl OpenAiProvider {
         if embedding.len() != dim {
             return Err(EngError::Internal(format!(
                 "{}: dimension mismatch: expected {}, got {}",
-                ctx, dim, embedding.len()
+                ctx,
+                dim,
+                embedding.len()
             )));
         }
         Ok(embedding)
@@ -136,7 +144,10 @@ impl EmbeddingProvider for OpenAiProvider {
                     return Ok(vec![]);
                 }
                 let input = serde_json::Value::Array(
-                    texts.iter().map(|t| serde_json::Value::String(t.clone())).collect(),
+                    texts
+                        .iter()
+                        .map(|t| serde_json::Value::String(t.clone()))
+                        .collect(),
                 );
                 let resp = self
                     .build_request(input)
@@ -147,7 +158,10 @@ impl EmbeddingProvider for OpenAiProvider {
                 if !resp.status().is_success() {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    return Err(EngError::Internal(format!("embed_batch {}: {}", status, body)));
+                    return Err(EngError::Internal(format!(
+                        "embed_batch {}: {}",
+                        status, body
+                    )));
                 }
 
                 let body: serde_json::Value = resp

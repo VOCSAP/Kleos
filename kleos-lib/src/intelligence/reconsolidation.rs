@@ -9,7 +9,6 @@ use crate::intelligence::types::{ReconsolidationAction, ReconsolidationResult};
 use crate::Result;
 use tracing::{info, warn};
 
-
 /// Re-evaluate a single memory against current knowledge.
 ///
 /// Checks:
@@ -26,22 +25,16 @@ pub async fn reconsolidate_memory(
     // Fetch the memory - MUST belong to caller
     let row_opt = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, importance, confidence, is_static, access_count, \
+            let mut stmt = conn.prepare(
+                "SELECT id, importance, confidence, is_static, access_count, \
                             recall_hits, recall_misses, fsrs_stability, created_at \
                      FROM memories WHERE id = ?1",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![memory_id])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![memory_id])?;
             if let Some(row) = rows.next()? {
                 let importance: i32 = row.get(1)?;
                 let confidence: f64 = row.get(2)?;
-                let is_static: bool = row
-                    .get::<_, i64>(3)
-                    .map(|v| v != 0)?;
+                let is_static: bool = row.get::<_, i64>(3).map(|v| v != 0)?;
                 let access_count: i32 = row.get(4)?;
                 let recall_hits: i32 = row.get(5)?;
                 let recall_misses: i32 = row.get(6)?;
@@ -218,8 +211,7 @@ pub async fn reconsolidate_memory(
             conn.execute(
                 "UPDATE memories SET updated_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![memory_id],
-            )
-            ?;
+            )?;
             Ok(())
         })
         .await?;
@@ -251,19 +243,15 @@ pub async fn run_reconsolidation_sweep(
     // Find candidates: old memories with low access, or memories with recall data
     let candidate_ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT id FROM memories \
                      WHERE is_forgotten = 0 AND is_latest = 1 \
                        AND (recall_hits + recall_misses > 0 \
                             OR (access_count < 3 AND created_at < datetime('now', '-7 days'))) \
                      ORDER BY updated_at ASC \
                      LIMIT ?1",
-                )
-                ?;
-            let mut rows = stmt
-                .query(rusqlite::params![batch_size as i64])
-                ?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![batch_size as i64])?;
             let mut ids = Vec::new();
             while let Some(row) = rows.next()? {
                 ids.push(row.get::<_, i64>(0)?);

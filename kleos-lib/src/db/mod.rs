@@ -288,8 +288,7 @@ impl Database {
         T: Send + 'static,
     {
         self.write(move |conn| {
-            let tx = conn
-                .transaction()?;
+            let tx = conn.transaction()?;
             let result = f(&tx)?;
             tx.commit()?;
             Ok(result)
