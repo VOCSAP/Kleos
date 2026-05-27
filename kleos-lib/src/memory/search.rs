@@ -1158,34 +1158,6 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     Ok(arc_results)
 }
 
-#[cfg(test)]
-mod budget_tests {
-    use super::hash_search_params;
-    use crate::memory::types::{SearchBudget, SearchRequest};
-
-    /// Keeps cache entries distinct when callers trim the search pipeline differently.
-    #[test]
-    fn different_budgets_produce_different_hashes() {
-        let base = SearchRequest {
-            query: "test query".into(),
-            ..Default::default()
-        };
-
-        let mut with_low = base.clone();
-        with_low.budget = Some(SearchBudget::Low);
-
-        let mut with_mid = base.clone();
-        with_mid.budget = Some(SearchBudget::Mid);
-
-        let h_none = hash_search_params(&base);
-        let h_low = hash_search_params(&with_low);
-        let h_mid = hash_search_params(&with_mid);
-
-        assert_ne!(h_none, h_low, "None vs Low should differ");
-        assert_ne!(h_low, h_mid, "Low vs Mid should differ");
-    }
-}
-
 /// SEC-recall-1.5: run `hybrid_search` then apply the supplied reranker.
 /// Wrapping (rather than threading reranker into `hybrid_search` itself)
 /// keeps the existing 10+ call sites untouched while letting any in-process
@@ -1628,5 +1600,33 @@ fn parse_iso_date(s: &str) -> Option<String> {
         Some(trimmed.to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::hash_search_params;
+    use crate::memory::types::{SearchBudget, SearchRequest};
+
+    /// Keeps cache entries distinct when callers trim the search pipeline differently.
+    #[test]
+    fn different_budgets_produce_different_hashes() {
+        let base = SearchRequest {
+            query: "test query".into(),
+            ..Default::default()
+        };
+
+        let mut with_low = base.clone();
+        with_low.budget = Some(SearchBudget::Low);
+
+        let mut with_mid = base.clone();
+        with_mid.budget = Some(SearchBudget::Mid);
+
+        let h_none = hash_search_params(&base);
+        let h_low = hash_search_params(&with_low);
+        let h_mid = hash_search_params(&with_mid);
+
+        assert_ne!(h_none, h_low, "None vs Low should differ");
+        assert_ne!(h_low, h_mid, "Low vs Mid should differ");
     }
 }
