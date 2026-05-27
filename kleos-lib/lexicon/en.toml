@@ -172,6 +172,46 @@ words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language m
 stem = false
 words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
 
+[classes.sentiment_pos5]
+# AFINN +5 (strong positive)
+words = ["love", "adore", "excellent", "amazing", "fantastic", "brilliant", "wonderful", "outstanding", "superb", "perfect", "incredible", "magnificent", "phenomenal", "exceptional", "flawless", "spectacular", "breathtaking", "glorious", "marvelous", "supreme"]
+
+[classes.sentiment_pos4]
+# AFINN +4
+words = ["bliss", "blissful", "thrilled", "overjoyed", "ecstatic", "elated", "exhilarating", "exquisite", "fascinating", "inspiring", "joyful", "passionate", "radiant", "triumph", "triumphant", "victorious", "delightful", "euphoric", "masterful", "treasured"]
+
+[classes.sentiment_pos3]
+# AFINN +3
+words = ["good", "great", "nice", "enjoy", "happy", "helpful", "pleased", "glad", "pleasant", "cheerful", "confident", "delighted", "eager", "enthusiastic", "fun", "generous", "grateful", "lovely", "motivated", "optimistic", "proud", "refreshing", "rewarding", "satisfied", "successful", "upbeat", "worthwhile", "excited", "energized", "inspired", "courageous", "peaceful", "vindicated", "empowered", "elegant", "robust", "innovative", "seamless", "powerful"]
+
+[classes.sentiment_pos2]
+# AFINN +2
+words = ["like", "fine", "comfortable", "positive", "creative", "friendly", "honest", "hopeful", "kind", "reliable", "smile", "supportive", "trusted", "valued", "welcoming", "content", "relieved", "determined", "amused", "clean", "concise", "efficient", "scalable", "maintainable", "readable", "resilient", "performant", "intuitive", "automated", "responsive", "fast", "flexible", "polished", "complete", "documented", "tested", "secure"]
+
+[classes.sentiment_pos1]
+# AFINN +1
+words = ["ok", "okay", "decent", "fair", "acceptable", "adequate", "alright", "reasonable", "solid", "calm", "steady", "workable", "useful", "functional", "stable", "manageable", "tolerable", "passable", "suitable", "serviceable", "bearable", "capable", "clear", "consistent", "constructive", "interesting", "neat", "polite", "practical", "professional", "nostalgic", "curious", "surprised", "modern", "patched", "working"]
+
+[classes.sentiment_neg1]
+# AFINN -1
+words = ["boring", "mediocre", "bland", "dull", "average", "forgettable", "plain", "flat", "meh", "uninspiring", "uninteresting", "lackluster", "generic", "basic", "stale", "mundane", "tedious", "tiresome", "uninspired", "unremarkable", "vague", "weak", "overrated", "hollow", "dry", "repetitive", "redundant", "routine", "predictable", "ordinary", "nervous", "bored", "restless", "suspicious", "conflicted", "baffled", "shocked", "verbose", "deprecated", "outdated", "underengineered", "rigid", "rough", "incomplete", "undocumented"]
+
+[classes.sentiment_neg2]
+# AFINN -2
+words = ["bad", "annoying", "disappointing", "difficult", "ugly", "poor", "slow", "confusing", "awkward", "buggy", "clunky", "complicated", "dirty", "failed", "flawed", "harsh", "ignorant", "inefficient", "inferior", "irritating", "lazy", "limited", "messy", "problematic", "unpleasant", "unstable", "wasteful", "wrong", "sad", "anxious", "worried", "melancholy", "lonely", "isolated", "stressed", "exhausted", "apathetic", "discouraged", "embarrassed", "irritable", "regretful", "envious", "jealous", "disturbed", "intimidated", "hacky", "fragile", "bloated", "convoluted", "overengineered", "cumbersome", "sluggish", "untested"]
+
+[classes.sentiment_neg3]
+# AFINN -3
+words = ["frustrating", "broken", "corrupt", "cruel", "dangerous", "failure", "harmful", "hostile", "insulting", "misleading", "offensive", "reckless", "rude", "stupid", "terrible", "unreliable", "useless", "desperate", "overwhelmed", "fearful", "ashamed", "resentful", "offended", "vulnerable"]
+
+[classes.sentiment_neg4]
+# AFINN -4
+words = ["miserable", "toxic", "pathetic", "terrifying", "unbearable", "unacceptable", "outrageous", "infuriating", "agonizing", "depressing", "deplorable", "demoralizing", "degrading", "humiliating", "shameful", "pitiful", "hopeless", "horrified", "betrayed", "humiliated"]
+
+[classes.sentiment_neg5]
+# AFINN -5
+words = ["hate", "awful", "horrible", "disgusting", "dreadful", "devastating", "atrocious", "abysmal", "abominable", "appalling", "catastrophic", "despicable", "disastrous", "evil", "execrable", "horrendous", "loathe", "loathing", "monstrous", "nightmarish", "repulsive", "revolting", "ruinous", "vile", "wretched"]
+
 [classes.domain_food]
 words = ["food", "eat", "cook", "drink", "pizza", "coffee", "breakfast", "lunch", "dinner", "snack", "restaurant", "recipe", "grocer"]
 

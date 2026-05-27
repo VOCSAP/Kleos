@@ -174,6 +174,46 @@ words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en
 stem = false
 words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "clé_privée", "clé_ssh", "client_secret"]
 
+[classes.sentiment_pos5]
+# Sélection FR équivalente à AFINN +5
+words = ["aimer", "adorer", "excellent", "formidable", "fantastique", "brillant", "merveilleux", "parfait", "incroyable", "magnifique", "exceptionnel", "génial", "sublime", "extraordinaire"]
+
+[classes.sentiment_pos4]
+# +4
+words = ["ravi", "comblé", "enchanté", "extase", "passionné", "triomphe", "triomphant", "victorieux", "délicieux", "fascinant", "inspirant", "radieux", "euphorique"]
+
+[classes.sentiment_pos3]
+# +3
+words = ["bon", "super", "sympa", "plaisant", "agréable", "heureux", "content", "fier", "motivé", "optimiste", "satisfait", "enthousiaste", "joyeux", "fier", "génial", "encouragé", "inspiré", "courageux", "paisible", "élégant", "robuste", "innovant", "puissant"]
+
+[classes.sentiment_pos2]
+# +2
+words = ["bien", "correct", "confortable", "positif", "créatif", "gentil", "honnête", "fiable", "utile", "efficace", "propre", "concis", "lisible", "soutenant", "résilient", "intuitif", "automatisé", "réactif", "rapide", "flexible", "poli", "complet", "documenté", "testé", "sécurisé"]
+
+[classes.sentiment_pos1]
+# +1
+words = ["ok", "décent", "juste", "acceptable", "raisonnable", "stable", "gérable", "clair", "intéressant", "moderne", "calme", "fonctionnel", "constant", "utilisable", "convenable", "pratique", "professionnel", "patché", "fonctionne", "constructif", "cohérent", "capable", "nostalgique", "curieux", "surpris"]
+
+[classes.sentiment_neg1]
+# -1
+words = ["ennuyeux", "médiocre", "fade", "plat", "oubliable", "vague", "faible", "banal", "basique", "répétitif", "ordinaire", "creux", "sec", "moyen", "ennuyeuse", "ennuyée", "redondant", "routinier", "prévisible", "terne", "nerveux", "agité", "suspicieux", "perplexe", "choqué", "verbeux", "déprécié", "obsolète", "rigide", "rugueux", "incomplet", "non_documenté"]
+
+[classes.sentiment_neg2]
+# -2
+words = ["mauvais", "agaçant", "décevant", "difficile", "laid", "pauvre", "lent", "confus", "maladroit", "compliqué", "sale", "échoué", "défectueux", "dur", "ignorant", "paresseux", "limité", "désordonné", "problématique", "déplaisant", "anxieux", "inquiet", "mélancolique", "seul", "isolé", "stressé", "épuisé", "apathique", "découragé", "gêné", "irritable", "regrettable", "envieux", "jaloux", "perturbé", "intimidé", "bricolé", "fragile", "boursouflé", "alambiqué", "lourd", "léthargique", "non_testé"]
+
+[classes.sentiment_neg3]
+# -3
+words = ["frustrant", "cassé", "corrompu", "cruel", "dangereux", "échec", "nuisible", "hostile", "insultant", "trompeur", "offensant", "imprudent", "grossier", "stupide", "terrible", "peu_fiable", "inutile", "désespéré", "dépassé", "submergé", "peureux", "honteux", "rancunier", "offensé", "vulnérable"]
+
+[classes.sentiment_neg4]
+# -4
+words = ["misérable", "toxique", "pathétique", "terrifiant", "insupportable", "inacceptable", "scandaleux", "exaspérant", "agonisant", "déprimant", "déplorable", "démoralisant", "dégradant", "humiliant", "lamentable", "pitoyable", "sans_espoir", "horrifié", "trahi", "humilié"]
+
+[classes.sentiment_neg5]
+# -5
+words = ["haïr", "affreux", "horrible", "dégoûtant", "épouvantable", "dévastateur", "atroce", "abominable", "abject", "catastrophique", "méprisable", "désastreux", "mal", "exécrable", "horrifique", "répugnant", "révoltant", "ruineux", "vil", "monstrueux", "cauchemardesque"]
+
 [classes.domain_food]
 words = ["nourriture", "manger", "cuisiner", "boire", "pizza", "café", "petit-déjeuner", "déjeuner", "dîner", "repas", "restaurant", "recette", "épicerie", "boulangerie"]
 
