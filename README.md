@@ -213,56 +213,50 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 
 ### Runtime overlays (Patches 15, 19b, 38)
 
-Three independent layers of behavior can be tuned at runtime, each with the same cascade pattern (env-var path > `${KLEOS_DATA_DIR}/<topic>/` > embedded defaults), each with a 5-second mtime cache for hot reload without `systemctl restart`. All three are maintained as separate git submodules so operators can iterate on conventions without rebuilding `kleos-server`.
+Three independent layers of behavior can be tuned at runtime without recompiling `kleos-server`. All three follow the same cascade pattern and share a 5-second mtime cache so edits propagate within a few seconds without `systemctl restart`.
 
-| Overlay | Patch | Env var | Default path | Submodule (private) | Mount point |
-|---|---|---|---|---|---|
-| LLM prompts | 15 + 16 | `KLEOS_LLM_PROMPT_REPOSITORY` | `${KLEOS_DATA_DIR}/prompts/` | `VOCSAP/Kleos.prompts` | `prompts-overrides/` |
-| Gate patterns | 19b | (file-only, see below) | `${KLEOS_DATA_DIR}/gate/` | `VOCSAP/Kleos.gates-rules` | `gate-rules/` |
-| Lexicon (i18n core) | 38 L1 | `KLEOS_LEXICON_REPOSITORY` | `${KLEOS_DATA_DIR}/lexicon/` | `VOCSAP/Kleos.lexicon` | `lexicon-overrides/` |
+Cascade for each overlay (highest priority first):
 
-When unset and the default path is absent, the embedded baseline bundled in `kleos-server` applies (upstream behavior, zero regression). The cascade is opt-in: zero submodule pulled equals zero behavior change.
+1. Topic-specific env var pointing to any directory the operator controls.
+2. `${KLEOS_DATA_DIR}/<topic>/` when the conventional subdirectory exists.
+3. Embedded defaults bundled in the binary (upstream behavior, zero regression).
+
+| Overlay | Patch | Env var | Default path |
+|---|---|---|---|
+| LLM prompts | 15 + 16 | `KLEOS_LLM_PROMPT_REPOSITORY` | `${KLEOS_DATA_DIR}/prompts/` |
+| Gate patterns | 19b | (file-only, see below) | `${KLEOS_DATA_DIR}/gate/` |
+| Lexicon (i18n core) | 38 L1 | `KLEOS_LEXICON_REPOSITORY` | `${KLEOS_DATA_DIR}/lexicon/` |
+
+When the env var is unset and the conventional path is absent, the embedded baseline applies and there is zero I/O on the hot path. The overlay mechanism is purely opt-in: how the operator chooses to maintain those override directories (private git repository, configuration management, plain `rsync`, manual edits) is out of scope. The server only reads the files.
 
 #### LLM prompts overlay (Patch 15)
 
-System and user prompts driving Broca, Chiasm, growth/dreamer, skills, extraction and other LLM call sites can be overridden at runtime. Layout: `<root>/<service>/<purpose>/{system,user}.txt`. Example: drop a `broca/ask_plan/system.txt` under `/var/lib/kleos/prompts/` and the next call within 5 seconds will pick it up via mtime-invalidated cache. See `docs/dev-notes/llm-prompts-catalog.md` for the catalog of 35 surchargeable ids.
+System and user prompts driving Broca, Chiasm, growth/dreamer, skills, extraction and other LLM call sites can be overridden at runtime. Layout: `<root>/<service>/<purpose>/{system,user}.txt`. Example: drop a `broca/ask_plan/system.txt` under `/var/lib/kleos/prompts/` and the next call within 5 seconds will pick it up via the mtime-invalidated cache. See `docs/dev-notes/llm-prompts-catalog.md` for the catalog of 35 surchargeable ids.
 
 #### Gate pattern overlay (Patch 19b)
 
-Operator-first cascade for the gate pre-action checks. Layout: 1 pattern per line in `${KLEOS_DATA_DIR}/gate/{blocked,require_approval}_{patterns,whitelist}.txt`. Lines beginning with `#` or blank are ignored. The hardcoded `check_dangerous_patterns` remains the ultimate safety net and is never exempted by whitelists. Patch 25 added regex auto-detection (glob-lite vs anchored regex with `(?i)` prefix) and subcommand splitting via `shell-words`.
+Operator-first cascade for the gate pre-action checks. Layout: one pattern per line in `${KLEOS_DATA_DIR}/gate/{blocked,require_approval}_{patterns,whitelist}.txt`. Lines beginning with `#` or blank are ignored. The hardcoded `check_dangerous_patterns` remains the ultimate safety net and is never exempted by whitelists. Patch 25 added regex auto-detection (glob-lite vs anchored regex with `(?i)` prefix) and subcommand splitting via `shell-words`.
 
 #### Lexicon overlay (Patch 38 L1)
 
-Multilingual word lists for the intelligence pipeline (extraction, personality, valence, sentiment). Layout: `<root>/<lang>.toml` at the root, one file per ISO-639-style language code. Each file declares `[classes.<name>] words = [...]` tables; optional `valence` and `intensity` are consumed by `personality.rs` / `valence.rs` for `emotion_*` classes. The cascade includes the embedded EN and FR baselines (`kleos-lib/lexicon/{en,fr}.toml`); overrides only need to declare diverging classes -- missing classes fall through to the embedded version. See `lexicon-overrides/README.md` for the format reference.
+Multilingual word lists for the intelligence pipeline (extraction, personality, valence, sentiment). Layout: `<root>/<lang>.toml` at the root, one file per ISO-639-style language code. Each file declares `[classes.<name>] words = [...]` tables; optional `valence` and `intensity` are consumed by `personality.rs` / `valence.rs` for `emotion_*` classes. The cascade includes the embedded EN and FR baselines (`kleos-lib/lexicon/{en,fr}.toml`); override files only need to declare the classes that diverge from the embedded baseline -- missing classes fall through to the embedded version.
 
-Layer B regex overrides (`patterns/<id>.toml`) are reserved for Patch 38 Livrable 2 and will live next to the language files in the same submodule.
+Format reference:
 
-### Working with the submodules
+```toml
+schema_version = 1
+language = "fr"
 
-```bash
-# Clone with submodules initialised
-git clone --recurse-submodules https://github.com/VOCSAP/Kleos
-# Or initialise after the fact
-git submodule update --init --recursive
+[classes.verb_like]
+words = ["aimer", "adorer", "apprecier", "preferer"]
 
-# Edit an override locally (example: lexicon FR)
-cd lexicon-overrides
-$EDITOR fr.toml
-git add fr.toml && git commit -m "fr: add verb_like synonyms"
-git push origin main
-
-# Optionally bump the pointer in the main repo to track the version
-cd ..
-git add lexicon-overrides && git commit -m "chore: bump lexicon-overrides"
-
-# Deploy to LXC 121 (first time)
-ssh root@kleos-host "cd /var/lib/kleos && git clone https://github.com/VOCSAP/Kleos.lexicon lexicon"
-
-# Subsequent updates (no service restart required, cache picks up within 5 s)
-ssh root@kleos-host "git -C /var/lib/kleos/lexicon pull"
+[classes.emotion_happy]
+words = ["heureux", "content", "ravi"]
+valence = 0.7
+intensity = 0.6
 ```
 
-The submodule pointer in the main repo is optional: operators who only need hot-reload of overrides can ignore the main-repo bump and rely on the `git pull` cycle on the LXC. The pointer is useful when correlating a specific release of `kleos-server` with the override version it was validated against.
+Adding a new language is a single file: `<root>/<lang>.toml` with a `language = "<code>"` header and any `[classes.*]` tables the consumer call sites need. Layer B regex overrides (`patterns/<id>.toml`) are reserved for Patch 38 Livrable 2 and will live next to the language files.
 
 ### Security model
 
