@@ -65,6 +65,16 @@ pub(super) struct LexiconClass {
     #[serde(default)]
     #[allow(dead_code)]
     pub intensity: Option<f64>,
+    /// Opt-out of morphological stemming during matching. Defaults to
+    /// `true` (stem). Set to `false` for grammar-word classes where
+    /// stemming would over-collapse semantics (state_verbs: "est" ->
+    /// "et"; first_person_pronoun: "je" -> "j"; etc.).
+    #[serde(default = "default_stem")]
+    pub stem: bool,
+}
+
+fn default_stem() -> bool {
+    true
 }
 
 /// Parse error returned by `parse`. We keep this lightweight (string error)

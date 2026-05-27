@@ -40,6 +40,9 @@ mod loader;
 
 use std::sync::OnceLock;
 
+use rust_stemmers::{Algorithm, Stemmer};
+use unicode_normalization::UnicodeNormalization;
+
 use loader::ParsedLexicon;
 
 /// Embedded EN baseline. Parsed once on first access and panics if the file
@@ -130,6 +133,97 @@ pub fn supported_languages() -> Vec<String> {
     langs.sort();
     langs.dedup();
     langs
+}
+
+/// Map a language code to its Snowball stemmer algorithm, when one exists.
+/// Returns `None` for languages we do not have a stemmer for (the caller
+/// falls back to lowercase + strip-accents only).
+fn stemmer_for(lang: &str) -> Option<Stemmer> {
+    let algo = match lang {
+        "en" => Algorithm::English,
+        "fr" => Algorithm::French,
+        "de" => Algorithm::German,
+        "es" => Algorithm::Spanish,
+        "it" => Algorithm::Italian,
+        "pt" => Algorithm::Portuguese,
+        "nl" => Algorithm::Dutch,
+        "ru" => Algorithm::Russian,
+        "ar" => Algorithm::Arabic,
+        "ro" => Algorithm::Romanian,
+        "sv" => Algorithm::Swedish,
+        "no" => Algorithm::Norwegian,
+        "fi" => Algorithm::Finnish,
+        "hu" => Algorithm::Hungarian,
+        "da" => Algorithm::Danish,
+        "tr" => Algorithm::Turkish,
+        _ => return None,
+    };
+    Some(Stemmer::create(algo))
+}
+
+/// Strip diacritical marks from a string via Unicode NFD decomposition,
+/// then filter out combining marks (category Mn), then re-compose to NFC.
+/// `école` becomes `ecole`, `déçu` becomes `decu`, `naïve` becomes `naive`.
+fn strip_diacritics(s: &str) -> String {
+    use unicode_normalization::char::is_combining_mark;
+    s.nfd()
+        .filter(|c| !is_combining_mark(*c))
+        .nfc()
+        .collect()
+}
+
+/// Fold a single token or multi-word phrase for matching.
+///
+/// Pipeline: lowercase -> strip diacritics -> optional Snowball stem
+/// (per token if the input has spaces). `with_stem = false` skips
+/// the morphological step (used for grammar-word classes).
+///
+/// The function is invoked at both ends of a comparison so that the
+/// match is invariant to diacritics, casing, and (when stemming
+/// applies) inflection.
+pub fn fold_for_matching(s: &str, lang: &str, with_stem: bool) -> String {
+    let lower = s.to_lowercase();
+    let stripped = strip_diacritics(&lower);
+    if !with_stem {
+        return stripped;
+    }
+    let Some(stemmer) = stemmer_for(lang) else {
+        return stripped;
+    };
+    // Snowball operates on a single word. For multi-word entries (causal
+    // phrases like "a cause de"), split on whitespace, stem each token,
+    // then rejoin with spaces to preserve the phrase structure.
+    stripped
+        .split_whitespace()
+        .map(|tok| stemmer.stem(tok).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Look up whether `class` has `stem = true` (default) or `stem = false`
+/// in the lexicon, then call `fold_for_matching` with the appropriate
+/// stemming behavior. Use this when the class identity is known to the
+/// caller (which is the typical pattern after Patch 38 L2.A).
+pub fn fold_word_for_class(word: &str, lang: &str, class: &str) -> String {
+    let with_stem = class_stem_enabled(lang, class);
+    fold_for_matching(word, lang, with_stem)
+}
+
+/// Returns whether the given class allows morphological stemming.
+/// Defaults to `true` when the class is unknown. Override lookups
+/// follow the same cascade as `word_class`.
+fn class_stem_enabled(lang: &str, class: &str) -> bool {
+    if let Some(repo) = cache::repo_root() {
+        if let Some(parsed) = cache::resolve_override(repo, lang) {
+            if let Some(class_entry) = parsed.classes.get(class) {
+                return class_entry.stem;
+            }
+        }
+    }
+    embedded(lang)
+        .and_then(|p| p.classes.get(class))
+        .map(|c| c.stem)
+        .unwrap_or(true)
 }
 
 /// Stub for Layer B (Patch 38 Livrable 2): retrieve a complex regex
@@ -231,6 +325,82 @@ mod tests {
     #[test]
     fn complex_regex_returns_none_in_livrable_1() {
         assert!(complex_regex("any.id").is_none());
+    }
+
+    #[test]
+    fn fold_lowercases() {
+        let folded = fold_for_matching("AbC", "xx", false);
+        assert_eq!(folded, "abc");
+    }
+
+    #[test]
+    fn fold_strips_french_diacritics() {
+        assert_eq!(fold_for_matching("e\u{0301}cole", "xx", false), "ecole");
+        assert_eq!(fold_for_matching("de\u{0327}cu", "xx", false), "decu");
+        assert_eq!(fold_for_matching("nai\u{0308}ve", "xx", false), "naive");
+        // Precomposed forms also fold to the same shape.
+        assert_eq!(fold_for_matching("\u{00e9}cole", "xx", false), "ecole");
+    }
+
+    #[test]
+    fn fold_stems_french_conjugations() {
+        // All four French forms should fold to the same stem.
+        let infinitive = fold_for_matching("aimer", "fr", true);
+        let past_participle = fold_for_matching("aimee", "fr", true);
+        let plural = fold_for_matching("aimees", "fr", true);
+        let imperfect = fold_for_matching("aimait", "fr", true);
+        assert_eq!(infinitive, past_participle);
+        assert_eq!(infinitive, plural);
+        assert_eq!(infinitive, imperfect);
+    }
+
+    #[test]
+    fn fold_stems_english_plurals_and_tenses() {
+        let base = fold_for_matching("love", "en", true);
+        assert_eq!(fold_for_matching("loves", "en", true), base);
+        assert_eq!(fold_for_matching("loved", "en", true), base);
+        assert_eq!(fold_for_matching("loving", "en", true), base);
+    }
+
+    #[test]
+    fn fold_skips_stemming_when_disabled() {
+        let stemmed = fold_for_matching("aimerions", "fr", true);
+        let raw = fold_for_matching("aimerions", "fr", false);
+        assert_eq!(raw, "aimerions");
+        assert_ne!(stemmed, raw, "stemming must change the long form");
+    }
+
+    #[test]
+    fn fold_unknown_language_falls_back_to_strip_only() {
+        // No stemmer for "zz" -> the with_stem flag is ignored.
+        assert_eq!(
+            fold_for_matching("De\u{0301}cu", "zz", true),
+            fold_for_matching("De\u{0301}cu", "zz", false),
+        );
+    }
+
+    #[test]
+    fn fold_multi_word_phrase_stems_each_token() {
+        let folded = fold_for_matching("a cause de", "fr", true);
+        // The output should still be a single phrase, with tokens joined
+        // by single spaces. Snowball will leave the short tokens mostly
+        // unchanged but the structure must be preserved.
+        assert_eq!(folded.split_whitespace().count(), 3);
+    }
+
+    #[test]
+    fn class_stem_default_is_true() {
+        // verb_like has no explicit `stem` field in the embedded TOML and
+        // should default to true.
+        assert!(class_stem_enabled("en", "verb_like"));
+        assert!(class_stem_enabled("fr", "verb_like"));
+    }
+
+    #[test]
+    fn fold_word_for_class_respects_stem_metadata() {
+        // verb_like stems by default: "aimerions" should change.
+        let stemmed = fold_word_for_class("aimerions", "fr", "verb_like");
+        assert_ne!(stemmed, "aimerions");
     }
 
     #[test]
