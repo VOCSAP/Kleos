@@ -211,15 +211,58 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 - Batched flushing to the server
 - File-watching and persistent session support
 
-### LLM prompts overlay (VOCSAP Patch 15)
+### Runtime overlays (Patches 15, 19b, 38)
 
-System and user prompts driving Broca, Chiasm, growth/dreamer, skills, extraction and other LLM call sites can be overridden at runtime without recompilation. Cascade:
+Three independent layers of behavior can be tuned at runtime, each with the same cascade pattern (env-var path > `${KLEOS_DATA_DIR}/<topic>/` > embedded defaults), each with a 5-second mtime cache for hot reload without `systemctl restart`. All three are maintained as separate git submodules so operators can iterate on conventions without rebuilding `kleos-server`.
 
-1. `KLEOS_LLM_PROMPT_REPOSITORY` (explicit path) takes precedence.
-2. Otherwise `${KLEOS_DATA_DIR}/prompts/` is used if the directory exists.
-3. Otherwise the embedded defaults bundled in the binary apply (upstream behavior, zero regression).
+| Overlay | Patch | Env var | Default path | Submodule (private) | Mount point |
+|---|---|---|---|---|---|
+| LLM prompts | 15 + 16 | `KLEOS_LLM_PROMPT_REPOSITORY` | `${KLEOS_DATA_DIR}/prompts/` | `VOCSAP/Kleos.prompts` | `prompts-overrides/` |
+| Gate patterns | 19b | (file-only, see below) | `${KLEOS_DATA_DIR}/gate/` | `VOCSAP/Kleos.gates-rules` | `gate-rules/` |
+| Lexicon (i18n core) | 38 L1 | `KLEOS_LEXICON_REPOSITORY` | `${KLEOS_DATA_DIR}/lexicon/` | `VOCSAP/Kleos.lexicon` | `lexicon-overrides/` |
 
-Layout: `<root>/<service>/<purpose>/{system,user}.txt`. Example: drop a `broca/ask_plan/system.txt` under `/var/lib/kleos/prompts/` and the next call within 5 seconds will pick it up via mtime-invalidated cache. See `docs/dev-notes/llm-prompts-catalog.md` for the full catalog.
+When unset and the default path is absent, the embedded baseline bundled in `kleos-server` applies (upstream behavior, zero regression). The cascade is opt-in: zero submodule pulled equals zero behavior change.
+
+#### LLM prompts overlay (Patch 15)
+
+System and user prompts driving Broca, Chiasm, growth/dreamer, skills, extraction and other LLM call sites can be overridden at runtime. Layout: `<root>/<service>/<purpose>/{system,user}.txt`. Example: drop a `broca/ask_plan/system.txt` under `/var/lib/kleos/prompts/` and the next call within 5 seconds will pick it up via mtime-invalidated cache. See `docs/dev-notes/llm-prompts-catalog.md` for the catalog of 35 surchargeable ids.
+
+#### Gate pattern overlay (Patch 19b)
+
+Operator-first cascade for the gate pre-action checks. Layout: 1 pattern per line in `${KLEOS_DATA_DIR}/gate/{blocked,require_approval}_{patterns,whitelist}.txt`. Lines beginning with `#` or blank are ignored. The hardcoded `check_dangerous_patterns` remains the ultimate safety net and is never exempted by whitelists. Patch 25 added regex auto-detection (glob-lite vs anchored regex with `(?i)` prefix) and subcommand splitting via `shell-words`.
+
+#### Lexicon overlay (Patch 38 L1)
+
+Multilingual word lists for the intelligence pipeline (extraction, personality, valence, sentiment). Layout: `<root>/<lang>.toml` at the root, one file per ISO-639-style language code. Each file declares `[classes.<name>] words = [...]` tables; optional `valence` and `intensity` are consumed by `personality.rs` / `valence.rs` for `emotion_*` classes. The cascade includes the embedded EN and FR baselines (`kleos-lib/lexicon/{en,fr}.toml`); overrides only need to declare diverging classes -- missing classes fall through to the embedded version. See `lexicon-overrides/README.md` for the format reference.
+
+Layer B regex overrides (`patterns/<id>.toml`) are reserved for Patch 38 Livrable 2 and will live next to the language files in the same submodule.
+
+### Working with the submodules
+
+```bash
+# Clone with submodules initialised
+git clone --recurse-submodules https://github.com/VOCSAP/Kleos
+# Or initialise after the fact
+git submodule update --init --recursive
+
+# Edit an override locally (example: lexicon FR)
+cd lexicon-overrides
+$EDITOR fr.toml
+git add fr.toml && git commit -m "fr: add verb_like synonyms"
+git push origin main
+
+# Optionally bump the pointer in the main repo to track the version
+cd ..
+git add lexicon-overrides && git commit -m "chore: bump lexicon-overrides"
+
+# Deploy to LXC 121 (first time)
+ssh root@kleos-host "cd /var/lib/kleos && git clone https://github.com/VOCSAP/Kleos.lexicon lexicon"
+
+# Subsequent updates (no service restart required, cache picks up within 5 s)
+ssh root@kleos-host "git -C /var/lib/kleos/lexicon pull"
+```
+
+The submodule pointer in the main repo is optional: operators who only need hot-reload of overrides can ignore the main-repo bump and rely on the `git pull` cycle on the LXC. The pointer is useful when correlating a specific release of `kleos-server` with the override version it was validated against.
 
 ### Security model
 
