@@ -28,14 +28,89 @@ words = ["et", "ou", "mais", "donc", "car", "que", "qui", "dont", "ce", "cette",
 words = ["je", "j'", "j'ai", "moi", "me", "m'"]
 
 [classes.emotion_happy]
-words = ["heureux", "heureuse", "content", "contente", "ravi", "ravie", "enchante", "enchantee", "fier", "fiere", "joyeux", "joyeuse"]
-valence = 0.7
+words = ["heureux", "heureuse", "joyeux", "joyeuse"]
+valence = 1.0
 intensity = 0.6
 
-[classes.emotion_sad]
-words = ["triste", "decu", "decue", "abattu", "abattue", "decourage", "decouragee", "depite", "depitee"]
-valence = -0.6
+[classes.emotion_excited]
+words = ["excite", "excitee", "enthousiaste", "impatient", "impatiente"]
+valence = 1.0
+intensity = 0.8
+
+[classes.emotion_grateful]
+words = ["reconnaissant", "reconnaissante", "redevable"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_proud]
+words = ["fier", "fiere"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_relieved]
+words = ["soulage", "soulagee", "rassure", "rassuree"]
+valence = 1.0
 intensity = 0.5
+
+[classes.emotion_thrilled]
+words = ["enchante", "enchantee", "ravi", "ravie", "comble", "comblee"]
+valence = 1.0
+intensity = 0.9
+
+[classes.emotion_content]
+words = ["content", "contente", "satisfait", "satisfaite"]
+valence = 1.0
+intensity = 0.5
+
+[classes.emotion_sad]
+words = ["triste", "abattu", "abattue", "depite", "depitee"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_angry]
+words = ["en_colere", "furieux", "furieuse", "irrite", "irritee", "enrage", "enragee"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_frustrated]
+words = ["frustre", "frustree", "exaspere", "exasperee"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_anxious]
+words = ["anxieux", "anxieuse", "inquiet", "inquiete", "nerveux", "nerveuse"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_stressed]
+words = ["stresse", "stressee", "tendu", "tendue"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_disappointed]
+words = ["decu", "decue", "decourage", "decouragee"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_overwhelmed]
+words = ["depasse", "depassee", "submerge", "submergee"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_lonely]
+words = ["seul", "seule", "solitaire", "isole", "isolee"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_worried]
+words = ["soucieux", "soucieuse", "preoccupe", "preoccupee"]
+valence = -1.0
+intensity = 0.5
+
+[classes.emotion_bored]
+words = ["ennuye", "ennuyee", "blase", "blasee"]
+valence = -1.0
+intensity = 0.4
 
 [classes.intensifier_weakening]
 # multiplier 0.5
