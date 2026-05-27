@@ -384,50 +384,34 @@ fn extract_date_ref(content: &str) -> Option<String> {
     re.find(content).map(|m| m.as_str().to_string())
 }
 
+/// Infer the high-level domain of an object string by scanning the i18n
+/// lexicon for every supported language.
+///
+/// Patch 38 L2 site 11 -- replaces the prior 7-way English-only if/else
+/// cascade. The ordered tuple list preserves the original priority
+/// (food > entertainment > reading > music > gaming > fitness > travel)
+/// so that an object containing "watch" still resolves to entertainment
+/// rather than fitness when both classes would match.
 fn infer_domain(object: &str) -> String {
+    const DOMAINS: &[(&str, &str)] = &[
+        ("domain_food", "food"),
+        ("domain_entertainment", "entertainment"),
+        ("domain_reading", "reading"),
+        ("domain_music", "music"),
+        ("domain_gaming", "gaming"),
+        ("domain_fitness", "fitness"),
+        ("domain_travel", "travel"),
+    ];
     let lower = object.to_lowercase();
-    if lower.contains("food")
-        || lower.contains("eat")
-        || lower.contains("cook")
-        || lower.contains("drink")
-        || lower.contains("pizza")
-        || lower.contains("coffee")
-        || lower.contains("breakfast")
-        || lower.contains("lunch")
-        || lower.contains("dinner")
-        || lower.contains("snack")
-        || lower.contains("restaurant")
-        || lower.contains("recipe")
-        || lower.contains("grocer")
-    {
-        "food".to_string()
-    } else if lower.contains("movie")
-        || lower.contains("show")
-        || lower.contains("series")
-        || lower.contains("watch")
-    {
-        "entertainment".to_string()
-    } else if lower.contains("book") || lower.contains("read") || lower.contains("author") {
-        "reading".to_string()
-    } else if lower.contains("music")
-        || lower.contains("song")
-        || lower.contains("band")
-        || lower.contains("listen")
-    {
-        "music".to_string()
-    } else if lower.contains("game") || lower.contains("play") {
-        "gaming".to_string()
-    } else if lower.contains("sport")
-        || lower.contains("exercise")
-        || lower.contains("run")
-        || lower.contains("gym")
-    {
-        "fitness".to_string()
-    } else if lower.contains("travel") || lower.contains("visit") || lower.contains("trip") {
-        "travel".to_string()
-    } else {
-        "general".to_string()
+    for (class, label) in DOMAINS {
+        for lang in crate::lexicon::supported_languages() {
+            let words = crate::lexicon::word_class(&lang, class);
+            if words.iter().any(|w| lower.contains(&w.to_lowercase())) {
+                return (*label).to_string();
+            }
+        }
     }
+    "general".to_string()
 }
 
 #[cfg(test)]

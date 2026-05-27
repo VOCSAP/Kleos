@@ -154,5 +154,26 @@ words = ["en tant qu IA", "je suis une IA", "je ne peux pas", "je n ai pas", "en
 [classes.credential_keywords]
 words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "cle_privee", "cle_ssh", "client_secret"]
 
+[classes.domain_food]
+words = ["nourriture", "manger", "cuisiner", "boire", "pizza", "cafe", "petit_dejeuner", "dejeuner", "diner", "repas", "restaurant", "recette", "epicerie", "boulangerie"]
+
+[classes.domain_entertainment]
+words = ["film", "serie", "regarder", "spectacle", "cinema"]
+
+[classes.domain_reading]
+words = ["livre", "lire", "auteur", "lecture", "roman"]
+
+[classes.domain_music]
+words = ["musique", "chanson", "groupe", "ecouter", "album"]
+
+[classes.domain_gaming]
+words = ["jeu", "jouer", "console"]
+
+[classes.domain_fitness]
+words = ["sport", "exercice", "courir", "gym", "fitness", "course"]
+
+[classes.domain_travel]
+words = ["voyage", "voyager", "visiter", "trajet", "destination"]
+
 [classes.prohibition_marker]
 words = ["interdit", "interdite", "prohibe", "prohibee", "non autorise", "refuse", "bloque", "restreint", "ne doit pas", "ne peut pas", "jamais", "ne pas", "banni"]

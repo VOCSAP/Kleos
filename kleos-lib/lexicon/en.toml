@@ -155,5 +155,26 @@ words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language m
 [classes.credential_keywords]
 words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
 
+[classes.domain_food]
+words = ["food", "eat", "cook", "drink", "pizza", "coffee", "breakfast", "lunch", "dinner", "snack", "restaurant", "recipe", "grocer"]
+
+[classes.domain_entertainment]
+words = ["movie", "show", "series", "watch"]
+
+[classes.domain_reading]
+words = ["book", "read", "author"]
+
+[classes.domain_music]
+words = ["music", "song", "band", "listen"]
+
+[classes.domain_gaming]
+words = ["game", "play"]
+
+[classes.domain_fitness]
+words = ["sport", "exercise", "run", "gym"]
+
+[classes.domain_travel]
+words = ["travel", "visit", "trip"]
+
 [classes.prohibition_marker]
 words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not", "never", "do not", "don't", "banned"]
