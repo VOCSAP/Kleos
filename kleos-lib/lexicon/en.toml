@@ -62,4 +62,4 @@ words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language m
 words = ["password", "passphrase", "secret", "api_key", "token", "bearer", "credential", "private_key", "ssh_key", "client_secret"]
 
 [classes.prohibition_marker]
-words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not"]
+words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not", "never", "do not", "don't", "banned"]
