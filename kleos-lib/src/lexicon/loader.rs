@@ -65,6 +65,12 @@ pub(super) struct LexiconClass {
     #[serde(default)]
     #[allow(dead_code)]
     pub intensity: Option<f64>,
+    /// Arousal in [0.0, 1.0]. Used by valence.rs EMOTION_PATTERNS to
+    /// distinguish high-energy vs low-energy emotional signals
+    /// (e.g. enraged = 0.9, sad = 0.3, calm = 0.1).
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub arousal: Option<f64>,
     /// Opt-out of morphological stemming during matching. Defaults to
     /// `true` (stem). Set to `false` for grammar-word classes where
     /// stemming would over-collapse semantics (state_verbs: "est" ->
