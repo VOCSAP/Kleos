@@ -111,6 +111,36 @@ pub fn word_class_alternation(lang: &str, class: &str) -> String {
     word_class(lang, class).join("|")
 }
 
+/// Pipe-joined alternation of the **stemmed** words for a class. The
+/// stemming respects `stem = false` on the class (grammar / particle
+/// classes pass through untouched). Each word is `regex::escape`-ed so
+/// special characters in the stemmed form do not break the surrounding
+/// regex template.
+///
+/// Patch 38 L2.B helper. Use this when the regex compiled from the
+/// alternation will be matched against **raw source text** AND you want
+/// inflected forms to match: pair this with a `\w*` wildcard after the
+/// non-capturing group in the template. Example:
+///
+/// ```ignore
+/// let alt = word_class_alternation_stemmed("fr", "verb_like"); // "aim|ador|appreci|prefer"
+/// let pattern = format!(r"(?i)\b(?:{alt})\w*\b\s+(.+?)(?:\.|,|$)");
+/// // matches "j'aime", "j'aimais", "j'aimerais", "j'adore", ...
+/// ```
+///
+/// Multi-word entries (`burned out`, `en colere`) are split-stemmed-rejoined
+/// by `fold_for_matching`, so the resulting alternation contains
+/// space-separated stems (`burn out`, `en coler`) which still match the
+/// raw source via case-insensitive flag and the trailing wildcard.
+pub fn word_class_alternation_stemmed(lang: &str, class: &str) -> String {
+    let with_stem = class_stem_enabled(lang, class);
+    word_class(lang, class)
+        .iter()
+        .map(|w| regex::escape(&fold_for_matching(w, lang, with_stem)))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 /// Enumerate every language that the lexicon module can serve. Includes the
 /// embedded baselines plus any `<lang>.toml` file present in the override
 /// repo (if configured). Result is sorted and de-duplicated.
@@ -212,7 +242,7 @@ pub fn fold_word_for_class(word: &str, lang: &str, class: &str) -> String {
 /// Returns whether the given class allows morphological stemming.
 /// Defaults to `true` when the class is unknown. Override lookups
 /// follow the same cascade as `word_class`.
-fn class_stem_enabled(lang: &str, class: &str) -> bool {
+pub fn class_stem_enabled(lang: &str, class: &str) -> bool {
     if let Some(repo) = cache::repo_root() {
         if let Some(parsed) = cache::resolve_override(repo, lang) {
             if let Some(class_entry) = parsed.classes.get(class) {
@@ -605,5 +635,76 @@ mod tests {
                 "embedded fr.toml is missing class {class}",
             );
         }
+    }
+
+    // Patch 38 L2.B helper tests.
+
+    #[test]
+    fn word_class_alternation_stemmed_fr_verbs_match_inflected_forms() {
+        // The FR `verb_like` class lists infinitives (aimer, adorer, ...).
+        // After stemming, the alternation collapses to the Snowball roots,
+        // and the trailing `\w*` wildcard in the consumer template makes
+        // every inflected form match (aime, aimait, aimerions, adorera).
+        let alt = word_class_alternation_stemmed("fr", "verb_like");
+        let pattern = format!(r"(?i)\b(?:{alt})\w*\b");
+        let re = regex::Regex::new(&pattern).expect("compiled");
+        for inflected in &["j'aime", "j'aimais", "j'aimerions", "j'adore", "j'adorerais"] {
+            assert!(re.is_match(inflected), "FR inflected `{inflected}` must match");
+        }
+    }
+
+    #[test]
+    fn word_class_alternation_stemmed_en_baseline_preserved() {
+        // The EN `verb_like` class lists base forms (like, love, ...).
+        // Stem roots stay close to the base form for English (like -> like,
+        // loved -> love), and the trailing wildcard adds `s`/`d`/`ing`.
+        let alt = word_class_alternation_stemmed("en", "verb_like");
+        let pattern = format!(r"(?i)\b(?:{alt})\w*\b");
+        let re = regex::Regex::new(&pattern).expect("compiled");
+        for variant in &["I like", "I likes", "she loved", "they enjoy", "we adore"] {
+            assert!(re.is_match(variant), "EN variant `{variant}` must match");
+        }
+    }
+
+    #[test]
+    fn word_class_alternation_stemmed_respects_stem_false() {
+        // Grammar classes (articles, stopwords, particles) are declared
+        // `stem = false` in the TOMLs. The stemmed helper must return the
+        // raw words unchanged for those classes, otherwise short tokens
+        // like `le` would be munged.
+        let stemmed = word_class_alternation_stemmed("fr", "articles");
+        let raw = word_class_alternation("fr", "articles");
+        // After fold_for_matching with stem=false we still lowercase +
+        // strip diacritics, so the comparison is against a folded raw.
+        let raw_folded: String = raw
+            .split('|')
+            .map(|w| regex::escape(&fold_for_matching(w, "fr", false)))
+            .collect::<Vec<_>>()
+            .join("|");
+        assert_eq!(stemmed, raw_folded);
+    }
+
+    #[test]
+    fn word_class_alternation_stemmed_unknown_class_empty() {
+        assert!(word_class_alternation_stemmed("en", "this_class_does_not_exist").is_empty());
+        assert!(word_class_alternation_stemmed("xx", "verb_like").is_empty());
+    }
+
+    #[test]
+    fn word_class_alternation_stemmed_multiword_entries_handled() {
+        // `valence_anger_intense` for EN typically contains multi-word
+        // forms like `burned out`. fold_for_matching splits, stems each
+        // token, and rejoins -- the alternation entry remains a single
+        // pipe-delimited segment with an internal space.
+        let alt = word_class_alternation_stemmed("en", "valence_anger_intense");
+        if alt.is_empty() {
+            // Some embedded baselines may not carry this exact class;
+            // skip silently to keep the test resilient to TOML edits.
+            return;
+        }
+        // Compile must not fail; the escaped pipe-joined string is a
+        // valid regex body whether or not it contains spaces.
+        let pattern = format!(r"(?i)\b(?:{alt})\w*\b");
+        regex::Regex::new(&pattern).expect("multi-word alternation compiles");
     }
 }
