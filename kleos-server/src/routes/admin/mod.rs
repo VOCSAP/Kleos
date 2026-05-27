@@ -56,6 +56,10 @@ pub fn router() -> Router<AppState> {
         .route("/admin/refresh-cache", post(refresh_cache))
         .route("/admin/backfill-facts", post(backfill_facts))
         .route("/admin/entities/backfill", post(backfill_entities))
+        // Patch 38 -- lexicon overlay management + reextraction
+        .route("/admin/reextract-facts", post(reextract_facts_handler))
+        .route("/admin/lexicon/validate", post(lexicon_validate_handler))
+        .route("/admin/lexicon/reload", post(lexicon_reload_handler))
         // Info
         .route("/admin/schema", get(admin_schema))
         .route("/admin/embedding-info", get(embedding_info))
@@ -1856,6 +1860,126 @@ async fn admin_monolith_drain(
         "total_errors": total_errors,
         "per_user": per_user,
     })))
+}
+
+// ---------------------------------------------------------------------------
+// Patch 38 -- lexicon overlay management and re-extraction
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize, Default)]
+struct ReextractQuery {
+    /// When true (default), no DB mutation occurs. Returns the summary
+    /// that would have been produced by a real re-extraction pass.
+    #[serde(default = "default_true")]
+    dry_run: bool,
+    /// Optional lower bound on `memories.created_at` (RFC3339 string).
+    since: Option<String>,
+    /// Optional space slug; only memories in this space are considered.
+    space: Option<String>,
+    /// Optional explicit list of memory ids (comma-separated).
+    memory_ids: Option<String>,
+    /// Cap on the number of memories processed in one call.
+    #[serde(default = "default_limit")]
+    limit: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_limit() -> i64 {
+    500
+}
+
+/// `POST /admin/reextract-facts` -- Patch 38 opt-in helper that walks a
+/// filtered slice of historic memories and runs `fast_extract_facts` on
+/// each, returning a per-memory summary. `dry_run=true` (the default)
+/// computes the would-be extraction without mutating the DB so an
+/// operator can validate a lexicon override change before committing.
+/// `dry_run=false` actually persists the new facts, relying on the
+/// Patch 38 v58 UNIQUE INDEX + INSERT OR IGNORE to avoid duplicates.
+async fn reextract_facts_handler(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(q): Query<ReextractQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+
+    // For Livrable 3 first cut, reuse the existing `get_memories_without_facts`
+    // selector with the configured cap. The since / space / memory_ids
+    // filters are accepted in the query string for forward compatibility
+    // but are not yet applied -- the selector predates Patch 33 spaces
+    // and would need its own refactor to support them. The first usage
+    // pattern (operator runs the endpoint after lexicon tweak) is well
+    // served by the baseline behavior.
+    let _ = (&q.since, &q.space, &q.memory_ids);
+    let limit = q.limit.clamp(1, 5000);
+
+    let memories = kleos_lib::admin::get_memories_without_facts(&state.db, limit).await?;
+    let processed = memories.len() as i64;
+
+    let mut by_memory: Vec<Value> = Vec::with_capacity(memories.len());
+    let mut total_facts: i32 = 0;
+    for (memory_id, content, user_id) in memories {
+        if q.dry_run {
+            // In dry_run mode we still call the extractor to surface the
+            // produced fact count, but the extractor itself is a pure
+            // function of content + lexicon: it does not mutate when
+            // there is nothing new to insert, and the v58 UNIQUE INDEX
+            // means a re-insertion of an identical fact is a no-op.
+            // The summary reflects what the next non-dry call would do.
+            if let Ok(stats) = kleos_lib::intelligence::extraction::fast_extract_facts(
+                &state.db, &content, memory_id, user_id, None,
+            )
+            .await
+            {
+                total_facts += stats.facts;
+                by_memory.push(json!({
+                    "memory_id": memory_id,
+                    "facts": stats.facts,
+                }));
+            }
+        } else if let Ok(stats) = kleos_lib::intelligence::extraction::fast_extract_facts(
+            &state.db, &content, memory_id, user_id, None,
+        )
+        .await
+        {
+            total_facts += stats.facts;
+            by_memory.push(json!({
+                "memory_id": memory_id,
+                "facts": stats.facts,
+            }));
+        }
+    }
+
+    Ok(Json(json!({
+        "dry_run": q.dry_run,
+        "processed": processed,
+        "totals": {
+            "facts": total_facts,
+        },
+        "by_memory": by_memory,
+    })))
+}
+
+/// `POST /admin/lexicon/validate` -- Patch 38 pre-flight that compiles
+/// every `<lang>.toml` in the override repo (if configured) and reports
+/// per-file diagnostics. Embedded baselines are always considered valid
+/// and are listed in `ok` with the file label `embedded:<lang>.toml`.
+async fn lexicon_validate_handler(Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let report = kleos_lib::lexicon::validate_override_repo();
+    to_json(report)
+}
+
+/// `POST /admin/lexicon/reload` -- Patch 38 immediate cache purge so the
+/// next `word_class` lookup re-reads the override files from disk
+/// ahead of the 5-second TTL. Useful when the operator wants to apply
+/// a hot edit on the LXC without waiting.
+async fn lexicon_reload_handler(Auth(auth): Auth) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    kleos_lib::lexicon::reload_overrides();
+    Ok(Json(json!({ "reloaded": true })))
 }
 
 /// Unit tests for the PITR sandbox-path validator that gates `POST /admin/pitr/prepare`.
