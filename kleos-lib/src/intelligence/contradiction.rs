@@ -63,11 +63,24 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
             .read(move |conn| {
                 let mut stmt = conn
                     .prepare(
+                        // Patch 37.1 -- partition single-path detection by the
+                        // new memory's space_id so online contradiction checks
+                        // never cross spaces. Sibling of Patch 37 which covered
+                        // scan_all_contradictions + detect_fact_contradictions
+                        // but missed this fn. Same JOIN shape as temporal.rs:
+                        // m_cand for the candidate fact's owner, m_new for the
+                        // new memory bound via the existing ?3 placeholder.
+                        // NULL legacy memories isolate naturally (NULL = NULL
+                        // is false in SQL) -- safe-by-default during the
+                        // Patch 33 transition window.
                         "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
                          FROM structured_facts sf \
+                         JOIN memories m_cand ON m_cand.id = sf.memory_id \
+                         JOIN memories m_new ON m_new.id = ?3 \
                          WHERE sf.subject = ?1 AND sf.predicate = ?2 \
                            AND sf.memory_id != ?3 \
                            AND sf.id != ?4 \
+                           AND m_cand.space_id = m_new.space_id \
                          ORDER BY sf.confidence DESC",
                     )
                     .map_err(rusqlite_to_eng_error)?;

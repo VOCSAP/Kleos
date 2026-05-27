@@ -4025,6 +4025,89 @@ agent-forge spec_id : `spec_cbf300ff`.
 
 ---
 
+## Patch 37.1 -- detect_contradictions(memory) filtre par space (2026-05-27)
+
+**Symptome / motivation** -- Patch 37 (commit `f2d0327b`) a applique le
+filtre par space sur les passes paire offline (`scan_all_contradictions`,
+`detect_fact_contradictions`, `detect_patterns`) mais a oublie la
+fonction `detect_contradictions(memory)` (kleos-lib/src/intelligence/
+contradiction.rs ligne 22), appelee par le pipeline **online** a chaque
+ingestion de memoire. Cette fn compare la new memoire aux
+`structured_facts` pre-existants en filtrant uniquement par
+`subject+predicate`, sans contrainte de space. Resultat : 2 projets
+differents qui partagent un meme triplet subject+predicate (ex: deux
+projets qui declarent `agent-forge expose --help`) auraient produit une
+contradiction false-positive immediatement a l'ingestion.
+
+**Approche (niveau chirurgical, kleos-lib uniquement)** -- Sibling du
+Patch 37 avec le meme pattern que `temporal.rs::detect_fact_contradictions`.
+La fn prend deja `memory: &Memory` en parametre et utilise `memory_id`
+comme placeholder `?3` dans la query candidate. Pas besoin d'ajouter un
+nouveau param : on peut JOIN sur `?3` directement.
+
+Avant :
+```sql
+SELECT sf.id, sf.object, sf.memory_id, sf.confidence
+FROM structured_facts sf
+WHERE sf.subject = ?1 AND sf.predicate = ?2
+  AND sf.memory_id != ?3
+  AND sf.id != ?4
+ORDER BY sf.confidence DESC
+```
+
+Apres :
+```sql
+SELECT sf.id, sf.object, sf.memory_id, sf.confidence
+FROM structured_facts sf
+JOIN memories m_cand ON m_cand.id = sf.memory_id
+JOIN memories m_new ON m_new.id = ?3
+WHERE sf.subject = ?1 AND sf.predicate = ?2
+  AND sf.memory_id != ?3
+  AND sf.id != ?4
+  AND m_cand.space_id = m_new.space_id
+ORDER BY sf.confidence DESC
+```
+
+3 lignes JOIN + 1 clause egalite. Signature `pub async fn
+detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec<
+Contradiction>>` inchangee. Ordre des placeholders inchange.
+
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/contradiction.rs` (~15 lignes ajoutees
+  dont 9 commentaires) -- query candidate dans `detect_contradictions`.
+
+Zero touche cote `kleos-server` ni autres modules kleos-lib. Callers du
+pipeline online (services/memory.rs, intelligence/mod.rs) inchanges.
+
+**Comportement** :
+
+| Cas | Resultat |
+|---|---|
+| New memoire space=kleos, candidate fact memoire space=kleos | Paire detectee normalement |
+| New memoire space=kleos, candidate fact memoire space=default | Paire ignoree (clause egalite faux) |
+| New memoire space=kleos, candidate fact memoire space=NULL legacy | Paire ignoree (NULL != kleos) |
+| New memoire space=NULL legacy, candidate fact memoire space=NULL legacy | Paire ignoree (NULL = NULL false, safe-by-default) |
+| Fact orphelin sans memoire correspondante en DB | INNER JOIN m_cand filtre, fact non considere |
+| memory.id absente de la table memories (cas test inconsistant) | JOIN m_new retourne 0 ligne, 0 candidat, skip silencieux |
+
+**Tests** -- `cargo check -p kleos-lib --features bundled-sqlite` :
+0 error, 10 warnings (tous pre-existants dans cred/bootstrap.rs).
+`cargo check -p kleos-server --features kleos-lib/bundled-sqlite` :
+0 error. Validation agent-forge `verify` : 2/2 steps passed.
+
+Tests integration kleos-lib non-executes cote Windows MSVC (ICE
+STATUS_STACK_BUFFER_OVERRUN pre-existant -- memoire Kleos #4545,
+independant). Validation E2E LXC 121 et smoke FR cross-space contradiction
+reportes au build WSL + redeploy.
+
+**Conditions de retrait** -- candidat PR upstream **avec** Patch 37 (les
+deux constituent une unite logique : filtre par space sur les 4 passes
+contradiction/temporal). Voir aussi conditions Patch 37.
+
+agent-forge spec_id : `spec_9be9c0f3`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
