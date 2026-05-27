@@ -172,6 +172,26 @@ words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language m
 stem = false
 words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
 
+[classes.decision_verbs]
+# Phrases that introduce a decision or action choice.
+stem = false
+words = ["decided to", "chose to", "going to", "switched to", "opted for", "picked", "went with"]
+
+[classes.identity_markers]
+# Phrases that introduce an identity claim.
+stem = false
+words = ["am a", "am an", "'m a", "'m an", "consider myself", "identify as"]
+
+[classes.value_markers]
+# Phrases that signal a personal value or belief.
+stem = false
+words = ["important to me", "matters to me", "I believe in", "I value", "I care about"]
+
+[classes.motivation_markers]
+# Phrases that signal a motivation or goal.
+stem = false
+words = ["I want to", "my goal is", "I aspire to", "I'm trying to", "I hope to", "I aim to"]
+
 [classes.favorite_marker]
 # "my favorite", "my fav", "my favourite" introducers in the favorite_regex.
 stem = false

@@ -215,42 +215,157 @@ fn build_intensifier_map() -> HashMap<String, f64> {
 // Regex patterns for signal extraction
 // ============================================================================
 
-macro_rules! lazy_regex {
-    ($name:ident, $pat:expr) => {
-        static $name: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new($pat).expect(concat!("invalid regex: ", stringify!($name)))
-        });
+// Patch 38 L2.B 2/4 -- per-language regex helpers replacing the prior
+// English-only static LIKE_PATTERN / DISLIKE_PATTERN / etc. Each helper
+// reads the relevant lexicon class (verb_like, verb_dislike, etc.) and
+// interpolates its words into the surrounding pattern template. The
+// helpers fall back to None when the class has no words, so a language
+// without coverage is silently skipped at the call site.
+
+fn personality_like_pattern_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "verb_like");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
     };
+    Regex::new(&format!(
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
+    ))
+    .ok()
 }
 
-lazy_regex!(
-    LIKE_PATTERN,
-    r"(?i)\b(?:I\s+)?(?:love|like|enjoy|prefer|adore|am (?:really )?into)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
-);
-lazy_regex!(
-    DISLIKE_PATTERN,
-    r"(?i)\b(?:I\s+)?(?:hate|dislike|don't like|can't stand|avoid)\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
-);
-lazy_regex!(
-    FAV_PATTERN,
-    r"(?i)\bmy favorite\s+(.+?)\s+(?:is|are)\s+(.+?)(?:\.|,|$)"
-);
-lazy_regex!(
-    DECISION_PATTERN,
-    r"(?i)\b(?:I\s+)?(?:decided to|chose to|going to|switched to|opted for|picked|went with)\s+(.+?)(?:\.|,|!|$)"
-);
-lazy_regex!(
-    IDENTITY_PATTERN,
-    r"(?i)\b(?:I\s+)?(?:am a|'m a|consider myself|identify as)\s+(.+?)(?:\.|,|!|$)"
-);
-lazy_regex!(
-    VALUE_PATTERN,
-    r"(?i)\b(?:important to me|matters to me|I believe in|I value|I care about)\s+(.+?)(?:\.|,|!|$)"
-);
-lazy_regex!(
-    MOTIVATION_PATTERN,
-    r"(?i)\b(?:I want to|my goal is|I aspire to|I'm trying to|I hope to|I aim to)\s+(.+?)(?:\.|,|!|$)"
-);
+fn personality_dislike_pattern_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "verb_dislike");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    Regex::new(&format!(
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
+    ))
+    .ok()
+}
+
+fn personality_fav_pattern_for(lang: &str) -> Option<Regex> {
+    let marker = crate::lexicon::word_class_alternation(lang, "favorite_marker");
+    let copula = crate::lexicon::word_class_alternation(lang, "is_or_are");
+    if marker.is_empty() || copula.is_empty() {
+        return None;
+    }
+    // Marker placement varies (EN before, FR after). Use non-capturing
+    // groups around the optional marker so cap[1] / cap[2] still mean
+    // (category, value) at the call site.
+    Regex::new(&format!(
+        r"(?i)\b(?:my|mon|ma)\s+(?:{marker}\s+)?(.+?)\s+(?:{marker}\s+)?(?:{copula})\s+(.+?)(?:\.|,|$)"
+    ))
+    .ok()
+}
+
+fn personality_decision_pattern_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "decision_verbs");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    Regex::new(&format!(
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|!|$)"
+    ))
+    .ok()
+}
+
+fn personality_identity_pattern_for(lang: &str) -> Option<Regex> {
+    let markers = crate::lexicon::word_class_alternation(lang, "identity_markers");
+    if markers.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    Regex::new(&format!(
+        r"(?i)\b(?:{pronoun_clause})?(?:{markers})\s+(.+?)(?:\.|,|!|$)"
+    ))
+    .ok()
+}
+
+fn personality_value_pattern_for(lang: &str) -> Option<Regex> {
+    let markers = crate::lexicon::word_class_alternation(lang, "value_markers");
+    if markers.is_empty() {
+        return None;
+    }
+    Regex::new(&format!(r"(?i)\b(?:{markers})\s+(.+?)(?:\.|,|!|$)")).ok()
+}
+
+fn personality_motivation_pattern_for(lang: &str) -> Option<Regex> {
+    let markers = crate::lexicon::word_class_alternation(lang, "motivation_markers");
+    if markers.is_empty() {
+        return None;
+    }
+    Regex::new(&format!(r"(?i)\b(?:{markers})\s+(.+?)(?:\.|,|!|$)")).ok()
+}
+
+struct PersonalityRegexCache {
+    like: HashMap<String, Regex>,
+    dislike: HashMap<String, Regex>,
+    favorite: HashMap<String, Regex>,
+    decision: HashMap<String, Regex>,
+    identity: HashMap<String, Regex>,
+    value: HashMap<String, Regex>,
+    motivation: HashMap<String, Regex>,
+}
+
+static PERSONALITY_REGEX: LazyLock<PersonalityRegexCache> = LazyLock::new(|| {
+    let mut cache = PersonalityRegexCache {
+        like: HashMap::new(),
+        dislike: HashMap::new(),
+        favorite: HashMap::new(),
+        decision: HashMap::new(),
+        identity: HashMap::new(),
+        value: HashMap::new(),
+        motivation: HashMap::new(),
+    };
+    for lang in crate::lexicon::supported_languages() {
+        if let Some(r) = personality_like_pattern_for(&lang) {
+            cache.like.insert(lang.clone(), r);
+        }
+        if let Some(r) = personality_dislike_pattern_for(&lang) {
+            cache.dislike.insert(lang.clone(), r);
+        }
+        if let Some(r) = personality_fav_pattern_for(&lang) {
+            cache.favorite.insert(lang.clone(), r);
+        }
+        if let Some(r) = personality_decision_pattern_for(&lang) {
+            cache.decision.insert(lang.clone(), r);
+        }
+        if let Some(r) = personality_identity_pattern_for(&lang) {
+            cache.identity.insert(lang.clone(), r);
+        }
+        if let Some(r) = personality_value_pattern_for(&lang) {
+            cache.value.insert(lang.clone(), r);
+        }
+        if let Some(r) = personality_motivation_pattern_for(&lang) {
+            cache.motivation.insert(lang.clone(), r);
+        }
+    }
+    cache
+});
 
 // ============================================================================
 // Helper functions
@@ -300,106 +415,142 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
     let mut signals = Vec::new();
     let sentences = split_sentences(content);
 
-    // Preferences: likes
-    for caps in LIKE_PATTERN.captures_iter(content) {
-        if let Some(m) = caps.get(1) {
-            let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 {
-                continue;
-            }
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Preference,
-                subject: subject.clone(),
-                valence: Valence::Positive,
-                intensity: 0.6,
-                reasoning: format!("Expressed positive preference about {subject}"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
-        }
-    }
+    // Patch 38 L2.B 2/4 -- the 5 pattern families below iterate over
+    // every supported language and apply that language's compiled
+    // regex. A HashSet keyed by (signal_type discriminant, subject)
+    // dedup-guards against duplicate signals when bilingual content
+    // matches multiple languages' patterns.
+    let mut seen_signals: std::collections::HashSet<(u8, String)> =
+        std::collections::HashSet::new();
 
-    // Preferences: dislikes
-    for caps in DISLIKE_PATTERN.captures_iter(content) {
-        if let Some(m) = caps.get(1) {
-            let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 {
-                continue;
+    for lang in crate::lexicon::supported_languages() {
+        // Preferences: likes
+        if let Some(re) = PERSONALITY_REGEX.like.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let Some(m) = caps.get(1) {
+                    let subject = clean_subject(m.as_str());
+                    if subject.len() < 3 || subject.len() > 100 {
+                        continue;
+                    }
+                    if !seen_signals.insert((1, subject.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Preference,
+                        subject: subject.clone(),
+                        valence: Valence::Positive,
+                        intensity: 0.6,
+                        reasoning: format!("Expressed positive preference about {subject}"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
             }
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Preference,
-                subject: subject.clone(),
-                valence: Valence::Negative,
-                intensity: 0.6,
-                reasoning: format!("Expressed negative preference about {subject}"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
         }
-    }
 
-    // Preferences: favorites
-    for caps in FAV_PATTERN.captures_iter(content) {
-        if let (Some(cat), Some(val)) = (caps.get(1), caps.get(2)) {
-            let cat_clean = clean_subject(cat.as_str());
-            let val_clean = clean_subject(val.as_str());
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Preference,
-                subject: format!("{cat_clean}: {val_clean}"),
-                valence: Valence::Positive,
-                intensity: 0.8,
-                reasoning: format!("Named {val_clean} as favorite {cat_clean}"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
-        }
-    }
-
-    // Decisions
-    for caps in DECISION_PATTERN.captures_iter(content) {
-        if let Some(m) = caps.get(1) {
-            let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 {
-                continue;
+        // Preferences: dislikes
+        if let Some(re) = PERSONALITY_REGEX.dislike.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let Some(m) = caps.get(1) {
+                    let subject = clean_subject(m.as_str());
+                    if subject.len() < 3 || subject.len() > 100 {
+                        continue;
+                    }
+                    if !seen_signals.insert((2, subject.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Preference,
+                        subject: subject.clone(),
+                        valence: Valence::Negative,
+                        intensity: 0.6,
+                        reasoning: format!("Expressed negative preference about {subject}"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
             }
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Decision,
-                subject: subject.clone(),
-                valence: Valence::Neutral,
-                intensity: 0.5,
-                reasoning: format!("Made a decision about {subject}"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
         }
-    }
 
-    // Identity
-    for caps in IDENTITY_PATTERN.captures_iter(content) {
-        if let Some(m) = caps.get(1) {
-            let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 {
-                continue;
+        // Preferences: favorites
+        if let Some(re) = PERSONALITY_REGEX.favorite.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let (Some(cat), Some(val)) = (caps.get(1), caps.get(2)) {
+                    let cat_clean = clean_subject(cat.as_str());
+                    let val_clean = clean_subject(val.as_str());
+                    let key = format!("{cat_clean}: {val_clean}");
+                    if !seen_signals.insert((3, key.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Preference,
+                        subject: key,
+                        valence: Valence::Positive,
+                        intensity: 0.8,
+                        reasoning: format!("Named {val_clean} as favorite {cat_clean}"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
             }
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Identity,
-                subject: subject.clone(),
-                valence: Valence::Neutral,
-                intensity: 0.7,
-                reasoning: format!("Self-identified as {subject}"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
+        }
+
+        // Decisions
+        if let Some(re) = PERSONALITY_REGEX.decision.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let Some(m) = caps.get(1) {
+                    let subject = clean_subject(m.as_str());
+                    if subject.len() < 3 || subject.len() > 100 {
+                        continue;
+                    }
+                    if !seen_signals.insert((4, subject.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Decision,
+                        subject: subject.clone(),
+                        valence: Valence::Neutral,
+                        intensity: 0.5,
+                        reasoning: format!("Made a decision about {subject}"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+        }
+
+        // Identity
+        if let Some(re) = PERSONALITY_REGEX.identity.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let Some(m) = caps.get(1) {
+                    let subject = clean_subject(m.as_str());
+                    if subject.len() < 3 || subject.len() > 100 {
+                        continue;
+                    }
+                    if !seen_signals.insert((5, subject.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Identity,
+                        subject: subject.clone(),
+                        valence: Valence::Neutral,
+                        intensity: 0.7,
+                        reasoning: format!("Self-identified as {subject}"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
+            }
         }
     }
 
@@ -463,45 +614,62 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
 pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
     let mut signals = extract_signals_template(content);
 
-    // Values
-    for caps in VALUE_PATTERN.captures_iter(content) {
-        if let Some(m) = caps.get(1) {
-            let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 {
-                continue;
-            }
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Value,
-                subject: subject.clone(),
-                valence: Valence::Positive,
-                intensity: 0.7,
-                reasoning: format!("Expressed that {subject} is important to them"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
-        }
-    }
+    // Patch 38 L2.B 2/4 -- per-language iteration for values and
+    // motivations, same dedup pattern as the upstream caller.
+    let mut seen_signals: std::collections::HashSet<(u8, String)> =
+        std::collections::HashSet::new();
 
-    // Motivations
-    for caps in MOTIVATION_PATTERN.captures_iter(content) {
-        if let Some(m) = caps.get(1) {
-            let subject = clean_subject(m.as_str());
-            if subject.len() < 3 || subject.len() > 100 {
-                continue;
+    for lang in crate::lexicon::supported_languages() {
+        // Values
+        if let Some(re) = PERSONALITY_REGEX.value.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let Some(m) = caps.get(1) {
+                    let subject = clean_subject(m.as_str());
+                    if subject.len() < 3 || subject.len() > 100 {
+                        continue;
+                    }
+                    if !seen_signals.insert((6, subject.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Value,
+                        subject: subject.clone(),
+                        valence: Valence::Positive,
+                        intensity: 0.7,
+                        reasoning: format!("Expressed that {subject} is important to them"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
             }
-            signals.push(PersonalitySignal {
-                signal_type: SignalType::Motivation,
-                subject: subject.clone(),
-                valence: Valence::Positive,
-                intensity: 0.6,
-                reasoning: format!("Expressed aspiration toward {subject}"),
-                source_text: caps
-                    .get(0)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default(),
-            });
+        }
+
+        // Motivations
+        if let Some(re) = PERSONALITY_REGEX.motivation.get(&lang) {
+            for caps in re.captures_iter(content) {
+                if let Some(m) = caps.get(1) {
+                    let subject = clean_subject(m.as_str());
+                    if subject.len() < 3 || subject.len() > 100 {
+                        continue;
+                    }
+                    if !seen_signals.insert((7, subject.clone())) {
+                        continue;
+                    }
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Motivation,
+                        subject: subject.clone(),
+                        valence: Valence::Positive,
+                        intensity: 0.6,
+                        reasoning: format!("Expressed aspiration toward {subject}"),
+                        source_text: caps
+                            .get(0)
+                            .map(|m| m.as_str().trim().to_string())
+                            .unwrap_or_default(),
+                    });
+                }
+            }
         }
     }
 
