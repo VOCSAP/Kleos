@@ -237,6 +237,111 @@ words = ["moved to", "relocated to", "live in", "living in", "staying in"]
 stem = false
 words = ["started", "began", "got promoted to", "now work as", "am now", "just became"]
 
+[classes.valence_anger_intense]
+words = ["furious", "enraged", "livid", "outraged"]
+valence = -0.9
+arousal = 0.9
+
+[classes.valence_anger_mild]
+words = ["angry", "pissed", "mad", "frustrated", "annoyed", "irritated"]
+valence = -0.7
+arousal = 0.7
+
+[classes.valence_fear_intense]
+words = ["terrified", "panicked", "horrified"]
+valence = -0.8
+arousal = 0.9
+
+[classes.valence_fear_mild]
+words = ["anxious", "worried", "nervous", "stressed", "afraid", "scared"]
+valence = -0.6
+arousal = 0.6
+
+[classes.valence_sadness_intense]
+words = ["devastated", "heartbroken", "grief", "mourning"]
+valence = -0.9
+arousal = 0.3
+
+[classes.valence_sadness_mild]
+words = ["sad", "disappointed", "depressed", "miserable", "upset", "bummed"]
+valence = -0.6
+arousal = 0.3
+
+[classes.valence_fatigue]
+words = ["bored", "tired", "exhausted", "drained", "burned out", "burnt out"]
+valence = -0.3
+arousal = 0.1
+
+[classes.valence_confusion]
+words = ["confused", "lost", "stuck", "puzzled", "stumped"]
+valence = -0.3
+arousal = 0.4
+
+[classes.valence_frustration]
+words = ["crashed", "broken", "failed", "down", "error", "bug", "issue", "problem"]
+valence = -0.5
+arousal = 0.6
+
+[classes.valence_disgust]
+words = ["hate", "worst", "terrible", "awful", "horrible", "garbage", "trash"]
+valence = -0.8
+arousal = 0.5
+
+[classes.valence_joy_intense]
+words = ["ecstatic", "thrilled", "elated", "overjoyed"]
+valence = 0.9
+arousal = 0.9
+
+[classes.valence_excitement]
+words = ["excited", "pumped", "stoked", "hyped", "amazing", "incredible"]
+valence = 0.8
+arousal = 0.8
+
+[classes.valence_joy_mild]
+words = ["happy", "glad", "pleased", "delighted", "great", "awesome", "fantastic"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_pride]
+words = ["proud", "accomplished", "nailed", "crushed it", "killed it"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_satisfaction]
+words = ["satisfied", "content", "good", "nice", "fine", "pleasant", "comfortable"]
+valence = 0.4
+arousal = 0.3
+
+[classes.valence_calm]
+words = ["calm", "relaxed", "peaceful", "serene", "chill"]
+valence = 0.3
+arousal = 0.1
+
+[classes.valence_gratitude]
+words = ["grateful", "thankful", "appreciate"]
+valence = 0.6
+arousal = 0.3
+
+[classes.valence_curiosity]
+words = ["curious", "interested", "intrigued", "fascinated"]
+valence = 0.4
+arousal = 0.5
+
+[classes.valence_accomplishment]
+words = ["fixed", "resolved", "working", "deployed", "shipped", "launched", "completed", "done", "finished"]
+valence = 0.5
+arousal = 0.5
+
+[classes.valence_admiration]
+words = ["love", "perfect", "beautiful", "elegant", "clean", "brilliant"]
+valence = 0.7
+arousal = 0.4
+
+[classes.valence_surprise]
+words = ["surprised", "unexpected", "wow", "whoa"]
+valence = 0.0
+arousal = 0.7
+
 [classes.sentiment_pos5]
 # AFINN +5 (strong positive)
 words = ["love", "adore", "excellent", "amazing", "fantastic", "brilliant", "wonderful", "outstanding", "superb", "perfect", "incredible", "magnificent", "phenomenal", "exceptional", "flawless", "spectacular", "breathtaking", "glorious", "marvelous", "supreme"]

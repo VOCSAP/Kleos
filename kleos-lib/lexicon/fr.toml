@@ -239,6 +239,111 @@ words = ["déménagé à", "déménagé vers", "habite à", "vis à", "vis en", 
 stem = false
 words = ["commencé", "débuté", "promu", "travaille maintenant comme", "suis maintenant", "viens de devenir", "promue"]
 
+[classes.valence_anger_intense]
+words = ["furieux", "furieuse", "enragé", "enragée", "déchaîné", "déchaînée", "ulcéré", "ulcérée"]
+valence = -0.9
+arousal = 0.9
+
+[classes.valence_anger_mild]
+words = ["en colère", "fâché", "fâchée", "irrité", "irritée", "agacé", "agacée", "énervé", "énervée"]
+valence = -0.7
+arousal = 0.7
+
+[classes.valence_fear_intense]
+words = ["terrifié", "terrifiée", "paniqué", "paniquée", "horrifié", "horrifiée"]
+valence = -0.8
+arousal = 0.9
+
+[classes.valence_fear_mild]
+words = ["anxieux", "anxieuse", "inquiet", "inquiète", "nerveux", "nerveuse", "stressé", "stressée", "effrayé", "effrayée"]
+valence = -0.6
+arousal = 0.6
+
+[classes.valence_sadness_intense]
+words = ["dévasté", "dévastée", "anéanti", "anéantie", "deuil", "endeuillé", "endeuillée"]
+valence = -0.9
+arousal = 0.3
+
+[classes.valence_sadness_mild]
+words = ["triste", "déçu", "déçue", "déprimé", "déprimée", "misérable", "abattu", "abattue"]
+valence = -0.6
+arousal = 0.3
+
+[classes.valence_fatigue]
+words = ["ennuyé", "ennuyée", "fatigué", "fatiguée", "épuisé", "épuisée", "vidé", "vidée", "à plat", "lessivé", "lessivée"]
+valence = -0.3
+arousal = 0.1
+
+[classes.valence_confusion]
+words = ["confus", "confuse", "perdu", "perdue", "bloqué", "bloquée", "perplexe"]
+valence = -0.3
+arousal = 0.4
+
+[classes.valence_frustration]
+words = ["planté", "cassé", "échoué", "en panne", "erreur", "bug", "souci", "problème"]
+valence = -0.5
+arousal = 0.6
+
+[classes.valence_disgust]
+words = ["déteste", "pire", "terrible", "affreux", "horrible", "infâme", "poubelle"]
+valence = -0.8
+arousal = 0.5
+
+[classes.valence_joy_intense]
+words = ["aux anges", "comblé", "comblée", "transporté", "transportée", "extasié", "extasiée"]
+valence = 0.9
+arousal = 0.9
+
+[classes.valence_excitement]
+words = ["excité", "excitée", "enthousiasmé", "enthousiasmée", "incroyable", "génial", "géniale"]
+valence = 0.8
+arousal = 0.8
+
+[classes.valence_joy_mild]
+words = ["heureux", "heureuse", "content", "contente", "ravi", "ravie", "super", "chouette"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_pride]
+words = ["fier", "fière", "accompli", "accomplie", "réussi", "réussie"]
+valence = 0.7
+arousal = 0.6
+
+[classes.valence_satisfaction]
+words = ["satisfait", "satisfaite", "content", "contente", "bien", "agréable", "confortable"]
+valence = 0.4
+arousal = 0.3
+
+[classes.valence_calm]
+words = ["calme", "détendu", "détendue", "paisible", "serein", "sereine", "tranquille"]
+valence = 0.3
+arousal = 0.1
+
+[classes.valence_gratitude]
+words = ["reconnaissant", "reconnaissante", "merci", "apprécie"]
+valence = 0.6
+arousal = 0.3
+
+[classes.valence_curiosity]
+words = ["curieux", "curieuse", "intéressé", "intéressée", "intrigué", "intriguée", "fasciné", "fascinée"]
+valence = 0.4
+arousal = 0.5
+
+[classes.valence_accomplishment]
+words = ["corrigé", "résolu", "résolue", "fonctionne", "déployé", "livré", "terminé", "fini", "achevé"]
+valence = 0.5
+arousal = 0.5
+
+[classes.valence_admiration]
+words = ["adore", "parfait", "parfaite", "beau", "belle", "élégant", "élégante", "propre", "brillant", "brillante"]
+valence = 0.7
+arousal = 0.4
+
+[classes.valence_surprise]
+words = ["surpris", "surprise", "inattendu", "inattendue", "wow"]
+valence = 0.0
+arousal = 0.7
+
 [classes.sentiment_pos5]
 # Sélection FR équivalente à AFINN +5
 words = ["aimer", "adorer", "excellent", "formidable", "fantastique", "brillant", "merveilleux", "parfait", "incroyable", "magnifique", "exceptionnel", "génial", "sublime", "extraordinaire"]

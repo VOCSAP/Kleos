@@ -237,6 +237,30 @@ pub fn complex_regex(_id: &str) -> Option<String> {
     None
 }
 
+/// Return the optional `(valence, arousal)` metadata for a valence
+/// class. Used by intelligence/valence.rs::analyze_valence. Returns
+/// `None` when the class is missing the metadata or when the language
+/// is unknown.
+pub fn class_valence_arousal(lang: &str, class: &str) -> Option<(f64, f64)> {
+    let from_override = cache::repo_root()
+        .and_then(|repo| cache::resolve_override(repo, lang))
+        .and_then(|p| {
+            p.classes.get(class).and_then(|c| match (c.valence, c.arousal) {
+                (Some(v), Some(a)) => Some((v, a)),
+                _ => None,
+            })
+        });
+    if from_override.is_some() {
+        return from_override;
+    }
+    embedded(lang).and_then(|p| {
+        p.classes.get(class).and_then(|c| match (c.valence, c.arousal) {
+            (Some(v), Some(a)) => Some((v, a)),
+            _ => None,
+        })
+    })
+}
+
 /// Return the optional `(valence, intensity)` metadata for an emotion class.
 /// Used by Livrable 2 personality.rs / valence.rs refactor. Returns `None`
 /// when the class has no metadata or the language is unknown.
