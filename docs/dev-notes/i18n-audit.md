@@ -245,26 +245,26 @@ Pour reference, les const wordlists suivantes ont ete examinees et **ne sont pas
 
 ---
 
-## 7. Status post-Patch 38 (2026-05-27)
+## 7. Status post-Patch 38 (2026-05-27 + L2.B wildcard-after-stem)
 
-Patch 38 livre sur branche `local/patch-38-i18n-core` HEAD `f0b556a5`. Statut par site :
+Patch 38 livre sur branche `local/patch-38-i18n-core`. Statut par site :
 
 | # | Site | Livre | Differable |
 |---|---|---|---|
 | 1 | extraction.rs 12 regex | 5/12 (like, dislike, favorite, location, role) | 7/12 (buy, spent, have, exercise, made, earned -- unit/currency EN-only) |
 | 2 | extraction.rs::infer_domain | oui | -- |
 | 3 | temporal.rs::STATE_VERBS | oui | -- |
-| 4 | valence.rs EMOTION_PATTERNS | 0/22 | 22 patterns avec metadata valence+arousal, TOML lourd |
+| 4 | valence.rs EMOTION_PATTERNS | oui (21 classes via lexicon + wildcard-after-stem) | -- |
 | 5 | sentiment.rs SENTIMENT_LEXICON | oui (decoupage 10 buckets par score) | -- |
 | 6 | decomposition.rs FILLER_PREFIXES | oui | -- |
 | 7 | decomposition.rs META_STOPLIST | oui | -- |
 | 8 | personality.rs EMOTION_KEYWORDS | oui (17 emotion classes lexicon) | -- |
 | 9 | personality.rs INTENSIFIERS | oui (5 tier classes lexicon) | -- |
-| 10 | personality.rs 7 lazy_regex | 7/7 | -- |
+| 10 | personality.rs 7 lazy_regex | 7/7 (wildcard-after-stem) | -- |
 | 11 | personality.rs clean_subject articles | oui (NB: pas folde, position-based) | -- |
 | 12 | prompts.rs SCRUB_PATTERNS | oui | -- |
 | 13 | recall.rs causal + NEGATION | oui (NB: hopfield causal compute_causal_score position-based, pas folde) | -- |
-| 14 | atoms.rs 4 RE_* | oui | -- |
+| 14 | atoms.rs 4 RE_* | oui (wildcard-after-stem) | -- |
 | 15 | services/brain.rs stopwords | oui | -- |
 | 16 | gate/mod.rs PROHIBITIONS | oui | -- |
 
@@ -272,14 +272,15 @@ Patch 38 livre sur branche `local/patch-38-i18n-core` HEAD `f0b556a5`. Statut pa
 
 - `lexicon::fold_for_matching(s, lang, with_stem)` -- lowercase + Unicode NFD strip diacritics + Snowball stemming optional.
 - `lexicon::fold_word_for_class(word, lang, class)` -- consulte le metadata `stem` de la classe.
+- `lexicon::word_class_alternation_stemmed(lang, class)` -- pipe-joined alternation des words **stemmes** (Patch 38 L2.B). Pair avec un `\w*` apres le groupe non-capturant dans le template regex pour absorber conjugues / accords.
+- `lexicon::class_stem_enabled(lang, class)` -- helper public utilise par atoms.rs et valence.rs pour stemmer les markers multi-mots tout en preservant la collapse `\s+`.
 - Crates ajoutees au workspace : `unicode-normalization` 0.1, `rust-stemmers` 1.2.
 - 9 classes "mots-grammaire" marquees `stem = false` (state_verbs, articles, stopwords, first_person_pronoun, negation_marker, intensifier_*, credential_keywords).
-- 8 / 11 sites L2.A patches utilisent le folding ; 3 sites position-based (clean_subject, hopfield causal, decomposition strip_filler) restent en comparaison surface.
+- L2.A (12/12 sites) folde les comparaisons string-equality.
+- L2.B (4/4 sites, 37 patterns) utilise wildcard-after-stem : 5 patterns extraction.rs + 7 patterns personality.rs + 4 patterns atoms.rs + 21 patterns valence.rs. Captures `(.+?)` restent sur source raw -> objects preserves avec accents/casse.
 
 ### Reste a faire (cf. docs/dev-notes/patch-38-remaining-work.md)
 
-- valence.rs 22 EMOTION_PATTERNS : 22 classes lexicon avec valence + arousal metadata par classe.
 - extraction.rs 7 patterns unit-specific (buy/spent/have/exercise/made/earned) : design dedie pour EN/FR currency + units.
-- Livrable 3 : migrations v66 (UNIQUE INDEX structured_facts) + v67 (extraction_source column) + 3 admin endpoints (reextract-facts, lexicon/validate, lexicon/reload).
-- Sync submodule lexicon-overrides avec TOMLs maj.
-- Build WSL + deploy LXC 121 + smoke E2E contradiction FR cross-space.
+- Build WSL + deploy LXC 121 + smoke E2E contradiction FR cross-space (`j'aime`, `je deteste`, accords feminin/pluriel emotions).
+- Mesure empirique over-match `aimable` -> verb_like (acceptable au MVP, fix possible via phase 2 verification additive).

@@ -4179,6 +4179,34 @@ Total : 47 classes EN + 47 classes FR.
 
 agent-forge spec_ids : `spec_9737ef82` (L1), `spec_477f37f9` (L2.A), `spec_afa9794c` (normalize), `spec_118f0313` (L2.B partial 3/4).
 
+### Patch 38 -- L2.B wildcard-after-stem (2026-05-27)
+
+**Symptome / motivation** -- Smoke E2E 2026-05-27 16:53 BRT a montre que les 37 patterns L2.B (5 extraction + 7 personality + 4 atoms + 21 valence) ne matchent pas les conjugues FR : `j'aime` rate parce que le TOML liste `aimer` et que `word_class_alternation` injecte les words bruts sans passer par `fold_for_matching`. Asymetrie avec L2.A (qui folde les deux cotes de la comparaison). Memoire issue Kleos #5608 trace le diagnostic. `j'adore` matche par coincidence lexicale FR/EN (le TOML EN liste `adore`).
+
+**Approche** -- Niveau delta `additif + chirurgical local` (touche uniquement du code Patch 38 deja local). Solution **1-phase wildcard-after-stem** preferee a la two-phase match parce que la phase 1 stem-source + regex-stem ne distingue pas mieux les false-positifs (`aimable` se stem aussi en `aim`) tout en doublant le cout d'execution. Le risque over-match est explicitement tolere au MVP et mesurable post-deploy.
+
+**Mecanique** :
+
+- Nouveau helper `kleos_lib::lexicon::word_class_alternation_stemmed(lang, class) -> String` qui retourne la concatenation pipe-joined des words stemmes via `fold_for_matching` (respect `stem = false` sur classes grammaticales, multi-word entries gerees par split-stem-rejoin existant).
+- Helper `class_stem_enabled(lang, class)` rendu `pub` pour atoms.rs et valence.rs qui doivent stemmer leurs markers multi-mots tout en preservant la collapse `\s+` (atoms) ou la concatenation pipe-joined (valence).
+- Sites refactores : chaque template regex remplace `(?:{alternation})` par `(?:{alternation_stemmed})\w*` -- le wildcard absorbe les conjugues et accords. Captures `(.+?)` restent sur source raw -> objects extraits preservent accents/casse.
+- valence.rs inclus dans le refactor (cout marginal, bonus FR reel sur accords feminin/pluriel comme `fatiguee`/`fatigues`/`joyeuses`, pas de capture donc 0 risque regression).
+
+**Fichiers touches (refactor local)** :
+- kleos-lib/src/lexicon/mod.rs (+helper + 5 tests + 1 fn `pub`)
+- kleos-lib/src/intelligence/extraction.rs (5 patterns)
+- kleos-lib/src/personality.rs (7 patterns)
+- kleos-lib/src/handoffs/atoms.rs (4 patterns via `build_atom_regex` refactore en `(lang, class)`)
+- kleos-lib/src/intelligence/valence.rs (21 patterns via LazyLock loop)
+- docs/dev-notes/i18n-audit.md (section 7 mise a jour)
+- docs/dev-notes/patch-38-remaining-work.md (section 1 cloturee)
+
+**Verification** : `cargo check -p kleos-lib --features bundled-sqlite --lib` passe a 0 erreur (10 warnings pre-existants cred/bootstrap.rs, non lies). Tests cfg(test) non executables cote Windows MSVC pour dette pre-existante (`StoreRequest space` field manquant dans plusieurs fichiers de test) heritage de Patch 33+, hors scope. Validation tests lexicon prevus via WSL build operateur + smoke E2E FR post-deploy LXC 121.
+
+**Conditions de retrait** -- Comportement par defaut preserve quand TOMLs FR sont vides (pas de match). Quand TOMLs FR sont peuples (aimer, adorer, ...), le `\w*` permet de matcher les conjugues sans dupliquer le TOML. Au prochain rebase upstream, candidat PR upstream unique avec le reste du Patch 38.
+
+agent-forge spec : `spec_01e9984f`.
+
 ---
 
 ## Binaires compilés pour chaque plateforme

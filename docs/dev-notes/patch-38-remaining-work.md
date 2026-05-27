@@ -15,7 +15,39 @@ Couvre L1 + L2.A 12/12 + normalize + L2.B 4/4 + L3 + submodule sync
 
 ## Roadmap restante (ordre suggere)
 
-### 1. L2.B fold-then-regex (two-phase match)
+### 1. L2.B fold-then-regex (two-phase match) -- LIVRE via wildcard-after-stem (1-phase)
+
+**Statut : LIVRE 2026-05-27 sur `local/patch-38-i18n-core`**. Approche
+retenue : la **variante 1-phase wildcard-after-stem** decrite ci-dessous,
+preferee a la two-phase match parce que la phase 1 stem-source + regex
+stem ne distingue pas mieux les false-positifs (`aimable` se stem aussi
+en `aim`) tout en doublant le cout d'execution. Le risque over-match est
+explicitement tolere au MVP et mesurable post-deploy.
+
+Implementation effective :
+
+- Nouveau helper `kleos_lib::lexicon::word_class_alternation_stemmed(lang, class) -> String`
+  qui retourne la concatenation pipe-joined des words stemmes via
+  `fold_for_matching` (respect `stem = false` sur classes grammaticales).
+- 4 fichiers refactores : `extraction.rs` (5 patterns), `personality.rs`
+  (7 patterns), `handoffs/atoms.rs` (4 patterns via `build_atom_regex`
+  refactore), `intelligence/valence.rs` (21 patterns via la boucle
+  LazyLock).
+- Pattern template avant : `(?i)\b(?:{alternation})\s+(.+?)...`.
+- Pattern template apres : `(?i)\b(?:{alternation_stemmed})\w*\s+(.+?)...`.
+- Captures (.+?) inchangees -> objects extraits restent raw avec
+  accents/casse preserves.
+- Helper `class_stem_enabled` rendu `pub` pour atoms.rs et valence.rs
+  qui doivent stemmer leurs markers multi-mots tout en preservant la
+  collapse `\s+` (atoms) ou la concatenation pipe-joined (valence).
+- Tests unitaires lexicon : 5 nouveaux tests couvrent FR conjugues, EN
+  baseline preserve, classes stem=false, multi-word entries, unknown.
+
+Reference traceabilite originale : memoire issue #5608, spec docs
+`spec_e9f14d5f` (READMEs explanation), smoke E2E 2026-05-27 16:53 BRT.
+Spec agent-forge livraison : `spec_01e9984f`.
+
+### 1.bis Two-phase match (analyse pour reference)
 
 Suite directe au smoke E2E 2026-05-27 (memoire issue #5608) qui a montre
 que les 16 patterns L2.B ne matchent pas les conjugues FR (`j'aime`,
