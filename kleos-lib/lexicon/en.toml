@@ -147,10 +147,10 @@ words = ["after", "following", "as a result of", "given that", "since", "because
 words = ["maybe", "perhaps", "possibly", "might", "broke", "fixed"]
 
 [classes.filler_prefixes]
-words = ["um", "uh", "well", "so", "actually", "basically", "literally", "honestly", "you know"]
+words = ["um", "uh", "well", "so", "actually", "basically", "literally", "honestly", "you know", "like", "i mean", "anyway"]
 
 [classes.meta_stoplist]
-words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language model", "I am unable", "I'm just", "I don't have access", "I apologize", "let me clarify", "to summarize", "in conclusion"]
+words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language model", "I am unable", "Im just", "I do not have access", "I apologize", "let me clarify", "to summarize", "in conclusion", "let me explain", "as I mentioned", "in summary", "as we discussed", "like I said", "to be clear", "for context", "moving on", "on another note", "by the way", "speaking of which"]
 
 [classes.credential_keywords]
 words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]

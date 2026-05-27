@@ -146,10 +146,10 @@ words = ["apres", "suite a", "compte tenu de", "etant donne", "depuis", "parce q
 words = ["peut-etre", "possiblement", "probablement", "pourrait", "casse", "repare"]
 
 [classes.filler_prefixes]
-words = ["euh", "ben", "alors", "donc", "voila", "tu sais", "en fait", "honnetement"]
+words = ["euh", "ben", "alors", "donc", "voila", "tu sais", "en fait", "honnetement", "je veux dire", "bref", "bon"]
 
 [classes.meta_stoplist]
-words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en tant que modele de langage", "je ne suis pas en mesure", "je m'excuse", "pour clarifier", "pour resumer", "en conclusion"]
+words = ["en tant qu IA", "je suis une IA", "je ne peux pas", "je n ai pas", "en tant que modele de langage", "je ne suis pas en mesure", "je m excuse", "pour clarifier", "pour resumer", "en conclusion", "laisse moi expliquer", "comme je l ai dit", "en resume", "comme nous en avons parle", "pour etre clair", "pour le contexte", "passons", "a propos", "au fait"]
 
 [classes.credential_keywords]
 words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "cle_privee", "cle_ssh", "client_secret"]
