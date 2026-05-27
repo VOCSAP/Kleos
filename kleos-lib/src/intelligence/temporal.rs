@@ -555,10 +555,18 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
 // CONTRADICTION DETECTION ON STRUCTURED FACTS
 // ============================================================================
 
-/// State-type verbs where only one value can be true at a time.
-const STATE_VERBS: &[&str] = &[
-    "is", "has", "lives", "works", "became", "started", "moved", "lives in", "works at", "works as",
-];
+/// Check if a verb is a "state" verb where only one value can be true at a
+/// time. State verbs are drawn from the i18n lexicon (`state_verbs` class)
+/// across every supported language so that French and English memories
+/// produce the same contradiction signal. Patch 38 Livrable 2 replacement
+/// for the prior hardcoded `STATE_VERBS` constant.
+fn is_state_verb(verb_lower_trimmed: &str) -> bool {
+    crate::lexicon::supported_languages().iter().any(|lang| {
+        crate::lexicon::word_class(lang, "state_verbs")
+            .iter()
+            .any(|word| word.eq_ignore_ascii_case(verb_lower_trimmed))
+    })
+}
 
 /// Check if a new structured fact contradicts existing facts.
 /// Two facts contradict when: same subject + same verb + different object (for state verbs),
@@ -581,7 +589,7 @@ pub async fn detect_fact_contradictions(
 
     // Compute these before the closure consumes subject/verb
     let verb_lower_owned = verb.to_lowercase();
-    let is_state_verb = STATE_VERBS.contains(&verb_lower_owned.trim());
+    let is_state_verb = is_state_verb(verb_lower_owned.trim());
 
     /// Ephemeral row type for candidate contradicting facts returned from the DB query.
     struct CandidateRow {
