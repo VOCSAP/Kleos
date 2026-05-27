@@ -250,9 +250,12 @@ async fn create_invite_handler(
 
     // Generate 32 bytes of cryptographic randomness, then URL-safe
     // base64-encode them so the token is safe to paste into a CLI.
-    use rand::Rng;
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
     let mut raw_bytes = [0u8; 32];
-    rand::rng().fill(&mut raw_bytes);
+    OsRng
+        .try_fill_bytes(&mut raw_bytes)
+        .expect("OS CSPRNG must be available");
     use base64::Engine;
     let raw_token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_bytes);
 

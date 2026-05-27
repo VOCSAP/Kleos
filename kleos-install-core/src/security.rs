@@ -4,15 +4,18 @@
 //! encoded as lowercase hexadecimal strings. None of these functions require
 //! a running Kleos server.
 
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 
 /// Generate a random hex string containing `bytes` bytes of entropy.
 ///
-/// Uses `rand::rng()` (the OS CSPRNG) to fill a buffer, then encodes it as
+/// Draws directly from `OsRng` (the OS CSPRNG) and encodes the bytes as
 /// lowercase hex. The returned string has length `bytes * 2`.
 pub fn generate_hex_key(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
-    rand::rng().fill_bytes(&mut buf);
+    OsRng
+        .try_fill_bytes(&mut buf)
+        .expect("OS CSPRNG must be available");
     hex::encode(buf)
 }
 

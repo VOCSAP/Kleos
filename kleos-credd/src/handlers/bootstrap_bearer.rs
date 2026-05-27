@@ -30,7 +30,8 @@ use kleos_cred::crypto::decrypt;
 use kleos_cred::piv::{ecdh_agree, PivSlot};
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::Signature;
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tracing::{error, warn};
@@ -460,7 +461,9 @@ pub async fn post_bootstrap_kleos_bearer_ecdh(
     // AES-256-GCM with a fresh random 12-byte nonce.
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&bearer_key));
     let mut nonce_bytes = [0u8; 12];
-    rand::rng().fill_bytes(&mut nonce_bytes);
+    OsRng
+        .try_fill_bytes(&mut nonce_bytes)
+        .expect("OS CSPRNG must be available");
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, bare_bearer.as_bytes())

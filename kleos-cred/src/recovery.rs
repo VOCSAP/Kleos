@@ -4,7 +4,8 @@
 //! This recovery key is encrypted with the master encryption key and stored.
 //! If the YubiKey is lost, the recovery key can be used to re-derive the master key.
 
-use rand::Rng;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use rusqlite::params;
 
 use crate::crypto::{decrypt_secret, encrypt_secret, KEY_SIZE};
@@ -33,7 +34,9 @@ pub struct RecoveryInfo {
 /// and store it securely offline.
 pub fn generate_recovery_key() -> [u8; RECOVERY_KEY_SIZE] {
     let mut key = [0u8; RECOVERY_KEY_SIZE];
-    rand::rng().fill(&mut key);
+    OsRng
+        .try_fill_bytes(&mut key)
+        .expect("OS CSPRNG must be available");
     key
 }
 

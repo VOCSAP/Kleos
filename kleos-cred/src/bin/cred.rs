@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use argon2::{password_hash::SaltString, Argon2, Params, PasswordHasher};
 use clap::{Parser, Subcommand};
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use sha2::{Digest, Sha256};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -521,7 +522,9 @@ fn mint_get_session_grant(path: &Path, ttl_secs: i64) -> Result<String> {
 
     let now = chrono::Utc::now().timestamp();
     let mut token_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut token_bytes);
+    OsRng
+        .try_fill_bytes(&mut token_bytes)
+        .expect("OS CSPRNG must be available");
     let token = hex::encode(token_bytes);
     token_bytes.zeroize();
 

@@ -5,7 +5,8 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::Rng;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -143,7 +144,9 @@ pub fn encrypt_secret(
 
     // Generate random nonce
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::rng().fill(&mut nonce_bytes);
+    OsRng
+        .try_fill_bytes(&mut nonce_bytes)
+        .expect("OS CSPRNG must be available");
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -161,7 +164,9 @@ pub fn encrypt(key: &[u8; KEY_SIZE], plaintext: &[u8]) -> Result<Vec<u8>> {
         .map_err(|e| CredError::Encryption(format!("invalid key: {}", e)))?;
 
     let mut nonce_bytes = [0u8; NONCE_SIZE];
-    rand::rng().fill(&mut nonce_bytes);
+    OsRng
+        .try_fill_bytes(&mut nonce_bytes)
+        .expect("OS CSPRNG must be available");
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let ciphertext = cipher
@@ -218,7 +223,9 @@ pub fn decrypt_secret(
 /// Generate a random 256-bit key.
 pub fn generate_random_key() -> [u8; KEY_SIZE] {
     let mut key = [0u8; KEY_SIZE];
-    rand::rng().fill(&mut key);
+    OsRng
+        .try_fill_bytes(&mut key)
+        .expect("OS CSPRNG must be available");
     key
 }
 
@@ -256,7 +263,9 @@ pub fn derive_key_from_passphrase(passphrase: &str, salt: &[u8]) -> Result<[u8; 
 /// Format: salt (16 bytes) || nonce (12 bytes) || ciphertext+tag.
 pub fn encrypt_recovery(passphrase: &str, hmac_secret: &[u8]) -> Result<Vec<u8>> {
     let mut salt = [0u8; SALT_SIZE];
-    rand::rng().fill(&mut salt);
+    OsRng
+        .try_fill_bytes(&mut salt)
+        .expect("OS CSPRNG must be available");
 
     let key = derive_key_from_passphrase(passphrase, &salt)?;
     let encrypted = encrypt(&key, hmac_secret)?;
@@ -287,7 +296,9 @@ pub fn decrypt_recovery(passphrase: &str, data: &[u8]) -> Result<Vec<u8>> {
 /// Generate a random 20-byte HMAC-SHA1 secret for YubiKey programming.
 pub fn generate_hmac_secret() -> [u8; 20] {
     let mut secret = [0u8; 20];
-    rand::rng().fill(&mut secret);
+    OsRng
+        .try_fill_bytes(&mut secret)
+        .expect("OS CSPRNG must be available");
     secret
 }
 

@@ -203,9 +203,12 @@ fn normalize_key(raw_key: &str) -> Option<String> {
 /// to validate via [`validate_key`]. Debug builds keep the v1 fallback for
 /// local development ergonomics.
 fn generate_key() -> Result<(String, String, String, i32)> {
-    use rand::Rng;
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
     let mut raw = [0u8; 16];
-    rand::rng().fill(&mut raw);
+    OsRng
+        .try_fill_bytes(&mut raw)
+        .expect("OS CSPRNG must be available");
     let mut raw_hex = String::with_capacity(32);
     for byte in raw {
         use std::fmt::Write;

@@ -14,6 +14,8 @@ use serde_json::json;
 use kleos_cred::CredError;
 use kleos_credd::auth::Auth;
 use kleos_credd::handlers::AppError;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 
 use crate::audit::{actions, log_phylax_audit};
 use crate::models::piv_pubkey;
@@ -44,7 +46,9 @@ pub async fn issue_challenge(
     state.gc_challenges();
 
     let mut nonce = [0u8; 32];
-    rand::Rng::fill(&mut rand::rng(), &mut nonce);
+    OsRng
+        .try_fill_bytes(&mut nonce)
+        .expect("OS CSPRNG must be available");
 
     let challenge_id = uuid::Uuid::new_v4().to_string();
     state.challenges.insert(

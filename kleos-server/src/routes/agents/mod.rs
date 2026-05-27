@@ -456,9 +456,12 @@ fn load_or_create_signing_secret() -> String {
     // SECURITY (SEC-MED-5): use OsRng for 256-bit signing secret instead of
     // UUID v4 which has only ~122 bits and fixed version/variant bits.
     let generated = {
-        use rand::Rng;
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
         let mut raw = [0u8; 32];
-        rand::rng().fill(&mut raw);
+        OsRng
+            .try_fill_bytes(&mut raw)
+            .expect("OS CSPRNG must be available");
         hex::encode(raw)
     };
 

@@ -17,7 +17,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -181,7 +182,9 @@ impl FileAgentKeyStore {
         }
 
         let mut bytes = [0u8; 32];
-        rand::rng().fill_bytes(&mut bytes);
+        OsRng
+            .try_fill_bytes(&mut bytes)
+            .expect("OS CSPRNG must be available");
         let key_hex = hex::encode(bytes);
 
         // Store only the SHA-256 hash; the plaintext is returned to the

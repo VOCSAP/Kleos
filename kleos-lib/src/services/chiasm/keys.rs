@@ -5,7 +5,8 @@
 
 use crate::db::Database;
 use crate::{EngError, Result};
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -48,7 +49,9 @@ pub fn hash_key(key: &str) -> String {
 /// standalone chiasm format. Uses the OS CSPRNG.
 fn mint_raw_key() -> String {
     let mut buf = [0u8; 32];
-    rand::rng().fill_bytes(&mut buf);
+    OsRng
+        .try_fill_bytes(&mut buf)
+        .expect("OS CSPRNG must be available");
     let mut hex = String::with_capacity(3 + buf.len() * 2);
     hex.push_str("mc_");
     for b in buf {

@@ -16,7 +16,8 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use rand::Rng;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use tracing::{debug, info, warn};
 
 use crate::{CredError, Result};
@@ -290,7 +291,9 @@ pub fn get_or_create_challenge() -> Result<[u8; CHALLENGE_SIZE]> {
     }
 
     let mut challenge = [0u8; CHALLENGE_SIZE];
-    rand::rng().fill(&mut challenge);
+    OsRng
+        .try_fill_bytes(&mut challenge)
+        .expect("OS CSPRNG must be available");
 
     std::fs::create_dir_all(&dir)
         .map_err(|e| CredError::YubiKey(format!("mkdir {}: {}", dir.display(), e)))?;

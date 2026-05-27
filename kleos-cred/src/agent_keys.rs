@@ -1,7 +1,8 @@
 //! Agent key management with permission scoping and revocation.
 
 use kleos_lib::db::Database;
-use rand::Rng;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use rusqlite::params;
 use subtle::ConstantTimeEq;
 
@@ -134,7 +135,9 @@ impl AgentKeyPermissions {
 /// Returns (raw_key_bytes, key_hash).
 pub fn generate_agent_key() -> ([u8; 32], String) {
     let mut key = [0u8; 32];
-    rand::rng().fill(&mut key);
+    OsRng
+        .try_fill_bytes(&mut key)
+        .expect("OS CSPRNG must be available");
     let hash = hash_key(&key);
     (key, hash)
 }

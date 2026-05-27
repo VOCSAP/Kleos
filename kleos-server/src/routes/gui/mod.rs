@@ -126,8 +126,11 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
                 "refusing to use non-absolute or traversing data_dir; falling back to ephemeral HMAC secret"
             );
             let mut raw = [0u8; 32];
-            use rand::Rng;
-            rand::rng().fill(&mut raw);
+            use rand::rngs::OsRng;
+            use rand::TryRngCore;
+            OsRng
+                .try_fill_bytes(&mut raw)
+                .expect("OS CSPRNG must be available");
             let mut out = String::with_capacity(64);
             for byte in raw {
                 use std::fmt::Write;
@@ -157,9 +160,12 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
 
     // Generate new secret: 32 bytes from OsRng, hex encoded.
     let secret = {
-        use rand::Rng;
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
         let mut raw = [0u8; 32];
-        rand::rng().fill(&mut raw);
+        OsRng
+            .try_fill_bytes(&mut raw)
+            .expect("OS CSPRNG must be available");
         let mut out = String::with_capacity(64);
         for byte in raw {
             use std::fmt::Write;

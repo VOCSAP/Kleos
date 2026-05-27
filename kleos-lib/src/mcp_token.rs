@@ -137,8 +137,12 @@ fn canonical_payload_bytes(payload: &McpTokenPayload) -> Vec<u8> {
 
 /// Generate a 128-bit random jti (32 hex chars).
 pub fn generate_jti() -> String {
-    use rand::Rng;
-    let bytes: [u8; 16] = rand::rng().random();
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
+    let mut bytes = [0u8; 16];
+    OsRng
+        .try_fill_bytes(&mut bytes)
+        .expect("OS CSPRNG must be available");
     hex::encode(bytes)
 }
 

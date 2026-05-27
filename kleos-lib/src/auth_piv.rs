@@ -383,8 +383,11 @@ impl SessionManager {
             arr
         } else {
             let mut key = [0u8; 32];
-            use rand::Rng;
-            rand::rng().fill(&mut key);
+            use rand::rngs::OsRng;
+            use rand::TryRngCore;
+            OsRng
+                .try_fill_bytes(&mut key)
+                .expect("OS CSPRNG must be available");
             tracing::warn!("KLEOS_SESSION_KEY not set, generated ephemeral key (sessions will not survive restart)");
             key
         };
@@ -424,8 +427,11 @@ impl SessionManager {
             + (expires_at.saturating_duration_since(Instant::now())).as_millis() as u64;
 
         let mut random_8 = [0u8; 8];
-        use rand::Rng;
-        rand::rng().fill(&mut random_8);
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut random_8)
+            .expect("OS CSPRNG must be available");
 
         let mut mac = HmacSha256::new_from_slice(&self.key).unwrap();
         mac.update(&identity_id.to_le_bytes());
@@ -564,8 +570,11 @@ pub fn check_timestamp(ts_ms: u64) -> Result<()> {
 
 pub fn generate_nonce() -> String {
     let mut buf = [0u8; 12];
-    use rand::Rng;
-    rand::rng().fill(&mut buf);
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
+    OsRng
+        .try_fill_bytes(&mut buf)
+        .expect("OS CSPRNG must be available");
     hex::encode(buf)
 }
 
@@ -825,8 +834,11 @@ impl RequestSigner {
         }
 
         let mut secret = [0u8; 32];
-        use rand::Rng;
-        rand::rng().fill(&mut secret);
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
 
         std::fs::write(&key_path, hex::encode(secret))
             .map_err(|e| EngError::Internal(format!("cannot write key file: {e}")))?;
@@ -1030,8 +1042,11 @@ impl RequestSigner {
 
     pub fn generate_keypair() -> ([u8; 32], String) {
         let mut secret = [0u8; 32];
-        use rand::Rng;
-        rand::rng().fill(&mut secret);
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
         let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
         let vk = sk.verifying_key();
 
@@ -1238,9 +1253,13 @@ mod tests {
     #[test]
     fn ed25519_sign_verify_roundtrip() {
         use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
 
         let mut secret = [0u8; 32];
-        rand::Rng::fill(&mut rand::rng(), &mut secret);
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
         let sk = SigningKey::from_bytes(&secret);
         let vk = sk.verifying_key();
 
@@ -1259,9 +1278,13 @@ mod tests {
     #[test]
     fn ed25519_bad_sig_rejected() {
         use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
 
         let mut secret = [0u8; 32];
-        rand::Rng::fill(&mut rand::rng(), &mut secret);
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
         let sk = SigningKey::from_bytes(&secret);
         let vk = sk.verifying_key();
         let pubkey_pem = ed25519_pubkey_to_pem(vk.as_bytes());
