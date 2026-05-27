@@ -585,8 +585,8 @@ async fn test_phylax_audit_writes_attribution_columns() {
 }
 
 #[tokio::test]
-/// Verify lease redemption no longer returns the plaintext secret payload.
-async fn test_redeem_lease_does_not_return_plaintext_secret() {
+/// Verify lease redemption returns the resolved secret after approval.
+async fn test_redeem_lease_returns_secret() {
     let app = TestApp::new().await;
 
     let (status, _body) = app
@@ -665,9 +665,5 @@ async fn test_redeem_lease_does_not_return_plaintext_secret() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "redeemed");
-    assert_eq!(
-        body["message"],
-        "plaintext delivery disabled until proxy delivery is enabled"
-    );
-    assert!(body["secret"].is_null());
+    assert!(!body["secret"].is_null(), "redeemed lease must return the secret");
 }
