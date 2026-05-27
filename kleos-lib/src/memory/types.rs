@@ -347,6 +347,31 @@ impl Default for SearchRequest {
             include_archived: None,
             include_noise: None,
             exclude_consolidated: None,
+            budget: None,
+        }
+    }
+}
+
+/// Controls how much of the hybrid search pipeline executes for a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchBudget {
+    /// Runs only vector retrieval.
+    Low = 0,
+    /// Runs vector retrieval plus lexical FTS retrieval.
+    Mid = 1,
+    /// Runs the full vector, FTS, and graph expansion pipeline.
+    High = 2,
+}
+
+impl SearchBudget {
+    /// Parses a budget string, defaulting unknown values to the full pipeline.
+    pub fn parse(value: &str) -> Self {
+        match value.to_lowercase().as_str() {
+            "low" => Self::Low,
+            "mid" | "medium" => Self::Mid,
+            "high" => Self::High,
+            _ => Self::High,
         }
     }
 }
@@ -382,6 +407,9 @@ pub struct SearchRequest {
     pub include_archived: Option<bool>,
     pub include_noise: Option<bool>,
     pub exclude_consolidated: Option<bool>,
+    /// Optional budget that trims hybrid search stages for latency-sensitive callers.
+    #[serde(default)]
+    pub budget: Option<SearchBudget>,
 }
 fn default_true() -> bool {
     true
@@ -608,6 +636,39 @@ pub struct FtsHit {
     pub memory_id: i64,
     pub rank: usize,
     pub bm25_score: f64,
+}
+
+#[cfg(test)]
+mod search_budget_tests {
+    use super::{SearchBudget, SearchRequest};
+
+    /// Accepts canonical and legacy budget spellings while defaulting safely.
+    #[test]
+    fn parse_budget_variants() {
+        assert_eq!(SearchBudget::parse("low"), SearchBudget::Low);
+        assert_eq!(SearchBudget::parse("mid"), SearchBudget::Mid);
+        assert_eq!(SearchBudget::parse("high"), SearchBudget::High);
+        assert_eq!(SearchBudget::parse("LOW"), SearchBudget::Low);
+        assert_eq!(SearchBudget::parse("MID"), SearchBudget::Mid);
+        assert_eq!(SearchBudget::parse("HIGH"), SearchBudget::High);
+        assert_eq!(SearchBudget::parse("garbage"), SearchBudget::High);
+        assert_eq!(SearchBudget::parse(""), SearchBudget::High);
+    }
+
+    /// Orders budgets from the cheapest search to the fullest search.
+    #[test]
+    fn budget_ordering() {
+        assert!(SearchBudget::Low < SearchBudget::Mid);
+        assert!(SearchBudget::Mid < SearchBudget::High);
+        assert!(SearchBudget::Low < SearchBudget::High);
+    }
+
+    /// Leaves the budget unset by default so existing callers keep full behavior.
+    #[test]
+    fn default_search_request_has_no_budget() {
+        let req = SearchRequest::default();
+        assert!(req.budget.is_none());
+    }
 }
 
 /// Result from vector ANN search -- id, distance (cosine distance from LanceDB),

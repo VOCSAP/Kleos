@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct Observation {
     pub tool_name: String,
     pub content: String,
+    pub role: String,
     pub importance: i32,
     pub category: String,
     pub timestamp: DateTime<Utc>,
@@ -17,6 +18,7 @@ pub struct Session {
     pub id: String,
     pub started_at: DateTime<Utc>,
     pub observation_count: usize,
+    pub turn_count: usize,
     pub stored_count: usize,
     pub pending: Vec<Observation>,
     pub ended: bool,
@@ -33,6 +35,7 @@ impl Session {
             id,
             started_at: Utc::now(),
             observation_count: 0,
+            turn_count: 0,
             stored_count: 0,
             pending: Vec::new(),
             ended: false,
@@ -43,12 +46,36 @@ impl Session {
 
     pub fn add_observation(&mut self, obs: Observation) -> usize {
         self.observation_count += 1;
+        self.turn_count += 1;
         self.last_activity = Instant::now();
         if self.pending.is_empty() {
             self.pending_since = Some(Instant::now());
         }
         self.pending.push(obs);
         self.pending.len()
+    }
+
+    /// Drain all pending observations except the newest `overlap_turns` items.
+    pub fn drain_with_overlap(&mut self, overlap_turns: usize) -> Vec<Observation> {
+        if self.pending.len() <= overlap_turns {
+            return Vec::new();
+        }
+
+        let keep_from = self.pending.len() - overlap_turns;
+        let drained: Vec<Observation> = self.pending.drain(..keep_from).collect();
+        self.pending_since = if self.pending.is_empty() {
+            None
+        } else {
+            Some(Instant::now())
+        };
+        self.last_activity = Instant::now();
+        drained
+    }
+
+    /// Returns the newest `limit` pending observations in chronological order.
+    pub fn recent_observations(&self, limit: usize) -> Vec<Observation> {
+        let keep = self.pending.len().saturating_sub(limit);
+        self.pending.iter().skip(keep).cloned().collect()
     }
 
     /// Drain the pending queue. Does NOT bump stored_count -- callers must
@@ -249,6 +276,7 @@ mod tests {
         let s = Session::new("test-123".to_string());
         assert_eq!(s.id, "test-123");
         assert_eq!(s.observation_count, 0);
+        assert_eq!(s.turn_count, 0);
         assert_eq!(s.stored_count, 0);
         assert!(s.pending.is_empty());
         assert!(!s.ended);
@@ -260,6 +288,7 @@ mod tests {
         let obs = Observation {
             tool_name: "read_file".to_string(),
             content: "Found config at /etc/app.conf".to_string(),
+            role: "tool".to_string(),
             importance: 3,
             category: "discovery".to_string(),
             timestamp: Utc::now(),
@@ -268,6 +297,7 @@ mod tests {
         assert_eq!(s.add_observation(obs.clone()), 1);
         assert_eq!(s.add_observation(obs), 2);
         assert_eq!(s.observation_count, 2);
+        assert_eq!(s.turn_count, 2);
 
         let drained = s.drain_pending();
         assert_eq!(drained.len(), 2);
@@ -374,6 +404,7 @@ mod tests {
         let obs = Observation {
             tool_name: "t".into(),
             content: "c".into(),
+            role: "tool".into(),
             importance: 1,
             category: "d".into(),
             timestamp: Utc::now(),
@@ -403,6 +434,7 @@ mod tests {
         let obs = |n: u32| Observation {
             tool_name: format!("t{}", n),
             content: format!("c{}", n),
+            role: "tool".into(),
             importance: 1,
             category: "d".into(),
             timestamp: Utc::now(),
@@ -440,6 +472,7 @@ mod tests {
         s.add_observation(Observation {
             tool_name: "t".into(),
             content: "c".into(),
+            role: "tool".into(),
             importance: 1,
             category: "d".into(),
             timestamp: Utc::now(),
@@ -448,5 +481,29 @@ mod tests {
         let drained = s.drain_pending();
         assert_eq!(drained.len(), 1);
         assert!(s.pending_since.is_none(), "drain clears the timer");
+    }
+
+    #[test]
+    fn drain_with_overlap_keeps_tail() {
+        let mut s = Session::new("t".into());
+        let obs = |n: u32| Observation {
+            tool_name: format!("t{}", n),
+            content: format!("c{}", n),
+            role: "tool".into(),
+            importance: 1,
+            category: "d".into(),
+            timestamp: Utc::now(),
+        };
+
+        s.add_observation(obs(1));
+        s.add_observation(obs(2));
+        s.add_observation(obs(3));
+
+        let drained = s.drain_with_overlap(2);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].tool_name, "t1");
+        assert_eq!(s.pending.len(), 2);
+        assert_eq!(s.pending[0].tool_name, "t2");
+        assert_eq!(s.pending[1].tool_name, "t3");
     }
 }

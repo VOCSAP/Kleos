@@ -7,7 +7,7 @@ use crate::memory::scoring::{
 };
 use crate::memory::types::{
     FacetBucket, FacetedSearchRequest, FacetedSearchResponse, LinkedMemory, QuestionType,
-    SearchRequest, SearchResult, TagCooccurrence, VersionChainEntry,
+    SearchBudget, SearchRequest, SearchResult, TagCooccurrence, VersionChainEntry,
 };
 use crate::validation::{DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, RERANKER_TOP_K};
 use crate::Result;
@@ -85,6 +85,7 @@ fn hash_search_params(req: &SearchRequest) -> u64 {
     req.latest_only.hash(&mut h);
     req.mode.hash(&mut h);
     req.expand_relationships.hash(&mut h);
+    req.budget.hash(&mut h);
     h.finish()
 }
 
@@ -241,9 +242,7 @@ async fn hydrate_candidates(
         }
         params.push(&user_id);
 
-        let mut rows = stmt
-            .query(params.as_slice())
-            ?;
+        let mut rows = stmt.query(params.as_slice())?;
         // 6.9 capacity hint: upper bound is the input id set.
         let mut hydrated = Vec::with_capacity(ids.len());
         while let Some(row) = rows.next()? {
@@ -254,17 +253,11 @@ async fn hydrate_candidates(
                 is_static: row.get::<_, i32>(3)? != 0,
                 source_count: row.get(4)?,
                 version: row.get(5)?,
-                is_latest: row
-                    .get::<_, Option<i32>>(6)
-                    ?
-                    .map(|value| value != 0),
+                is_latest: row.get::<_, Option<i32>>(6)?.map(|value| value != 0),
                 source: row.get(7)?,
                 model: row.get(8)?,
                 access_count: row.get(9)?,
-                pagerank_score: row
-                    .get::<_, Option<f64>>(10)
-                    ?
-                    .unwrap_or(0.0),
+                pagerank_score: row.get::<_, Option<f64>>(10)?.unwrap_or(0.0),
                 fsrs_stability: row.get(11)?,
                 content: row.get(12)?,
                 category: row.get(13)?,
@@ -298,9 +291,7 @@ async fn fetch_graph_neighbors(
 
     db.read(move |conn| {
         let mut stmt = conn.prepare(link_sql)?;
-        let mut rows = stmt
-            .query(rusqlite::params![seed_id, user_id])
-            ?;
+        let mut rows = stmt.query(rusqlite::params![seed_id, user_id])?;
         // 6.9 capacity hint: typical graph-neighbor fanout.
         let mut linked = Vec::with_capacity(16);
         while let Some(row) = rows.next()? {
@@ -353,9 +344,7 @@ async fn fetch_memories_batch(
         }
         params.push(&user_id);
 
-        let mut rows = stmt
-            .query(params.as_slice())
-            ?;
+        let mut rows = stmt.query(params.as_slice())?;
 
         let mut map = HashMap::new();
         while let Some(row) = rows.next()? {
@@ -410,9 +399,7 @@ async fn fetch_links_batch(
         }
         params.push(&user_id);
 
-        let mut rows = stmt
-            .query(params.as_slice())
-            ?;
+        let mut rows = stmt.query(params.as_slice())?;
 
         let mut map: HashMap<i64, Vec<LinkedMemory>> = HashMap::new();
         while let Some(row) = rows.next()? {
@@ -423,9 +410,7 @@ async fn fetch_links_batch(
             let owner: i64 = row.get(0)?;
             let link = LinkedMemory {
                 id: row.get(1)?,
-                similarity: ((row.get::<_, f64>(2)? * 1000.0)
-                    .round())
-                    / 1000.0,
+                similarity: ((row.get::<_, f64>(2)? * 1000.0).round()) / 1000.0,
                 link_type: row.get(3)?,
                 content: row.get(4)?,
                 category: row.get(5)?,
@@ -471,9 +456,7 @@ async fn fetch_version_chains_batch(
         }
         params.push(&user_id);
 
-        let mut rows = stmt
-            .query(params.as_slice())
-            ?;
+        let mut rows = stmt.query(params.as_slice())?;
 
         let mut map: HashMap<i64, Vec<VersionChainEntry>> = HashMap::new();
         while let Some(row) = rows.next()? {
@@ -572,6 +555,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         .max((limit * strategy.candidate_multiplier).max(RERANKER_TOP_K))
         .min(200);
     let fts_limit = limit.max((limit * strategy.fts_limit_multiplier).min(250));
+    let budget = req.budget.unwrap_or(SearchBudget::High);
 
     // Ranked lists for RRF fusion
     let mut vector_ranked: Vec<(i64, f64)> = Vec::new();
@@ -655,8 +639,8 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
         }
     }
 
-    // Channel 2: FTS5 search
-    if !req.query.is_empty() {
+    // Channel 2: FTS5 search (skipped when the caller wants vector-only recall).
+    if !req.query.is_empty() && budget >= SearchBudget::Mid {
         if let Ok(hits) = fts_search(db, &req.query, fts_limit.max(candidate_target), user_id).await
         {
             for hit in &hits {
@@ -878,7 +862,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
 
     // Relationship expansion (2-hop) -- graph RRF channel
     let mut graph_score_map: HashMap<i64, f64> = HashMap::new();
-    if strategy.expand_relationships {
+    if strategy.expand_relationships && budget >= SearchBudget::High {
         let mut top_ids: Vec<(i64, f64)> = results
             .iter()
             .map(|(&id, c)| (id, c.combined_score))
@@ -1172,6 +1156,34 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     cache_put(user_id, param_hash, Arc::clone(&arc_results));
 
     Ok(arc_results)
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::hash_search_params;
+    use crate::memory::types::{SearchBudget, SearchRequest};
+
+    /// Keeps cache entries distinct when callers trim the search pipeline differently.
+    #[test]
+    fn different_budgets_produce_different_hashes() {
+        let base = SearchRequest {
+            query: "test query".into(),
+            ..Default::default()
+        };
+
+        let mut with_low = base.clone();
+        with_low.budget = Some(SearchBudget::Low);
+
+        let mut with_mid = base.clone();
+        with_mid.budget = Some(SearchBudget::Mid);
+
+        let h_none = hash_search_params(&base);
+        let h_low = hash_search_params(&with_low);
+        let h_mid = hash_search_params(&with_mid);
+
+        assert_ne!(h_none, h_low, "None vs Low should differ");
+        assert_ne!(h_low, h_mid, "Low vs Mid should differ");
+    }
 }
 
 /// SEC-recall-1.5: run `hybrid_search` then apply the supplied reranker.
@@ -1486,9 +1498,7 @@ async fn faceted_db_scan(
             .map(|b| b.as_ref() as &dyn rusqlite::types::ToSql)
             .collect();
         let mut stmt = conn.prepare(&sql)?;
-        let mut rows = stmt
-            .query(param_refs.as_slice())
-            ?;
+        let mut rows = stmt.query(param_refs.as_slice())?;
         // 6.9 capacity hint: SQL over-fetches limit*3 for tag filtering.
         let mut memories = Vec::with_capacity(limit.saturating_mul(3));
         while let Some(row) = rows.next()? {
@@ -1620,4 +1630,3 @@ fn parse_iso_date(s: &str) -> Option<String> {
         None
     }
 }
-

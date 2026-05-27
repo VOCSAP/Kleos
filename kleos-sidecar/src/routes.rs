@@ -290,6 +290,7 @@ struct ObserveBody {
     pub tool: Option<String>,
     pub content: Option<String>,
     pub summary: Option<String>,
+    pub role: Option<String>,
     #[serde(default = "default_importance")]
     pub importance: i32,
     #[serde(default = "default_category")]
@@ -314,16 +315,31 @@ async fn observe(
         .or(body.tool)
         .unwrap_or_else(|| "unknown".to_string());
     let content = body.content.or(body.summary).unwrap_or_default();
+    let role = body.role.unwrap_or_else(|| "tool".to_string());
+
+    if (!state.retain_tool_calls && role == "tool")
+        || !state.retain_roles.iter().any(|allowed| allowed == &role)
+    {
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "accepted": true,
+                "skipped": true,
+                "reason": "role filtered",
+            })),
+        ));
+    }
 
     let obs = Observation {
         tool_name,
         content,
+        role,
         importance: body.importance,
         category: body.category,
         timestamp: chrono::Utc::now(),
     };
 
-    let (pending_count, session_id) = {
+    let (pending_count, session_id, flush_batch) = {
         let mut sessions = state.sessions.write().await;
         let sid = sessions.resolve_id(body.session_id.as_deref()).to_string();
         let session = sessions.get_or_create(&sid);
@@ -352,16 +368,23 @@ async fn observe(
         }
 
         let count = session.add_observation(obs);
-        (count, sid)
+        let mut flush_batch = Vec::new();
+        if session.turn_count % state.retain_every_n == 0 || count >= state.batch_size {
+            flush_batch = session.drain_with_overlap(state.overlap_turns);
+        }
+        (session.pending.len(), sid, flush_batch)
     };
 
     metrics::inc_observations(1);
 
-    let flushed = if pending_count >= state.batch_size {
-        flush_pending(&state, &session_id).await
-    } else {
-        0
-    };
+    let flushed = flush_batch.len();
+    if !flush_batch.is_empty() {
+        let flush_state = state.clone();
+        let flush_session_id = session_id.clone();
+        tokio::spawn(async move {
+            let _ = flush_observations(&flush_state, &flush_session_id, flush_batch).await;
+        });
+    }
 
     Ok((
         StatusCode::ACCEPTED,
@@ -382,11 +405,88 @@ struct RecallBody {
     pub message: Option<String>,
     #[serde(default = "default_recall_limit")]
     pub limit: usize,
+    pub budget: Option<String>,
+    pub context_turns: Option<usize>,
+    pub max_tokens: Option<usize>,
+    pub max_query_chars: Option<usize>,
     pub session_id: Option<String>,
 }
 
 fn default_recall_limit() -> usize {
     10
+}
+
+/// Returns the default number of recent observations that should shape recall.
+fn default_context_turns() -> usize {
+    1
+}
+
+/// Returns the default token cap for injected recall context.
+fn default_recall_max_tokens() -> usize {
+    1024
+}
+
+/// Returns the default character cap applied to the search query sent upstream.
+fn default_recall_max_query_chars() -> usize {
+    800
+}
+
+/// Truncates text by character count without splitting UTF-8 code units.
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(text.len().min(max_chars));
+    for ch in text.chars().take(max_chars) {
+        out.push(ch);
+    }
+    out
+}
+
+/// Formats the newest observations into recall query context.
+fn format_recent_context(observations: &[Observation]) -> String {
+    observations
+        .iter()
+        .map(|obs| {
+            format!(
+                "[{}:{}] {}",
+                obs.role,
+                obs.tool_name,
+                truncate_chars(&obs.content, 180)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Formats returned memories into Claude additionalContext text under a char budget.
+fn format_recall_context(results: &[Value], max_chars: usize) -> String {
+    let mut lines = Vec::new();
+    let mut used = 0usize;
+
+    for result in results {
+        let Some(content) = result.get("content").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let category = result
+            .get("category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("general");
+        let line = format!("[{}] {}", category, truncate_chars(content, 220));
+        let extra = if lines.is_empty() {
+            line.len()
+        } else {
+            line.len() + 1
+        };
+        if used + extra > max_chars {
+            break;
+        }
+        used += extra;
+        lines.push(line);
+    }
+
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("Relevant memories:\n{}", lines.join("\n"))
+    }
 }
 
 /// Try POST to primary path, fall back to alternate on 404.
@@ -457,12 +557,38 @@ async fn recall(
         })));
     }
 
+    let session_id = {
+        let sessions = state.sessions.read().await;
+        sessions.resolve_id(body.session_id.as_deref()).to_string()
+    };
+    let context_turns = body.context_turns.unwrap_or_else(default_context_turns);
+    let max_tokens = body.max_tokens.unwrap_or_else(default_recall_max_tokens);
+    let max_query_chars = body
+        .max_query_chars
+        .unwrap_or_else(default_recall_max_query_chars);
+
+    let recent_context = {
+        let sessions = state.sessions.read().await;
+        sessions
+            .get(&session_id)
+            .map(|session| session.recent_observations(context_turns))
+            .unwrap_or_default()
+    };
+    let combined_query = if recent_context.is_empty() {
+        truncate_chars(&query, max_query_chars)
+    } else {
+        truncate_chars(
+            &format!("{}\n\n{}", format_recent_context(&recent_context), query),
+            max_query_chars,
+        )
+    };
+
     let search_req = json!({
-        "query": query,
+        "query": combined_query,
         "limit": body.limit.min(100),
-        "user_id": state.user_id,
         "include_forgotten": false,
         "latest_only": true,
+        "budget": body.budget,
     });
 
     let response = post_with_fallback(&state, "/search", "/memory/search", &search_req).await?;
@@ -484,41 +610,13 @@ async fn recall(
         )
     })?;
 
-    let session_id = {
-        let sessions = state.sessions.read().await;
-        sessions.resolve_id(body.session_id.as_deref()).to_string()
-    };
-
     let empty_arr = json!([]);
     let results_arr = results.get("results").unwrap_or(&empty_arr);
     let count = results_arr.as_array().map(|a| a.len()).unwrap_or(0);
-
-    let context = if let Some(arr) = results_arr.as_array() {
-        let lines: Vec<String> = arr
-            .iter()
-            .filter_map(|m| {
-                let content = m.get("content")?.as_str()?;
-                let cat = m
-                    .get("category")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("general");
-                let truncated = if content.len() > 180 {
-                    format!("{}...", &content[..177])
-                } else {
-                    content.to_string()
-                };
-                Some(format!("[{}] {}", cat, truncated))
-            })
-            .take(5)
-            .collect();
-        if lines.is_empty() {
-            String::new()
-        } else {
-            format!("Relevant memories:\n{}", lines.join("\n"))
-        }
-    } else {
-        String::new()
-    };
+    let context = results_arr
+        .as_array()
+        .map(|arr| format_recall_context(arr, max_tokens.saturating_mul(4)))
+        .unwrap_or_default();
 
     Ok(Json(json!({
         "results": results_arr,
@@ -668,6 +766,7 @@ async fn compress(
                     file_path,
                     &summary[..summary.len().min(200)]
                 ),
+                role: "tool".to_string(),
                 importance: 2,
                 category: "discovery".to_string(),
                 timestamp: chrono::Utc::now(),
@@ -817,7 +916,15 @@ pub async fn flush_pending(state: &SidecarState, session_id: &str) -> usize {
             None => return 0,
         }
     };
+    flush_observations(state, session_id, observations).await
+}
 
+/// Flushes an already selected observation batch to Kleos and requeues failures.
+async fn flush_observations(
+    state: &SidecarState,
+    session_id: &str,
+    observations: Vec<Observation>,
+) -> usize {
     if observations.is_empty() {
         return 0;
     }

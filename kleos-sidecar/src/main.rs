@@ -42,6 +42,10 @@ struct ConfigFile {
     batch_size: Option<usize>,
     batch_interval_ms: Option<u64>,
     max_pending_per_session: Option<usize>,
+    retain_every_n_turns: Option<usize>,
+    retain_overlap_turns: Option<usize>,
+    retain_roles: Option<String>,
+    retain_tool_calls: Option<bool>,
     compress_enabled: Option<bool>,
     compress_model: Option<String>,
     #[serde(alias = "gate_model")]
@@ -137,6 +141,22 @@ struct Cli {
     #[arg(long, env = "KLEOS_SIDECAR_MAX_PENDING")]
     max_pending_per_session: Option<usize>,
 
+    /// Flush pending observations every N retained turns.
+    #[arg(long, env = "KLEOS_RETAIN_EVERY_N_TURNS")]
+    retain_every_n_turns: Option<usize>,
+
+    /// Keep this many trailing observations buffered across automatic flushes.
+    #[arg(long, env = "KLEOS_RETAIN_OVERLAP_TURNS")]
+    retain_overlap_turns: Option<usize>,
+
+    /// Comma-separated roles that should be retained by /observe.
+    #[arg(long, env = "KLEOS_RETAIN_ROLES")]
+    retain_roles: Option<String>,
+
+    /// Whether tool-role observations should be retained.
+    #[arg(long, env = "KLEOS_RETAIN_TOOL_CALLS")]
+    retain_tool_calls: Option<bool>,
+
     /// Enable /compress LLM summarization. Disable to make /compress always
     /// pass content through without probing or calling a local model.
     #[arg(long, env = "KLEOS_SIDECAR_COMPRESS_ENABLED")]
@@ -190,6 +210,10 @@ struct ResolvedConfig {
     batch_size: usize,
     batch_interval_ms: u64,
     max_pending_per_session: usize,
+    retain_every_n_turns: usize,
+    retain_overlap_turns: usize,
+    retain_roles: String,
+    retain_tool_calls: bool,
     compress_enabled: bool,
     compress_model: Option<String>,
     gate_model: Option<String>,
@@ -235,6 +259,26 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
             cli.max_pending_per_session,
             cfg.max_pending_per_session,
             5000_usize
+        ),
+        retain_every_n_turns: pick!(
+            cli.retain_every_n_turns,
+            cfg.retain_every_n_turns,
+            10_usize
+        ),
+        retain_overlap_turns: pick!(
+            cli.retain_overlap_turns,
+            cfg.retain_overlap_turns,
+            2_usize
+        ),
+        retain_roles: pick!(
+            cli.retain_roles,
+            cfg.retain_roles,
+            String::from("user,assistant,tool")
+        ),
+        retain_tool_calls: pick!(
+            cli.retain_tool_calls,
+            cfg.retain_tool_calls,
+            true
         ),
         compress_enabled: pick!(cli.compress_enabled, cfg.compress_enabled, true),
         compress_model: cli.compress_model.or(cfg.compress_model),
@@ -394,6 +438,16 @@ async fn main() {
         batch_size: rc.batch_size.max(1),
         batch_interval_ms: rc.batch_interval_ms,
         max_pending_per_session: rc.max_pending_per_session.max(1),
+        retain_every_n: rc.retain_every_n_turns.max(1),
+        overlap_turns: rc.retain_overlap_turns,
+        retain_roles: rc
+            .retain_roles
+            .split(',')
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .map(ToOwned::to_owned)
+            .collect(),
+        retain_tool_calls: rc.retain_tool_calls,
         compress_passthrough_bytes: rc.compress_passthrough_bytes,
         compress_max_input_bytes: rc.compress_max_input_bytes,
         compress_timeout_ms: rc.compress_timeout_ms,
@@ -404,6 +458,10 @@ async fn main() {
         batch_size = state.batch_size,
         batch_interval_ms = state.batch_interval_ms,
         max_pending_per_session = state.max_pending_per_session,
+        retain_every_n = state.retain_every_n,
+        overlap_turns = state.overlap_turns,
+        retain_roles = ?state.retain_roles,
+        retain_tool_calls = state.retain_tool_calls,
         compress_enabled = state.compress_enabled,
         compress_model = state
             .compress_model

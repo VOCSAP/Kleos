@@ -360,6 +360,7 @@ async fn search_memories(
         include_links: body.include_links.unwrap_or(false),
         latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
+        budget: body.budget,
         ..Default::default()
     };
 
@@ -484,6 +485,7 @@ async fn explain_search(
         include_links: body.include_links.unwrap_or(false),
         latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
+        budget: body.budget,
         ..Default::default()
     };
 

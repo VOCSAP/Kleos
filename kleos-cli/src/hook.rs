@@ -43,6 +43,9 @@ const POLICY_CACHE_TTL_SECS: u64 = 60;
 
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+const SIDECAR_RECALL_TIMEOUT: Duration = Duration::from_secs(12);
+const SIDECAR_OBSERVE_TIMEOUT: Duration = Duration::from_secs(5);
+const SIDECAR_END_TIMEOUT: Duration = Duration::from_secs(15);
 
 // --- Policy fetch with cache ---
 
@@ -133,6 +136,45 @@ fn build_context_output(event: &str, context: &str) -> Value {
             "additionalContext": context
         }
     })
+}
+
+/// POSTs JSON to the local sidecar and returns the parsed response on success.
+async fn sidecar_post(path: &str, body: &Value, timeout: Duration) -> Option<Value> {
+    let base = std::env::var("KLEOS_SIDECAR_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:7711".to_string());
+    let url = format!("{}{}", base, path);
+
+    let client = reqwest::Client::new();
+    let mut req = client.post(&url).json(body).timeout(timeout);
+    if let Ok(token) = std::env::var("KLEOS_SIDECAR_TOKEN") {
+        req = req.header("Authorization", format!("Bearer {}", token));
+    }
+
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => resp.json().await.ok(),
+        Ok(resp) => {
+            eprintln!("[kleos-hook] sidecar {} returned {}", path, resp.status());
+            None
+        }
+        Err(e) => {
+            eprintln!("[kleos-hook] sidecar {} failed: {}", path, e);
+            None
+        }
+    }
+}
+
+/// Converts hook tool output into bounded text for sidecar observation storage.
+fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
+    let raw = input
+        .get("tool_result")
+        .and_then(|v| v.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| {
+            input
+                .get("tool_result")
+                .map(|v| serde_json::to_string(v).unwrap_or_default())
+                .unwrap_or_default()
+        });
+    raw.chars().take(max_chars).collect()
 }
 
 fn build_deny_output(event: &str, reason: &str) -> Value {
@@ -228,6 +270,45 @@ async fn handle_session_start(client: &Client) {
 async fn handle_user_prompt(client: &Client, input: &Value) {
     let session_id = extract_session_id(input);
 
+    // Recall relevant memories from the sidecar before the prompt is processed.
+    let recall_context = match input.get("prompt").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+        Some(user_message) => {
+            let budget =
+                std::env::var("KLEOS_RECALL_BUDGET").unwrap_or_else(|_| "mid".to_string());
+            let max_tokens: usize = std::env::var("KLEOS_RECALL_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1024);
+            let context_turns: usize = std::env::var("KLEOS_RECALL_CONTEXT_TURNS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            let max_query_chars: usize = std::env::var("KLEOS_RECALL_MAX_QUERY_CHARS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(800);
+
+            let recall_body = json!({
+                "message": user_message,
+                "budget": budget,
+                "context_turns": context_turns,
+                "max_tokens": max_tokens,
+                "max_query_chars": max_query_chars,
+                "session_id": session_id,
+            });
+
+            sidecar_post("/recall", &recall_body, SIDECAR_RECALL_TIMEOUT)
+                .await
+                .and_then(|resp| {
+                    resp.get("context")
+                        .and_then(|c| c.as_str())
+                        .filter(|ctx| !ctx.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+        }
+        None => None,
+    };
+
     // Drain supervisor for pending violations
     let encoded_session = utf8_percent_encode(&session_id, NON_ALPHANUMERIC).to_string();
     let pending_path = format!("/supervisor/pending?session_id={}", encoded_session);
@@ -249,11 +330,16 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 "UserPromptSubmit",
                 &format!("Supervisor violation: {}", msg),
             ));
+            return;
         }
+    }
+
+    if let Some(context) = recall_context {
+        emit(&build_context_output("UserPromptSubmit", &context));
     }
 }
 
-async fn handle_stop(client: &Client) {
+async fn handle_stop(client: &Client, input: &Value) {
     let _ = client
         .post_with_timeout(
             "/activity",
@@ -265,7 +351,14 @@ async fn handle_stop(client: &Client) {
             DEFAULT_TIMEOUT,
         )
         .await;
-    // Stop hooks need no stdout output
+
+    let session_id = extract_session_id(input);
+    let _ = sidecar_post(
+        "/end",
+        &json!({ "session_id": session_id }),
+        SIDECAR_END_TIMEOUT,
+    )
+    .await;
 }
 
 async fn handle_pre_tool(client: &Client, input: &Value) {
@@ -350,7 +443,16 @@ async fn handle_post_tool(client: &Client, input: &Value) {
             DEFAULT_TIMEOUT,
         )
         .await;
-    // No stdout output for PostToolUse
+
+    let observe_body = json!({
+        "tool_name": tool_name,
+        "content": extract_tool_result_text(input, 1500),
+        "role": "tool",
+        "session_id": session_id,
+        "importance": 3,
+        "category": "discovery",
+    });
+    let _ = sidecar_post("/observe", &observe_body, SIDECAR_OBSERVE_TIMEOUT).await;
 }
 
 // --- Entry point ---
@@ -365,7 +467,8 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
             handle_user_prompt(client, &input).await;
         }
         HookCommands::Stop => {
-            handle_stop(client).await;
+            let input = read_stdin_json();
+            handle_stop(client, &input).await;
         }
         HookCommands::PreTool => {
             let input = read_stdin_json();
