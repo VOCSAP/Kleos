@@ -2,13 +2,148 @@
 //!
 //! Ported from intelligence/extraction.ts. Pure regex, no LLM needed.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{LazyLock, OnceLock};
 
 use crate::db::Database;
 use crate::intelligence::types::ExtractionStats;
 use crate::{EngError, Result};
 use regex::Regex;
 use tracing::{debug, warn};
+
+/// Build a per-language regex from a template by interpolating
+/// `lexicon::word_class_alternation` for each placeholder.
+///
+/// Patch 38 L2.B helper. Used by the like/dislike/favorite/location/role
+/// patterns whose verbs vary across languages. The remaining patterns
+/// (buy / spent / have / exercise / made / earned) keep their English
+/// surface form because they encode unit-specific syntax (currency `$`,
+/// quantity prefix, time units) that does not port symmetrically to
+/// French and is left as future work.
+fn compile_lang_regex(pattern: &str) -> Option<Regex> {
+    Regex::new(pattern).ok()
+}
+
+fn like_regex_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "verb_like");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs})\s+(.+?)(?:\.|,|$)");
+    compile_lang_regex(&pattern)
+}
+
+fn dislike_regex_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "verb_dislike");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs})\s+(.+?)(?:\.|,|$)");
+    compile_lang_regex(&pattern)
+}
+
+fn favorite_regex_for(lang: &str) -> Option<Regex> {
+    let markers = crate::lexicon::word_class_alternation(lang, "favorite_marker");
+    let categories = crate::lexicon::word_class_alternation(lang, "favorite_category");
+    let copula = crate::lexicon::word_class_alternation(lang, "is_or_are");
+    if markers.is_empty() || categories.is_empty() || copula.is_empty() {
+        return None;
+    }
+    // English form: "my favorite food is X" (marker before category).
+    // French form: "mon plat préféré est X" (marker after category).
+    // The template accepts either order so the same regex covers both
+    // languages. Marker groups stay non-capturing so the caller still
+    // reads cap[1] = category, cap[2] = value (signature preserved).
+    let pattern = format!(
+        r"(?i)\b(?:my|mon|ma)\s+(?:{markers}\s+)?({categories})\s+(?:{markers}\s+)?(?:{copula})\s+(.+?)(?:\.|,|$)"
+    );
+    compile_lang_regex(&pattern)
+}
+
+fn location_regex_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "location_verbs");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|$)");
+    compile_lang_regex(&pattern)
+}
+
+fn role_regex_for(lang: &str) -> Option<Regex> {
+    let verbs = crate::lexicon::word_class_alternation(lang, "role_verbs");
+    if verbs.is_empty() {
+        return None;
+    }
+    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronoun_clause = if pronouns.is_empty() {
+        String::new()
+    } else {
+        format!(r"(?:{pronouns})\s+")
+    };
+    let pattern =
+        format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(?:a\s+|an\s+|my\s+|un\s+|une\s+)?(.+?)(?:\.|,|$)");
+    compile_lang_regex(&pattern)
+}
+
+/// Cache of compiled per-language regexes for the 5 i18n-portable patterns.
+/// Compiled once on first access from the current state of the lexicon.
+struct LangRegexCache {
+    like: HashMap<String, Regex>,
+    dislike: HashMap<String, Regex>,
+    favorite: HashMap<String, Regex>,
+    location: HashMap<String, Regex>,
+    role: HashMap<String, Regex>,
+}
+
+static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
+    let mut like = HashMap::new();
+    let mut dislike = HashMap::new();
+    let mut favorite = HashMap::new();
+    let mut location = HashMap::new();
+    let mut role = HashMap::new();
+    for lang in crate::lexicon::supported_languages() {
+        if let Some(re) = like_regex_for(&lang) {
+            like.insert(lang.clone(), re);
+        }
+        if let Some(re) = dislike_regex_for(&lang) {
+            dislike.insert(lang.clone(), re);
+        }
+        if let Some(re) = favorite_regex_for(&lang) {
+            favorite.insert(lang.clone(), re);
+        }
+        if let Some(re) = location_regex_for(&lang) {
+            location.insert(lang.clone(), re);
+        }
+        if let Some(re) = role_regex_for(&lang) {
+            role.insert(lang.clone(), re);
+        }
+    }
+    LangRegexCache {
+        like,
+        dislike,
+        favorite,
+        location,
+        role,
+    }
+});
 
 /// Retained for symmetry with other modules. Extraction writes errors are
 /// logged inline via `warn!` and do not propagate, so `?` + this helper is
@@ -65,41 +200,16 @@ fn earned_regex() -> &'static Regex {
     })
 }
 
-fn like_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:I\s+)?(love|like|enjoy|adore|prefer)\s+(.+?)(?:\.|,|$)").unwrap()
-    })
-}
-
-fn dislike_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:I\s+)?(hate|dislike|can't stand|don't like)\s+(.+?)(?:\.|,|$)")
-            .unwrap()
-    })
-}
-
-fn favorite_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\bmy\s+(?:favorite|fav|favourite)\s+(food|movie|book|show|game|song|color|colour|sport|place|drink|artist|band|author)\s+(?:is|are)\s+(.+?)(?:\.|,|$)").unwrap()
-    })
-}
-
-fn location_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:I\s+)?(?:moved to|relocated to|live in|living in|staying in)\s+(.+?)(?:\.|,|$)").unwrap()
-    })
-}
-
-fn role_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(?:I\s+)?(?:started|began|got promoted to|now work as|am now|just became)\s+(?:a\s+|an\s+|my\s+)?(.+?)(?:\.|,|$)").unwrap()
-    })
-}
+// Patch 38 L2.B -- the prior English-only static like_regex(),
+// dislike_regex(), favorite_regex(), location_regex() and role_regex()
+// functions are superseded by the per-language helpers above
+// (like_regex_for, dislike_regex_for, etc.) and the LANG_REGEX cache.
+//
+// The other 7 patterns (buy, spent, have, exercise, made, earned) keep
+// their English surface form below because they encode unit-specific
+// syntax (currency `$`, numeric quantity prefix, time/distance units)
+// that does not translate symmetrically to French. They are tracked as
+// future work in docs/dev-notes/i18n-audit.md.
 
 // Collected operations to execute in a single transaction
 struct FactInsert {
@@ -218,56 +328,92 @@ pub async fn fast_extract_facts(
     }
 
     // -- Preferences: likes/enjoys --
-    for cap in like_regex().captures_iter(content) {
-        let object = cap[2].trim();
-        if object.len() > 3 && object.len() < 100 {
-            let domain = infer_domain(object);
-            prefs.push(PrefUpsert {
-                key: format!("{}:likes {}", domain, object),
-                value: format!("evidence_memory_id:{}", memory_id),
-            });
+    // Patch 38 L2.B -- the 5 i18n-portable patterns (like, dislike,
+    // favorite, location, role) iterate over every supported language
+    // and apply that language's compiled regex. A small HashSet
+    // dedup-guards against the same pref / state appearing twice when
+    // a bilingual sentence matches both languages' patterns.
+    let mut seen_prefs: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_states: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for lang in crate::lexicon::supported_languages() {
+        // -- Preferences: likes --
+        if let Some(re) = LANG_REGEX.like.get(&lang) {
+            for cap in re.captures_iter(content) {
+                let object = cap[2].trim();
+                if object.len() > 3 && object.len() < 100 {
+                    let domain = infer_domain(object);
+                    let key = format!("{domain}:likes {object}");
+                    if seen_prefs.insert(key.clone()) {
+                        prefs.push(PrefUpsert {
+                            key,
+                            value: format!("evidence_memory_id:{memory_id}"),
+                        });
+                    }
+                }
+            }
         }
-    }
 
-    // -- Preferences: dislikes --
-    for cap in dislike_regex().captures_iter(content) {
-        let object = cap[2].trim();
-        if object.len() > 3 && object.len() < 100 {
-            let domain = infer_domain(object);
-            prefs.push(PrefUpsert {
-                key: format!("{}:dislikes {}", domain, object),
-                value: format!("evidence_memory_id:{}", memory_id),
-            });
+        // -- Preferences: dislikes --
+        if let Some(re) = LANG_REGEX.dislike.get(&lang) {
+            for cap in re.captures_iter(content) {
+                let object = cap[2].trim();
+                if object.len() > 3 && object.len() < 100 {
+                    let domain = infer_domain(object);
+                    let key = format!("{domain}:dislikes {object}");
+                    if seen_prefs.insert(key.clone()) {
+                        prefs.push(PrefUpsert {
+                            key,
+                            value: format!("evidence_memory_id:{memory_id}"),
+                        });
+                    }
+                }
+            }
         }
-    }
 
-    // -- Preferences: favorites --
-    for cap in favorite_regex().captures_iter(content) {
-        let category = cap[1].trim().to_lowercase();
-        let value = cap[2].trim();
-        prefs.push(PrefUpsert {
-            key: format!("{}:favorite: {}", category, value),
-            value: format!("evidence_memory_id:{}", memory_id),
-        });
-    }
+        // -- Preferences: favorites --
+        if let Some(re) = LANG_REGEX.favorite.get(&lang) {
+            for cap in re.captures_iter(content) {
+                let category = cap[1].trim().to_lowercase();
+                let value = cap[2].trim();
+                let key = format!("{category}:favorite: {value}");
+                if seen_prefs.insert(key.clone()) {
+                    prefs.push(PrefUpsert {
+                        key,
+                        value: format!("evidence_memory_id:{memory_id}"),
+                    });
+                }
+            }
+        }
 
-    // -- State updates: location changes --
-    for cap in location_regex().captures_iter(content) {
-        let location = cap[1].trim();
-        states.push(StateUpsert {
-            key: "current_location".to_string(),
-            value: format!("{} (memory:{})", location, memory_id),
-        });
-    }
+        // -- State updates: location changes --
+        if let Some(re) = LANG_REGEX.location.get(&lang) {
+            for cap in re.captures_iter(content) {
+                let location = cap[1].trim();
+                let key = format!("current_location|{location}");
+                if seen_states.insert(key) {
+                    states.push(StateUpsert {
+                        key: "current_location".to_string(),
+                        value: format!("{location} (memory:{memory_id})"),
+                    });
+                }
+            }
+        }
 
-    // -- State updates: role changes --
-    for cap in role_regex().captures_iter(content) {
-        let role = cap[1].trim();
-        if role.len() > 3 && role.len() < 100 {
-            states.push(StateUpsert {
-                key: "current_role".to_string(),
-                value: format!("{} (memory:{})", role, memory_id),
-            });
+        // -- State updates: role changes --
+        if let Some(re) = LANG_REGEX.role.get(&lang) {
+            for cap in re.captures_iter(content) {
+                let role = cap[1].trim();
+                if role.len() > 3 && role.len() < 100 {
+                    let key = format!("current_role|{role}");
+                    if seen_states.insert(key) {
+                        states.push(StateUpsert {
+                            key: "current_role".to_string(),
+                            value: format!("{role} (memory:{memory_id})"),
+                        });
+                    }
+                }
+            }
         }
     }
 
