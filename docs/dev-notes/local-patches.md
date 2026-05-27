@@ -4108,6 +4108,79 @@ agent-forge spec_id : `spec_9be9c0f3`.
 
 ---
 
+## Patch 38 -- i18n core lexicon + 16 sites refactores (2026-05-27)
+
+**Symptome / motivation** -- L'audit `docs/dev-notes/i18n-audit.md` (2026-05-26) a identifie 15 sites Kleos qui hardcodent du vocabulaire anglais (extraction, personality, valence, sentiment, decomposition, hopfield, services/brain, prompts, gate, handoffs). Empiriquement sur LXC 121 : ~2 structured_facts produits pour 2282 memoires, soit un taux <0.1% causé directement par le mismatch entre les regex EN et les memoires majoritairement FR/tech. Le pipeline d'intelligence (contradictions, valence, personality, sentiment) est de facto dead-end fonctionnel hors anglais.
+
+L'operateur a choisi **Option B** : module i18n core lexicon central + couche de normalisation au matching. Plan original dans `~/.claude/plans/je-pr-f-re-b-complet-robust-kazoo.md`.
+
+**Approche** -- Niveau delta `additif + chirurgical multi-sites`, kleos-lib principalement (1 site cote kleos-server). 3 livrables :
+
+1. **Livrable 1** -- Nouveau module `kleos_lib::lexicon` avec API `word_class(lang, class)`, `word_class_alternation`, `supported_languages`, `class_emotion_metadata`. Cascade `KLEOS_LEXICON_REPOSITORY` env > `${KLEOS_DATA_DIR}/lexicon/` > embedded baselines (`kleos-lib/lexicon/{en,fr}.toml`). Cache TTL 5s + Arc<ParsedLexicon> + OnceLock + RwLock (pattern miroir de `kleos_lib::llm::prompts.rs` Patch 15).
+
+2. **Livrable 2.A** -- 12/12 sites Layer A pur consomment `lexicon::word_class` au lieu de constantes Rust : STATE_VERBS, PROHIBITIONS, SCRUB_PATTERNS, articles, INTENSIFIERS, causal+negation, stopwords, EMOTION_KEYWORDS, FILLER_PREFIXES, META_STOPLIST, infer_domain, SENTIMENT_LEXICON.
+
+3. **Livrable 2.A.normalize** -- Couche de normalisation au matching pour absorber accents et morphologie :
+   - Crates ajoutees : `unicode-normalization` 0.1, `rust-stemmers` 1.2 (workspace, pures Rust, ~100 KiB total).
+   - API publique `lexicon::fold_for_matching(s, lang, with_stem)` : lowercase + NFD strip + Snowball stemming optionnel.
+   - API publique `lexicon::fold_word_for_class(word, lang, class)` : consulte le metadata `stem` de la classe.
+   - TOMLs FR re-orthographies avec les accents corrects (~70 mots accentues sur 29 classes).
+   - TOMLs EN re-orthographies avec apostrophes vraies dans contractions (`didn't`, `I'm just`, etc.).
+   - 9 classes mots-grammaire marquees `stem = false` pour eviter over-stemming sur les tokens courts ou techniques (state_verbs, articles, stopwords, first_person_pronoun, negation_marker, 5 intensifier_* tiers, credential_keywords).
+   - 8 / 11 sites L2.A patches utilisent le folding ; 3 sites position-based (clean_subject, hopfield causal, decomposition strip_filler) preservent leur comparaison surface car le folding casserait les indices de position (strip_prefix / starts_with + word indices).
+
+4. **Livrable 2.B partial 3/4** -- Refactor des regex multi-langues en templates parametriques par langue :
+   - extraction.rs 5/12 regex i18n-portables : like_regex_for, dislike_regex_for, favorite_regex_for, location_regex_for, role_regex_for. Les 7 autres (buy, spent, have, exercise, made, earned) sont differables car elles encodent une syntaxe unit/currency EN-only.
+   - personality.rs 7/7 patterns : LIKE_PATTERN, DISLIKE_PATTERN, FAV_PATTERN, DECISION_PATTERN, IDENTITY_PATTERN, VALUE_PATTERN, MOTIVATION_PATTERN.
+   - handoffs/atoms.rs 4/4 patterns : RE_DECISION, RE_CONSTRAINT, RE_TASK, RE_QUESTION (RE_ENTITY_PATH et RE_ENTITY_LABEL restent inchanges, ils encodent du structurel non linguistique).
+   - valence.rs 0/22 EMOTION_PATTERNS differable (chaque pattern porte valence + arousal metadata, decoupage TOML en 22 classes lourd).
+
+**Submodule** -- Nouveau `lexicon-overrides/` mappe vers `VOCSAP/Kleos.lexicon` (private). Pre-loaded avec les TOMLs EN/FR au moment de la creation. README du repo + README principal du repo Kleos documentent le pattern overlay (Patches 15, 19b, 38) sans nommer les repos prives.
+
+**Classes lexicon livrees** (en + fr.toml chacun) :
+- Grammar (stem=false) : verb_like, verb_dislike, verb_buy, state_verbs, articles, stopwords, first_person_pronoun, negation_marker, 5x intensifier_*, credential_keywords, atom_decision_markers, atom_constraint_markers, atom_task_markers, atom_question_markers, decision_verbs, identity_markers, value_markers, motivation_markers, favorite_marker, is_or_are, favorite_category, location_verbs, role_verbs.
+- Semantic (stem=true default) : 17 emotion_* (avec valence + intensity metadata), 5 causal_*, filler_prefixes, meta_stoplist, 7 domain_*, prohibition_marker, 10 sentiment_* (par bucket de score).
+
+Total : 47 classes EN + 47 classes FR.
+
+**Fichiers touches (additifs)** :
+- Cargo.toml workspace deps (+2)
+- kleos-lib/Cargo.toml (+2 deps)
+- kleos-lib/src/lib.rs (+1 pub mod)
+- kleos-lib/src/lexicon/{mod,loader,cache}.rs (nouveau module, ~700 lignes)
+- kleos-lib/lexicon/{en,fr}.toml (embedded baselines, ~250 lignes chaque)
+- docs/dev-notes/{i18n-audit,patch-38-regex-overrides-design,patch-38-remaining-work}.md
+- README.md (section Runtime overlays)
+- lexicon-overrides/ (nouveau submodule)
+- .gitmodules
+
+**Fichiers touches (refactor)** :
+- kleos-lib/src/intelligence/{extraction,temporal,decomposition,sentiment}.rs
+- kleos-lib/src/{personality,prompts}.rs
+- kleos-lib/src/brain/hopfield/recall.rs
+- kleos-lib/src/services/brain.rs
+- kleos-lib/src/handoffs/atoms.rs
+- kleos-server/src/routes/gate/mod.rs
+
+**Commits sur branche `local/patch-38-i18n-core`** :
+- `cb72ed09` feat(i18n): Livrable 1 lexicon core module
+- `9e721a5b` docs(i18n): Kleos.lexicon submodule + overlay pattern
+- `e5932477` docs(i18n): describe overlay intent without naming private repos
+- `22f09d4f` a `5e874aa3` : Livrable 2.A sites 1-11 (12 commits)
+- `6369d5af` Livrable 2.A site 12 sentiment AFINN
+- `039c0083` + `1c3b7587` : normalize fold_for_matching helper + accents FR
+- `0819c066` Livrable 2.B 1/4 extraction
+- `ddb4ec45` Livrable 2.B 2/4 personality
+- `f0b556a5` Livrable 2.B 3/4 atoms
+
+**Verification** : `cargo check -p kleos-lib --features bundled-sqlite` et `cargo check -p kleos-server --features kleos-lib/bundled-sqlite` passent avec 0 erreur a chaque commit (10 warnings pre-existants dans cred/bootstrap.rs, non lies). Tests integration kleos-lib non executes cote Windows MSVC pour bug ICE pre-existant (memoire Kleos #4545, independant). Validation E2E LXC 121 + smoke FR cross-space contradiction reportes apres build WSL + redeploy.
+
+**Conditions de retrait** -- ce patch est intrinsequement local (zero changement de behavior par defaut quand `KLEOS_LEXICON_REPOSITORY` est unset et que `${KLEOS_DATA_DIR}/lexicon/` est absent : le cascade tombe sur les embedded baselines). Candidat PR upstream une fois Livrables 2.B complet (valence + 7 extraction unit-specific) et Livrable 3 (migrations + admin endpoints) livres et valides E2E.
+
+agent-forge spec_ids : `spec_9737ef82` (L1), `spec_477f37f9` (L2.A), `spec_afa9794c` (normalize), `spec_118f0313` (L2.B partial 3/4).
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
