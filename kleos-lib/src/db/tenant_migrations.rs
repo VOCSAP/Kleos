@@ -344,6 +344,26 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         description: "conversations_space_id",
         up: apply_schema_v57_conversations_space_id,
     },
+    // Patch 38 (2026-05-27): de-duplicate structured_facts then enforce
+    // UNIQUE (memory_id, subject, predicate, object). The dedup keeps
+    // the row with the smallest id per group; downstream code uses
+    // INSERT OR IGNORE so re-extraction is idempotent. Indempotent via
+    // CREATE UNIQUE INDEX IF NOT EXISTS.
+    TenantMigration {
+        version: 58,
+        description: "structured_facts_unique_index",
+        up: apply_schema_v58_structured_facts_unique,
+    },
+    // Patch 38 (2026-05-27): adds `extraction_source TEXT NOT NULL
+    // DEFAULT 'embedded'` column to structured_facts so an operator
+    // can rollback selectively when a lexicon override produces noisy
+    // facts (`DELETE WHERE extraction_source = 'fr.bad_pattern'`).
+    // Idempotent via table_has_column guard.
+    TenantMigration {
+        version: 59,
+        description: "structured_facts_extraction_source",
+        up: apply_schema_v59_structured_facts_extraction_source,
+    },
 ];
 
 /// Tenant v1: applies the initial tenant schema from the embedded SQL file.
@@ -1159,6 +1179,52 @@ fn apply_schema_v57_conversations_space_id(conn: &Connection) -> Result<()> {
         )
         .map_err(|e| {
             EngError::DatabaseMessage(format!("tenant schema v57 (space_id) failed: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Tenant v58 (Patch 38, 2026-05-27): de-duplicate then enforce uniqueness on
+/// (memory_id, subject, predicate, object) in structured_facts. The pre-Patch-38
+/// extractor could produce duplicate facts when the same memory matched two
+/// language regex paths (EN + FR) yielding the same triple after stem folding.
+/// The dedup keeps the row with the smallest id per group and adds the unique
+/// index so subsequent re-extractions use INSERT OR IGNORE without producing
+/// runaway growth. Idempotent: the DELETE no-ops on a deduplicated table and
+/// the CREATE UNIQUE INDEX uses IF NOT EXISTS.
+fn apply_schema_v58_structured_facts_unique(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM structured_facts \
+           WHERE id NOT IN ( \
+             SELECT MIN(id) FROM structured_facts \
+               GROUP BY memory_id, subject, predicate, object \
+           ); \
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_structured_facts_subj_pred_obj \
+           ON structured_facts(memory_id, subject, predicate, object);",
+    )
+    .map_err(|e| {
+        EngError::DatabaseMessage(format!(
+            "tenant schema v58 (structured_facts unique) failed: {e}"
+        ))
+    })?;
+    Ok(())
+}
+
+/// Tenant v59 (Patch 38, 2026-05-27): adds `extraction_source TEXT NOT NULL
+/// DEFAULT 'embedded'` to structured_facts. The column lets an operator track
+/// which lexicon source produced a given fact (`embedded`, `fr.toml@<sha>`,
+/// `manual`, etc.) and selectively rollback when an override goes wrong.
+/// Idempotent via table_has_column guard.
+fn apply_schema_v59_structured_facts_extraction_source(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "structured_facts", "extraction_source")? {
+        conn.execute_batch(
+            "ALTER TABLE structured_facts \
+               ADD COLUMN extraction_source TEXT NOT NULL DEFAULT 'embedded';",
+        )
+        .map_err(|e| {
+            EngError::DatabaseMessage(format!(
+                "tenant schema v59 (extraction_source) failed: {e}"
+            ))
         })?;
     }
     Ok(())
