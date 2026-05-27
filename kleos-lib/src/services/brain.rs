@@ -1479,14 +1479,19 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
     let claims = extract_claims(answer);
     let mut flags = Vec::new();
 
-    // Patch 38 L2 site 7 -- stopwords sourced from the i18n lexicon
-    // (stopwords class) across every supported language so French
-    // claims get filtered symmetrically. The HashSet is built per call
-    // and stores owned Strings rather than &'static str references.
+    // Patch 38 L2 site 7 + normalize -- stopwords from the i18n lexicon
+    // folded with fold_for_matching (stopwords class declares stem =
+    // false, so the fold is lowercase + diacritic strip only). Source
+    // tokens are folded the same way before the .contains() check
+    // below so "été" in a claim matches "ete" in the stopword set.
     let stopwords: HashSet<String> = crate::lexicon::supported_languages()
         .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "stopwords"))
-        .map(|w| w.to_lowercase())
+        .flat_map(|lang| {
+            let lang = lang.clone();
+            crate::lexicon::word_class(&lang, "stopwords")
+                .into_iter()
+                .map(move |w| crate::lexicon::fold_word_for_class(&w, &lang, "stopwords"))
+        })
         .collect();
 
     for claim in &claims {
@@ -1502,7 +1507,14 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
             })
             .collect::<String>()
             .split_whitespace()
-            .filter(|w| w.len() > 4 && !stopwords.contains(*w))
+            .filter(|w| {
+                w.len() > 4 && {
+                    // Fold the token the same way the stopword set was
+                    // built (lowercase + diacritic strip; no stemming).
+                    let folded = crate::lexicon::fold_for_matching(w, "en", false);
+                    !stopwords.contains(&folded)
+                }
+            })
             .map(String::from)
             .collect();
 

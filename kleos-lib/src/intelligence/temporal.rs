@@ -562,9 +562,13 @@ pub fn resolve_relative_date(reference: &str, base_date: &str) -> Option<String>
 /// for the prior hardcoded `STATE_VERBS` constant.
 fn is_state_verb(verb_lower_trimmed: &str) -> bool {
     crate::lexicon::supported_languages().iter().any(|lang| {
+        let folded_input =
+            crate::lexicon::fold_word_for_class(verb_lower_trimmed, lang, "state_verbs");
         crate::lexicon::word_class(lang, "state_verbs")
             .iter()
-            .any(|word| word.eq_ignore_ascii_case(verb_lower_trimmed))
+            .any(|word| {
+                crate::lexicon::fold_word_for_class(word, lang, "state_verbs") == folded_input
+            })
     })
 }
 

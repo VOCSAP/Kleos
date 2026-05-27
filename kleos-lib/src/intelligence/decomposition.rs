@@ -44,14 +44,6 @@ fn filler_prefixes() -> Vec<String> {
         .collect()
 }
 
-fn meta_stoplist() -> Vec<String> {
-    crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "meta_stoplist"))
-        .map(|w| w.to_lowercase())
-        .collect()
-}
-
 #[derive(Debug, Deserialize)]
 struct LlmDecompositionResponse {
     facts: Option<Vec<String>>,
@@ -281,13 +273,24 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
         .filter(|s| s.len() >= 10 && s.len() <= 300)
         .collect();
 
-    // Filter meta-sentences (Patch 38 L2 site 10 -- lexicon-driven)
-    let meta_phrases = meta_stoplist();
+    // Filter meta-sentences (Patch 38 L2 site 10 + normalize).
+    // Compare folded source vs folded meta phrase so accents and casing
+    // never block a match. The meta_stoplist class allows stemming by
+    // default in the TOML, but multi-word entries stem token by token
+    // via fold_for_matching.
     let filtered: Vec<&str> = raw_sentences
         .into_iter()
         .filter(|s| {
-            let lower = s.to_lowercase();
-            !meta_phrases.iter().any(|meta| lower.contains(meta.as_str()))
+            !crate::lexicon::supported_languages().iter().any(|lang| {
+                let folded_s = crate::lexicon::fold_for_matching(s, lang, true);
+                crate::lexicon::word_class(lang, "meta_stoplist")
+                    .iter()
+                    .any(|meta| {
+                        folded_s.contains(
+                            &crate::lexicon::fold_word_for_class(meta, lang, "meta_stoplist"),
+                        )
+                    })
+            })
         })
         .collect();
 

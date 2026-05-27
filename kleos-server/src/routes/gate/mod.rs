@@ -649,16 +649,10 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
 
     const ACTIVATION_THRESHOLD: f64 = 0.6;
 
-    // Patch 38 L2 site 2 -- prohibition markers sourced from the i18n
-    // lexicon across every supported language (EN + FR + future). The
-    // previous hardcoded English-only PROHIBITIONS constant missed every
-    // non-English brain memory; lexicon::prohibition_marker now drives
-    // both languages from a single TOML.
-    let prohibitions: Vec<String> = kleos_lib::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| kleos_lib::lexicon::word_class(lang, "prohibition_marker"))
-        .map(|w| w.to_lowercase())
-        .collect();
+    // Patch 38 L2 site 2 + normalize -- prohibition markers via lexicon,
+    // diacritic + casing tolerant via fold_for_matching. Memories written
+    // in French with proper accents (interdit, déclenché, etc.) match
+    // against the bare ASCII forms the user may produce.
 
     let command_lower = command.to_lowercase();
     let command_tokens: Vec<&str> = command_lower
@@ -670,13 +664,23 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
         if mem.activation < ACTIVATION_THRESHOLD {
             continue;
         }
-        let content_lower = mem.content.to_lowercase();
-        let has_prohibition = prohibitions.iter().any(|k| content_lower.contains(k.as_str()));
+        let has_prohibition = kleos_lib::lexicon::supported_languages().iter().any(|lang| {
+            let folded_content =
+                kleos_lib::lexicon::fold_word_for_class(&mem.content, lang, "prohibition_marker");
+            kleos_lib::lexicon::word_class(lang, "prohibition_marker")
+                .iter()
+                .any(|k| {
+                    folded_content.contains(
+                        &kleos_lib::lexicon::fold_word_for_class(k, lang, "prohibition_marker"),
+                    )
+                })
+        });
         if !has_prohibition {
             continue;
         }
         // Require at least one shared token to avoid tripping on rules that
         // happen to contain "never" but talk about something unrelated.
+        let content_lower = mem.content.to_lowercase();
         let overlaps = command_tokens.iter().any(|t| content_lower.contains(t));
         if !overlaps {
             continue;

@@ -250,20 +250,26 @@ pub async fn generate_header(
 
 /// Remove credential values from arbitrary text before inserting into prompts.
 ///
-/// Patch 38 L2 site 3 -- credential keywords sourced from the i18n lexicon
-/// (`credential_keywords` class) across every supported language so that
-/// French prompts get the same scrubbing protection as English ones.
+/// Patch 38 L2 site 3 + normalize -- credential keywords from the i18n
+/// lexicon, matched through fold_for_matching so that "Mot de Passe :
+/// xxx" matches "mot de passe" without depending on exact casing or
+/// accent presence. The credential_keywords class declares stem = false
+/// in the TOML so api_key / clé_privée etc. are not corrupted by
+/// morphological stemming.
 pub fn scrub_credentials(text: &str) -> String {
-    let scrub_patterns: Vec<String> = crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| crate::lexicon::word_class(lang, "credential_keywords"))
-        .map(|w| w.to_lowercase())
-        .collect();
-
     let mut result = String::with_capacity(text.len());
     for line in text.lines() {
-        let line_lower = line.to_lowercase();
-        let is_cred = scrub_patterns.iter().any(|pat| line_lower.contains(pat.as_str()));
+        let is_cred = crate::lexicon::supported_languages().iter().any(|lang| {
+            let folded_line =
+                crate::lexicon::fold_word_for_class(line, lang, "credential_keywords");
+            crate::lexicon::word_class(lang, "credential_keywords")
+                .iter()
+                .any(|pat| {
+                    folded_line.contains(
+                        &crate::lexicon::fold_word_for_class(pat, lang, "credential_keywords"),
+                    )
+                })
+        });
         if is_cred
             && (line.contains('=')
                 || (line.contains(':') && !line.contains("://") && !line.contains("path")))

@@ -387,11 +387,12 @@ fn extract_date_ref(content: &str) -> Option<String> {
 /// Infer the high-level domain of an object string by scanning the i18n
 /// lexicon for every supported language.
 ///
-/// Patch 38 L2 site 11 -- replaces the prior 7-way English-only if/else
-/// cascade. The ordered tuple list preserves the original priority
+/// Patch 38 L2 site 11 + normalize -- compare folded versions of both
+/// sides so an object like "petit-déjeuner" matches the lexicon entry
+/// "petit-déjeuner" (or its bare ASCII equivalent if the user dropped
+/// the accent and the hyphen). DOMAINS preserves the original priority
 /// (food > entertainment > reading > music > gaming > fitness > travel)
-/// so that an object containing "watch" still resolves to entertainment
-/// rather than fitness when both classes would match.
+/// so overlapping matches resolve deterministically.
 fn infer_domain(object: &str) -> String {
     const DOMAINS: &[(&str, &str)] = &[
         ("domain_food", "food"),
@@ -402,11 +403,14 @@ fn infer_domain(object: &str) -> String {
         ("domain_fitness", "fitness"),
         ("domain_travel", "travel"),
     ];
-    let lower = object.to_lowercase();
     for (class, label) in DOMAINS {
         for lang in crate::lexicon::supported_languages() {
+            let folded_obj = crate::lexicon::fold_for_matching(object, &lang, true);
             let words = crate::lexicon::word_class(&lang, class);
-            if words.iter().any(|w| lower.contains(&w.to_lowercase())) {
+            if words
+                .iter()
+                .any(|w| folded_obj.contains(&crate::lexicon::fold_word_for_class(w, &lang, class)))
+            {
                 return (*label).to_string();
             }
         }

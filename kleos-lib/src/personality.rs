@@ -197,9 +197,13 @@ fn build_intensifier_map() -> HashMap<String, f64> {
     for lang in crate::lexicon::supported_languages() {
         for (class, mult) in TIERS {
             for word in crate::lexicon::word_class(&lang, class) {
-                // Normalize whitespace in multi-word intensifiers so they
-                // match the tokenized form (split_whitespace + replace).
-                let key = word.to_lowercase().replace(' ', "_");
+                // Fold the lexicon word (lowercase + strip-accents, stem
+                // disabled per the intensifier_* TOML metadata). Then
+                // normalise whitespace to underscore so the key matches
+                // the tokeniser convention applied downstream
+                // (split_whitespace + replace).
+                let folded = crate::lexicon::fold_word_for_class(&word, &lang, class);
+                let key = folded.replace(' ', "_");
                 map.entry(key).or_insert(*mult);
             }
         }
@@ -399,19 +403,19 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
         }
     }
 
-    // Emotions (keyword scan per sentence) -- Patch 38 L2 site 8.
-    // Iterate every supported language and every emotion class. The
-    // first matching word wins for a given sentence (preserves the
-    // original "one emotion per sentence" semantics). The subject is
-    // the matched word in its source-language form, which keeps the
-    // signal informative across languages.
+    // Emotions (keyword scan per sentence) -- Patch 38 L2 site 8 +
+    // normalize. Source and lexicon word are both passed through
+    // fold_word_for_class so French expressions like "elle est déçue"
+    // match the lexicon entry "déçu" even though the user typed without
+    // accents, in a different inflection, or both.
     for sentence in &sentences {
-        let lower = sentence.to_lowercase();
         let mut matched = false;
         for lang in crate::lexicon::supported_languages() {
             if matched {
                 break;
             }
+            let folded_sentence =
+                crate::lexicon::fold_for_matching(sentence, &lang, true);
             for class in EMOTION_CLASSES {
                 if matched {
                     break;
@@ -423,7 +427,9 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
                 };
                 let valence = valence_from_signed(valence_signed);
                 for word in crate::lexicon::word_class(&lang, class) {
-                    if lower.contains(&word.to_lowercase()) {
+                    let folded_word =
+                        crate::lexicon::fold_word_for_class(&word, &lang, class);
+                    if folded_sentence.contains(&folded_word) {
                         signals.push(PersonalitySignal {
                             signal_type: SignalType::Emotion,
                             subject: word.clone(),
@@ -507,11 +513,16 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
             sig.intensity = (sig.intensity + avg_sentiment * 0.05).clamp(0.0, 1.0);
         }
 
-        // Intensifier detection (Patch 38 L2 site 5 -- words via lexicon)
+        // Intensifier detection (Patch 38 L2 site 5 + normalize -- words
+        // via lexicon, source-text tokens folded the same way as map keys
+        // so French intensifiers like "très" match "tres" in the source).
         let intensifiers = build_intensifier_map();
-        let words: Vec<String> = sig
-            .source_text
-            .to_lowercase()
+        // The intensifier class has stem = false, so we fold without
+        // stemming -- lowercase + diacritic strip only. We pick "en" as
+        // the fold language since stem is disabled; the result is
+        // language-agnostic in that path.
+        let folded_text = crate::lexicon::fold_for_matching(&sig.source_text, "en", false);
+        let words: Vec<String> = folded_text
             .split_whitespace()
             .map(|w| w.replace(char::is_whitespace, "_"))
             .collect();
