@@ -37,8 +37,25 @@ words = ["sad", "disappointed", "downcast", "discouraged", "blue", "depressed"]
 valence = -0.6
 intensity = 0.5
 
+[classes.intensifier_weakening]
+# multiplier 0.5
+words = ["barely", "hardly"]
+
+[classes.intensifier_softening]
+# multiplier 0.6
+words = ["mildly"]
+
+[classes.intensifier_attenuating]
+# multiplier 0.7
+words = ["somewhat", "slightly", "a_bit", "kind_of", "sort_of"]
+
 [classes.intensifier_strong]
-words = ["very", "really", "extremely", "absolutely", "totally", "completely", "utterly", "highly"]
+# multiplier 1.3
+words = ["very", "really", "super", "totally", "deeply", "strongly", "highly", "completely", "utterly"]
+
+[classes.intensifier_very_strong]
+# multiplier 1.4
+words = ["absolutely", "extremely", "incredibly"]
 
 [classes.negation_marker]
 words = ["not", "no", "never", "none", "neither", "nor", "without"]
