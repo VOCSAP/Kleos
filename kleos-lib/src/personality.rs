@@ -223,42 +223,46 @@ fn build_intensifier_map() -> HashMap<String, f64> {
 // without coverage is silently skipped at the call site.
 
 fn personality_like_pattern_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "verb_like");
+    // Patch 38 L2.B wildcard-after-stem: stem the TOML words once and
+    // add `\w*` so inflected forms (`j'aime`, `aimerais`, `loved`,
+    // `enjoys`) match without TOML duplication. Verb/marker groups stay
+    // non-capturing -- cap[1] = object.
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "verb_like");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
     Regex::new(&format!(
-        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
     ))
     .ok()
 }
 
 fn personality_dislike_pattern_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "verb_dislike");
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "verb_dislike");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
     Regex::new(&format!(
-        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(.+?)(?:\.|,|!|\s+(?:and|but|so|because))"
     ))
     .ok()
 }
 
 fn personality_fav_pattern_for(lang: &str) -> Option<Regex> {
-    let marker = crate::lexicon::word_class_alternation(lang, "favorite_marker");
-    let copula = crate::lexicon::word_class_alternation(lang, "is_or_are");
+    let marker = crate::lexicon::word_class_alternation_stemmed(lang, "favorite_marker");
+    let copula = crate::lexicon::word_class_alternation_stemmed(lang, "is_or_are");
     if marker.is_empty() || copula.is_empty() {
         return None;
     }
@@ -266,59 +270,59 @@ fn personality_fav_pattern_for(lang: &str) -> Option<Regex> {
     // groups around the optional marker so cap[1] / cap[2] still mean
     // (category, value) at the call site.
     Regex::new(&format!(
-        r"(?i)\b(?:my|mon|ma)\s+(?:{marker}\s+)?(.+?)\s+(?:{marker}\s+)?(?:{copula})\s+(.+?)(?:\.|,|$)"
+        r"(?i)\b(?:my|mon|ma)\s+(?:{marker}\w*\s+)?(.+?)\s+(?:{marker}\w*\s+)?(?:{copula}\w*)\s+(.+?)(?:\.|,|$)"
     ))
     .ok()
 }
 
 fn personality_decision_pattern_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "decision_verbs");
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "decision_verbs");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
     Regex::new(&format!(
-        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|!|$)"
+        r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(.+?)(?:\.|,|!|$)"
     ))
     .ok()
 }
 
 fn personality_identity_pattern_for(lang: &str) -> Option<Regex> {
-    let markers = crate::lexicon::word_class_alternation(lang, "identity_markers");
+    let markers = crate::lexicon::word_class_alternation_stemmed(lang, "identity_markers");
     if markers.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
     Regex::new(&format!(
-        r"(?i)\b(?:{pronoun_clause})?(?:{markers})\s+(.+?)(?:\.|,|!|$)"
+        r"(?i)\b(?:{pronoun_clause})?(?:{markers})\w*\s+(.+?)(?:\.|,|!|$)"
     ))
     .ok()
 }
 
 fn personality_value_pattern_for(lang: &str) -> Option<Regex> {
-    let markers = crate::lexicon::word_class_alternation(lang, "value_markers");
+    let markers = crate::lexicon::word_class_alternation_stemmed(lang, "value_markers");
     if markers.is_empty() {
         return None;
     }
-    Regex::new(&format!(r"(?i)\b(?:{markers})\s+(.+?)(?:\.|,|!|$)")).ok()
+    Regex::new(&format!(r"(?i)\b(?:{markers})\w*\s+(.+?)(?:\.|,|!|$)")).ok()
 }
 
 fn personality_motivation_pattern_for(lang: &str) -> Option<Regex> {
-    let markers = crate::lexicon::word_class_alternation(lang, "motivation_markers");
+    let markers = crate::lexicon::word_class_alternation_stemmed(lang, "motivation_markers");
     if markers.is_empty() {
         return None;
     }
-    Regex::new(&format!(r"(?i)\b(?:{markers})\s+(.+?)(?:\.|,|!|$)")).ok()
+    Regex::new(&format!(r"(?i)\b(?:{markers})\w*\s+(.+?)(?:\.|,|!|$)")).ok()
 }
 
 struct PersonalityRegexCache {
