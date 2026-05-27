@@ -174,6 +174,26 @@ words = ["en tant qu'IA", "je suis une IA", "je ne peux pas", "je n'ai pas", "en
 stem = false
 words = ["mot de passe", "mot_de_passe", "secret", "api_key", "apikey", "jeton", "token", "bearer", "autorisation", "credential", "clé_privée", "clé_ssh", "client_secret"]
 
+[classes.atom_decision_markers]
+# Marqueurs introduisant une décision dans un transcript.
+stem = false
+words = ["nous allons", "nous devrions", "on va", "décidé de", "choisi de", "parti avec", "en utilisant", "utilisant"]
+
+[classes.atom_constraint_markers]
+# Marqueurs introduisant une contrainte ou interdiction.
+stem = false
+words = ["ne doit pas", "ne peut pas", "jamais", "toujours", "requis", "interdit", "ne pas"]
+
+[classes.atom_task_markers]
+# Marqueurs introduisant une tâche.
+stem = false
+words = ["TODO:", "à faire", "besoin de", "va implémenter", "va corriger", "va ajouter", "va construire", "il faut"]
+
+[classes.atom_question_markers]
+# Marqueurs introduisant une question ouverte.
+stem = false
+words = ["pas sûr", "pas clair", "question ouverte", "besoin de comprendre", "à éclaircir"]
+
 [classes.decision_verbs]
 # Phrases introduisant une décision ou un choix d'action.
 stem = false

@@ -185,26 +185,79 @@ pub fn make_atom_id(atom_type: AtomType, canonical_form: &str) -> String {
 // Compiled regexes (lazy)
 // ---------------------------------------------------------------------------
 
-static RE_DECISION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(we\s+will|we\s+should|decided\s+to|chose\s+to|went\s+with|using)\b.{1,120}")
-        .expect("RE_DECISION is a valid regex")
-});
+// Patch 38 L2.B 4/4 -- the 4 atom-extraction regexes become per-language
+// templates fed by the lexicon (atom_<kind>_markers classes). The static
+// RE_ENTITY_PATH and RE_ENTITY_LABEL below stay language-agnostic because
+// they encode structural patterns (path prefixes, `file:` / `service:`
+// label syntax) that do not vary across human languages.
 
-static RE_CONSTRAINT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(must\s+not|cannot|never|always|required|forbidden|do\s+not)\b.{1,120}")
-        .expect("RE_CONSTRAINT is a valid regex")
-});
+fn build_atom_regex(markers: &[String]) -> Option<Regex> {
+    if markers.is_empty() {
+        return None;
+    }
+    // Each marker may already contain whitespace (e.g. "we will"); collapse
+    // any inner whitespace into `\s+` so the regex matches normalised
+    // source text. The leading anchor stays an alphanumeric word boundary
+    // where the marker starts on a letter, falling back to a literal
+    // match otherwise (e.g. "TODO:" or "[ ]" begins on punctuation).
+    let alternation = markers
+        .iter()
+        .map(|m| {
+            m.split_whitespace()
+                .map(regex::escape)
+                .collect::<Vec<_>>()
+                .join(r"\s+")
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&format!(r"(?i)(?:\b|(?<=^|\s))(?:{alternation}).{{0,120}}")).ok()
+}
 
-static RE_TASK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:TODO:|need\s+to|going\s+to\s+(?:implement|fix|add|build)|\[\s*\]\s+).{1,120}",
-    )
-    .expect("RE_TASK is a valid regex")
-});
+fn atom_decision_regex_for(lang: &str) -> Option<Regex> {
+    build_atom_regex(&crate::lexicon::word_class(lang, "atom_decision_markers"))
+}
 
-static RE_QUESTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(not\s+sure|unclear|open\s+question|need\s+to\s+figure\s+out)\b.{0,120}")
-        .expect("RE_QUESTION is a valid regex")
+fn atom_constraint_regex_for(lang: &str) -> Option<Regex> {
+    build_atom_regex(&crate::lexicon::word_class(lang, "atom_constraint_markers"))
+}
+
+fn atom_task_regex_for(lang: &str) -> Option<Regex> {
+    build_atom_regex(&crate::lexicon::word_class(lang, "atom_task_markers"))
+}
+
+fn atom_question_regex_for(lang: &str) -> Option<Regex> {
+    build_atom_regex(&crate::lexicon::word_class(lang, "atom_question_markers"))
+}
+
+struct AtomRegexCache {
+    decision: std::collections::HashMap<String, Regex>,
+    constraint: std::collections::HashMap<String, Regex>,
+    task: std::collections::HashMap<String, Regex>,
+    question: std::collections::HashMap<String, Regex>,
+}
+
+static ATOM_REGEX: LazyLock<AtomRegexCache> = LazyLock::new(|| {
+    let mut cache = AtomRegexCache {
+        decision: std::collections::HashMap::new(),
+        constraint: std::collections::HashMap::new(),
+        task: std::collections::HashMap::new(),
+        question: std::collections::HashMap::new(),
+    };
+    for lang in crate::lexicon::supported_languages() {
+        if let Some(r) = atom_decision_regex_for(&lang) {
+            cache.decision.insert(lang.clone(), r);
+        }
+        if let Some(r) = atom_constraint_regex_for(&lang) {
+            cache.constraint.insert(lang.clone(), r);
+        }
+        if let Some(r) = atom_task_regex_for(&lang) {
+            cache.task.insert(lang.clone(), r);
+        }
+        if let Some(r) = atom_question_regex_for(&lang) {
+            cache.question.insert(lang.clone(), r);
+        }
+    }
+    cache
 });
 
 /// Matches Unix-style paths with at least two segments (e.g. /foo/bar.rs or
@@ -250,31 +303,38 @@ pub fn extract_heuristic(text: &str) -> Vec<ExtractedAtom> {
         }};
     }
 
-    // Decisions
-    for cap in RE_DECISION.captures_iter(text) {
-        if let Some(m) = cap.get(0) {
-            push!(AtomType::Decision, m.as_str(), 0.7);
+    // Patch 38 L2.B 4/4 -- iterate over every supported language and apply
+    // that language's atom regex. The push! macro already deduplicates by
+    // canonical lowercase form, so bilingual source text producing two
+    // overlapping matches collapses to a single atom.
+    for lang in crate::lexicon::supported_languages() {
+        if let Some(re) = ATOM_REGEX.decision.get(&lang) {
+            for cap in re.captures_iter(text) {
+                if let Some(m) = cap.get(0) {
+                    push!(AtomType::Decision, m.as_str(), 0.7);
+                }
+            }
         }
-    }
-
-    // Constraints
-    for cap in RE_CONSTRAINT.captures_iter(text) {
-        if let Some(m) = cap.get(0) {
-            push!(AtomType::Constraint, m.as_str(), 0.8);
+        if let Some(re) = ATOM_REGEX.constraint.get(&lang) {
+            for cap in re.captures_iter(text) {
+                if let Some(m) = cap.get(0) {
+                    push!(AtomType::Constraint, m.as_str(), 0.8);
+                }
+            }
         }
-    }
-
-    // Tasks
-    for cap in RE_TASK.captures_iter(text) {
-        if let Some(m) = cap.get(0) {
-            push!(AtomType::Task, m.as_str(), 0.75);
+        if let Some(re) = ATOM_REGEX.task.get(&lang) {
+            for cap in re.captures_iter(text) {
+                if let Some(m) = cap.get(0) {
+                    push!(AtomType::Task, m.as_str(), 0.75);
+                }
+            }
         }
-    }
-
-    // Questions
-    for cap in RE_QUESTION.captures_iter(text) {
-        if let Some(m) = cap.get(0) {
-            push!(AtomType::Question, m.as_str(), 0.65);
+        if let Some(re) = ATOM_REGEX.question.get(&lang) {
+            for cap in re.captures_iter(text) {
+                if let Some(m) = cap.get(0) {
+                    push!(AtomType::Question, m.as_str(), 0.65);
+                }
+            }
         }
     }
 

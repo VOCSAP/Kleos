@@ -172,6 +172,26 @@ words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language m
 stem = false
 words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
 
+[classes.atom_decision_markers]
+# Markers that introduce a decision atom in a transcript.
+stem = false
+words = ["we will", "we should", "decided to", "chose to", "went with", "using"]
+
+[classes.atom_constraint_markers]
+# Markers that introduce a constraint or prohibition.
+stem = false
+words = ["must not", "cannot", "never", "always", "required", "forbidden", "do not"]
+
+[classes.atom_task_markers]
+# Markers that introduce a task or todo item.
+stem = false
+words = ["TODO:", "need to", "going to implement", "going to fix", "going to add", "going to build"]
+
+[classes.atom_question_markers]
+# Markers that introduce an open question.
+stem = false
+words = ["not sure", "unclear", "open question", "need to figure out"]
+
 [classes.decision_verbs]
 # Phrases that introduce a decision or action choice.
 stem = false
