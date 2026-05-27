@@ -25,39 +25,44 @@ fn compile_lang_regex(pattern: &str) -> Option<Regex> {
 }
 
 fn like_regex_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "verb_like");
+    // Patch 38 L2.B wildcard-after-stem: TOML lists infinitives
+    // (`aimer`, `adorer`) but the source is raw user text with
+    // conjugated forms. Stem the alternation and add `\w*` so the
+    // root matches every inflection (`aime`, `aimait`, `aimerions`).
+    // The capture group is preserved (cap[1] = verb, cap[2] = object).
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "verb_like");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
-    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs})\s+(.+?)(?:\.|,|$)");
+    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs}\w*)\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
 fn dislike_regex_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "verb_dislike");
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "verb_dislike");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
-    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs})\s+(.+?)(?:\.|,|$)");
+    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs}\w*)\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
 fn favorite_regex_for(lang: &str) -> Option<Regex> {
-    let markers = crate::lexicon::word_class_alternation(lang, "favorite_marker");
-    let categories = crate::lexicon::word_class_alternation(lang, "favorite_category");
-    let copula = crate::lexicon::word_class_alternation(lang, "is_or_are");
+    let markers = crate::lexicon::word_class_alternation_stemmed(lang, "favorite_marker");
+    let categories = crate::lexicon::word_class_alternation_stemmed(lang, "favorite_category");
+    let copula = crate::lexicon::word_class_alternation_stemmed(lang, "is_or_are");
     if markers.is_empty() || categories.is_empty() || copula.is_empty() {
         return None;
     }
@@ -66,40 +71,42 @@ fn favorite_regex_for(lang: &str) -> Option<Regex> {
     // The template accepts either order so the same regex covers both
     // languages. Marker groups stay non-capturing so the caller still
     // reads cap[1] = category, cap[2] = value (signature preserved).
+    // Stemmed alternations + `\w*` wildcard handle inflected forms
+    // (plurals, gender agreements) without TOML duplication.
     let pattern = format!(
-        r"(?i)\b(?:my|mon|ma)\s+(?:{markers}\s+)?({categories})\s+(?:{markers}\s+)?(?:{copula})\s+(.+?)(?:\.|,|$)"
+        r"(?i)\b(?:my|mon|ma)\s+(?:{markers}\w*\s+)?({categories}\w*)\s+(?:{markers}\w*\s+)?(?:{copula}\w*)\s+(.+?)(?:\.|,|$)"
     );
     compile_lang_regex(&pattern)
 }
 
 fn location_regex_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "location_verbs");
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "location_verbs");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
-    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(.+?)(?:\.|,|$)");
+    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
 fn role_regex_for(lang: &str) -> Option<Regex> {
-    let verbs = crate::lexicon::word_class_alternation(lang, "role_verbs");
+    let verbs = crate::lexicon::word_class_alternation_stemmed(lang, "role_verbs");
     if verbs.is_empty() {
         return None;
     }
-    let pronouns = crate::lexicon::word_class_alternation(lang, "first_person_pronoun");
+    let pronouns = crate::lexicon::word_class_alternation_stemmed(lang, "first_person_pronoun");
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\s+")
+        format!(r"(?:{pronouns})\w*\s+")
     };
     let pattern =
-        format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\s+(?:a\s+|an\s+|my\s+|un\s+|une\s+)?(.+?)(?:\.|,|$)");
+        format!(r"(?i)\b(?:{pronoun_clause})?(?:{verbs})\w*\s+(?:a\s+|an\s+|my\s+|un\s+|une\s+)?(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
