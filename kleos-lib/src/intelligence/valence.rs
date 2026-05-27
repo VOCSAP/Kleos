@@ -57,14 +57,19 @@ static EMOTION_PATTERNS: LazyLock<Vec<EmotionPattern>> = LazyLock::new(|| {
             if words.is_empty() {
                 continue;
             }
-            // Escape each multi-word entry so that "burned out" matches
-            // literally, then join with `|` for the regex alternation.
+            // Patch 38 L2.B wildcard-after-stem: stem each word (one-shot)
+            // and add `\w*` so FR feminine/plural forms (`fatiguee`,
+            // `joyeuses`) match without TOML duplication. Multi-word
+            // entries (`burned out`) keep their inner whitespace; the
+            // case-insensitive flag and trailing `\w*` carry the bulk
+            // of the tolerance.
+            let with_stem = crate::lexicon::class_stem_enabled(&lang, class);
             let alternation = words
                 .iter()
-                .map(|w| regex::escape(w))
+                .map(|w| regex::escape(&crate::lexicon::fold_for_matching(w, &lang, with_stem)))
                 .collect::<Vec<_>>()
                 .join("|");
-            let pattern = format!(r"(?i)\b(?:{alternation})\b");
+            let pattern = format!(r"(?i)\b(?:{alternation})\w*\b");
             let Ok(regex) = Regex::new(&pattern) else {
                 tracing::warn!(class = class, lang = %lang, "valence regex compile failed");
                 continue;
