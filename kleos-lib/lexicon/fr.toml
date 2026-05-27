@@ -58,16 +58,17 @@ words = ["vraiment", "tres", "fort", "totalement", "completement", "profondement
 words = ["absolument", "extremement", "incroyablement"]
 
 [classes.negation_marker]
-words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans"]
+words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans", "n_est_pas", "n_a_pas", "n_etait_pas", "ne_va_pas"]
 
 [classes.causal_strong]
-words = ["cause par", "resulte de", "provoque par", "du fait de", "a cause de", "en raison de"]
+words = ["cause par", "resulte de", "resulte en", "provoque par", "du fait de", "a cause de", "en raison de", "grace a", "declenche"]
 
 [classes.causal_context]
-words = ["apres", "suite a", "compte tenu de", "etant donne", "depuis"]
+words = ["apres", "suite a", "compte tenu de", "etant donne", "depuis", "parce que", "donc", "par consequent"]
 
 [classes.causal_weak]
-words = ["peut-etre", "possiblement", "probablement", "pourrait"]
+# Voir en.toml: melange likelihood + verbes d action causale (broke/fixed equivalent FR).
+words = ["peut-etre", "possiblement", "probablement", "pourrait", "casse", "repare"]
 
 [classes.filler_prefixes]
 words = ["euh", "ben", "alors", "donc", "voila", "tu sais", "en fait", "honnetement"]

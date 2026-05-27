@@ -13,35 +13,48 @@ fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
 
 // ---------------------------------------------------------------------------
 // Causal keyword tables -- ported from eidolon absorb.rs
+// Patch 38 L2 site 6 -- sourced from the i18n lexicon (causal_strong,
+// causal_context, causal_weak, negation_marker) across every supported
+// language. Hardcoded English-only constants removed; the four helpers
+// below assemble the keyword sets on demand. Cost is bounded by the
+// number of supported languages times the words per class (small).
 // ---------------------------------------------------------------------------
 
-const STRONG_CAUSAL: &[&str] = &[
-    "caused by",
-    "resulted in",
-    "led to",
-    "as a result",
-    "due to",
-    "thanks to",
-    "triggered",
-];
+fn strong_causal_keywords() -> Vec<String> {
+    crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "causal_strong"))
+        .map(|w| w.to_lowercase())
+        .collect()
+}
 
-const CONTEXT_CAUSAL: &[&str] = &["because", "since", "therefore", "consequently", "after"];
+fn context_causal_keywords() -> Vec<String> {
+    crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "causal_context"))
+        .map(|w| w.to_lowercase())
+        .collect()
+}
 
-const WEAK_CAUSAL: &[&str] = &["broke", "fixed"];
+fn weak_causal_keywords() -> Vec<String> {
+    crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "causal_weak"))
+        .map(|w| w.to_lowercase())
+        .collect()
+}
 
-const NEGATION: &[&str] = &[
-    "not",
-    "never",
-    "didn't",
-    "wasn't",
-    "isn't",
-    "won't",
-    "can't",
-    "couldn't",
-    "wouldn't",
-    "shouldn't",
-    "no",
-];
+fn negation_keywords() -> Vec<String> {
+    crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "negation_marker"))
+        .map(|w| w.to_lowercase())
+        // The contraction forms in the TOML use underscore as the apostrophe
+        // proxy (didn_t in TOML key, didn't in source text). Normalise both
+        // directions here so the caller compares the canonical form.
+        .map(|w| w.replace('_', "'"))
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // Constants -- ported from eidolon decay.rs
@@ -305,6 +318,10 @@ async fn load_memory_content(
 ///
 /// Returns the total score. A score >= 3.0 triggers a causal edge.
 fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
+    let strong = strong_causal_keywords();
+    let context = context_causal_keywords();
+    let weak = weak_causal_keywords();
+    let negation = negation_keywords();
     let mut score = 0.0f32;
 
     // Pre-compute word indices of all causal keywords.
@@ -315,11 +332,11 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
             break;
         }
         let remaining = &text[prefix_len..];
-        let is_causal_kw = STRONG_CAUSAL
+        let is_causal_kw = strong
             .iter()
-            .chain(CONTEXT_CAUSAL.iter())
-            .chain(WEAK_CAUSAL.iter())
-            .any(|kw| remaining.starts_with(kw));
+            .chain(context.iter())
+            .chain(weak.iter())
+            .any(|kw| remaining.starts_with(kw.as_str()));
         if is_causal_kw {
             all_kw_word_indices.push(wi);
         }
@@ -327,7 +344,7 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
 
     let has_negation = |word_idx: usize| -> bool {
         let start = word_idx.saturating_sub(3);
-        (start..word_idx).any(|i| NEGATION.contains(&words[i]))
+        (start..word_idx).any(|i| negation.iter().any(|n| n.as_str() == words[i]))
     };
 
     let has_nearby_causal = |word_idx: usize| -> bool {
@@ -336,8 +353,8 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
             .any(|&pos| pos != word_idx && (pos as isize - word_idx as isize).unsigned_abs() <= 5)
     };
 
-    for kw in STRONG_CAUSAL {
-        if let Some(pos) = text.find(kw) {
+    for kw in &strong {
+        if let Some(pos) = text.find(kw.as_str()) {
             let word_idx = text[..pos].split_whitespace().count();
             let mut pts = 2.0f32;
             if word_idx < words.len() && has_negation(word_idx) {
@@ -347,8 +364,8 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
         }
     }
 
-    for kw in CONTEXT_CAUSAL {
-        if let Some(pos) = text.find(kw) {
+    for kw in &context {
+        if let Some(pos) = text.find(kw.as_str()) {
             let word_idx = text[..pos].split_whitespace().count();
             let negated = word_idx < words.len() && has_negation(word_idx);
             let has_context = has_nearby_causal(word_idx);
@@ -360,8 +377,8 @@ fn compute_causal_score(text: &str, words: &[&str]) -> f32 {
         }
     }
 
-    for kw in WEAK_CAUSAL {
-        if let Some(pos) = text.find(kw) {
+    for kw in &weak {
+        if let Some(pos) = text.find(kw.as_str()) {
             let word_idx = text[..pos].split_whitespace().count();
             let mut pts = 1.0f32;
             if word_idx < words.len() && has_negation(word_idx) {

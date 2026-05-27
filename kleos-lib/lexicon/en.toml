@@ -58,16 +58,18 @@ words = ["very", "really", "super", "totally", "deeply", "strongly", "highly", "
 words = ["absolutely", "extremely", "incredibly"]
 
 [classes.negation_marker]
-words = ["not", "no", "never", "none", "neither", "nor", "without"]
+words = ["not", "no", "never", "none", "neither", "nor", "without", "didn_t", "wasn_t", "isn_t", "won_t", "can_t", "couldn_t", "wouldn_t", "shouldn_t"]
 
 [classes.causal_strong]
-words = ["caused by", "results from", "produced by", "led to", "because of", "due to"]
+words = ["caused by", "results from", "resulted in", "produced by", "led to", "because of", "due to", "as a result", "thanks to", "triggered"]
 
 [classes.causal_context]
-words = ["after", "following", "as a result of", "given that", "since"]
+words = ["after", "following", "as a result of", "given that", "since", "because", "therefore", "consequently"]
 
 [classes.causal_weak]
-words = ["maybe", "perhaps", "possibly", "might"]
+# Includes both "causal action verbs" (broke / fixed -- X did something to Y)
+# and "likelihood markers" (maybe / perhaps) for shared low-confidence signal.
+words = ["maybe", "perhaps", "possibly", "might", "broke", "fixed"]
 
 [classes.filler_prefixes]
 words = ["um", "uh", "well", "so", "actually", "basically", "literally", "honestly", "you know"]
