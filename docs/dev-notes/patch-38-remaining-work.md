@@ -1,13 +1,75 @@
 # Patch 38 -- Reste a faire (post 2026-05-27)
 
-Etat du tronc : branche `local/patch-38-i18n-core` HEAD `f0b556a5`.
-Couvre L1 + L2.A 12/12 + normalize + L2.B 3/4. Detail : voir
+Etat du tronc : branche `local/patch-38-i18n-core` HEAD `bf1d897b`.
+Couvre L1 + L2.A 12/12 + normalize + L2.B 4/4 + L3 + submodule sync
++ deploy LXC 121 + smoke E2E partiel. Detail : voir
 `docs/dev-notes/local-patches.md` section Patch 38, et
 `docs/dev-notes/i18n-audit.md` section 7 (status post-Patch 38).
 
+## Sections livrees depuis la redaction initiale
+
+- valence.rs 21 EMOTION_PATTERNS (Strategy A retenue) -- commit `839d4f9f`.
+- Livrable 3 migrations v58/v59 + 3 admin endpoints -- commit `521d35b5`.
+- Submodule lexicon-overrides synchronise au commit `b0ee47f`.
+- Deploy LXC 121 -- 16:44 BRT, migrations v58/v59 appliquees, service active.
+
 ## Roadmap restante (ordre suggere)
 
-### 1. valence.rs 22 EMOTION_PATTERNS
+### 1. L2.B fold-then-regex (two-phase match)
+
+Suite directe au smoke E2E 2026-05-27 (memoire issue #5608) qui a montre
+que les 16 patterns L2.B ne matchent pas les conjugues FR (`j'aime`,
+`je deteste`) parce que le matcher compile le regex via
+`word_class_alternation` qui injecte les words bruts du TOML, sans
+faire passer le source text par `fold_for_matching`. Le stemmer Snowball
+existe mais n'agit que sur les 8 sites L2.A qui appellent explicitement
+`fold_word_for_class`.
+
+**Approche retenue (two-phase match)** -- preferee sur le wildcard-after-
+stem qui sur-matcherait `aimable` comme like. Le pipeline devient :
+
+1. **Phase detection** : pour chaque langue, stem les words du TOML et
+   construire un regex `\b(stem1|stem2|...)\w*\b`. Tester la presence
+   d'un match sur la version stemmee du source text. Si pas de match,
+   skip la langue.
+2. **Phase extraction** : si la detection a trouve un verb candidat,
+   relancer un regex non-stemme sur le source text raw pour extraire
+   l'object `(.+?)` avec ses positions, casse, accents intacts. Le
+   verb capture peut etre soit la racine stemmee soit la forme raw,
+   selon le call site.
+
+L'object reste intact (point critique : les downstream consommateurs
+comme `pref key` et `signal source_text` recoivent du texte non
+corrompu). Le verb est detecte tolerablement.
+
+**Variante 1-phase plus pragmatique** : compiler le regex avec une
+ancre apres la racine stemmee : `\b(aim|ador|appreci|prefer|kiff)\w*\b`.
+Une seule passe. Moins precis (over-match `aimable` -> like, `adorable`
+-> like) mais acceptable pour les heuristiques like/dislike. La
+detection over-match est rare en pratique et le signal reste utile.
+
+**Fichiers touches** :
+- `kleos-lib/src/lexicon/mod.rs` -- nouveau helper
+  `word_class_alternation_stemmed(lang, class)` qui retourne
+  l'alternation des racines stemmees.
+- `kleos-lib/src/intelligence/extraction.rs` -- 5 patterns
+  (like/dislike/favorite/location/role).
+- `kleos-lib/src/personality.rs` -- 7 patterns (LIKE/DISLIKE/FAV/
+  DECISION/IDENTITY/VALUE/MOTIVATION).
+- `kleos-lib/src/handoffs/atoms.rs` -- 4 atom patterns.
+- `kleos-lib/src/intelligence/valence.rs` -- 21 EMOTION_PATTERNS
+  (a evaluer, les valence words sont deja en formes communes sans
+  flexion donc le besoin est moindre).
+
+**Reference traceabilite** : memoire issue #5608, spec docs
+`spec_e9f14d5f` (READMEs explanation), smoke E2E 2026-05-27 16:53 BRT.
+
+### 2. valence.rs 21 EMOTION_PATTERNS (LIVRE commit `839d4f9f`)
+
+Section originale conservee pour historique des Strategy A/B/C
+considerees. Strategy A retenue.
+
+### 3. valence.rs 22 EMOTION_PATTERNS
 
 Site 4 de l'audit. Chaque pattern porte `valence` (`f64` dans [-1, 1]) et
 `arousal` (`f64` dans [0, 1]). Decoupage propose :
