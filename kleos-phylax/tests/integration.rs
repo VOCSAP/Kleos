@@ -235,7 +235,7 @@ async fn test_approval_flow() {
     // List leases -- should have at least one active lease.
     let (status, body) = app.request_master("GET", "/phylax/leases", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body["leases"].as_array().unwrap().len() >= 1);
+    assert!(!body["leases"].as_array().unwrap().is_empty());
 }
 
 /// Test that policy-gated resolve endpoints return approvals for agents.
