@@ -37,8 +37,25 @@ words = ["triste", "decu", "decue", "abattu", "abattue", "decourage", "decourage
 valence = -0.6
 intensity = 0.5
 
+[classes.intensifier_weakening]
+# multiplier 0.5
+words = ["a_peine", "presque_pas"]
+
+[classes.intensifier_softening]
+# multiplier 0.6
+words = ["doucement", "mollement"]
+
+[classes.intensifier_attenuating]
+# multiplier 0.7
+words = ["un_peu", "quelque_peu", "plutot", "legerement", "modere"]
+
 [classes.intensifier_strong]
-words = ["vraiment", "extremement", "absolument", "totalement", "completement", "tres", "fort", "hautement"]
+# multiplier 1.3
+words = ["vraiment", "tres", "fort", "totalement", "completement", "profondement", "fortement", "hautement"]
+
+[classes.intensifier_very_strong]
+# multiplier 1.4
+words = ["absolument", "extremement", "incroyablement"]
 
 [classes.negation_marker]
 words = ["non", "pas", "jamais", "aucun", "aucune", "ni", "sans"]

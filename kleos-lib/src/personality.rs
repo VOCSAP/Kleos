@@ -266,28 +266,35 @@ static EMOTION_KEYWORDS: LazyLock<HashMap<&'static str, EmotionMeta>> = LazyLock
     ])
 });
 
-static INTENSIFIERS: LazyLock<HashMap<&'static str, f64>> = LazyLock::new(|| {
-    HashMap::from([
-        ("very", 1.3),
-        ("really", 1.3),
-        ("absolutely", 1.4),
-        ("extremely", 1.4),
-        ("incredibly", 1.4),
-        ("super", 1.3),
-        ("totally", 1.3),
-        ("deeply", 1.3),
-        ("strongly", 1.3),
-        ("highly", 1.3),
-        ("somewhat", 0.7),
-        ("slightly", 0.7),
-        ("a_bit", 0.7),
-        ("kind_of", 0.7),
-        ("sort_of", 0.7),
-        ("barely", 0.5),
-        ("hardly", 0.5),
-        ("mildly", 0.6),
-    ])
-});
+/// Build the intensifier word -> multiplier map from the i18n lexicon.
+///
+/// Patch 38 L2 site 5 -- replaces the hardcoded English-only INTENSIFIERS
+/// static. The map is rebuilt per derive_signals call (cheap given a
+/// small number of tiers and words). Tier multipliers stay in code
+/// because they encode a semantic policy about how strongly each tier
+/// modulates the signal; the words themselves live in the lexicon and
+/// can be extended per language without recompilation.
+fn build_intensifier_map() -> HashMap<String, f64> {
+    const TIERS: &[(&str, f64)] = &[
+        ("intensifier_weakening", 0.5),
+        ("intensifier_softening", 0.6),
+        ("intensifier_attenuating", 0.7),
+        ("intensifier_strong", 1.3),
+        ("intensifier_very_strong", 1.4),
+    ];
+    let mut map = HashMap::new();
+    for lang in crate::lexicon::supported_languages() {
+        for (class, mult) in TIERS {
+            for word in crate::lexicon::word_class(&lang, class) {
+                // Normalize whitespace in multi-word intensifiers so they
+                // match the tokenized form (split_whitespace + replace).
+                let key = word.to_lowercase().replace(' ', "_");
+                map.entry(key).or_insert(*mult);
+            }
+        }
+    }
+    map
+}
 
 // ============================================================================
 // Regex patterns for signal extraction
@@ -564,7 +571,8 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
             sig.intensity = (sig.intensity + avg_sentiment * 0.05).clamp(0.0, 1.0);
         }
 
-        // Intensifier detection
+        // Intensifier detection (Patch 38 L2 site 5 -- words via lexicon)
+        let intensifiers = build_intensifier_map();
         let words: Vec<String> = sig
             .source_text
             .to_lowercase()
@@ -572,7 +580,7 @@ pub fn extract_signals_rule_based(content: &str) -> Vec<PersonalitySignal> {
             .map(|w| w.replace(char::is_whitespace, "_"))
             .collect();
         for word in &words {
-            if let Some(&mult) = INTENSIFIERS.get(word.as_str()) {
+            if let Some(&mult) = intensifiers.get(word.as_str()) {
                 sig.intensity = (sig.intensity * mult).clamp(0.0, 1.0);
             }
         }
