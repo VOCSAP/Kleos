@@ -28,14 +28,89 @@ words = ["the", "a", "an", "and", "or", "but", "so", "for", "to", "of", "in", "o
 words = ["I", "i", "I'm", "I've", "I'll", "I'd"]
 
 [classes.emotion_happy]
-words = ["happy", "joyful", "content", "delighted", "thrilled", "proud", "excited"]
-valence = 0.7
+words = ["happy", "joyful", "delighted", "glad"]
+valence = 1.0
 intensity = 0.6
 
-[classes.emotion_sad]
-words = ["sad", "disappointed", "downcast", "discouraged", "blue", "depressed"]
-valence = -0.6
+[classes.emotion_excited]
+words = ["excited", "eager", "pumped"]
+valence = 1.0
+intensity = 0.8
+
+[classes.emotion_grateful]
+words = ["grateful", "thankful", "appreciative"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_proud]
+words = ["proud", "accomplished"]
+valence = 1.0
+intensity = 0.7
+
+[classes.emotion_relieved]
+words = ["relieved", "reassured"]
+valence = 1.0
 intensity = 0.5
+
+[classes.emotion_thrilled]
+words = ["thrilled", "ecstatic", "elated"]
+valence = 1.0
+intensity = 0.9
+
+[classes.emotion_content]
+words = ["content", "satisfied", "at_peace"]
+valence = 1.0
+intensity = 0.5
+
+[classes.emotion_sad]
+words = ["sad", "downcast", "blue", "depressed", "miserable"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_angry]
+words = ["angry", "furious", "mad", "irritated", "enraged"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_frustrated]
+words = ["frustrated", "exasperated"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_anxious]
+words = ["anxious", "nervous", "uneasy"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_stressed]
+words = ["stressed", "strained", "tense"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_disappointed]
+words = ["disappointed", "let_down", "discouraged"]
+valence = -1.0
+intensity = 0.6
+
+[classes.emotion_overwhelmed]
+words = ["overwhelmed", "swamped"]
+valence = -1.0
+intensity = 0.8
+
+[classes.emotion_lonely]
+words = ["lonely", "isolated", "alone"]
+valence = -1.0
+intensity = 0.7
+
+[classes.emotion_worried]
+words = ["worried", "concerned", "apprehensive"]
+valence = -1.0
+intensity = 0.5
+
+[classes.emotion_bored]
+words = ["bored", "uninterested"]
+valence = -1.0
+intensity = 0.4
 
 [classes.intensifier_weakening]
 # multiplier 0.5

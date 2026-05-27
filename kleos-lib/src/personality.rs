@@ -138,133 +138,44 @@ pub struct StaticMemoryRow {
 // Emotion keywords and intensifiers
 // ============================================================================
 
-struct EmotionMeta {
-    valence: Valence,
-    intensity: f64,
+/// Lexicon class identifiers driving the emotion keyword scan.
+///
+/// Patch 38 L2 site 8 -- the previous hardcoded EMOTION_KEYWORDS HashMap
+/// (English-only, 17 entries) is replaced by an iteration over these
+/// classes for every supported language. Each class declares its
+/// `valence` (signed: positive emotions > 0, negative < 0) and
+/// `intensity` in the TOML lexicon. The Rust side only enumerates
+/// the class names so the canonical taxonomy stays stable across
+/// languages.
+const EMOTION_CLASSES: &[&str] = &[
+    "emotion_happy",
+    "emotion_excited",
+    "emotion_grateful",
+    "emotion_proud",
+    "emotion_relieved",
+    "emotion_thrilled",
+    "emotion_content",
+    "emotion_sad",
+    "emotion_angry",
+    "emotion_frustrated",
+    "emotion_anxious",
+    "emotion_stressed",
+    "emotion_disappointed",
+    "emotion_overwhelmed",
+    "emotion_lonely",
+    "emotion_worried",
+    "emotion_bored",
+];
+
+fn valence_from_signed(signed: f64) -> Valence {
+    if signed > 0.0 {
+        Valence::Positive
+    } else if signed < 0.0 {
+        Valence::Negative
+    } else {
+        Valence::Neutral
+    }
 }
-static EMOTION_KEYWORDS: LazyLock<HashMap<&'static str, EmotionMeta>> = LazyLock::new(|| {
-    HashMap::from([
-        (
-            "happy",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.6,
-            },
-        ),
-        (
-            "excited",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.8,
-            },
-        ),
-        (
-            "grateful",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.7,
-            },
-        ),
-        (
-            "proud",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.7,
-            },
-        ),
-        (
-            "relieved",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.5,
-            },
-        ),
-        (
-            "thrilled",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.9,
-            },
-        ),
-        (
-            "content",
-            EmotionMeta {
-                valence: Valence::Positive,
-                intensity: 0.5,
-            },
-        ),
-        (
-            "sad",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.6,
-            },
-        ),
-        (
-            "angry",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.8,
-            },
-        ),
-        (
-            "frustrated",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.7,
-            },
-        ),
-        (
-            "anxious",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.6,
-            },
-        ),
-        (
-            "stressed",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.7,
-            },
-        ),
-        (
-            "disappointed",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.6,
-            },
-        ),
-        (
-            "overwhelmed",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.8,
-            },
-        ),
-        (
-            "lonely",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.7,
-            },
-        ),
-        (
-            "worried",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.5,
-            },
-        ),
-        (
-            "bored",
-            EmotionMeta {
-                valence: Valence::Negative,
-                intensity: 0.4,
-            },
-        ),
-    ])
-});
 
 /// Build the intensifier word -> multiplier map from the i18n lexicon.
 ///
@@ -488,20 +399,45 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
         }
     }
 
-    // Emotions (keyword scan per sentence)
+    // Emotions (keyword scan per sentence) -- Patch 38 L2 site 8.
+    // Iterate every supported language and every emotion class. The
+    // first matching word wins for a given sentence (preserves the
+    // original "one emotion per sentence" semantics). The subject is
+    // the matched word in its source-language form, which keeps the
+    // signal informative across languages.
     for sentence in &sentences {
         let lower = sentence.to_lowercase();
-        for (keyword, meta) in EMOTION_KEYWORDS.iter() {
-            if lower.contains(keyword) {
-                signals.push(PersonalitySignal {
-                    signal_type: SignalType::Emotion,
-                    subject: keyword.to_string(),
-                    valence: meta.valence,
-                    intensity: meta.intensity,
-                    reasoning: format!("Expressed {} emotion: {keyword}", meta.valence),
-                    source_text: sentence.chars().take(500).collect(),
-                });
-                break; // One emotion per sentence
+        let mut matched = false;
+        for lang in crate::lexicon::supported_languages() {
+            if matched {
+                break;
+            }
+            for class in EMOTION_CLASSES {
+                if matched {
+                    break;
+                }
+                let Some((valence_signed, intensity)) =
+                    crate::lexicon::class_emotion_metadata(&lang, class)
+                else {
+                    continue;
+                };
+                let valence = valence_from_signed(valence_signed);
+                for word in crate::lexicon::word_class(&lang, class) {
+                    if lower.contains(&word.to_lowercase()) {
+                        signals.push(PersonalitySignal {
+                            signal_type: SignalType::Emotion,
+                            subject: word.clone(),
+                            valence,
+                            intensity,
+                            reasoning: format!(
+                                "Expressed {valence} emotion: {word}"
+                            ),
+                            source_text: sentence.chars().take(500).collect(),
+                        });
+                        matched = true;
+                        break;
+                    }
+                }
             }
         }
     }
