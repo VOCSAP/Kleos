@@ -665,5 +665,8 @@ async fn test_redeem_lease_returns_secret() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "redeemed");
-    assert!(!body["secret"].is_null(), "redeemed lease must return the secret");
+    assert!(
+        !body["secret"].is_null(),
+        "redeemed lease must return the secret"
+    );
 }

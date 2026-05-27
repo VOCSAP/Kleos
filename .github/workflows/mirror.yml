@@ -19,4 +19,5 @@ jobs:
           MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
         run: |
           git remote add mirror https://x-access-token:${MIRROR_TOKEN}@github.com/Syntheos-Systems/Kleos.git
-          git push mirror --mirror
+          git push mirror --all --force
+          git push mirror --tags --force

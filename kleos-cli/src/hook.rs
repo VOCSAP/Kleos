@@ -140,8 +140,8 @@ fn build_context_output(event: &str, context: &str) -> Value {
 
 /// POSTs JSON to the local sidecar and returns the parsed response on success.
 async fn sidecar_post(path: &str, body: &Value, timeout: Duration) -> Option<Value> {
-    let base = std::env::var("KLEOS_SIDECAR_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:7711".to_string());
+    let base =
+        std::env::var("KLEOS_SIDECAR_URL").unwrap_or_else(|_| "http://127.0.0.1:7711".to_string());
     let url = format!("{}{}", base, path);
 
     let client = reqwest::Client::new();
@@ -271,10 +271,13 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
     let session_id = extract_session_id(input);
 
     // Recall relevant memories from the sidecar before the prompt is processed.
-    let recall_context = match input.get("prompt").and_then(|v| v.as_str()).filter(|p| !p.is_empty()) {
+    let recall_context = match input
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.is_empty())
+    {
         Some(user_message) => {
-            let budget =
-                std::env::var("KLEOS_RECALL_BUDGET").unwrap_or_else(|_| "mid".to_string());
+            let budget = std::env::var("KLEOS_RECALL_BUDGET").unwrap_or_else(|_| "mid".to_string());
             let max_tokens: usize = std::env::var("KLEOS_RECALL_MAX_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
