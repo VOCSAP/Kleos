@@ -248,27 +248,22 @@ pub async fn generate_header(
 // Living prompt -- Eidolon-style context block with brain recall
 // ---------------------------------------------------------------------------
 
-/// Credential scrubbing patterns. Lines matching any of these patterns AND
-/// containing "=" or ":" (but not "://" or "path") are redacted.
-const SCRUB_PATTERNS: &[&str] = &[
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "api_key",
-    "apikey",
-    "private_key",
-    "bearer",
-    "authorization",
-    "credential",
-];
-
 /// Remove credential values from arbitrary text before inserting into prompts.
+///
+/// Patch 38 L2 site 3 -- credential keywords sourced from the i18n lexicon
+/// (`credential_keywords` class) across every supported language so that
+/// French prompts get the same scrubbing protection as English ones.
 pub fn scrub_credentials(text: &str) -> String {
+    let scrub_patterns: Vec<String> = crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "credential_keywords"))
+        .map(|w| w.to_lowercase())
+        .collect();
+
     let mut result = String::with_capacity(text.len());
     for line in text.lines() {
         let line_lower = line.to_lowercase();
-        let is_cred = SCRUB_PATTERNS.iter().any(|pat| line_lower.contains(pat));
+        let is_cred = scrub_patterns.iter().any(|pat| line_lower.contains(pat.as_str()));
         if is_cred
             && (line.contains('=')
                 || (line.contains(':') && !line.contains("://") && !line.contains("path")))

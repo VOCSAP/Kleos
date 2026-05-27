@@ -59,7 +59,7 @@ words = ["um", "uh", "well", "so", "actually", "basically", "literally", "honest
 words = ["as an AI", "I am an AI", "I cannot", "I do not have", "as a language model", "I am unable", "I'm just", "I don't have access", "I apologize", "let me clarify", "to summarize", "in conclusion"]
 
 [classes.credential_keywords]
-words = ["password", "passphrase", "secret", "api_key", "token", "bearer", "credential", "private_key", "ssh_key", "client_secret"]
+words = ["password", "passwd", "passphrase", "secret", "api_key", "apikey", "token", "bearer", "authorization", "credential", "private_key", "ssh_key", "client_secret"]
 
 [classes.prohibition_marker]
 words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not", "never", "do not", "don't", "banned"]
