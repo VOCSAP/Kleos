@@ -335,14 +335,17 @@ lazy_regex!(
 // ============================================================================
 
 /// Clean a captured subject string: trim, remove leading articles, truncate.
+///
+/// Patch 38 L2 site 4 -- leading articles sourced from the i18n lexicon
+/// (`articles` class) across every supported language so French captures
+/// like "le chien" / "une voiture" / "mes amis" get the same article
+/// stripping as English captures.
 fn clean_subject(raw: &str) -> String {
     let trimmed = raw.trim();
-    let stripped = trimmed
-        .strip_prefix("a ")
-        .or_else(|| trimmed.strip_prefix("an "))
-        .or_else(|| trimmed.strip_prefix("the "))
-        .or_else(|| trimmed.strip_prefix("my "))
-        .or_else(|| trimmed.strip_prefix("our "))
+    let stripped = crate::lexicon::supported_languages()
+        .iter()
+        .flat_map(|lang| crate::lexicon::word_class(lang, "articles"))
+        .find_map(|article| trimmed.strip_prefix(&format!("{} ", article.to_lowercase())))
         .unwrap_or(trimmed);
     let chars: String = stripped.chars().take(200).collect();
     chars
