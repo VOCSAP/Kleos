@@ -7,3 +7,6 @@
 [submodule "gate-rules"]
 	path = gate-rules
 	url = https://github.com/VOCSAP/Kleos.gates-rules.git
+[submodule "lexicon-overrides"]
+	path = lexicon-overrides
+	url = https://github.com/VOCSAP/Kleos.lexicon.git
