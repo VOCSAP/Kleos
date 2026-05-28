@@ -126,20 +126,33 @@ Site 4 de l'audit. Chaque pattern porte `valence` (`f64` dans [-1, 1]) et
 `emotion -> regex assemble a partir des classes emotion_<X>_intense +
 emotion_<X>_mild`. Volume TOML modeste, design coherent avec L2.A.
 
-### 2. extraction.rs 7 patterns unit-specific
+### 2. extraction.rs 7 patterns unit-specific -- LIVRE Patch 38.2 (2026-05-28)
 
-`buy_regex`, `spent_regex`, `have_regex`, `exercise_regex`, `made_regex`,
-`earned_regex` (+ un legacy). Ces patterns encodent :
+Statut : **migration livree** sur la branche `local/patch-38-i18n-core`,
+agent-forge spec `spec_ada22012`, voir `docs/dev-notes/local-patches.md`
+section Patch 38.2.
 
-- Quantite numerique (`\s+(\d+)\s+`) : preservable cross-lang.
-- Devise (`\$([\d,.]+)`) : EN-only ; FR utilise `\d+(?:,\d+)?\s*€` ou
-  `\d+\s+euros`. Necessite un template par convention monetaire.
-- Unites de temps / distance (`hours?|minutes?|mins?|miles?|km`) : EN
-  metric et imperial melanges ; FR aurait `heures?|minutes?|mins?|kilometres?|km`.
+Resume retrospectif :
 
-**Recommandation** : nouvelle classe lexicon `time_units` + `distance_units`
-+ `currency_symbols` (un set par langue). Le helper `_regex_for(lang)`
-interpole ces classes. Layer A+B avec metadata par classe.
+- 6 patterns ont effectivement ete migres (`buy_regex`, `spent_regex`,
+  `have_regex`, `exercise_regex`, `made_regex`, `earned_regex`). Le
+  "+1 legacy" mentionne dans la section originale n'existait pas en pratique.
+- Recommandation originale appliquee : classes lexicon
+  `currency_symbols_prefix` / `currency_symbols_suffix` (au lieu d'un set
+  unique), plus `time_units` et `distance_units`, plus verbes et
+  prepositions par classe dediee.
+- Helpers `_regex_for(lang)` symetriques aux 5 patterns deja migres
+  (like / dislike / favorite / location / role) via `LangRegexCache` +
+  `LazyLock`. Sites d'extraction iterent `supported_languages()` avec
+  dedup `HashSet<String>` sur cle canonique pour les phrases bilingues.
+
+**Reste a faire post-patch :**
+- Build WSL + deploy LXC 121 + smoke E2E FR sur les 6 patterns (corpus FR
+  reel via `POST /memories` + verification `structured_facts` table).
+- Commit + push du submodule `lexicon-overrides` (12 nouvelles classes par
+  langue), bump pointer cote main repo.
+- Mesure empirique : volume de structured_facts FR avant/apres sur LXC 121
+  prod (baseline : 2 facts pour 2282 memoires selon memoire Kleos #4914).
 
 ### 3. Livrable 3 -- migrations + admin endpoints
 
