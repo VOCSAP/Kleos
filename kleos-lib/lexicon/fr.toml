@@ -225,9 +225,19 @@ stem = false
 words = ["plat", "film", "livre", "série", "jeu", "chanson", "couleur", "sport", "endroit", "boisson", "artiste", "groupe", "auteur", "nourriture"]
 
 [classes.is_or_are]
-# Copule utilisée dans le motif favorite_regex.
+# Copule utilisée dans le motif favorite_regex et par le filtre Patch 38.1
+# cross-pattern collision skip (extraction.rs object_starts_with_copula).
+# Enrichi pour couvrir indicatif présent/imparfait/futur + subjonctif courants
+# au lieu d'attendre des cas oubliés en production.
 stem = false
-words = ["est", "sont"]
+words = [
+  "est", "sont", "suis", "es", "sommes", "êtes",
+  "était", "étaient", "étais", "étions", "étiez",
+  "sera", "seront", "serai", "seras", "serez", "serons",
+  "serait", "seraient", "serais", "serions", "seriez",
+  "soit", "soient", "sois", "soyons", "soyez",
+  "être", "été",
+]
 
 [classes.location_verbs]
 # Phrases introduisant un changement ou un état de localisation.
