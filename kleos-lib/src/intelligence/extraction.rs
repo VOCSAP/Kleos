@@ -118,7 +118,7 @@ fn role_regex_for(lang: &str) -> Option<Regex> {
 }
 
 /// Cache of compiled per-language regexes for the 5 i18n-portable patterns,
-/// plus the per-language copula set used by the Patch 38.1 collision skip.
+/// plus the cross-language copula set used by the Patch 38.1 collision skip.
 /// Compiled once on first access from the current state of the lexicon.
 struct LangRegexCache {
     like: HashMap<String, Regex>,
@@ -126,14 +126,22 @@ struct LangRegexCache {
     favorite: HashMap<String, Regex>,
     location: HashMap<String, Regex>,
     role: HashMap<String, Regex>,
-    /// Patch 38.1: per-language set of copula tokens (`is_or_are` class)
-    /// folded with the class's `stem` policy. Used by the LIKE / DISLIKE
-    /// post-match filter to discard captures whose object starts with a
-    /// copula (strong signal that the source is actually a FAVORITE
-    /// structure mis-classified by the verb stem overlap, e.g. FR
-    /// `mon plat prefere est X` where `prefere` collides with stem
-    /// `prefer` of verb_like `preferer`).
-    copulas: HashMap<String, HashSet<String>>,
+    /// Patch 38.1 (v2 -- cross-lang): union of copula tokens (`is_or_are`
+    /// class) folded across ALL supported languages, with stem=false
+    /// projection so the runtime check can fold its candidate token the
+    /// same way regardless of which lang's pattern produced the match.
+    ///
+    /// Rationale: a `verb_like` stem (`prefer` from EN `prefer` or FR
+    /// `preferer`) often matches across languages thanks to `\w*`. The
+    /// match's lang is therefore not a reliable hint for which copula
+    /// vocabulary to consult. The union set absorbs this: if the first
+    /// token of the captured object is a copula in ANY supported lang,
+    /// the match is suspect regardless of which lang's regex produced it.
+    ///
+    /// False-positive risk is minimal: copules are short, distinctive
+    /// grammar words (`is`/`est`/`ist`/`es`...) and rarely appear as
+    /// leading tokens of legitimate LIKE/DISLIKE objects.
+    all_copulas: HashSet<String>,
 }
 
 static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
@@ -142,7 +150,7 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
     let mut favorite = HashMap::new();
     let mut location = HashMap::new();
     let mut role = HashMap::new();
-    let mut copulas: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut all_copulas: HashSet<String> = HashSet::new();
     for lang in crate::lexicon::supported_languages() {
         if let Some(re) = like_regex_for(&lang) {
             like.insert(lang.clone(), re);
@@ -159,17 +167,16 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
         if let Some(re) = role_regex_for(&lang) {
             role.insert(lang.clone(), re);
         }
-        // Patch 38.1: build the copula set for this language. Fold each
-        // word with the class's stem policy so the runtime check folds
-        // its candidate token the same way and comparisons are symmetric.
+        // Patch 38.1 v2: merge every lang's copula set into the global
+        // union. Fold each word with the class's stem policy of THIS
+        // lang (typically stem=false for the grammar class), so the
+        // stored form matches what the runtime check produces.
         let copula_words = crate::lexicon::word_class(&lang, "is_or_are");
         if !copula_words.is_empty() {
             let with_stem = crate::lexicon::class_stem_enabled(&lang, "is_or_are");
-            let set: HashSet<String> = copula_words
-                .iter()
-                .map(|w| crate::lexicon::fold_for_matching(w, &lang, with_stem))
-                .collect();
-            copulas.insert(lang.clone(), set);
+            for w in copula_words {
+                all_copulas.insert(crate::lexicon::fold_for_matching(&w, &lang, with_stem));
+            }
         }
     }
     LangRegexCache {
@@ -178,26 +185,35 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
         favorite,
         location,
         role,
-        copulas,
+        all_copulas,
     }
 });
 
-/// Patch 38.1: returns true when the LIKE / DISLIKE capture is suspect
-/// because its object starts with a copula (`est`, `is`, ...). Strong
-/// indicator that the source is a FAVORITE structure mis-classified by
-/// the verb stem overlap. The check is lang-aware via the cached copula
-/// set; languages without an `is_or_are` class skip the filter entirely
-/// (no copula set -> no false-positive skip).
-fn object_starts_with_copula(lang: &str, object: &str) -> bool {
-    let Some(set) = LANG_REGEX.copulas.get(lang) else {
-        return false;
-    };
+/// Patch 38.1 (v2): returns true when a LIKE / DISLIKE capture is suspect
+/// because its object starts with a copula in any supported language.
+/// Cross-lang on purpose: `verb_like` stems often match cross-lang via
+/// `\w*` (EN `prefer` matches FR `prefere`), so the match's lang does
+/// not reliably indicate which copula vocabulary to consult. We fold the
+/// candidate token under each supported lang and check membership in the
+/// global union -- a hit in any lang means skip.
+///
+/// Languages without an `is_or_are` class contribute nothing to the
+/// union, so they cannot trigger a false-positive skip.
+fn object_starts_with_copula(object: &str) -> bool {
     let Some(first_token) = object.split_whitespace().next() else {
         return false;
     };
-    let with_stem = crate::lexicon::class_stem_enabled(lang, "is_or_are");
-    let folded = crate::lexicon::fold_for_matching(first_token, lang, with_stem);
-    set.contains(&folded)
+    // Try every supported lang's fold projection. The union set was
+    // built from per-lang folds, so the candidate must be folded the
+    // same way to compare apples to apples.
+    for lang in crate::lexicon::supported_languages() {
+        let with_stem = crate::lexicon::class_stem_enabled(&lang, "is_or_are");
+        let folded = crate::lexicon::fold_for_matching(first_token, &lang, with_stem);
+        if LANG_REGEX.all_copulas.contains(&folded) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Retained for symmetry with other modules. Extraction writes errors are
@@ -400,7 +416,7 @@ pub async fn fast_extract_facts(
                 // copula -- strong signal the source is actually a
                 // FAVORITE structure ("mon plat prefere est X") that
                 // the verb stem overlap mis-classified as LIKE.
-                if object_starts_with_copula(&lang, object) {
+                if object_starts_with_copula(object) {
                     continue;
                 }
                 if object.len() > 3 && object.len() < 100 {
@@ -421,7 +437,7 @@ pub async fn fast_extract_facts(
             for cap in re.captures_iter(content) {
                 let object = cap[2].trim();
                 // Patch 38.1: same cross-pattern collision skip as LIKE.
-                if object_starts_with_copula(&lang, object) {
+                if object_starts_with_copula(object) {
                     continue;
                 }
                 if object.len() > 3 && object.len() < 100 {
