@@ -452,6 +452,7 @@ mod tests {
             is_static: None,
             user_id: Some(user_id),
             space_id: None,
+            space: None,
             parent_memory_id: None,
             chunk_embeddings: None,
         }

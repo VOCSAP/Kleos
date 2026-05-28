@@ -913,6 +913,7 @@ mod tests {
             is_static: None,
             user_id: Some(user_id),
             space_id: None,
+            space: None,
             parent_memory_id: None,
             chunk_embeddings: None,
         }
@@ -929,6 +930,8 @@ mod tests {
             threshold: None,
             user_id: Some(user_id),
             space_id: None,
+            space: None,
+            include_unscoped: Some(false),
             include_forgotten: None,
             mode: None,
             question_type: Some(QuestionType::FactRecall),
