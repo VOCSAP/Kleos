@@ -38,9 +38,15 @@ fn like_regex_for(lang: &str) -> Option<Regex> {
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\w*\s+")
+        format!(r"(?:(?:{pronouns})\w*\s+)")
     };
-    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs}\w*)\s+(.+?)(?:\.|,|$)");
+    // Patch 38 L2.B fix: wrap the alternation in `(?:...)` BEFORE
+    // applying the `\w*` wildcard. Without the inner group, regex
+    // priority makes `aim|ador|appreci|prefer|kiff\w*` parse as
+    // `(aim) OR (ador) OR ... OR (kiff\w*)` and only the last
+    // alternative gets the suffix. With `(?:...)\w*` the wildcard
+    // applies to every alternative.
+    let pattern = format!(r"(?i)\b{pronoun_clause}?((?:{verbs})\w*)\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
@@ -53,9 +59,9 @@ fn dislike_regex_for(lang: &str) -> Option<Regex> {
     let pronoun_clause = if pronouns.is_empty() {
         String::new()
     } else {
-        format!(r"(?:{pronouns})\w*\s+")
+        format!(r"(?:(?:{pronouns})\w*\s+)")
     };
-    let pattern = format!(r"(?i)\b(?:{pronoun_clause})?({verbs}\w*)\s+(.+?)(?:\.|,|$)");
+    let pattern = format!(r"(?i)\b{pronoun_clause}?((?:{verbs})\w*)\s+(.+?)(?:\.|,|$)");
     compile_lang_regex(&pattern)
 }
 
@@ -71,10 +77,11 @@ fn favorite_regex_for(lang: &str) -> Option<Regex> {
     // The template accepts either order so the same regex covers both
     // languages. Marker groups stay non-capturing so the caller still
     // reads cap[1] = category, cap[2] = value (signature preserved).
-    // Stemmed alternations + `\w*` wildcard handle inflected forms
-    // (plurals, gender agreements) without TOML duplication.
+    // Patch 38 L2.B fix: each alternation is wrapped in `(?:...)` so
+    // the `\w*` wildcard applies to every alternative (regex priority
+    // would otherwise attach the wildcard only to the last word).
     let pattern = format!(
-        r"(?i)\b(?:my|mon|ma)\s+(?:{markers}\w*\s+)?({categories}\w*)\s+(?:{markers}\w*\s+)?(?:{copula}\w*)\s+(.+?)(?:\.|,|$)"
+        r"(?i)\b(?:my|mon|ma)\s+(?:(?:{markers})\w*\s+)?((?:{categories})\w*)\s+(?:(?:{markers})\w*\s+)?(?:(?:{copula})\w*)\s+(.+?)(?:\.|,|$)"
     );
     compile_lang_regex(&pattern)
 }
