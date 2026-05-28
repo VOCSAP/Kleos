@@ -98,6 +98,12 @@ pub fn chunk_text_with_limit(
             end
         };
 
+        // Patch 39: floor `actual_end` defensively. SENTENCE_BREAK.find
+        // returns a char-safe offset, rfind(' ') is also char-safe (ASCII
+        // space), but a future edit could change either to a byte-arith
+        // pattern. Cheap idempotent guard.
+        let actual_end = floor_char_boundary(text, actual_end);
+
         let chunk = text[start..actual_end].trim().to_string();
         if !chunk.is_empty() {
             chunks.push(chunk);
@@ -106,6 +112,13 @@ pub fn chunk_text_with_limit(
         let step = (actual_end - start).saturating_sub(overlap);
         let min_step = chunk_size * 3 / 10;
         start += step.max(min_step);
+        // Patch 39: floor `start` to a char boundary so the next iteration
+        // does not slice `&text[start..end]` inside a multi-byte glyph.
+        // The previous logic relied on `start` always landing on a
+        // boundary thanks to `actual_end` being floored, but the
+        // `min_step` fallback (chunk_size * 3 / 10) can advance to an
+        // arbitrary byte index when `step` is below the floor.
+        start = floor_char_boundary(text, start);
     }
 
     chunks
