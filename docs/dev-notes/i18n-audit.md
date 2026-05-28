@@ -312,3 +312,22 @@ Workflow : edit code Rust -> spec_task agent-forge -> commit -> rebuild WSL (15-
 **Regle de decision** : si le symptome peut etre exprime comme "il manque ce mot / cette forme dans la classe X de la langue Y", c est TOML. Si le symptome demande "il faut changer COMMENT le regex est construit ou COMMENT le pipeline appelle la classe", c est code.
 
 **Anti-pattern** : utiliser le TOML pour contourner un bug code en listant manuellement toutes les inflexions FR. Court terme efficace mais multiplie la maintenance par N (chaque verb x ~5 conjugues x M langues) et casse l intention du stem+wildcard. Preferer le fix code propre une fois le diagnostic confirme.
+
+### Patch 38.1 -- cross-pattern collision skip (LIKE/DISLIKE vs FAVORITE)
+
+Smoke E2E 2026-05-28 a revele que `Mon plat prefere est le couscous.` produisait la preference `general:likes est le couscous` au lieu de `plat:favorite: le couscous`. Cause : le pattern LIKE FR matche le mot `prefere` (adjectif marker FR) via le stem `prefer` du verb `preferer` (verb_like), capturant `est le couscous` comme object. Le pattern FAVORITE qui aurait du gerer ce cas n a pas l occasion de matcher en premier.
+
+**Heuristique pragmatique applique au code** : apres un match LIKE / DISLIKE, si le premier token de l object est dans la classe lexicon `is_or_are` (set de copules par langue, folded avec la stem policy de la classe), skip le match. La copule en debut d object est un signal fort qu on a en realite affaire a une structure favorite.
+
+**Le code consomme la classe TOML, n hardcode rien.** Pour etendre la couverture (ajouter une copule oubliee, supporter une nouvelle langue) :
+```toml
+# lexicon-overrides/fr.toml
+[classes.is_or_are]
+stem = false
+words = ["est", "sont", "etait", "etaient", "sera", "seront", "soit", "soient", "etre", "ete"]
+```
+Edit -> commit + push -> `git -C /var/lib/kleos/lexicon pull` cote LXC 121 -> effet sous 5s via cache TTL. Aucun rebuild.
+
+Convention : enrichir le TOML up-front avec les formes courantes (indicatif present + imparfait + futur + subjonctif FR ; was/were/been EN) plutot que d attendre des cas oublies en production. Cout TOML negligeable, evite des regressions silencieuses.
+
+Implementation : `kleos-lib/src/intelligence/extraction.rs::LangRegexCache` gagne un champ `copulas: HashMap<String, HashSet<String>>` peuple au boot. Helper `object_starts_with_copula(lang, object)` fait le check. Patterns FAVORITE / LOCATION / ROLE / DECISION / IDENTITY / VALUE / MOTIVATION non concernes (collisions cross-pattern uniquement observees pour LIKE/DISLIKE).
