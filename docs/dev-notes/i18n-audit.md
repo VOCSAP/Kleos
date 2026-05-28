@@ -330,4 +330,10 @@ Edit -> commit + push -> `git -C /var/lib/kleos/lexicon pull` cote LXC 121 -> ef
 
 Convention : enrichir le TOML up-front avec les formes courantes (indicatif present + imparfait + futur + subjonctif FR ; was/were/been EN) plutot que d attendre des cas oublies en production. Cout TOML negligeable, evite des regressions silencieuses.
 
-Implementation : `kleos-lib/src/intelligence/extraction.rs::LangRegexCache` gagne un champ `copulas: HashMap<String, HashSet<String>>` peuple au boot. Helper `object_starts_with_copula(lang, object)` fait le check. Patterns FAVORITE / LOCATION / ROLE / DECISION / IDENTITY / VALUE / MOTIVATION non concernes (collisions cross-pattern uniquement observees pour LIKE/DISLIKE).
+Implementation : `kleos-lib/src/intelligence/extraction.rs::LangRegexCache` gagne un champ `all_copulas: HashSet<String>` (union cross-lang) peuple au boot. Helper `object_starts_with_copula(object)` fait le check.
+
+**Note importante -- cross-language match** : la premiere version (per-lang set) ne fonctionnait pas car le `verb_like` stem `prefer` est present dans EN ET FR (`prefer`/`preferer`), donc une source FR `mon resto prefere est X` matche aussi via la passe EN. Le check etait scope par `lang` du match, mais `est` n est pas dans le set EN -> pas de skip. Resolu en passant a un set GLOBAL union de toutes les copules de toutes les langs supportees : si le first_token est une copule dans NIMPORTE QUELLE langue, c est suspect. Risque faux-positif minimal (copules sont des mots tres courts et specifiques).
+
+**Portee a etendre -- autres patterns cross-lang** : le risque de cross-language match existe pour TOUS les patterns Patch 38 L2.B qui iterent sur `supported_languages()` (extraction, personality, atoms, valence). Pour LIKE/DISLIKE le symptome est observe (collision avec FAVORITE). Pour les autres patterns (DECISION, IDENTITY, VALUE, MOTIVATION, etc.) le risque existe mais aucun symptome similaire n a encore ete observe en prod. Recommandation : mesurer empiriquement avant d etendre la logique de skip cross-pattern a d autres families. Si un cas se presente, le pattern `union set global + check lang-agnostic` est reutilisable.
+
+Patterns FAVORITE / LOCATION / ROLE non concernes par CETTE heuristique specifique (collisions LIKE-vs-FAVORITE uniquement observees pour le moment).
