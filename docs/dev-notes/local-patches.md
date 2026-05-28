@@ -4252,6 +4252,50 @@ agent-forge spec : `spec_7dad1d09`.
 
 ---
 
+## Patch 38.2 -- extraction.rs 6 unit-specific patterns migrated to per-language
+
+**Branche** : `local/patch-38-i18n-core`
+**Spec agent-forge** : `spec_ada22012`
+**Date** : 2026-05-28
+**Niveau delta upstream** : chirurgical (refactor d'un fichier deja patche Patch 38 L2.B) + additif (12 nouvelles classes lexicon dans le submodule overlay).
+
+**Symptome :** Avant Patch 38.2, six regex de `kleos-lib/src/intelligence/extraction.rs` restaient hardcodes en anglais avec syntaxe unit-specific non i18n-portable :
+- `spent_regex` : `\$([\d,.]+)` USD-only ;
+- `earned_regex` : `\$([\d,.]+)` USD-only ;
+- `exercise_regex` : unites `hours?|minutes?|mins?|miles?|km` EN ;
+- `buy_regex`, `have_regex`, `made_regex` : verbes EN seulement.
+
+Le commentaire upstream lignes 274-283 reconnaissait explicitement la limite et renvoyait a `docs/dev-notes/i18n-audit.md` comme future work. Sur un transcript francais (J'ai depense 50 euros pour les courses, J'ai couru 5 km hier), zero fact extrait.
+
+**Approche :** Reutiliser le pattern Patch 38 L2.B deja en place pour les 5 autres regex (like / dislike / favorite / location / role) :
+1. 6 helpers `_regex_for(lang) -> Option<Regex>` qui lisent les classes lexicon par langue et composent le pattern via `word_class_alternation_stemmed`.
+2. Extension de `LangRegexCache` (struct + `LazyLock` init) avec 6 nouveaux `HashMap<String, Regex>`.
+3. Refactor des 6 sites d'extraction (lignes 449-528 pre-patch) en une boucle `for lang in supported_languages()` avec dedup `HashSet<String> seen_facts` sur cle canonique.
+4. Helper `currency_amount_fragment(lang)` qui choisit prefix (`$50`, convention EN) vs suffix (`50 euros`, convention FR) selon quelle classe lexicon est non-vide pour cette langue.
+5. Helper `currency_label(lang)` qui retourne `"dollars"` / `"euros"` pour le slot `[unit:...]` du fact format.
+6. Suppression des 6 anciennes fn statiques `OnceLock` + import `OnceLock` retire (n'est plus utilise dans extraction.rs).
+
+**Fichiers touches :**
+- `kleos-lib/src/intelligence/extraction.rs` (~250 lignes : +6 helpers + extension `LangRegexCache` + refactor 6 sites d'extraction + 7 tests FR additionnels + suppression 6 anciennes fn statiques + maj commentaire migration)
+- `lexicon-overrides/en.toml` (+12 classes : extract_{buy,spent,have,exercise,made,earned}_verbs + extract_{spent,earned}_preposition + currency_symbols_{prefix,suffix} + time_units + distance_units)
+- `lexicon-overrides/fr.toml` (+12 classes equivalentes en FR avec stems FR conjugues)
+
+**Convention currency** : chaque langue ne renseigne qu'une seule des deux classes `currency_symbols_prefix` ou `currency_symbols_suffix` selon sa norme native. Si une langue renseigne les deux, `currency_amount_fragment` prend prefix d'abord (convention).
+
+**Tests :**
+- Les 2 tests EN existants (`test_buy_regex_captures`, `test_spent_regex_captures`) sont conserves et adaptes pour appeler les nouveaux helpers `_for("en")`.
+- 7 nouveaux tests FR : `test_buy_regex_captures_fr`, `test_spent_regex_captures_fr`, `test_exercise_regex_captures_fr`, `test_earned_regex_captures_fr`, `test_have_regex_captures_fr`, `test_made_regex_captures_fr`, `test_currency_label`.
+- `cargo check -p kleos-lib --features bundled-sqlite` passe a 0 erreur (10 warnings pre-existants).
+- `cargo test -p kleos-lib` bloque sur une dette pre-existante (`StoreRequest missing space` dans 8 sites de test Patch 33+), confirme via `git stash` puis re-test. Non lie au Patch 38.2. Validation tests cibles a faire post-build WSL.
+
+**Verification (apres deploy LXC 121) :** Pre-patch, le test FR `J'ai depense 50 euros pour les courses` produit 0 fact. Post-patch, il produit `{verb: "spent", amount: 50, object: "les courses", unit: "euros"}`. Idem pour les 5 autres patterns.
+
+**Conditions de retrait :** Le pattern lexicon-driven est strictement plus general que l'ancien hardcode EN. Candidat PR upstream legitime : la migration ne casse aucun cas EN (les classes EN populent les memes verbes que l'ancien hardcode), et debloque toutes les autres langues via simple ajout d'un overlay TOML.
+
+agent-forge spec : `spec_ada22012`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
