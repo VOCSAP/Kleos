@@ -284,3 +284,31 @@ Patch 38 livre sur branche `local/patch-38-i18n-core`. Statut par site :
 - extraction.rs 7 patterns unit-specific (buy/spent/have/exercise/made/earned) : design dedie pour EN/FR currency + units.
 - Build WSL + deploy LXC 121 + smoke E2E contradiction FR cross-space (`j'aime`, `je deteste`, accords feminin/pluriel emotions).
 - Mesure empirique over-match `aimable` -> verb_like (acceptable au MVP, fix possible via phase 2 verification additive).
+
+### Arbre de decision : TOML overlay vs modif code
+
+Patch 38 a livre un systeme overlay TOML (`lexicon-overrides/` submodule + `${KLEOS_DATA_DIR}/lexicon/` cote LXC 121) precisement pour ajuster le vocabulaire SANS rebuild (cascade env > KLEOS_DATA_DIR > embedded, hot reload TTL 5s). Reflexe a appliquer face a un symptome i18n :
+
+**Cas "lexicalement trivial" -- voie TOML overlay (hot reload, 0 rebuild)** :
+- Mot manquant dans une classe (ajouter `raffoler` a `verb_like`).
+- Conjugue/inflexion non couvert par stem+wildcard (lister explicitement `j'aime`, `aimerais` dans le TOML).
+- Orthographe corrigee (`apprecier` -> `apprécier`).
+- Nouveau bucket d'emotion ou de domaine (`emotion_relief` avec valence + arousal metadata).
+- Toggle `stem = false` sur une classe (eviter over-stemming).
+- Reorthographie d'accents ou apostrophes.
+
+Workflow : edit `lexicon-overrides/<lang>.toml` -> commit -> push -> `git -C /var/lib/kleos/lexicon pull` cote LXC 121 -> effet sous 5s via cache TTL.
+
+**Cas "bug / faute lexical importante" -- voie modif code + rebuild** :
+- Bug dans la structure du regex template (mon cas 2026-05-28 : priorite `|` operator -- le `\w*` ne s appliquait qu au dernier element de l alternation).
+- Bug dans les captures groups (mauvaise position de cap[N], capture absente).
+- Bug dans le pipeline d extraction (call site oublie, ordre des regex, dedup).
+- Bug dans le mecanisme stem/fold (helper Snowball, normalisation Unicode).
+- Nouvelle classe lexicale necessitant un nouveau site Rust (nouvelle famille de regex, nouveau call site dans extraction.rs ou personality.rs).
+- Modification de signature publique du module `lexicon`.
+
+Workflow : edit code Rust -> spec_task agent-forge -> commit -> rebuild WSL (15-20 min) -> deploy LXC 121.
+
+**Regle de decision** : si le symptome peut etre exprime comme "il manque ce mot / cette forme dans la classe X de la langue Y", c est TOML. Si le symptome demande "il faut changer COMMENT le regex est construit ou COMMENT le pipeline appelle la classe", c est code.
+
+**Anti-pattern** : utiliser le TOML pour contourner un bug code en listant manuellement toutes les inflexions FR. Court terme efficace mais multiplie la maintenance par N (chaque verb x ~5 conjugues x M langues) et casse l intention du stem+wildcard. Preferer le fix code propre une fois le diagnostic confirme.
