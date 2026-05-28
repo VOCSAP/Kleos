@@ -2,7 +2,7 @@
 //!
 //! Ported from intelligence/extraction.ts. Pure regex, no LLM needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, OnceLock};
 
 use crate::db::Database;
@@ -117,7 +117,8 @@ fn role_regex_for(lang: &str) -> Option<Regex> {
     compile_lang_regex(&pattern)
 }
 
-/// Cache of compiled per-language regexes for the 5 i18n-portable patterns.
+/// Cache of compiled per-language regexes for the 5 i18n-portable patterns,
+/// plus the per-language copula set used by the Patch 38.1 collision skip.
 /// Compiled once on first access from the current state of the lexicon.
 struct LangRegexCache {
     like: HashMap<String, Regex>,
@@ -125,6 +126,14 @@ struct LangRegexCache {
     favorite: HashMap<String, Regex>,
     location: HashMap<String, Regex>,
     role: HashMap<String, Regex>,
+    /// Patch 38.1: per-language set of copula tokens (`is_or_are` class)
+    /// folded with the class's `stem` policy. Used by the LIKE / DISLIKE
+    /// post-match filter to discard captures whose object starts with a
+    /// copula (strong signal that the source is actually a FAVORITE
+    /// structure mis-classified by the verb stem overlap, e.g. FR
+    /// `mon plat prefere est X` where `prefere` collides with stem
+    /// `prefer` of verb_like `preferer`).
+    copulas: HashMap<String, HashSet<String>>,
 }
 
 static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
@@ -133,6 +142,7 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
     let mut favorite = HashMap::new();
     let mut location = HashMap::new();
     let mut role = HashMap::new();
+    let mut copulas: HashMap<String, HashSet<String>> = HashMap::new();
     for lang in crate::lexicon::supported_languages() {
         if let Some(re) = like_regex_for(&lang) {
             like.insert(lang.clone(), re);
@@ -149,6 +159,18 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
         if let Some(re) = role_regex_for(&lang) {
             role.insert(lang.clone(), re);
         }
+        // Patch 38.1: build the copula set for this language. Fold each
+        // word with the class's stem policy so the runtime check folds
+        // its candidate token the same way and comparisons are symmetric.
+        let copula_words = crate::lexicon::word_class(&lang, "is_or_are");
+        if !copula_words.is_empty() {
+            let with_stem = crate::lexicon::class_stem_enabled(&lang, "is_or_are");
+            let set: HashSet<String> = copula_words
+                .iter()
+                .map(|w| crate::lexicon::fold_for_matching(w, &lang, with_stem))
+                .collect();
+            copulas.insert(lang.clone(), set);
+        }
     }
     LangRegexCache {
         like,
@@ -156,8 +178,27 @@ static LANG_REGEX: LazyLock<LangRegexCache> = LazyLock::new(|| {
         favorite,
         location,
         role,
+        copulas,
     }
 });
+
+/// Patch 38.1: returns true when the LIKE / DISLIKE capture is suspect
+/// because its object starts with a copula (`est`, `is`, ...). Strong
+/// indicator that the source is a FAVORITE structure mis-classified by
+/// the verb stem overlap. The check is lang-aware via the cached copula
+/// set; languages without an `is_or_are` class skip the filter entirely
+/// (no copula set -> no false-positive skip).
+fn object_starts_with_copula(lang: &str, object: &str) -> bool {
+    let Some(set) = LANG_REGEX.copulas.get(lang) else {
+        return false;
+    };
+    let Some(first_token) = object.split_whitespace().next() else {
+        return false;
+    };
+    let with_stem = crate::lexicon::class_stem_enabled(lang, "is_or_are");
+    let folded = crate::lexicon::fold_for_matching(first_token, lang, with_stem);
+    set.contains(&folded)
+}
 
 /// Retained for symmetry with other modules. Extraction writes errors are
 /// logged inline via `warn!` and do not propagate, so `?` + this helper is
@@ -355,6 +396,13 @@ pub async fn fast_extract_facts(
         if let Some(re) = LANG_REGEX.like.get(&lang) {
             for cap in re.captures_iter(content) {
                 let object = cap[2].trim();
+                // Patch 38.1: skip captures whose object starts with a
+                // copula -- strong signal the source is actually a
+                // FAVORITE structure ("mon plat prefere est X") that
+                // the verb stem overlap mis-classified as LIKE.
+                if object_starts_with_copula(&lang, object) {
+                    continue;
+                }
                 if object.len() > 3 && object.len() < 100 {
                     let domain = infer_domain(object);
                     let key = format!("{domain}:likes {object}");
@@ -372,6 +420,10 @@ pub async fn fast_extract_facts(
         if let Some(re) = LANG_REGEX.dislike.get(&lang) {
             for cap in re.captures_iter(content) {
                 let object = cap[2].trim();
+                // Patch 38.1: same cross-pattern collision skip as LIKE.
+                if object_starts_with_copula(&lang, object) {
+                    continue;
+                }
                 if object.len() > 3 && object.len() < 100 {
                     let domain = infer_domain(object);
                     let key = format!("{domain}:dislikes {object}");
