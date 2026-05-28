@@ -356,11 +356,11 @@ pub async fn reflect(
 
     let existing_block = match req.existing_growth.as_deref() {
         Some(existing) => {
-            let truncated = if existing.len() > 4000 {
-                &existing[..4000]
-            } else {
-                existing
-            };
+            // Patch 39: utf-8 safe truncation -- raw &existing[..4000]
+            // panics when byte 4000 lands inside a multi-byte glyph
+            // (frequent on FR/CJK/emoji content). Caps at 4000 bytes
+            // or the largest prefix ending on a char boundary below.
+            let truncated = crate::str_safe::truncate_at_char(existing, 4000);
             format!(
                 "Things I already know (do NOT repeat these):\n{}\n\n",
                 truncated

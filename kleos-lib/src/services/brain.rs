@@ -1529,8 +1529,10 @@ pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<Str
         let ratio = matched as f64 / keywords.len() as f64;
 
         if ratio < 0.25 {
+            // Patch 39: utf-8 safe truncation -- raw &claim[..80] panics
+            // when byte 80 lands inside a multi-byte glyph.
             let truncated = if claim.len() > 80 {
-                format!("{}...", &claim[..80])
+                format!("{}...", crate::str_safe::truncate_at_char(claim, 80))
             } else {
                 claim.clone()
             };
