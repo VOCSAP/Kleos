@@ -223,9 +223,17 @@ stem = false
 words = ["food", "movie", "book", "show", "game", "song", "color", "colour", "sport", "place", "drink", "artist", "band", "author"]
 
 [classes.is_or_are]
-# Copula used inside the favorite_regex tail.
+# Copula used inside the favorite_regex tail and by the Patch 38.1
+# cross-pattern collision skip (extraction.rs object_starts_with_copula).
+# Enriched to cover present/past/future/perfect copula forms up-front
+# rather than waiting for missed cases in production.
 stem = false
-words = ["is", "are"]
+words = [
+  "is", "are", "am",
+  "was", "were",
+  "be", "been", "being",
+  "'s", "'re", "'m",
+]
 
 [classes.location_verbs]
 # Phrases that introduce a location change or current location.
