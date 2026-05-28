@@ -48,6 +48,7 @@ pub mod services;
 pub mod sessions;
 pub mod skills;
 pub mod space;
+pub mod str_safe;
 pub mod sync;
 pub mod tenant;
 pub mod validation;
