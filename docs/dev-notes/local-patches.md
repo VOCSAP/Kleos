@@ -4209,6 +4209,49 @@ agent-forge spec : `spec_01e9984f`.
 
 ---
 
+## Patch 39 -- utf-8 safety helpers (2026-05-28)
+
+**Symptome / motivation** -- Audit logs LXC 121 post-deploy Patch 38 L2.B revele 2 panics historiques `thread 'tokio-rt-worker' panicked at ...:74:26: start byte index N is not a char boundary; it is inside 'é'` sur `kleos-lib/src/embeddings/chunking.rs` (5x observe) et 2x sur `kleos-lib/src/memory/scoring.rs:480`. Audit elargi sur les modules consommateurs de user content (intelligence, personality, handoffs, lexicon, embeddings, memory, services, brain) identifie 4 sites qui slicent des `&str` par byte index sans verifier les char boundaries UTF-8. Avec l i18n FR Patch 38 plus actif, la frequence d apparition augmente (contenu FR riche en `é`, `è`, `à`, ainsi qu emojis dans les conversations).
+
+**Approche** -- Niveau delta `additif (helper) + chirurgical sur upstream pur (4 fixes)`. Centralisation du pattern de truncation safe via nouveau module `kleos_lib::str_safe` (miroir factorise de la defense explicite deja en place dans `services/broca.rs:1309-1314`).
+
+**Sites identifies par l audit (verification cross-call-site)** :
+
+| Site | Pattern | Statut | Fix |
+|---|---|---|---|
+| `embeddings/chunking.rs:74,86,101` | `&text[start..end]` | BUG panic 5x prod | Floor `start` apres increment + floor `actual_end` defensif |
+| `memory/scoring.rs:480` | `&rest[..10]` | BUG panic 2x prod | `rest.get(..10)` qui skip None proprement |
+| `intelligence/growth.rs:360` | `&existing[..4000]` | BUG latent | `str_safe::truncate_at_char(existing, 4000)` |
+| `services/brain.rs:1533` | `&claim[..80]` | BUG latent | `str_safe::truncate_at_char(claim, 80)` |
+
+Sites verifies SAFE (audit complete) : `brain/reasoning.rs:71` (`char_indices().nth(max_len)`), `memory/scoring.rs:555` (find-based), `intelligence/llm.rs:141` (find/rfind-based), `services/loom.rs:299,1921`, `services/broca.rs:1188,1315` (defense explicite).
+
+**Helper** :
+
+```rust
+pub fn truncate_at_char(s: &str, max_bytes: usize) -> &str
+```
+
+Retourne le plus grand prefixe de `s` qui (a) fait au plus `max_bytes` bytes (b) se termine sur une char boundary. Cas degeneres : `max_bytes >= s.len()` -> `s` tel quel (zero cost), `max_bytes == 0` -> `""`, premier char plus grand que cap -> `""`. 7 tests unitaires couvrent ASCII, FR `é`, emoji 4-byte, CJK 3-byte, leading-multibyte-too-large, idempotence sur boundary, len edge cases.
+
+**Fichiers touches (additifs)** :
+- kleos-lib/src/str_safe.rs (nouveau, ~100 lignes avec 7 tests)
+- kleos-lib/src/lib.rs (+1 ligne `pub mod str_safe;`)
+
+**Fichiers touches (chirurgical sur upstream pur)** :
+- kleos-lib/src/embeddings/chunking.rs (+9 lignes : floor `actual_end` + floor `start` apres increment + commentaires)
+- kleos-lib/src/memory/scoring.rs (~5 lignes : `rest.get(..10)` au lieu de `&rest[..10]`)
+- kleos-lib/src/intelligence/growth.rs (~3 lignes : appel `str_safe::truncate_at_char`)
+- kleos-lib/src/services/brain.rs (~3 lignes : appel `str_safe::truncate_at_char`)
+
+**Verification** : `cargo check -p kleos-lib --features bundled-sqlite --lib` passe a 0 erreur (10 warnings pre-existants cred/bootstrap.rs, non lies). Tests `str_safe` non executables cote Windows MSVC pour dette laterale `StoreRequest space` field manquant (Patch 33+ heritage, hors scope). Validation prevue via WSL build + smoke E2E LXC 121.
+
+**Conditions de retrait** -- Les 4 fixes sont des bug-fixes purs (le code panic, le fix evite le panic). Candidat PR upstream legitime apres validation. Le helper `str_safe::truncate_at_char` est additif et reutilisable par tout futur site avec un besoin similaire (etend la convention deja presente dans `broca.rs`).
+
+agent-forge spec : `spec_7dad1d09`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
