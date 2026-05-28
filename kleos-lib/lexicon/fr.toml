@@ -417,3 +417,56 @@ words = ["voyage", "voyager", "visiter", "trajet", "destination"]
 
 [classes.prohibition_marker]
 words = ["interdit", "interdite", "prohibé", "prohibée", "non autorisé", "refusé", "bloqué", "restreint", "ne doit pas", "ne peut pas", "jamais", "ne pas", "banni"]
+
+# ---------------------------------------------------------------------------
+# Patch 38.2 -- extraction.rs unit-specific patterns. FR convention:
+# currency goes AFTER the amount (50 euros, 50€).
+# ---------------------------------------------------------------------------
+
+[classes.extract_buy_verbs]
+stem = true
+words = ["acheté", "achetée", "acquis", "acquise", "reçu", "reçue", "commandé", "commandée", "pris", "prise"]
+
+[classes.extract_spent_verbs]
+stem = true
+words = ["dépensé", "dépensée", "payé", "payée", "réglé", "réglée", "déboursé", "déboursée"]
+
+[classes.extract_spent_preposition]
+stem = false
+words = ["pour", "en", "sur"]
+
+[classes.extract_have_verbs]
+stem = true
+words = ["possède", "possèdes", "possèdent", "ai", "avons", "as", "ont"]
+
+[classes.extract_exercise_verbs]
+stem = true
+words = ["couru", "marché", "randonné", "nagé", "pédalé", "fait", "parcouru"]
+
+[classes.extract_made_verbs]
+stem = true
+words = ["fait", "cuit", "cuisiné", "préparé", "préparée", "réalisé", "réalisée"]
+
+[classes.extract_earned_verbs]
+stem = true
+words = ["gagné", "gagnée", "reçu", "reçue", "touché", "touchée", "obtenu", "obtenue"]
+
+[classes.extract_earned_preposition]
+stem = false
+words = ["pour", "par", "en", "de", "depuis"]
+
+[classes.currency_symbols_prefix]
+stem = false
+words = []
+
+[classes.currency_symbols_suffix]
+stem = false
+words = ["€", "EUR", "euros", "euro"]
+
+[classes.time_units]
+stem = false
+words = ["heures", "heure", "minutes", "minute", "mins", "min", "h"]
+
+[classes.distance_units]
+stem = false
+words = ["kilomètres", "kilomètre", "km", "mètres", "mètre"]
