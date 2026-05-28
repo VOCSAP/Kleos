@@ -269,8 +269,11 @@ fn personality_fav_pattern_for(lang: &str) -> Option<Regex> {
     // Marker placement varies (EN before, FR after). Use non-capturing
     // groups around the optional marker so cap[1] / cap[2] still mean
     // (category, value) at the call site.
+    // Patch 38 L2.B fix: wrap each alternation in `(?:...)` BEFORE
+    // applying the `\w*` wildcard, otherwise regex priority attaches
+    // the suffix only to the last alternative.
     Regex::new(&format!(
-        r"(?i)\b(?:my|mon|ma)\s+(?:{marker}\w*\s+)?(.+?)\s+(?:{marker}\w*\s+)?(?:{copula}\w*)\s+(.+?)(?:\.|,|$)"
+        r"(?i)\b(?:my|mon|ma)\s+(?:(?:{marker})\w*\s+)?(.+?)\s+(?:(?:{marker})\w*\s+)?(?:(?:{copula})\w*)\s+(.+?)(?:\.|,|$)"
     ))
     .ok()
 }
