@@ -476,8 +476,12 @@ pub fn extract_query_date(query: &str) -> Option<String> {
     // ISO date
     if let Some(pos) = q.find(|c: char| c.is_ascii_digit()) {
         let rest = &q[pos..];
-        if rest.len() >= 10 {
-            let c = &rest[..10];
+        // Patch 39: use `get` instead of indexed slicing. An ISO date
+        // is pure ASCII (YYYY-MM-DD = 10 bytes), so if `rest[..10]`
+        // would land mid-char on a multi-byte glyph, this region cannot
+        // possibly be an ISO date -- `get(..10)` returns None and we
+        // fall through to the "Month day" branch below cleanly.
+        if let Some(c) = rest.get(..10) {
             if c.as_bytes()[4] == b'-'
                 && c.as_bytes()[7] == b'-'
                 && c[..4].chars().all(|x| x.is_ascii_digit())
