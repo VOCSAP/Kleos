@@ -413,3 +413,58 @@ words = ["travel", "visit", "trip"]
 
 [classes.prohibition_marker]
 words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not", "never", "do not", "don't", "banned"]
+
+# ---------------------------------------------------------------------------
+# Patch 38.2 -- extraction.rs unit-specific patterns (buy/spent/have/exercise/
+# made/earned). EN convention: currency goes BEFORE the amount ($50). FR uses
+# the suffix convention (50 euros). Each language populates only the
+# convention it natively uses; the helper picks the non-empty class.
+# ---------------------------------------------------------------------------
+
+[classes.extract_buy_verbs]
+stem = true
+words = ["bought", "purchased", "got", "acquired", "received", "ordered", "picked up"]
+
+[classes.extract_spent_verbs]
+stem = true
+words = ["spent", "paid"]
+
+[classes.extract_spent_preposition]
+stem = false
+words = ["on", "for"]
+
+[classes.extract_have_verbs]
+stem = true
+words = ["have", "has", "own", "got", "owns"]
+
+[classes.extract_exercise_verbs]
+stem = true
+words = ["ran", "jogged", "walked", "hiked", "swam", "cycled", "biked", "exercised"]
+
+[classes.extract_made_verbs]
+stem = true
+words = ["made", "baked", "cooked", "prepared"]
+
+[classes.extract_earned_verbs]
+stem = true
+words = ["earned", "made", "received", "got"]
+
+[classes.extract_earned_preposition]
+stem = false
+words = ["from", "for", "in"]
+
+[classes.currency_symbols_prefix]
+stem = false
+words = ["$", "USD"]
+
+[classes.currency_symbols_suffix]
+stem = false
+words = []
+
+[classes.time_units]
+stem = false
+words = ["hours", "hour", "minutes", "minute", "mins", "min"]
+
+[classes.distance_units]
+stem = false
+words = ["miles", "mile", "km", "kilometers", "kilometer"]
