@@ -73,6 +73,10 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                         // NULL legacy memories isolate naturally (NULL = NULL
                         // is false in SQL) -- safe-by-default during the
                         // Patch 33 transition window.
+                        // Patch 38.3 -- also exclude soft-deleted (is_forgotten)
+                        // memories, aligning on the discipline of every other
+                        // intelligence pass (duplicates.rs, temporal.rs,
+                        // consolidation.rs); this fn was the lone exception.
                         "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
                          FROM structured_facts sf \
                          JOIN memories m_cand ON m_cand.id = sf.memory_id \
@@ -81,6 +85,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                            AND sf.memory_id != ?3 \
                            AND sf.id != ?4 \
                            AND m_cand.space_id = m_new.space_id \
+                           AND m_cand.is_forgotten = 0 \
+                           AND m_new.is_forgotten = 0 \
                          ORDER BY sf.confidence DESC",
                     )
                     .map_err(rusqlite_to_eng_error)?;
@@ -171,6 +177,8 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                     // naturally because NULL = NULL evaluates to false in
                     // SQL, so legacy rows neither merge with each other
                     // nor with spaced rows -- safe-by-default in transition.
+                    // Patch 38.3 -- also exclude soft-deleted (is_forgotten)
+                    // memories on both sides, aligning on duplicates.rs:30.
                     "SELECT sf1.memory_id, sf2.memory_id, \
                             sf1.subject, sf1.predicate, sf1.object, sf2.object, \
                             sf1.confidence, sf2.confidence \
@@ -182,6 +190,8 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                      JOIN memories m1 ON m1.id = sf1.memory_id \
                      JOIN memories m2 ON m2.id = sf2.memory_id \
                        AND m1.space_id = m2.space_id \
+                       AND m1.is_forgotten = 0 \
+                       AND m2.is_forgotten = 0 \
                      LIMIT 500",
                 )
                 .map_err(rusqlite_to_eng_error)?;

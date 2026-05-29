@@ -4296,6 +4296,34 @@ agent-forge spec : `spec_ada22012`.
 
 ---
 
+## Patch 38.3 -- contradiction.rs filtre is_forgotten (cross-call-site discipline)
+
+**Branche** : `local/patch-38-i18n-core`
+**Spec agent-forge** : `spec_45506d84` / hypothese `hyp_e1b85e24`
+**Date** : 2026-05-29
+**Niveau delta upstream** : chirurgical (4 lignes SQL ajoutees + 2 commentaires), candidat PR upstream.
+
+**Symptome :** Les memoires soft-deleted (`is_forgotten = 1`, posees par `kleos-cli delete` avec `forget_reason = user_deleted`) continuaient de generer des contradictions dans `scan_all_contradictions` et `detect_contradictions`. Observe pendant le smoke E2E du 2026-05-29 : les memoires de test 6771/6772 supprimees (GET `/memory/{id}` -> 404, presentes dans `/memory/trash` avec `is_forgotten = true`) apparaissaient toujours dans le scan.
+
+**Diagnostic (cross-call-site, cf. `.claude/rules/kleos-patching-discipline.md`) :** `contradiction.rs` avait **0** filtre `is_forgotten`, alors que toutes les autres passes intelligence le filtrent : `duplicates.rs:30` (`ms.is_forgotten=0 AND mt.is_forgotten=0`), `temporal.rs` (4 sites), `consolidation.rs` (5), plus `memory/search.rs`, `admin`, `compression`, `context/deps`. La discipline majoritaire revele l'intention upstream ; `contradiction.rs` etait la seule exception, donc le bug.
+
+**Approche :** Ajouter `AND m.is_forgotten = 0` sur les deux cotes des deux requetes JOIN memories, sur le modele `duplicates.rs:30` :
+1. `detect_contradictions` (online) : `AND m_cand.is_forgotten = 0 AND m_new.is_forgotten = 0`.
+2. `scan_all_contradictions` (scan) : `AND m1.is_forgotten = 0 AND m2.is_forgotten = 0`.
+
+**Scope :** `is_forgotten` uniquement. `is_archived` exclu : la discipline est divisee (filtre par `consolidation` mais pas par `duplicates` ni `temporal`), et `duplicates.rs` -- le module le plus analogue a `contradiction.rs` (comparaison de paires) -- ne le filtre pas. Une memoire archivee reste consultable, donc legitime dans la detection.
+
+**Fichiers touches :**
+- `kleos-lib/src/intelligence/contradiction.rs` (2 string literals SQL + 2 commentaires `Patch 38.3`, zero changement de signature).
+
+**Tests :**
+- `cargo check -p kleos-lib --features bundled-sqlite` passe (10 warnings pre-existants sans rapport).
+- Validation E2E deterministe (les memoires forgotten disparaissent du scan) : a faire post-build WSL + deploy LXC 121.
+
+**Conditions de retrait :** Strictement additif, aligne sur la discipline existante. Candidat PR upstream : aucun cas non-forgotten n'est affecte, le filtre ne fait qu'exclure les memoires deja soft-deleted que l'utilisateur a explicitement oubliees.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
