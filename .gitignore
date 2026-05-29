@@ -61,18 +61,16 @@ graphify-out/
 backup/
 KLEOS.md
 
-# Plan/TODO/progress artefacts (skills + dev-notes locales)
-docs/dev-notes/*-todo.md
-docs/dev-notes/*-plan.md
+# docs/dev-notes : travail en cours / fait, NON public (depot public).
+# Seul local-patches.md reste tracke (reference des patches VOCSAP).
+docs/dev-notes/*
+!docs/dev-notes/local-patches.md
+
+# Plan/TODO/progress artefacts (racine, hors dev-notes)
 task_plan.md
 progress.md
 findings.md
 session-checkpoint.md
-docs/dev-notes/vector-index-investigation-2026-05-19.md
-docs/dev-notes/dreamer-brouillons-review-*.md
-docs/dev-notes/kleos-mcp-usage.md
-docs/dev-notes/agent-forge-guide.md
-docs/dev-notes/kleos-sh-kr-kw-ke-architecture.md
 
 # Project-scoped MCP server config -- path command is poste-specific (cf. Patch 18)
 .mcp.json
