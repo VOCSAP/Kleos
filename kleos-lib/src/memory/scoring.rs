@@ -30,6 +30,50 @@ pub const DEFAULT_VECTOR_FLOOR: f64 = 0.15;
 pub const RRF_K: f64 = 60.0;
 pub const RECENCY_WEIGHT: f64 = 0.15;
 
+/// Extra classifier keywords loaded once from env vars at first use.
+/// Each var is a comma-separated list of lowercase phrases that are
+/// merged with the built-in keyword arrays inside `classify_question_mixed`.
+///
+/// Env vars (all optional, additive — never replace the built-ins):
+///   KLEOS_CLASSIFIER_TEMPORAL_EXTRA
+///   KLEOS_CLASSIFIER_PREFERENCE_EXTRA
+///   KLEOS_CLASSIFIER_REASONING_EXTRA
+///   KLEOS_CLASSIFIER_FACTRECALL_EXTRA
+///   KLEOS_CLASSIFIER_GENERALIZATION_EXTRA
+static EXTRA_CLASSIFIER_KEYWORDS: LazyLock<HashMap<QuestionType, Vec<String>>> =
+    LazyLock::new(|| {
+        let defs = [
+            (QuestionType::Temporal, "KLEOS_CLASSIFIER_TEMPORAL_EXTRA"),
+            (
+                QuestionType::Preference,
+                "KLEOS_CLASSIFIER_PREFERENCE_EXTRA",
+            ),
+            (QuestionType::Reasoning, "KLEOS_CLASSIFIER_REASONING_EXTRA"),
+            (
+                QuestionType::FactRecall,
+                "KLEOS_CLASSIFIER_FACTRECALL_EXTRA",
+            ),
+            (
+                QuestionType::Generalization,
+                "KLEOS_CLASSIFIER_GENERALIZATION_EXTRA",
+            ),
+        ];
+        let mut map = HashMap::new();
+        for (qt, var) in defs {
+            if let Ok(v) = std::env::var(var) {
+                let kws: Vec<String> = v
+                    .split(',')
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !kws.is_empty() {
+                    map.insert(qt, kws);
+                }
+            }
+        }
+        map
+    });
+
 pub fn question_strategy(qt: QuestionType) -> SearchStrategy {
     match qt {
         QuestionType::FactRecall => SearchStrategy {
@@ -229,6 +273,14 @@ pub fn classify_question_mixed(query: &str) -> HashMap<QuestionType, f64> {
         &["what kind of", "what type of", "taste in", "style of"],
     ) {
         *scores.entry(QuestionType::Preference).or_default() += 0.4;
+    }
+
+    // Apply any extra keywords configured via env vars.
+    for (qt, kws) in EXTRA_CLASSIFIER_KEYWORDS.iter() {
+        let refs: Vec<&str> = kws.iter().map(|s| s.as_str()).collect();
+        if contains_any(&q, &refs) {
+            *scores.entry(*qt).or_default() += 0.5;
+        }
     }
 
     let total: f64 = scores.values().sum();
@@ -567,5 +619,45 @@ mod tests {
             "got {}",
             s.vector_weight
         );
+    }
+
+    #[test]
+    fn classifier_preference_enables_personality_signals() {
+        let weights = classify_question_mixed("what music do you enjoy and love most?");
+        let strategy = blend_strategies(&weights);
+        assert!(
+            strategy.include_personality_signals,
+            "Preference query should enable personality signals"
+        );
+        assert!(strategy.personality_weight > 0.0);
+    }
+
+    #[test]
+    fn classifier_factrecall_disables_personality_signals() {
+        let weights = classify_question_mixed("what did i visit last week?");
+        let strategy = blend_strategies(&weights);
+        assert!(
+            !strategy.include_personality_signals,
+            "FactRecall query should not enable personality signals"
+        );
+    }
+
+    #[test]
+    fn classifier_reasoning_enables_personality_signals() {
+        let weights = classify_question_mixed("why did I decide to change jobs?");
+        let strategy = blend_strategies(&weights);
+        assert!(
+            strategy.include_personality_signals,
+            "Reasoning query should enable personality signals"
+        );
+    }
+
+    #[test]
+    fn extra_classifier_keywords_env_var_is_additive() {
+        // Verify the built-in keywords are unaffected whether env var is set or not.
+        // (Runtime env-var loading via LazyLock cannot be reliably tested in parallel
+        // unit tests — covered by integration tests instead.)
+        let w = classify_question_mixed("what do you prefer?");
+        assert!(w.contains_key(&QuestionType::Preference));
     }
 }
