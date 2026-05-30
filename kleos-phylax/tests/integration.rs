@@ -585,8 +585,8 @@ async fn test_phylax_audit_writes_attribution_columns() {
 }
 
 #[tokio::test]
-/// Verify lease redemption returns the resolved secret after approval.
-async fn test_redeem_lease_returns_secret() {
+/// Verify lease redemption consumes approval without returning the secret value.
+async fn test_redeem_lease_does_not_return_plaintext_secret() {
     let app = TestApp::new().await;
 
     let (status, _body) = app
@@ -665,8 +665,24 @@ async fn test_redeem_lease_returns_secret() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "redeemed");
-    assert!(
-        !body["secret"].is_null(),
-        "redeemed lease must return the secret"
+    assert!(body["secret"].is_null());
+    assert_eq!(
+        body["message"],
+        "plaintext delivery disabled until proxy delivery is enabled"
     );
+    assert!(
+        !body.to_string().contains("super-secret-key"),
+        "redeemed lease response must not contain the secret value"
+    );
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            &format!("/phylax/leases/{}/redeem", jti),
+            None,
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "lease already redeemed");
 }

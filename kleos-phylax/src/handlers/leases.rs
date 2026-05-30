@@ -9,7 +9,7 @@ use serde_json::json;
 
 use kleos_cred::CredError;
 use kleos_credd::auth::Auth;
-use kleos_credd::handlers::{get_secret_with_fallback, AppError};
+use kleos_credd::handlers::AppError;
 
 use crate::audit::{actions, log_phylax_audit};
 use crate::models::lease;
@@ -43,7 +43,7 @@ pub async fn list_leases(
     Ok(Json(json!({ "leases": items })))
 }
 
-/// Atomically redeem a lease and return the resolved secret.
+/// Atomically redeem a lease and return metadata without exposing secret bytes.
 pub async fn redeem_lease(
     Auth(auth): Auth,
     State(state): State<PhylaxState>,
@@ -92,13 +92,11 @@ pub async fn redeem_lease(
     )
     .await;
 
-    let (_, secret_data) =
-        get_secret_with_fallback(&state.inner, l.user_id, &l.category, &l.secret_name).await?;
-
     Ok(Json(json!({
         "lease": l.to_json(),
         "status": "redeemed",
-        "secret": secret_data,
+        "message": "plaintext delivery disabled until proxy delivery is enabled",
+        "secret": null,
     }))
     .into_response())
 }
