@@ -420,6 +420,9 @@ async fn search_memories(
             if let Some(s) = r.temporal_boost {
                 item["temporal_boost"] = json!(s);
             }
+            if let Some(s) = r.personality_signal_score {
+                item["personality_signal_score"] = json!(s);
+            }
             if let Some(ref linked) = r.linked {
                 item["linked"] = json!(linked);
             }

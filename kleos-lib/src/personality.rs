@@ -289,6 +289,44 @@ static INTENSIFIERS: LazyLock<HashMap<&'static str, f64>> = LazyLock::new(|| {
     ])
 });
 
+/// Additional emotion keywords loaded from env vars at startup.
+/// KLEOS_PERSONALITY_POSITIVE_EXTRA and KLEOS_PERSONALITY_NEGATIVE_EXTRA
+/// accept comma-separated keyword lists (e.g. "verliebt,selig").
+static EXTRA_EMOTION_KEYWORDS: LazyLock<HashMap<String, EmotionMeta>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    if let Ok(v) = std::env::var("KLEOS_PERSONALITY_POSITIVE_EXTRA") {
+        for kw in v
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+        {
+            map.insert(
+                kw,
+                EmotionMeta {
+                    valence: Valence::Positive,
+                    intensity: 0.65,
+                },
+            );
+        }
+    }
+    if let Ok(v) = std::env::var("KLEOS_PERSONALITY_NEGATIVE_EXTRA") {
+        for kw in v
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+        {
+            map.insert(
+                kw,
+                EmotionMeta {
+                    valence: Valence::Negative,
+                    intensity: 0.65,
+                },
+            );
+        }
+    }
+    map
+});
+
 // ============================================================================
 // Regex patterns for signal extraction
 // ============================================================================
@@ -474,21 +512,27 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
         }
     }
 
-    // Emotions (keyword scan per sentence)
+    // Emotions (keyword scan per sentence — built-ins + env-var extras)
     for sentence in &sentences {
         let lower = sentence.to_lowercase();
-        for (keyword, meta) in EMOTION_KEYWORDS.iter() {
-            if lower.contains(keyword) {
-                signals.push(PersonalitySignal {
-                    signal_type: SignalType::Emotion,
-                    subject: keyword.to_string(),
-                    valence: meta.valence,
-                    intensity: meta.intensity,
-                    reasoning: format!("Expressed {} emotion: {keyword}", meta.valence),
-                    source_text: sentence.chars().take(500).collect(),
-                });
-                break; // One emotion per sentence
-            }
+        let found = EMOTION_KEYWORDS
+            .iter()
+            .map(|(k, m)| (*k, m.valence, m.intensity))
+            .chain(
+                EXTRA_EMOTION_KEYWORDS
+                    .iter()
+                    .map(|(k, m)| (k.as_str(), m.valence, m.intensity)),
+            )
+            .find(|(kw, _, _)| lower.contains(*kw));
+        if let Some((kw, valence, intensity)) = found {
+            signals.push(PersonalitySignal {
+                signal_type: SignalType::Emotion,
+                subject: kw.to_string(),
+                valence,
+                intensity,
+                reasoning: format!("Expressed {} emotion: {kw}", valence),
+                source_text: sentence.chars().take(500).collect(),
+            });
         }
     }
 
@@ -1494,5 +1538,42 @@ mod tests {
             "Should contain KEY THEMES section"
         );
         assert!(profile.contains("2 signals"), "Should mention signal count");
+    }
+
+    #[test]
+    fn detect_signals_returns_scores_for_emotional_content() {
+        let signals =
+            detect_signals("I feel really excited about this project. I love building things.");
+        assert!(
+            !signals.is_empty(),
+            "Should detect signals in emotional content"
+        );
+        for (_, intensity) in &signals {
+            assert!(
+                *intensity >= 0.0 && *intensity <= 1.0,
+                "intensity must be in [0, 1]"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_signals_empty_for_neutral_content() {
+        let signals = detect_signals("The server started on port 4200.");
+        assert!(
+            signals.is_empty(),
+            "Should not detect signals in neutral technical content"
+        );
+    }
+
+    #[test]
+    fn extra_emotion_keywords_env_var_is_additive() {
+        // Built-in keywords must always work regardless of env-var state.
+        // (LazyLock-based env-var loading cannot be reliably tested in parallel
+        // unit tests — covered by integration tests instead.)
+        let signals = detect_signals("I feel happy today.");
+        assert!(
+            !signals.is_empty(),
+            "Built-in emotion keywords must always be active"
+        );
     }
 }

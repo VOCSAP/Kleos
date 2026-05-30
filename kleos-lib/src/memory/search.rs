@@ -9,6 +9,7 @@ use crate::memory::types::{
     FacetBucket, FacetedSearchRequest, FacetedSearchResponse, LinkedMemory, QuestionType,
     SearchBudget, SearchRequest, SearchResult, TagCooccurrence, VersionChainEntry,
 };
+use crate::personality;
 use crate::validation::{DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, RERANKER_TOP_K};
 use crate::Result;
 use lru::LruCache;
@@ -850,6 +851,20 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
             * contr
             * recency_boost;
         c.combined_score = c.score;
+
+        // Personality signal boost: detect emotion/preference signals in the
+        // candidate content and apply as a multiplicative boost when the
+        // strategy requests personality-weighted recall.
+        if strategy.include_personality_signals && !c.content.is_empty() {
+            let signals = personality::detect_signals(&c.content);
+            if !signals.is_empty() {
+                let avg_intensity =
+                    signals.iter().map(|(_, v)| v).sum::<f64>() / signals.len() as f64;
+                let clamped = avg_intensity.clamp(0.0, 1.0);
+                c.personality_signal_score = Some((clamped * 1000.0).round() / 1000.0);
+                c.combined_score *= 1.0 + clamped * strategy.personality_weight;
+            }
+        }
 
         let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
         c.rrf_pre_boost = Some(r3(rrf));
