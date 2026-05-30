@@ -22,6 +22,7 @@ use crate::{
     brain_absorber::absorb_activity_to_brain,
     error::AppError,
     extractors::{Auth, ResolvedDb},
+    routes::fsrs::record_recall_good,
     state::AppState,
 };
 
@@ -726,6 +727,18 @@ async fn recall(
     }
 
     output.truncate(limit);
+
+    // Background: update FSRS state (grade=Good) for every recalled memory.
+    // Fire-and-forget — never delays or fails the recall response.
+    {
+        let recalled_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+        let db_clone = db.clone();
+        tokio::spawn(async move {
+            for id in recalled_ids {
+                record_recall_good(&db_clone, id).await;
+            }
+        });
+    }
 
     // Batch-load artifact summaries for all recalled memories.
     let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
