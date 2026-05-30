@@ -85,6 +85,28 @@ pub async fn resolve_text_handler(
     State(state): State<AppState>,
     Json(body): Json<ResolveTextRequest>,
 ) -> Result<Json<ResolveTextResponse>, AppError> {
+    // Text substitution returns plaintext secret bytes in the response body,
+    // so it is a plaintext tier and requires the same privilege as raw
+    // retrieval. Non-raw agents (and bootstrap agents) must use proxy
+    // injection, which never returns the secret value to the caller.
+    if !auth.can_access_raw() {
+        log_audit(
+            &state.db,
+            auth.user_id(),
+            auth.agent_name(),
+            AuditAction::Resolve,
+            "",
+            "",
+            Some(AccessTier::Substitution),
+            false,
+        )
+        .await?;
+        return Err(CredError::PermissionDenied(
+            "text resolve exposes plaintext and requires raw access; use proxy resolve".into(),
+        )
+        .into());
+    }
+
     let placeholders = find_placeholders(&body.text);
     let mut result = body.text.clone();
     let mut offset: isize = 0;
