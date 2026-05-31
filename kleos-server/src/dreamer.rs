@@ -609,13 +609,7 @@ async fn run_cycle_tenants(
         // routing); parse to the numeric form the downstream pipeline expects.
         let users: Vec<i64> = match tenant_row.user_id.parse::<i64>() {
             Ok(uid) => vec![uid],
-            Err(e) => {
-                warn!(
-                    tenant = %tenant_row.tenant_id,
-                    user_id = %tenant_row.user_id,
-                    error = %e,
-                    "dreamer: tenant user_id is not numeric; skipping"
-                );
+            Err(_) => {
                 continue;
             }
         };
