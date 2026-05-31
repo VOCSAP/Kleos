@@ -355,7 +355,8 @@ Four channels run per query:
 | `kleos-mcp` | MCP transport bridge. Curated daily-driver registry with compatibility aliases; stdio by default, HTTP behind a feature flag. |
 | `kleos-sidecar` | Session-scoped memory proxy. File watcher, batched flushing, Ollama compression, persistent sessions. |
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
-| `kleos-credd` | Credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
+| `kleos-credd` | Base credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
+| `kleos-phylaxd` (`phylaxd`) | The credential daemon actually deployed. Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. The `credd` service runs this binary. |
 | `kleos-ingest` | Transcript ingest daemon. PIV/software-key request signing, file watching, LLM summarization, real-time observation streaming. |
 | `agent-forge` | Structured reasoning CLI. 20+ subcommands. Tree-sitter AST parsing for 7 languages. |
 | `eidolon-supervisor` | Session drift detection daemon. Real-time transcript watching, rule-based alerts. |
@@ -385,7 +386,7 @@ The installer (`kleos-install` or `kleos-install-gui`) supports four profiles:
 | Profile | Includes |
 |---------|----------|
 | `Server` | kleos-server, kleos-cli |
-| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, kleos-credd |
+| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, phylaxd |
 | `Full` | Every binary |
 | `Custom` | Pick individual components |
 
