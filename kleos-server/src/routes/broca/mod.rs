@@ -102,7 +102,7 @@ async fn log_action_handler(
         narrative,
         payload,
         axon_event_id: body.axon_event_id,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
     };
 
     let entry = log_action(&db, req).await?;
@@ -132,7 +132,7 @@ async fn list_actions_handler(
         since,
         limit,
         offset,
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
 
@@ -145,7 +145,7 @@ async fn get_action_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let entry = get_action(&db, id, auth.user_id).await?;
+    let entry = get_action(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(entry)))
 }
 
@@ -162,7 +162,17 @@ async fn get_feed_handler(
     let agent = params.agent.as_deref();
     let since = params.since.as_deref();
 
-    let entries = query_actions(&db, agent, None, None, since, limit, offset, auth.user_id).await?;
+    let entries = query_actions(
+        &db,
+        agent,
+        None,
+        None,
+        since,
+        limit,
+        offset,
+        auth.effective_user_id(),
+    )
+    .await?;
 
     Ok(Json(json!({ "items": entries, "count": entries.len() })))
 }
@@ -171,7 +181,7 @@ async fn get_feed_handler(
 /// (total actions, distinct agents, distinct services) for the authenticated
 /// user's tenant shard.
 async fn get_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
-    let stats = get_broca_stats(&db, auth.user_id).await?;
+    let stats = get_broca_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -192,7 +202,7 @@ async fn narrate_action_handler(
     // get_or_narrate_action enforces tenant scope via user_id and handles both
     // the fetch and the LLM-persist slow path. Returns None for missing or
     // cross-tenant ids so we can emit a clean 404.
-    let narrative = get_or_narrate_action(&db, id, auth.user_id)
+    let narrative = get_or_narrate_action(&db, id, auth.effective_user_id())
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound(format!("action {id}"))))?;
 
@@ -233,7 +243,9 @@ async fn narrate_batch_handler(
     for action_id in body.ids {
         // get_or_narrate_action returns Ok(None) for missing ids or ids owned by
         // other tenants -- silently skip both so cross-tenant ids don't error.
-        if let Some(narrative) = get_or_narrate_action(&db, action_id, auth.user_id).await? {
+        if let Some(narrative) =
+            get_or_narrate_action(&db, action_id, auth.effective_user_id()).await?
+        {
             results.push(json!({ "id": action_id, "narrative": narrative }));
         }
     }
@@ -275,7 +287,7 @@ async fn ask_handler(
         )));
     }
 
-    let result = broca_ask(&db, auth.user_id, &body.question).await?;
+    let result = broca_ask(&db, auth.effective_user_id(), &body.question).await?;
     Ok(Json(json!(result)))
 }
 

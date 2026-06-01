@@ -1,26 +1,75 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
-    routing::{delete, post},
+    routing::{delete, get, post},
     Json, Router,
 };
-use kleos_lib::auth;
+use kleos_lib::spaces::{self, InstanceAccess};
+use kleos_lib::{audit, auth};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::{error::AppError, extractors::Auth, state::AppState};
 
 mod types;
-use types::{CreateKeyBody, CreateSpaceBody, RotateKeyBody};
+use types::{CreateGrantBody, CreateKeyBody, CreateSpaceBody, ListGrantsQuery, RotateKeyBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/keys", post(create_key).get(list_keys))
         .route("/keys/{id}", delete(revoke_key))
         .route("/keys/rotate", post(rotate_key))
+        // Caller identity + scopes, so the GUI can gate admin-only surfaces.
+        .route("/me", get(whoami))
         // /users routes moved to routes::users module
         .route("/spaces", post(create_space).get(list_spaces))
         .route("/spaces/{id}", delete(delete_space))
+        // Instance-level access grants (Space Sharing, whole-instance model).
+        .route(
+            "/instance-grants",
+            post(create_instance_grant).get(list_instance_grants),
+        )
+        .route(
+            "/instance-grants/{owner}/{grantee}",
+            delete(revoke_instance_grant),
+        )
+        // Admin-wide overviews for the Spaces and Sharing console. A dedicated
+        // /sharing/* namespace avoids shadowing the GUI's /admin/spaces browser
+        // route and any /spaces/{id} or /instance-grants/{..} param routes.
+        .route("/sharing/grants", get(list_all_instance_grants))
+        .route("/sharing/spaces", get(list_all_spaces))
+}
+
+// ---- Caller identity ----
+
+/// GET /me -- report the authenticated caller's identity and scopes so the GUI
+/// can gate admin-only surfaces (e.g. the Spaces and Sharing page). This always
+/// reflects the REAL caller, never an act-as target.
+async fn whoami(
+    State(state): State<AppState>,
+    Auth(auth_ctx): Auth,
+) -> Result<Json<Value>, AppError> {
+    let scopes: Vec<String> = auth_ctx.key.scopes.iter().map(|s| s.to_string()).collect();
+    let is_admin = auth_ctx.has_scope(&auth::Scope::Admin);
+    let uid = auth_ctx.user_id;
+    let username: Option<String> = state
+        .db
+        .read(move |conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT username FROM users WHERE id = ?1",
+                    params![uid],
+                    |r| r.get(0),
+                )
+                .optional()?)
+        })
+        .await?;
+    Ok(Json(json!({
+        "user_id": auth_ctx.user_id,
+        "username": username,
+        "scopes": scopes,
+        "is_admin": is_admin,
+    })))
 }
 
 // ---- Key Management ----
@@ -354,4 +403,228 @@ async fn delete_space(
         .await?;
 
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+// ---- Instance Access Grants (Space Sharing) ----
+
+/// Create or update a grant that delegates access to an owner's entire shard.
+///
+/// SD2: only the instance owner or an admin may manage grants on a shard. A
+/// non-admin caller may therefore only grant access to their OWN shard.
+async fn create_instance_grant(
+    State(state): State<AppState>,
+    Auth(auth_ctx): Auth,
+    Json(body): Json<CreateGrantBody>,
+) -> Result<(StatusCode, Json<Value>), AppError> {
+    let owner = body.owner_user_id;
+    let grantee = body.grantee_user_id;
+    let access: InstanceAccess = body.access.parse().map_err(AppError)?;
+
+    // SD2: owner-or-admin gate. Mirrors the `delete_space` ownership check.
+    if owner != auth_ctx.user_id && !auth_ctx.has_scope(&auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "only the instance owner or an admin may manage grants".into(),
+        )));
+    }
+
+    // The grantee must be a real, active user, and the owner must exist, so a
+    // typo'd or disabled account can never be handed delegated access.
+    let (owner_exists, grantee_active): (bool, bool) = state
+        .db
+        .read(move |conn| {
+            let owner_exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
+                params![owner],
+                |r| r.get(0),
+            )?;
+            let grantee_active: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1 AND is_active = 1)",
+                params![grantee],
+                |r| r.get(0),
+            )?;
+            Ok((owner_exists, grantee_active))
+        })
+        .await?;
+    if !owner_exists {
+        return Err(AppError(kleos_lib::EngError::NotFound(format!(
+            "owner user {owner} not found"
+        ))));
+    }
+    if !grantee_active {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+            "grantee user {grantee} not found or inactive"
+        ))));
+    }
+
+    // Storage upserts on (owner, grantee) and rejects a self-grant.
+    spaces::grant_instance_access(&state.db, owner, grantee, access, auth_ctx.user_id).await?;
+
+    // SD5: record the grant in the audit trail (who granted what to whom).
+    let _ = audit::log_mutation(
+        &state.db,
+        "instance_grant.create",
+        "instance_grant",
+        &owner.to_string(),
+        Some(&auth_ctx.user_id.to_string()),
+        None,
+        Some(json!({ "owner": owner, "grantee": grantee, "access": access.as_str() })),
+    )
+    .await;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "owner_user_id": owner,
+            "grantee_user_id": grantee,
+            "access": access.as_str(),
+        })),
+    ))
+}
+
+/// List the grants an owner has issued. Defaults to the caller's own shard;
+/// querying another owner requires Admin (or being that owner).
+async fn list_instance_grants(
+    State(state): State<AppState>,
+    Auth(auth_ctx): Auth,
+    Query(q): Query<ListGrantsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let owner = q.owner.unwrap_or(auth_ctx.user_id);
+
+    if owner != auth_ctx.user_id && !auth_ctx.has_scope(&auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "only the instance owner or an admin may list grants".into(),
+        )));
+    }
+
+    let grants = spaces::list_grants_for_owner(&state.db, owner).await?;
+    let grants_json: Vec<Value> = grants
+        .iter()
+        .map(|g| {
+            json!({
+                "owner_user_id": g.owner_user_id,
+                "grantee_user_id": g.grantee_user_id,
+                "access": g.access.as_str(),
+                "granted_by": g.granted_by,
+                "created_at": g.created_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(
+        json!({ "grants": grants_json, "count": grants_json.len() }),
+    ))
+}
+
+/// Revoke a grant. Idempotent. SD2: owner-or-admin gate.
+async fn revoke_instance_grant(
+    State(state): State<AppState>,
+    Auth(auth_ctx): Auth,
+    Path((owner, grantee)): Path<(i64, i64)>,
+) -> Result<Json<Value>, AppError> {
+    if owner != auth_ctx.user_id && !auth_ctx.has_scope(&auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "only the instance owner or an admin may revoke grants".into(),
+        )));
+    }
+
+    spaces::revoke_instance_access(&state.db, owner, grantee).await?;
+
+    // SD5: record the revoke in the audit trail.
+    let _ = audit::log_mutation(
+        &state.db,
+        "instance_grant.revoke",
+        "instance_grant",
+        &owner.to_string(),
+        Some(&auth_ctx.user_id.to_string()),
+        Some(json!({ "owner": owner, "grantee": grantee })),
+        None,
+    )
+    .await;
+
+    Ok(Json(json!({
+        "revoked": true,
+        "owner_user_id": owner,
+        "grantee_user_id": grantee,
+    })))
+}
+
+/// GET /admin/instance-grants -- every instance grant across all owners, with
+/// usernames resolved, for the admin Spaces and Sharing overview. Admin only.
+async fn list_all_instance_grants(
+    State(state): State<AppState>,
+    Auth(auth_ctx): Auth,
+) -> Result<Json<Value>, AppError> {
+    if !auth_ctx.has_scope(&auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "admin scope required".into(),
+        )));
+    }
+    let grants: Vec<Value> = state
+        .db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT g.owner_user_id, ou.username, g.grantee_user_id, gu.username,
+                        g.access, g.granted_by, bu.username, g.created_at
+                 FROM instance_grants g
+                 LEFT JOIN users ou ON ou.id = g.owner_user_id
+                 LEFT JOIN users gu ON gu.id = g.grantee_user_id
+                 LEFT JOIN users bu ON bu.id = g.granted_by
+                 ORDER BY ou.username, gu.username",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(json!({
+                        "owner_user_id": r.get::<_, i64>(0)?,
+                        "owner_username": r.get::<_, Option<String>>(1)?,
+                        "grantee_user_id": r.get::<_, i64>(2)?,
+                        "grantee_username": r.get::<_, Option<String>>(3)?,
+                        "access": r.get::<_, String>(4)?,
+                        "granted_by": r.get::<_, i64>(5)?,
+                        "granted_by_username": r.get::<_, Option<String>>(6)?,
+                        "created_at": r.get::<_, String>(7)?,
+                    }))
+                })?
+                .collect::<rusqlite::Result<Vec<Value>>>()?;
+            Ok(rows)
+        })
+        .await?;
+    Ok(Json(json!({ "grants": grants, "count": grants.len() })))
+}
+
+/// GET /admin/spaces -- every named space across all users, with the owner
+/// username resolved, for the admin Spaces and Sharing overview. Admin only.
+async fn list_all_spaces(
+    State(state): State<AppState>,
+    Auth(auth_ctx): Auth,
+) -> Result<Json<Value>, AppError> {
+    if !auth_ctx.has_scope(&auth::Scope::Admin) {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "admin scope required".into(),
+        )));
+    }
+    let spaces: Vec<Value> = state
+        .db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.user_id, u.username, s.name, s.description, s.created_at
+                 FROM spaces s
+                 LEFT JOIN users u ON u.id = s.user_id
+                 ORDER BY u.username, s.name",
+            )?;
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok(json!({
+                        "id": r.get::<_, i64>(0)?,
+                        "owner_user_id": r.get::<_, i64>(1)?,
+                        "owner_username": r.get::<_, Option<String>>(2)?,
+                        "name": r.get::<_, String>(3)?,
+                        "description": r.get::<_, Option<String>>(4)?,
+                        "created_at": r.get::<_, String>(5)?,
+                    }))
+                })?
+                .collect::<rusqlite::Result<Vec<Value>>>()?;
+            Ok(rows)
+        })
+        .await?;
+    Ok(Json(json!({ "spaces": spaces, "count": spaces.len() })))
 }

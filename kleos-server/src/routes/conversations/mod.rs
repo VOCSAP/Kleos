@@ -38,7 +38,7 @@ async fn create(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<CreateConversationRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let conv = conversations::create_conversation(&db, body, auth.user_id).await?;
+    let conv = conversations::create_conversation(&db, body, auth.effective_user_id()).await?;
     Ok((StatusCode::CREATED, Json(json!(conv))))
 }
 
@@ -50,9 +50,10 @@ async fn list(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(100);
     let convs = if let Some(ref agent) = params.agent {
-        conversations::list_conversations_by_agent(&db, auth.user_id, agent, limit).await?
+        conversations::list_conversations_by_agent(&db, auth.effective_user_id(), agent, limit)
+            .await?
     } else {
-        conversations::list_conversations(&db, auth.user_id, limit).await?
+        conversations::list_conversations(&db, auth.effective_user_id(), limit).await?
     };
     Ok(Json(json!({ "conversations": convs })))
 }
@@ -64,10 +65,11 @@ async fn get_one(
     Path(id): Path<i64>,
     Query(params): Query<GetConversationParams>,
 ) -> Result<Json<Value>, AppError> {
-    let conv = conversations::get_conversation_for_user(&db, id, auth.user_id).await?;
+    let conv = conversations::get_conversation_for_user(&db, id, auth.effective_user_id()).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let messages = conversations::list_messages(&db, id, auth.user_id, limit, offset).await?;
+    let messages =
+        conversations::list_messages(&db, id, auth.effective_user_id(), limit, offset).await?;
     Ok(Json(json!({
         "id": conv.id, "agent": conv.agent, "session_id": conv.session_id,
         "title": conv.title, "metadata": conv.metadata,
@@ -83,7 +85,7 @@ async fn update(
     Path(id): Path<i64>,
     Json(body): Json<UpdateConversationRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let conv = conversations::update_conversation(&db, id, auth.user_id, body).await?;
+    let conv = conversations::update_conversation(&db, id, auth.effective_user_id(), body).await?;
     Ok(Json(json!(conv)))
 }
 
@@ -93,7 +95,7 @@ async fn remove(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    conversations::delete_conversation(&db, id, auth.user_id).await?;
+    conversations::delete_conversation(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -107,17 +109,26 @@ async fn add_msg(
     Json(body): Json<MessageBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     // Verify conversation belongs to user
-    conversations::get_conversation_for_user(&db, id, auth.user_id).await?;
+    conversations::get_conversation_for_user(&db, id, auth.effective_user_id()).await?;
     match body {
         MessageBody::Single(req) => {
-            let msg = conversations::add_message(&db, &state.credd, id, auth.user_id, req).await?;
+            let msg =
+                conversations::add_message(&db, &state.credd, id, auth.effective_user_id(), req)
+                    .await?;
             Ok((StatusCode::CREATED, Json(json!(msg))))
         }
         MessageBody::Batch(reqs) => {
             let mut msgs = Vec::new();
             for req in reqs {
                 msgs.push(
-                    conversations::add_message(&db, &state.credd, id, auth.user_id, req).await?,
+                    conversations::add_message(
+                        &db,
+                        &state.credd,
+                        id,
+                        auth.effective_user_id(),
+                        req,
+                    )
+                    .await?,
                 );
             }
             Ok((StatusCode::CREATED, Json(json!({ "messages": msgs }))))
@@ -133,10 +144,11 @@ async fn list_msgs(
     Query(params): Query<ListMessagesParams>,
 ) -> Result<Json<Value>, AppError> {
     // Verify conversation ownership before accessing messages
-    conversations::get_conversation_for_user(&db, id, auth.user_id).await?;
+    conversations::get_conversation_for_user(&db, id, auth.effective_user_id()).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let messages = conversations::list_messages(&db, id, auth.user_id, limit, offset).await?;
+    let messages =
+        conversations::list_messages(&db, id, auth.effective_user_id(), limit, offset).await?;
     Ok(Json(json!({ "messages": messages })))
 }
 
@@ -149,7 +161,8 @@ async fn bulk_insert(
     Json(body): Json<BulkInsertRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let conv =
-        conversations::bulk_insert_conversation(&db, &state.credd, body, auth.user_id).await?;
+        conversations::bulk_insert_conversation(&db, &state.credd, body, auth.effective_user_id())
+            .await?;
     Ok((StatusCode::CREATED, Json(json!(conv))))
 }
 
@@ -161,7 +174,9 @@ async fn upsert(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<UpsertConversationRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let conv = conversations::upsert_conversation(&db, &state.credd, body, auth.user_id).await?;
+    let conv =
+        conversations::upsert_conversation(&db, &state.credd, body, auth.effective_user_id())
+            .await?;
     Ok(Json(json!(conv)))
 }
 
@@ -171,7 +186,7 @@ async fn search_msgs(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<SearchMessagesRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let results = conversations::search_messages(&db, body, auth.user_id).await?;
+    let results = conversations::search_messages(&db, body, auth.effective_user_id()).await?;
     Ok(Json(json!({ "messages": results })))
 }
 

@@ -46,6 +46,7 @@ pub mod scratchpad;
 pub mod services;
 pub mod sessions;
 pub mod skills;
+pub mod spaces;
 pub mod sync;
 pub mod tenant;
 pub mod validation;

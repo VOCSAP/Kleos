@@ -22,7 +22,7 @@ async fn report_activity(
     Auth(auth): Auth,
     Json(body): Json<ActivityReport>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let caller_user_id = auth.user_id;
+    let caller_user_id = auth.effective_user_id();
     let memory_id = process_activity(&db, &body, caller_user_id).await?;
 
     // Brain absorption: fire-and-forget, best-effort, never fails the response.

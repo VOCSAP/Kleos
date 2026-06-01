@@ -100,6 +100,7 @@ fn build_cors_layer() -> CorsLayer {
     }
 }
 
+use crate::middleware::act_as::act_as_middleware;
 use crate::middleware::audit::audit_middleware;
 use crate::middleware::auth::auth_middleware;
 use crate::middleware::json_depth::json_depth_middleware;
@@ -189,6 +190,13 @@ pub fn build_router(state: AppState) -> Router {
     // API routes that require bearer token auth
     let api_routes = bare_routes
         .merge(mcp_route)
+        // Act-as delegation authorization. Innermost so it runs after
+        // auth_middleware has set the AuthContext and just before handlers and
+        // the ResolvedDb extractor, which read the delegated effective identity.
+        .layer(axum_mw::from_fn_with_state(
+            state.clone(),
+            act_as_middleware,
+        ))
         // Rate limit runs after auth (inner layer), then auth sets context (outer layer)
         .layer(axum_mw::from_fn_with_state(
             state.clone(),
@@ -273,15 +281,24 @@ pub fn build_router(state: AppState) -> Router {
             ),
         ))
         // R7-006 / H-013: baseline CSP. Login page inline style/script were
-        // externalised to /_app/login.css and /_app/login.js, so 'unsafe-inline'
-        // is no longer required. 'wasm-unsafe-eval' is kept for the ONNX WASM
-        // runtime. frame-ancestors 'none' hard-locks clickjacking.
+        // externalised to /_app/login.css and /_app/login.js. 'wasm-unsafe-eval'
+        // is kept for the ONNX WASM runtime. frame-ancestors 'none' hard-locks
+        // clickjacking.
+        //
+        // style-src keeps 'unsafe-inline': the memory graph's 3d-force-graph /
+        // three.js renderer injects runtime inline styles (canvas/tooltip/scene
+        // elements) that a strict style-src blocks, breaking the visualization.
+        // Tradeoff: this re-opens inline <style>/style="" for the whole GUI, the
+        // hardening H-013 had closed. Accepted because the GUI is a first-party,
+        // access-controlled surface; script-src stays strict (no unsafe-inline),
+        // so this does not enable script injection. Revisit if the graph library
+        // gains a nonce/CSP-clean styling path.
         .layer(SetResponseHeaderLayer::overriding(
             HeaderName::from_static("content-security-policy"),
             HeaderValue::from_static(
                 "default-src 'self'; \
                  script-src 'self' 'wasm-unsafe-eval'; \
-                 style-src 'self'; \
+                 style-src 'self' 'unsafe-inline'; \
                  img-src 'self' data: blob:; \
                  font-src 'self' data:; \
                  connect-src 'self'; \

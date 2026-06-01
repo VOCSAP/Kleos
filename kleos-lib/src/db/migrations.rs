@@ -385,6 +385,7 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_cred_audit_attribution_columns,
         tx
     ),
+    migration!(84, "instance_grants", run_migration_instance_grants, tx),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -571,6 +572,8 @@ const MIGRATION_MCP_TOKENS: i64 = 81;
 const MIGRATION_PHYLAX_TABLES: i64 = 82;
 /// Version number for cred_audit attribution columns.
 const MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS: i64 = 83;
+/// Version number for the Space Sharing `instance_grants` control-DB table.
+const MIGRATION_INSTANCE_GRANTS: i64 = 84;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1252,6 +1255,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
             MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS,
             "cred_audit_attribution_columns",
         )?;
+    }
+
+    if current_version < MIGRATION_INSTANCE_GRANTS {
+        info!("Running migration 84: instance_grants");
+        run_migration_instance_grants(conn)?;
+        record_migration(conn, MIGRATION_INSTANCE_GRANTS, "instance_grants")?;
     }
 
     Ok(())
@@ -5383,6 +5392,32 @@ fn run_migration_phylax_tables(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration 84: Space Sharing `instance_grants` table (control DB).
+///
+/// A grant lets `grantee_user_id` reach `owner_user_id`'s ENTIRE shard at the
+/// recorded `access` level. The composite primary key `(owner, grantee)` makes
+/// a grant unique per pair and gives the chokepoint an index-only lookup. The
+/// table lives in the control/global DB because it maps cross-shard
+/// relationships no single tenant shard can hold. The grantee index supports
+/// "what can this grantee reach" listings for the management UI.
+fn run_migration_instance_grants(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS instance_grants (
+            owner_user_id   INTEGER NOT NULL,
+            grantee_user_id INTEGER NOT NULL,
+            access          TEXT NOT NULL CHECK(access IN ('read','write')),
+            granted_by      INTEGER NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (owner_user_id, grantee_user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_instance_grants_grantee
+            ON instance_grants(grantee_user_id);",
+    )
+    .map_err(|e| EngError::DatabaseMessage(format!("migration 84 instance_grants: {e}")))?;
+    info!("Migration 84 complete: instance_grants table created");
+    Ok(())
+}
+
 // --- Tests ---
 
 /// Unit and integration tests for the migration chain.
@@ -5420,6 +5455,62 @@ mod tests {
             applied, highest_in_array,
             "MIGRATIONS array contains v{highest_in_array} but run_migrations only applied up to v{applied}. \
              Did you add an entry to the MIGRATIONS array without adding the matching dispatch block?"
+        );
+    }
+
+    /// Migration 84: the control-DB `instance_grants` table backs Space
+    /// Sharing's delegated cross-shard access. After a fresh `run_migrations`
+    /// the table must exist with the expected columns and a composite primary
+    /// key on `(owner_user_id, grantee_user_id)`.
+    #[test]
+    fn migration_84_creates_instance_grants() {
+        let conn = open_test_db();
+        run_migrations(&conn).expect("migrations apply on fresh db");
+
+        // Table exists.
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='instance_grants'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query sqlite_master");
+        assert_eq!(
+            table_count, 1,
+            "instance_grants table must be created by v84"
+        );
+
+        // Expected columns are present.
+        let mut stmt = conn
+            .prepare("SELECT name FROM pragma_table_info('instance_grants')")
+            .expect("pragma table_info");
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .expect("query columns")
+            .map(|r| r.expect("column name"))
+            .collect();
+        for expected in [
+            "owner_user_id",
+            "grantee_user_id",
+            "access",
+            "granted_by",
+            "created_at",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == expected),
+                "instance_grants missing column {expected}, got {cols:?}"
+            );
+        }
+
+        // The CHECK constraint rejects an out-of-lattice access level.
+        let bad = conn.execute(
+            "INSERT INTO instance_grants (owner_user_id, grantee_user_id, access, granted_by) \
+             VALUES (1, 2, 'admin', 1)",
+            [],
+        );
+        assert!(
+            bad.is_err(),
+            "access CHECK must reject values outside ('read','write')"
         );
     }
 

@@ -29,7 +29,7 @@ async fn reflect_handler(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<GrowthReflectRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let result = reflect(&db, &body, auth.user_id).await?;
+    let result = reflect(&db, &body, auth.effective_user_id()).await?;
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
@@ -52,7 +52,7 @@ async fn materialize_handler(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<MaterializeBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let new_id = materialize(&db, body.observation_id, auth.user_id).await?;
+    let new_id = materialize(&db, body.observation_id, auth.effective_user_id()).await?;
     Ok((
         StatusCode::CREATED,
         Json(json!({ "ok": true, "memory_id": new_id })),

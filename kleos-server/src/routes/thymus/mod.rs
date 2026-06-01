@@ -70,7 +70,7 @@ async fn list_rubrics_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let rubrics = list_rubrics(&db, auth.user_id).await?;
+    let rubrics = list_rubrics(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "rubrics": rubrics })))
 }
 
@@ -82,7 +82,7 @@ async fn create_rubric_handler(
     Json(body): Json<CreateRubricRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = CreateRubricRequest {
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         ..body
     };
     let rubric = create_rubric(&db, req).await?;
@@ -96,7 +96,7 @@ async fn get_rubric_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = get_rubric(&db, id, auth.user_id).await?;
+    let rubric = get_rubric(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(rubric)))
 }
 
@@ -109,7 +109,7 @@ async fn update_rubric_handler(
     Path(id): Path<i64>,
     Json(body): Json<UpdateRubricRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let rubric = update_rubric(&db, id, auth.user_id, body).await?;
+    let rubric = update_rubric(&db, id, auth.effective_user_id(), body).await?;
     Ok(Json(json!(rubric)))
 }
 
@@ -120,7 +120,7 @@ async fn delete_rubric_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_rubric(&db, id, auth.user_id).await?;
+    delete_rubric(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -135,7 +135,7 @@ async fn evaluate_handler(
     Json(body): Json<EvaluateRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = EvaluateRequest {
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         ..body
     };
     let evaluation = evaluate(&db, req).await?;
@@ -153,7 +153,7 @@ async fn list_evaluations_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let evaluations = list_evaluations(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         params.agent.as_deref(),
         params.rubric_id,
         limit,
@@ -169,7 +169,7 @@ async fn get_evaluation_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let evaluation = get_evaluation(&db, id, auth.user_id).await?;
+    let evaluation = get_evaluation(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(evaluation)))
 }
 
@@ -189,7 +189,7 @@ async fn get_agent_scores_handler(
 ) -> Result<Json<Value>, AppError> {
     let scores = get_agent_scores(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         &agent,
         params.rubric_id,
         params.since.as_deref(),
@@ -209,7 +209,7 @@ async fn record_metric_handler(
     Json(body): Json<RecordMetricRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = RecordMetricRequest {
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         ..body
     };
     let metric = record_metric(&db, req).await?;
@@ -227,7 +227,7 @@ async fn get_metrics_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let metrics = get_metrics(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         params.agent.as_deref(),
         params.metric.as_deref(),
         params.since.as_deref(),
@@ -252,8 +252,14 @@ async fn get_metric_summary_handler(
         kleos_lib::EngError::InvalidInput("metric query parameter is required".into())
     })?;
 
-    let summary =
-        get_metric_summary(&db, auth.user_id, agent, metric, params.since.as_deref()).await?;
+    let summary = get_metric_summary(
+        &db,
+        auth.effective_user_id(),
+        agent,
+        metric,
+        params.since.as_deref(),
+    )
+    .await?;
     Ok(Json(summary))
 }
 
@@ -268,7 +274,7 @@ async fn record_session_quality_handler(
     ResolvedDb(db): ResolvedDb,
     Json(mut body): Json<RecordSessionQualityRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    body.user_id = Some(auth.user_id);
+    body.user_id = Some(auth.effective_user_id());
     let sq = record_session_quality(&db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(sq))))
 }
@@ -283,8 +289,14 @@ async fn get_session_quality_handler(
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let records =
-        get_session_quality(&db, auth.user_id, agent, params.since.as_deref(), limit).await?;
+    let records = get_session_quality(
+        &db,
+        auth.effective_user_id(),
+        agent,
+        params.since.as_deref(),
+        limit,
+    )
+    .await?;
     Ok(Json(json!({ "session_quality": records })))
 }
 
@@ -299,7 +311,7 @@ async fn record_drift_event_handler(
     ResolvedDb(db): ResolvedDb,
     Json(mut body): Json<RecordDriftEventRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    body.user_id = Some(auth.user_id);
+    body.user_id = Some(auth.effective_user_id());
     let event = record_drift_event(&db, body).await?;
     Ok((StatusCode::CREATED, Json(json!(event))))
 }
@@ -314,7 +326,7 @@ async fn get_drift_events_handler(
 ) -> Result<Json<Value>, AppError> {
     let agent = params.agent.as_deref().unwrap_or("*");
     let limit = params.limit.unwrap_or(100).min(1000);
-    let events = get_drift_events(&db, auth.user_id, agent, limit).await?;
+    let events = get_drift_events(&db, auth.effective_user_id(), agent, limit).await?;
     Ok(Json(json!({ "drift_events": events })))
 }
 
@@ -330,7 +342,7 @@ async fn get_drift_summary_handler(
     let agent = params
         .agent
         .ok_or_else(|| kleos_lib::EngError::InvalidInput("agent is required".into()))?;
-    let summary = get_drift_summary(&db, auth.user_id, &agent).await?;
+    let summary = get_drift_summary(&db, auth.effective_user_id(), &agent).await?;
     Ok(Json(json!({ "drift_summary": summary })))
 }
 
@@ -343,6 +355,6 @@ async fn get_stats_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&db, auth.user_id).await?;
+    let stats = get_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }

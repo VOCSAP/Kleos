@@ -43,7 +43,7 @@ async fn create_webhook_handler(
         &body.url,
         &events,
         body.secret.as_deref(),
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok((
@@ -62,7 +62,7 @@ async fn list_webhooks_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let items = kleos_lib::webhooks::list_webhooks(&db, auth.user_id).await?;
+    let items = kleos_lib::webhooks::list_webhooks(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "webhooks": items, "count": items.len() })))
 }
 
@@ -71,7 +71,7 @@ async fn delete_webhook_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::webhooks::delete_webhook(&db, id, auth.user_id).await?;
+    kleos_lib::webhooks::delete_webhook(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -83,8 +83,14 @@ async fn test_webhook_handler(
 ) -> Result<Json<Value>, AppError> {
     let event = body.event.as_deref().unwrap_or("test");
     let payload = json!({ "webhook_id": id, "test": true });
-    let receipt =
-        kleos_lib::webhooks::emit_test_to_webhook(&db, id, event, &payload, auth.user_id).await?;
+    let receipt = kleos_lib::webhooks::emit_test_to_webhook(
+        &db,
+        id,
+        event,
+        &payload,
+        auth.effective_user_id(),
+    )
+    .await?;
     Ok(Json(serde_json::to_value(receipt).unwrap_or_else(
         |_| json!({ "dispatched": false, "error": "receipt serialization failed" }),
     )))
@@ -97,7 +103,8 @@ async fn list_dead_letters_handler(
     Query(query): Query<DeadLetterQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = query.limit.unwrap_or(50).min(200);
-    let items = kleos_lib::webhooks::list_dead_letters(&db, id, auth.user_id, limit).await?;
+    let items =
+        kleos_lib::webhooks::list_dead_letters(&db, id, auth.effective_user_id(), limit).await?;
     Ok(Json(
         json!({ "dead_letters": items, "count": items.len(), "webhook_id": id }),
     ))

@@ -50,7 +50,14 @@ async fn build_context(
     }
 
     let embedder = state.embedder.read().await.clone();
-    let result = assemble_context(&db, body, auth.user_id, embedder, state.llm.clone()).await?;
+    let result = assemble_context(
+        &db,
+        body,
+        auth.effective_user_id(),
+        embedder,
+        state.llm.clone(),
+    )
+    .await?;
 
     Ok(Json(json!(result)))
 }
@@ -86,7 +93,7 @@ async fn build_context_stream(
         let result = assemble_context(
             &resolved_db,
             body,
-            auth.user_id,
+            auth.effective_user_id(),
             embedder,
             state.llm.clone(),
         )
@@ -111,7 +118,7 @@ async fn build_context_stream(
     // M-R3-007: stream assembly also routes to the caller's shard.
     let db = resolved_db.clone();
     let llm = state.llm.clone();
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
 
     // Output channel for SSE events (progress + final result).
     let (sse_tx, sse_rx) = tokio::sync::mpsc::channel::<Event>(CHANNEL_CAP);

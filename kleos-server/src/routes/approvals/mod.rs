@@ -31,7 +31,7 @@ async fn create_handler(
     Auth(auth): Auth,
     Json(body): Json<CreateApprovalRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), AppError> {
-    let approval = create_approval(&db, &body, auth.user_id).await?;
+    let approval = create_approval(&db, &body, auth.effective_user_id()).await?;
 
     // Notify any waiting watchers that a new approval is pending
     if let Some(ref tx) = state.approval_notify {
@@ -46,7 +46,7 @@ async fn get_handler(
     Auth(auth): Auth,
     Path(id): Path<String>,
 ) -> Result<Json<ApprovalResponse>, AppError> {
-    let approval = get_approval(&db, &id, auth.user_id)
+    let approval = get_approval(&db, &id, auth.effective_user_id())
         .await?
         .ok_or_else(|| kleos_lib::EngError::NotFound(format!("approval {} not found", id)))?;
 
@@ -60,7 +60,7 @@ async fn list_pending_handler(
     // First expire any stale approvals for this user
     let expired_count = expire_stale(&db).await?;
 
-    let approvals = list_pending(&db, auth.user_id).await?;
+    let approvals = list_pending(&db, auth.effective_user_id()).await?;
     let responses: Vec<ApprovalResponse> = approvals.into_iter().map(Into::into).collect();
 
     Ok(Json(json!({
@@ -83,7 +83,7 @@ async fn decide_handler(
         reason: body.reason,
     };
 
-    let approval = decide(&db, &id, &req, auth.user_id).await?;
+    let approval = decide(&db, &id, &req, auth.effective_user_id()).await?;
 
     // Notify any waiting watchers that a decision was made
     if let Some(ref tx) = state.approval_notify {

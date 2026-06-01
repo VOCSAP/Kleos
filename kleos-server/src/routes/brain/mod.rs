@@ -67,11 +67,11 @@ async fn stats_handler(
         .brain
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
-    let stats = brain.stats(auth.user_id).await?;
+    let stats = brain.stats(auth.effective_user_id()).await?;
     Ok(Json(json!({ "ok": true, "stats": stats })))
 }
 
-// Query scopes the recall to the caller's pattern space via auth.user_id.
+// Query scopes the recall to the caller's pattern space via auth.effective_user_id().
 async fn query_handler(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -88,13 +88,18 @@ async fn query_handler(
         ))
     })?;
     let result = brain
-        .query(embedder.as_ref(), &body.query, auth.user_id, &body)
+        .query(
+            embedder.as_ref(),
+            &body.query,
+            auth.effective_user_id(),
+            &body,
+        )
         .await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }
 
 // C-R3-001: absorb fetches the memory from the caller's tenant DB and pipes
-// auth.user_id into get_memory_for_absorb so monolith fetches still enforce
+// auth.effective_user_id() into get_memory_for_absorb so monolith fetches still enforce
 // ownership.
 async fn absorb_handler(
     State(state): State<AppState>,
@@ -112,9 +117,9 @@ async fn absorb_handler(
             "embedder not ready (still loading)".into(),
         ))
     })?;
-    let memory = get_memory_for_absorb(&db, body.id, auth.user_id).await?;
+    let memory = get_memory_for_absorb(&db, body.id, auth.effective_user_id()).await?;
     brain
-        .absorb(embedder.as_ref(), auth.user_id, memory)
+        .absorb(embedder.as_ref(), auth.effective_user_id(), memory)
         .await?;
     Ok(Json(json!({ "ok": true, "id": body.id })))
 }
@@ -145,7 +150,7 @@ async fn feedback_handler(
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
 
-    let owned = verify_memory_ownership(&db, &body.memory_ids, auth.user_id).await?;
+    let owned = verify_memory_ownership(&db, &body.memory_ids, auth.effective_user_id()).await?;
     if !owned {
         return Err(AppError(kleos_lib::EngError::Auth(
             "One or more memory_ids not found or not owned by you".into(),
@@ -157,7 +162,12 @@ async fn feedback_handler(
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
     let result = brain
-        .feedback_signal(auth.user_id, body.memory_ids, body.edge_pairs, body.useful)
+        .feedback_signal(
+            auth.effective_user_id(),
+            body.memory_ids,
+            body.edge_pairs,
+            body.useful,
+        )
         .await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }
@@ -177,7 +187,7 @@ async fn decay_handler(
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
     let ticks = body.ticks.clamp(0, MAX_DECAY_TICKS);
-    brain.decay_tick(auth.user_id, ticks).await?;
+    brain.decay_tick(auth.effective_user_id(), ticks).await?;
     Ok(Json(json!({ "ok": true, "ticks_applied": ticks })))
 }
 
@@ -190,7 +200,7 @@ async fn evolution_feedback_handler(
 ) -> Result<Json<Value>, AppError> {
     require_brain(&state).await?;
 
-    let owned = verify_memory_ownership(&db, &body.memory_ids, auth.user_id).await?;
+    let owned = verify_memory_ownership(&db, &body.memory_ids, auth.effective_user_id()).await?;
     if !owned {
         return Err(AppError(kleos_lib::EngError::Auth(
             "One or more memory_ids not found or not owned by you".into(),
@@ -202,7 +212,12 @@ async fn evolution_feedback_handler(
         .as_ref()
         .ok_or_else(|| AppError(kleos_lib::EngError::Internal("brain not configured".into())))?;
     let result = brain
-        .feedback_signal(auth.user_id, body.memory_ids, body.edge_pairs, body.useful)
+        .feedback_signal(
+            auth.effective_user_id(),
+            body.memory_ids,
+            body.edge_pairs,
+            body.useful,
+        )
         .await?;
     Ok(Json(json!({ "ok": true, "result": result })))
 }

@@ -40,7 +40,7 @@ async fn inject_handler(
         )));
     }
 
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
     let id = db
         .write(move |conn| {
             conn.execute(
@@ -78,7 +78,7 @@ async fn pending_handler(
         )));
     }
 
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
     let session_id = q.session_id.clone();
     let claimed: Vec<InjectionRow> = db
         .transaction(move |tx| {

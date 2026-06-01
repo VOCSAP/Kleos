@@ -113,7 +113,7 @@ async fn store_memory(
         )));
     }
 
-    req.user_id = Some(auth.user_id);
+    req.user_id = Some(auth.effective_user_id());
     let content = req.content.clone();
     let brain_category = req.category.clone();
     let brain_source = req.source.clone();
@@ -205,7 +205,7 @@ async fn store_memory(
     {
         let db = db.clone();
         let memory_id = result.id;
-        let user_id = auth.user_id;
+        let user_id = auth.effective_user_id();
         // Clone content before consuming it in the spawn so the entity_extract
         // block below can use the same value without a borrow conflict.
         let content_for_extract = content.clone();
@@ -213,7 +213,7 @@ async fn store_memory(
             Ok(p) => p,
             Err(_) => {
                 tracing::warn!("fact_extract semaphore closed; skipping background work");
-                let mem = memory::get(&db, result.id, auth.user_id).await?;
+                let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
                 return Ok((
                     StatusCode::CREATED,
                     Json(json!({
@@ -263,7 +263,7 @@ async fn store_memory(
     {
         let db = db.clone();
         let memory_id = result.id;
-        let user_id = auth.user_id;
+        let user_id = auth.effective_user_id();
         // Move content into this closure; it is no longer needed after this block.
         let content_for_entities = content;
         let permit = match state.fact_extract_sem.clone().acquire_owned().await {
@@ -272,7 +272,7 @@ async fn store_memory(
                 tracing::warn!("fact_extract semaphore closed; skipping entity extraction");
                 // Semaphore closed means server is shutting down; skip extraction
                 // and fall through to return the stored memory as normal.
-                let mem = memory::get(&db, result.id, auth.user_id).await?;
+                let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
                 return Ok((
                     StatusCode::CREATED,
                     Json(json!({
@@ -316,7 +316,10 @@ async fn store_memory(
     if let Some(brain) = state.brain.clone() {
         let embedder = state.embedder.clone();
         let memory_id = result.id;
-        let user_id = auth.user_id;
+        // Act-as aware: absorb under the effective (delegated) user -- the same
+        // owner the memory was stored under (req.user_id) -- not the real caller,
+        // matching the sibling brain blocks and the brain's per-user partitioning.
+        let user_id = auth.effective_user_id();
         match state.brain_absorb_sem.clone().acquire_owned().await {
             Ok(permit) => {
                 let shutdown = state.shutdown_token.clone();
@@ -338,7 +341,7 @@ async fn store_memory(
         }
     }
 
-    let mem = memory::get(&db, result.id, auth.user_id).await?;
+    let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
     let mut response = json!({
         "stored": true, "id": result.id, "created_at": mem.created_at,
         "importance": mem.importance, "embedded": embedded,
@@ -386,7 +389,7 @@ async fn search_memories(
         source: body.source,
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         space_id: body.space_id,
         include_forgotten: body.include_forgotten,
         mode: body.mode,
@@ -514,7 +517,7 @@ async fn explain_search(
         source: body.source,
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         space_id: body.space_id,
         include_forgotten: body.include_forgotten,
         mode: body.mode.clone(),
@@ -603,7 +606,7 @@ async fn recall(
     Json(body): Json<RecallBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(20).min(100);
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
     let query = body
         .query
         .filter(|q| !q.trim().is_empty())
@@ -779,7 +782,7 @@ async fn list_memories(
         offset: params.offset.unwrap_or(0),
         category: params.category,
         source: params.source,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         space_id: params.space_id,
         include_forgotten: params.include_forgotten.unwrap_or(false),
         include_archived: params.include_archived.unwrap_or(false),
@@ -796,7 +799,7 @@ async fn get_memory(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let mem = memory::get(&db, id, auth.user_id).await?;
+    let mem = memory::get(&db, id, auth.effective_user_id()).await?;
     Ok(Json(memory_to_json(&mem)))
 }
 
@@ -807,7 +810,7 @@ async fn delete_memory(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::delete(&db, id, auth.user_id).await?;
+    memory::delete(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -819,7 +822,7 @@ async fn list_trashed(
     Query(opts): Query<TrashListOptions>,
 ) -> Result<Json<Value>, AppError> {
     let limit = opts.limit.unwrap_or(50).min(200);
-    let memories = memory::list_trashed(&db, auth.user_id, limit).await?;
+    let memories = memory::list_trashed(&db, auth.effective_user_id(), limit).await?;
     let items: Vec<Value> = memories.iter().map(memory_to_json).collect();
     Ok(Json(json!({ "memories": items, "count": items.len() })))
 }
@@ -831,7 +834,7 @@ async fn restore_memory(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let restored = memory::restore(&db, id, auth.user_id).await?;
+    let restored = memory::restore(&db, id, auth.effective_user_id()).await?;
     Ok(Json(memory_to_json(&restored)))
 }
 
@@ -843,14 +846,14 @@ async fn update_memory(
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.user_id, false).await?;
+    let updated = memory::update(&db, id, req, auth.effective_user_id(), false).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 
 /// GET /tags -- list all tags in use across the corpus.
 #[tracing::instrument(skip_all)]
 async fn list_tags(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
-    let tags = memory::list_all_tags(&db, auth.user_id).await?;
+    let tags = memory::list_all_tags(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "tags": tags })))
 }
 
@@ -869,7 +872,7 @@ async fn search_tags(
 
     let memories = memory::search_by_tags(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         &body.tags,
         body.match_all.unwrap_or(false),
         body.limit.unwrap_or(50).min(100),
@@ -887,7 +890,7 @@ async fn faceted_search_handler(
     ResolvedDb(db): ResolvedDb,
     Json(mut body): Json<FacetedSearchRequest>,
 ) -> Result<Json<Value>, AppError> {
-    body.user_id = Some(auth.user_id);
+    body.user_id = Some(auth.effective_user_id());
     body.limit = body.limit.min(100);
 
     // Embed query if present.
@@ -912,8 +915,8 @@ async fn update_tags(
     Path(id): Path<i64>,
     Json(body): Json<UpdateTagsBody>,
 ) -> Result<Json<Value>, AppError> {
-    memory::update_memory_tags(&db, id, auth.user_id, &body.tags).await?;
-    let updated = memory::get(&db, id, auth.user_id).await?;
+    memory::update_memory_tags(&db, id, auth.effective_user_id(), &body.tags).await?;
+    let updated = memory::get(&db, id, auth.effective_user_id()).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 
@@ -923,7 +926,7 @@ async fn profile_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let profile = memory::get_user_profile(&db, auth.user_id).await?;
+    let profile = memory::get_user_profile(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(profile)))
 }
 
@@ -933,7 +936,7 @@ async fn synthesize_profile(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let uid = auth.user_id;
+    let uid = auth.effective_user_id();
     db.write(move |conn| {
         conn.execute(
             "DELETE FROM personality_signals WHERE user_id = ?1 AND memory_id IS NOT NULL",
@@ -950,7 +953,7 @@ async fn synthesize_profile(
             offset: 0,
             category: None,
             source: None,
-            user_id: Some(auth.user_id),
+            user_id: Some(auth.effective_user_id()),
             space_id: None,
             include_forgotten: false,
             include_archived: true,
@@ -963,20 +966,21 @@ async fn synthesize_profile(
             &db,
             &mem.content,
             mem.id,
-            auth.user_id,
+            auth.effective_user_id(),
         )
         .await?;
     }
 
-    let _ = kleos_lib::personality::synthesize_personality_profile(&db, auth.user_id).await?;
-    let profile = memory::get_user_profile(&db, auth.user_id).await?;
+    let _ = kleos_lib::personality::synthesize_personality_profile(&db, auth.effective_user_id())
+        .await?;
+    let profile = memory::get_user_profile(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(profile)))
 }
 
 /// GET /memory/stats -- counts and aggregates for the calling user's memories.
 #[tracing::instrument(skip_all)]
 async fn user_stats(Auth(auth): Auth, ResolvedDb(db): ResolvedDb) -> Result<Json<Value>, AppError> {
-    let stats = memory::get_user_stats(&db, auth.user_id).await?;
+    let stats = memory::get_user_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -988,9 +992,9 @@ async fn forget_memory(
     Path(id): Path<i64>,
     body: Option<Json<ForgetBody>>,
 ) -> Result<Json<Value>, AppError> {
-    memory::mark_forgotten(&db, id, auth.user_id).await?;
+    memory::mark_forgotten(&db, id, auth.effective_user_id()).await?;
     if let Some(reason) = body.and_then(|Json(body)| body.reason) {
-        memory::update_forget_reason(&db, id, &reason, auth.user_id).await?;
+        memory::update_forget_reason(&db, id, &reason, auth.effective_user_id()).await?;
     }
     Ok(Json(json!({ "id": id, "status": "forgotten" })))
 }
@@ -1002,7 +1006,7 @@ async fn archive_memory(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::mark_archived(&db, id, auth.user_id).await?;
+    memory::mark_archived(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "id": id, "status": "archived" })))
 }
 
@@ -1013,7 +1017,7 @@ async fn unarchive_memory(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    memory::mark_unarchived(&db, id, auth.user_id).await?;
+    memory::mark_unarchived(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "id": id, "status": "active" })))
 }
 
@@ -1024,8 +1028,8 @@ async fn get_links(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let _ = memory::get(&db, id, auth.user_id).await?;
-    let links = memory::get_links_for(&db, id, auth.user_id).await?;
+    let _ = memory::get(&db, id, auth.effective_user_id()).await?;
+    let links = memory::get_links_for(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "links": links })))
 }
 
@@ -1036,6 +1040,6 @@ async fn version_chain_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let versions = memory::get_version_chain(&db, id, auth.user_id).await?;
+    let versions = memory::get_version_chain(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "versions": versions })))
 }

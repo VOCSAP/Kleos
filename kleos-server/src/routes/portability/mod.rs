@@ -50,7 +50,7 @@ async fn export_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Response, AppError> {
-    let data = kleos_lib::admin::export_user_data(&db, auth.user_id).await?;
+    let data = kleos_lib::admin::export_user_data(&db, auth.effective_user_id()).await?;
 
     let mut lines: Vec<Result<axum::body::Bytes, std::convert::Infallible>> = Vec::new();
 
@@ -103,23 +103,23 @@ async fn import_handler(
                 "expected JSON array".into(),
             ))
         })?;
-        return import_array(&db, auth.user_id, arr).await;
+        return import_array(&db, auth.effective_user_id(), arr).await;
     }
     if let Some(obj) = body.as_object() {
         if obj.contains_key("memories") {
             // Kleos JSON export or generic format with memories key
             let version = obj.get("version").and_then(|v| v.as_str());
             if version.is_some() {
-                return import_kleos_export(&db, auth.user_id, obj).await;
+                return import_kleos_export(&db, auth.effective_user_id(), obj).await;
             }
             // mem0-style: has "memories" but no version
             if let Some(arr) = obj.get("memories").and_then(|v| v.as_array()) {
-                return import_mem0_array(&db, auth.user_id, arr).await;
+                return import_mem0_array(&db, auth.effective_user_id(), arr).await;
             }
         }
         if obj.contains_key("results") {
             if let Some(arr) = obj.get("results").and_then(|v| v.as_array()) {
-                return import_mem0_array(&db, auth.user_id, arr).await;
+                return import_mem0_array(&db, auth.effective_user_id(), arr).await;
             }
         }
         if obj.contains_key("documents") || obj.contains_key("data") {
@@ -128,7 +128,7 @@ async fn import_handler(
                 .or_else(|| obj.get("data"))
                 .and_then(|v| v.as_array());
             if let Some(arr) = items {
-                return import_array(&db, auth.user_id, arr).await;
+                return import_array(&db, auth.effective_user_id(), arr).await;
             }
         }
     }
@@ -315,7 +315,7 @@ async fn get_state_handler(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<GetStateQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let prefix = format!("user:{}:", auth.user_id);
+    let prefix = format!("user:{}:", auth.effective_user_id());
     let prefix_len = prefix.len();
     let filter_key = params.key.clone();
 
@@ -371,7 +371,7 @@ async fn delete_state_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let prefix = format!("user:{}:%", auth.user_id);
+    let prefix = format!("user:{}:%", auth.effective_user_id());
     let affected = db
         .write(move |conn| {
             conn.execute("DELETE FROM app_state WHERE key LIKE ?1", params![prefix])
@@ -388,7 +388,7 @@ async fn list_preferences_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let prefs = kleos_lib::preferences::list_preferences(&db, auth.user_id).await?;
+    let prefs = kleos_lib::preferences::list_preferences(&db, auth.effective_user_id()).await?;
     let count = prefs.len();
     let items = serde_json::to_value(prefs)
         .map_err(|e| AppError(kleos_lib::EngError::Internal(e.to_string())))?;
@@ -400,7 +400,7 @@ async fn get_preference_handler(
     ResolvedDb(db): ResolvedDb,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let pref = kleos_lib::preferences::get_preference(&db, auth.user_id, &key).await?;
+    let pref = kleos_lib::preferences::get_preference(&db, auth.effective_user_id(), &key).await?;
     Ok(Json(serde_json::to_value(pref).map_err(|e| {
         AppError(kleos_lib::EngError::Internal(e.to_string()))
     })?))
@@ -417,7 +417,7 @@ async fn put_preferences_handler(
             .as_str()
             .map(|s| s.to_string())
             .unwrap_or_else(|| val.to_string());
-        kleos_lib::preferences::set_preference(&db, auth.user_id, key, &v).await?;
+        kleos_lib::preferences::set_preference(&db, auth.effective_user_id(), key, &v).await?;
         updated += 1;
     }
     Ok(Json(json!({ "updated": updated })))
@@ -427,7 +427,8 @@ async fn delete_all_preferences_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let deleted = kleos_lib::preferences::delete_all_preferences(&db, auth.user_id).await?;
+    let deleted =
+        kleos_lib::preferences::delete_all_preferences(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deleted": deleted })))
 }
 
@@ -436,6 +437,6 @@ async fn delete_preference_handler(
     ResolvedDb(db): ResolvedDb,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::preferences::delete_preference(&db, auth.user_id, &key).await?;
+    kleos_lib::preferences::delete_preference(&db, auth.effective_user_id(), &key).await?;
     Ok(Json(json!({ "deleted": true, "key": key })))
 }

@@ -79,7 +79,7 @@ async fn publish_event_handler(
         payload: body.payload,
         source: body.source,
         agent: body.agent,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
     };
 
     let event = publish_event(&db, req).await?;
@@ -125,7 +125,7 @@ async fn list_events_handler(
         params.source.as_deref(),
         limit,
         0,
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
 
@@ -148,7 +148,7 @@ async fn get_event_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let event = get_event(&db, id, auth.user_id).await?;
+    let event = get_event(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(event)))
 }
 
@@ -157,13 +157,13 @@ async fn list_channels_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let channels = list_channels(&db, auth.user_id).await?;
+    let channels = list_channels(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "channels": channels })))
 }
 
 /// Returns Axon statistics.
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_axon_stats(&db, auth.user_id).await?;
+    let stats = get_axon_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -209,7 +209,7 @@ async fn subscribe_handler(
         filter_type: body.filter_type,
         webhook_url: body.webhook_url,
     };
-    let sub = upsert_subscription(&db, req, auth.user_id).await?;
+    let sub = upsert_subscription(&db, req, auth.effective_user_id()).await?;
     Ok((StatusCode::CREATED, Json(json!(sub))))
 }
 
@@ -229,7 +229,7 @@ async fn list_subscriptions_handler(
     Auth(auth): Auth,
     Query(params): Query<ListSubscriptionsParams>,
 ) -> Result<Json<Value>, AppError> {
-    let subs = list_subscriptions_for_agent(&db, &params.agent, auth.user_id).await?;
+    let subs = list_subscriptions_for_agent(&db, &params.agent, auth.effective_user_id()).await?;
     Ok(Json(json!({ "subscriptions": subs, "count": subs.len() })))
 }
 
@@ -240,8 +240,15 @@ async fn poll_handler(
     Json(body): Json<PollBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = body.limit.unwrap_or(100).min(1000);
-    let events = consume(&db, &body.agent, &body.channel, limit, auth.user_id).await?;
-    let cursor = get_cursor(&db, &body.agent, &body.channel, auth.user_id).await?;
+    let events = consume(
+        &db,
+        &body.agent,
+        &body.channel,
+        limit,
+        auth.effective_user_id(),
+    )
+    .await?;
+    let cursor = get_cursor(&db, &body.agent, &body.channel, auth.effective_user_id()).await?;
     Ok(Json(json!({
         "events": events,
         "cursor": cursor.last_event_id,
@@ -255,6 +262,12 @@ async fn get_cursor_handler(
     Auth(auth): Auth,
     Query(params): Query<GetCursorParams>,
 ) -> Result<Json<Value>, AppError> {
-    let cursor = get_cursor(&db, &params.agent, &params.channel, auth.user_id).await?;
+    let cursor = get_cursor(
+        &db,
+        &params.agent,
+        &params.channel,
+        auth.effective_user_id(),
+    )
+    .await?;
     Ok(Json(json!(cursor)))
 }

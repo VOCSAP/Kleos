@@ -250,6 +250,57 @@ pub async fn delete(app: &Router, path: &str, key: &str) -> (StatusCode, Value) 
     send(app, request).await
 }
 
+/// HTTP header naming the act-as target owner for delegated shard access.
+pub const ACT_AS_HEADER: &str = "x-kleos-act-as";
+
+/// Authenticated GET that acts as another shard owner via the act-as header.
+pub async fn get_as(app: &Router, path: &str, key: &str, act_as_owner: i64) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Authorization", format!("Bearer {}", key))
+        .header(ACT_AS_HEADER, act_as_owner.to_string())
+        .body(Body::empty())
+        .unwrap();
+    send(app, request).await
+}
+
+/// Authenticated POST (JSON body) that acts as another shard owner.
+pub async fn post_as(
+    app: &Router,
+    path: &str,
+    key: &str,
+    act_as_owner: i64,
+    payload: Value,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("Authorization", format!("Bearer {}", key))
+        .header("Content-Type", "application/json")
+        .header(ACT_AS_HEADER, act_as_owner.to_string())
+        .body(Body::from(payload.to_string()))
+        .unwrap();
+    send(app, request).await
+}
+
+/// Authenticated GET with a raw act-as header value (for malformed-input tests).
+pub async fn get_as_raw(
+    app: &Router,
+    path: &str,
+    key: &str,
+    act_as_raw: &str,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Authorization", format!("Bearer {}", key))
+        .header(ACT_AS_HEADER, act_as_raw)
+        .body(Body::empty())
+        .unwrap();
+    send(app, request).await
+}
+
 /// Create a new user + write key via the admin API.
 /// Returns `(user_id, api_key_string)`.
 ///

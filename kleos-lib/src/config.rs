@@ -499,8 +499,9 @@ pub struct Config {
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
     pub use_chunk_vector_search: bool,
-    /// Whether the GUI is enabled. Set via ENGRAM_GUI_PASSWORD (any non-empty
-    /// value enables the GUI). A separate gui_password field can be added later
+    /// Whether the GUI is enabled. Set via KLEOS_GUI_PASSWORD or the legacy
+    /// ENGRAM_GUI_PASSWORD (any non-empty value enables the GUI).
+    /// A separate gui_password field can be added later
     /// when an actual password gate is needed; for now the field is a bool.
     #[serde(skip, default)]
     pub gui_enabled: bool,
@@ -689,7 +690,8 @@ impl Config {
     ///
     /// Secret fields (`api_key`, `eidolon.api_key`) are
     /// `#[serde(skip)]` and must be supplied via environment variables.
-    /// `gui_enabled` is also `#[serde(skip)]` and controlled by ENGRAM_GUI_PASSWORD.
+    /// `gui_enabled` is also `#[serde(skip)]` and controlled by KLEOS_GUI_PASSWORD
+    /// with ENGRAM_GUI_PASSWORD as a legacy fallback.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, String> {
         let path = path.as_ref();
         let text =
@@ -892,10 +894,14 @@ impl Config {
         if let Ok(v) = std::env::var("KLEOS_USE_CHUNK_VECTOR_SEARCH") {
             config.use_chunk_vector_search = v == "1" || v.eq_ignore_ascii_case("true");
         }
-        if let Ok(v) = std::env::var("ENGRAM_GUI_PASSWORD") {
+        if let Ok(v) =
+            std::env::var("KLEOS_GUI_PASSWORD").or_else(|_| std::env::var("ENGRAM_GUI_PASSWORD"))
+        {
             config.gui_enabled = !v.is_empty();
         }
-        if let Ok(v) = std::env::var("ENGRAM_GUI_BUILD_DIR") {
+        if let Ok(v) =
+            std::env::var("KLEOS_GUI_BUILD_DIR").or_else(|_| std::env::var("ENGRAM_GUI_BUILD_DIR"))
+        {
             config.gui_build_dir = Some(v);
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_REFRESH_INTERVAL") {
@@ -1259,6 +1265,7 @@ mod tests {
         assert!(c.prompt.default_include_memories);
     }
 
+    /// Verifies Config exposes the nested Eidolon prompt defaults.
     #[test]
     /// Verifies the top-level config exposes Eidolon prompt settings.
     fn config_exposes_eidolon_field() {
@@ -1266,6 +1273,7 @@ mod tests {
         assert_eq!(c.eidolon.prompt.default_max_tokens, 4000);
     }
 
+    /// Verifies partial TOML files merge with defaults.
     #[test]
     #[serial_test::serial(credential_authority_env)]
     /// Verifies PHYLAXD_URL wins over legacy CREDD_URL.
@@ -1349,6 +1357,7 @@ default_max_tokens = 8000
         std::fs::remove_dir(&dir).ok();
     }
 
+    /// Verifies malformed TOML produces a parse error.
     #[test]
     /// Verifies malformed TOML returns a parse error.
     fn from_file_rejects_malformed_toml() {

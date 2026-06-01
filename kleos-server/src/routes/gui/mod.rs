@@ -24,6 +24,7 @@ use kleos_lib::memory;
 mod types;
 use types::{BulkArchiveBody, CreateMemoryBody, LoginForm, UpdateMemoryBody};
 
+/// HMAC-SHA256 signer used for GUI session cookies.
 type HmacSha256 = Hmac<Sha256>;
 
 const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60; // 24 hours
@@ -32,18 +33,6 @@ const COOKIE_NAME: &str = "engram_auth";
 /// Process-lifetime cache for the HMAC secret. Avoids file I/O on every
 /// GUI request and eliminates the TOCTOU window between read-check and write.
 static HMAC_SECRET_CACHE: OnceLock<SecretString> = OnceLock::new();
-
-// SPA routes that serve index.html
-const SPA_ROUTES: &[&str] = &[
-    "/",
-    "/gui",
-    "/graph",
-    "/search",
-    "/inbox",
-    "/timeline",
-    "/entities",
-    "/projects",
-];
 
 // MIME types for static assets
 fn mime_for_extension(ext: &str) -> &'static str {
@@ -205,6 +194,7 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
 /// because Windows ACLs default to user-restrictive. Returns false on any
 /// error (caller logs via warn elsewhere).
 #[cfg(unix)]
+/// Write a GUI secret file with owner-only permissions on Unix systems.
 async fn write_secret_file_0600(path: &std::path::Path, bytes: &[u8]) -> bool {
     use tokio::io::AsyncWriteExt;
     let mut opts = fs::OpenOptions::new();
@@ -228,6 +218,7 @@ async fn write_secret_file_0600(path: &std::path::Path, bytes: &[u8]) -> bool {
 }
 
 #[cfg(not(unix))]
+/// Write a GUI secret file on platforms without Unix permission bits.
 async fn write_secret_file_0600(path: &std::path::Path, bytes: &[u8]) -> bool {
     use tokio::io::AsyncWriteExt;
     let mut opts = fs::OpenOptions::new();
@@ -248,6 +239,7 @@ async fn write_secret_file_0600(path: &std::path::Path, bytes: &[u8]) -> bool {
 }
 
 #[cfg(unix)]
+/// Tighten an existing GUI secret file to owner-only permissions on Unix systems.
 async fn tighten_secret_perms(path: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(meta) = fs::metadata(path).await {
@@ -262,6 +254,7 @@ async fn tighten_secret_perms(path: &std::path::Path) {
 }
 
 #[cfg(not(unix))]
+/// Warn operators that secret-file permission tightening is unavailable.
 async fn tighten_secret_perms(path: &std::path::Path) {
     // R8 S-004: on non-unix targets we cannot chmod. Warn once per process
     // so operators notice that the HMAC secret on disk inherits default ACLs.
@@ -285,12 +278,15 @@ pub struct GuiSession {
     pub scopes: Vec<Scope>,
 }
 
+/// Provides helpers for checking resolved GUI session authorization.
 impl GuiSession {
+    /// Return whether this session grants the requested scope or admin.
     pub fn has_scope(&self, scope: &Scope) -> bool {
         self.scopes.contains(scope) || self.scopes.contains(&Scope::Admin)
     }
 }
 
+/// Encode scopes into the compact cookie payload representation.
 fn encode_scopes(scopes: &[Scope]) -> String {
     scopes
         .iter()
@@ -299,6 +295,7 @@ fn encode_scopes(scopes: &[Scope]) -> String {
         .join(",")
 }
 
+/// Decode scopes from the compact cookie payload representation.
 fn decode_scopes(raw: &str) -> Vec<Scope> {
     raw.split(',')
         .filter(|s| !s.is_empty())
@@ -468,8 +465,8 @@ async fn gui_auth(
 ) -> Response {
     // SECURITY (SEC-MED-7): gui_enabled controls whether the GUI is reachable.
     // It does NOT gate a password prompt -- actual authentication uses the API
-    // key submitted in the form. Set ENGRAM_GUI_PASSWORD to any non-empty value
-    // to enable the GUI.
+    // key submitted in the form. Set KLEOS_GUI_PASSWORD or the legacy
+    // ENGRAM_GUI_PASSWORD to any non-empty value to enable the GUI.
     if !state.config.gui_enabled {
         return (StatusCode::FORBIDDEN, "GUI authentication not configured").into_response();
     }
@@ -603,16 +600,28 @@ button:hover { background: #6b4ed1; }\n\
 .error { color: #ff6b6b; margin-bottom: 1rem; text-align: center; display: none; }\n\
 .hint { color: #888; font-size: 0.8rem; text-align: center; margin-top: 1rem; }\n";
 
-const LOGIN_JS: &str =
-    "document.getElementById('login-form').addEventListener('submit', async (e) => {\n\
+const LOGIN_JS: &str = "document.getElementById('login-form').addEventListener('submit', async (e) => {\n\
     e.preventDefault();\n\
     const form = e.target;\n\
+    const error = document.getElementById('error');\n\
     const data = new FormData(form);\n\
-    const res = await fetch('/gui/auth', { method: 'POST', body: new URLSearchParams(data) });\n\
-    if (res.ok) {\n\
-        window.location.href = '/gui';\n\
-    } else {\n\
-        document.getElementById('error').style.display = 'block';\n\
+    error.style.display = 'none';\n\
+    error.textContent = 'Invalid API key';\n\
+    try {\n\
+        const res = await fetch('/gui/auth', { method: 'POST', body: new URLSearchParams(data) });\n\
+        if (res.ok) {\n\
+            window.localStorage.setItem('kleos_api_key', data.get('api_key'));\n\
+            window.location.href = '/';\n\
+            return;\n\
+        }\n\
+        const message = await res.text();\n\
+        if (message) {\n\
+            error.textContent = message;\n\
+        }\n\
+        error.style.display = 'block';\n\
+    } catch (_error) {\n\
+        error.textContent = 'Unable to reach Kleos. Check that the server is running and try again.';\n\
+        error.style.display = 'block';\n\
     }\n\
 });\n";
 
@@ -664,7 +673,7 @@ async fn serve_login_js() -> Response {
         .unwrap()
 }
 
-/// GET /_app/* - serve SvelteKit static assets
+/// GET /_app/* - serve bundled SPA static assets.
 async fn serve_app_assets(State(state): State<AppState>, Path(path): Path<String>) -> Response {
     // SECURITY: when gui_enabled is false, the GUI is disabled entirely.
     if !state.config.gui_enabled {
@@ -684,10 +693,147 @@ async fn serve_app_assets(State(state): State<AppState>, Path(path): Path<String
 // Cache resolved build dir to avoid repeated filesystem checks
 static CACHED_BUILD_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
+/// Resolve the GUI build directory once per process.
 fn get_cached_build_dir(state: &AppState) -> Option<PathBuf> {
     CACHED_BUILD_DIR
         .get_or_init(|| resolve_gui_build_dir(state))
         .clone()
+}
+
+/// Return whether a path should always be handled as a static asset request.
+fn is_static_asset_path(path: &str) -> bool {
+    path.starts_with("/_app/")
+        || path
+            .rsplit('/')
+            .next()
+            .map(|segment| segment.contains('.'))
+            .unwrap_or(false)
+}
+
+/// Return whether a path starts with a named top-level segment.
+fn has_top_level_segment(path: &str, segment: &str) -> bool {
+    let trimmed = path.trim_start_matches('/');
+    trimmed == segment || trimmed.starts_with(&format!("{segment}/"))
+}
+
+/// Return whether a path is one of the coordination service API subpaths.
+fn is_coordination_api_path(path: &str) -> bool {
+    const COORDINATION_SEGMENTS: &[&str] = &["axon", "broca", "chiasm", "loom", "soma", "thymus"];
+
+    COORDINATION_SEGMENTS
+        .iter()
+        .any(|segment| has_top_level_segment(path, segment) && path != format!("/{segment}"))
+}
+
+/// Return whether a memory path targets a numeric memory API route.
+fn is_memory_api_path(path: &str) -> bool {
+    let mut segments = path.trim_start_matches('/').split('/');
+    matches!(segments.next(), Some("memory"))
+        && segments
+            .next()
+            .and_then(|id| id.parse::<i64>().ok())
+            .is_some()
+}
+
+/// Return whether a path is an API route that the SPA fallback must not swallow.
+fn is_api_route_path(path: &str) -> bool {
+    if matches!(path, "/gui/auth" | "/gui/logout") || path.starts_with("/gui/memories") {
+        return true;
+    }
+    if is_coordination_api_path(path) || is_memory_api_path(path) {
+        return true;
+    }
+
+    let first_segment = path
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+
+    matches!(
+        first_segment,
+        "activity"
+            | "admin"
+            | "agents"
+            | "approvals"
+            | "artifacts"
+            | "audit"
+            | "batch"
+            | "brain"
+            | "claims"
+            | "commerce"
+            | "communities"
+            | "consolidate"
+            | "context"
+            | "contradictions"
+            | "conversations"
+            | "decay"
+            | "digests"
+            | "dispatch"
+            | "docs"
+            | "entities"
+            | "entity-relationships"
+            | "episodes"
+            | "errors"
+            | "export"
+            | "facts"
+            | "fetch"
+            | "feed"
+            | "fsrs"
+            | "gate"
+            | "graph"
+            | "grounding"
+            | "growth"
+            | "handoffs"
+            | "health"
+            | "identities"
+            | "identity-keys"
+            | "import"
+            | "ingest"
+            | "inbox"
+            | "intelligence"
+            | "jobs"
+            | "keys"
+            | "list"
+            | "live"
+            | "mcp"
+            | "mcp-tokens"
+            | "messages"
+            | "metrics"
+            | "onboard"
+            | "pack"
+            | "pending"
+            | "personality"
+            | "policy"
+            | "projects"
+            | "prompts"
+            | "queue"
+            | "quota"
+            | "rate-limit"
+            | "ready"
+            | "reflect"
+            | "reflections"
+            | "schema"
+            | "scratch"
+            | "search"
+            | "sessions"
+            | "skills"
+            | "spaces"
+            | "stats"
+            | "structural"
+            | "supervisor"
+            | "sync"
+            | "tasks"
+            | "users"
+            | "usage"
+            | "verify"
+            | "webhooks"
+    )
+}
+
+/// Return whether an HTML GET path should serve the SPA index.
+fn is_spa_fallback_path(path: &str) -> bool {
+    path == "/" || (!is_static_asset_path(path) && !is_api_route_path(path))
 }
 
 /// Middleware that intercepts SPA routes when Accept: text/html is present.
@@ -706,7 +852,7 @@ pub async fn gui_spa_middleware(
         return next.run(request).await;
     }
 
-    // Check if this is a SPA route AND accepts HTML
+    // Check if this is a non-API HTML route.
     let accepts_html = request
         .headers()
         .get(header::ACCEPT)
@@ -714,7 +860,7 @@ pub async fn gui_spa_middleware(
         .map(|v| v.contains("text/html"))
         .unwrap_or(false);
 
-    if !accepts_html || !SPA_ROUTES.contains(&path) {
+    if !accepts_html || !is_spa_fallback_path(path) {
         return next.run(request).await;
     }
 
@@ -786,6 +932,7 @@ async fn gui_create_memory(
     ))
 }
 
+/// PATCH /gui/memories/{id} - update a memory through GUI cookie auth.
 async fn gui_update_memory(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -810,6 +957,7 @@ async fn gui_update_memory(
     Ok(Json(json!({ "updated": true, "id": id })))
 }
 
+/// DELETE /gui/memories/{id} - delete a memory through GUI cookie auth.
 async fn gui_delete_memory(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -822,6 +970,7 @@ async fn gui_delete_memory(
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
+/// POST /gui/memories/bulk-archive - archive a batch of memories through GUI cookie auth.
 async fn gui_bulk_archive(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -840,6 +989,7 @@ async fn gui_bulk_archive(
     Ok(Json(json!({ "archived": archived })))
 }
 
+/// Build the GUI router with auth, static assets, and memory mutation routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/gui/auth", post(gui_auth))
@@ -856,4 +1006,27 @@ pub fn router() -> Router<AppState> {
             patch(gui_update_memory).delete(gui_delete_memory),
         )
         .route("/gui/memories/bulk-archive", post(gui_bulk_archive))
+}
+
+/// Unit tests for GUI auth helpers and embedded login assets.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Verify the login bridge keeps the React bearer token in sync with the GUI cookie login.
+    #[test]
+    fn login_js_stores_api_key_and_redirects_to_root() {
+        assert!(
+            LOGIN_JS.contains("window.localStorage.setItem('kleos_api_key', data.get('api_key'))")
+        );
+        assert!(LOGIN_JS.contains("window.location.href = '/'"));
+    }
+
+    // Verify network failures render a visible login error instead of silently throwing in the page.
+    #[test]
+    fn login_js_handles_fetch_failures() {
+        assert!(LOGIN_JS.contains("try {"));
+        assert!(LOGIN_JS.contains("catch"));
+        assert!(LOGIN_JS.contains("Unable to reach Kleos"));
+    }
 }

@@ -70,21 +70,21 @@ async fn check_handler(
     // metacharacter injection when the resolved command reaches /bin/sh -c.
     let resolved_command = state
         .credd
-        .resolve_text_shell_safe(&db, auth.user_id, &body.agent, &body.command)
+        .resolve_text_shell_safe(&db, auth.effective_user_id(), &body.agent, &body.command)
         .await?;
     let mut resolved_patterns = Vec::new();
     for pattern in &state.config.eidolon.gate.blocked_patterns {
         resolved_patterns.push(
             state
                 .credd
-                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .resolve_text(&db, auth.effective_user_id(), &body.agent, pattern)
                 .await?,
         );
     }
     let mut result = check_command_with_context(
         &db,
         &body,
-        auth.user_id,
+        auth.effective_user_id(),
         Some(&resolved_command),
         &resolved_patterns,
         &state.config,
@@ -98,11 +98,13 @@ async fn check_handler(
     // command and cite the rule. This mirrors the eidolon gate's semantic
     // check -- static patterns cannot express every project-specific "never".
     if result.allowed {
-        if let Some(reason) = brain_grounded_check(&state, auth.user_id, &resolved_command).await {
+        if let Some(reason) =
+            brain_grounded_check(&state, auth.effective_user_id(), &resolved_command).await
+        {
             let gate_id = store_gate_request(
                 &db,
                 GateRequestInsert {
-                    user_id: auth.user_id,
+                    user_id: auth.effective_user_id(),
                     agent: &body.agent,
                     command: &body.command,
                     context: body.context.as_deref(),
@@ -146,7 +148,7 @@ async fn check_handler(
                 let gate_id = store_gate_request(
                     &db,
                     GateRequestInsert {
-                        user_id: auth.user_id,
+                        user_id: auth.effective_user_id(),
                         agent: &body.agent,
                         command: &body.command,
                         context: body.context.as_deref(),
@@ -220,12 +222,14 @@ async fn check_handler(
                     // Timeout or channel dropped. Atomically CAS the row to
                     // denied-timeout. If the CAS loses, a concurrent
                     // respond_handler already decided; read and honour that.
-                    match mark_gate_timed_out(&db, gate_id, auth.user_id).await {
+                    match mark_gate_timed_out(&db, gate_id, auth.effective_user_id()).await {
                         Ok(true) => false,
-                        Ok(false) => match read_gate_decision(&db, gate_id, auth.user_id).await {
-                            Ok(Some(d)) => d.status == "approved",
-                            _ => false,
-                        },
+                        Ok(false) => {
+                            match read_gate_decision(&db, gate_id, auth.effective_user_id()).await {
+                                Ok(Some(d)) => d.status == "approved",
+                                _ => false,
+                            }
+                        }
                         Err(e) => {
                             tracing::error!(
                                 "gate: failed to mark gate_id={} timed out: {}",
@@ -287,7 +291,7 @@ async fn respond_handler(
         body.gate_id,
         body.approved,
         body.reason.as_deref(),
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
 
@@ -312,7 +316,7 @@ async fn complete_handler(
     // memory (i.e. written to kleos) between gate-open and gate-complete.
     // This is how we enforce "store outcomes after completing any task".
     let gate_id = body.gate_id;
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
     let (agent, opened_at): (String, String) = db
         .read(move |conn| {
             conn.query_row(
@@ -355,7 +359,7 @@ async fn complete_handler(
         body.gate_id,
         &body.output,
         &body.known_secrets,
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok(Json(json!({ "ok": true, "kleos_stores": stored_count })))
@@ -543,7 +547,7 @@ async fn complete_latest_handler(
 ) -> Result<Json<Value>, AppError> {
     match complete_latest_gate(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         &body.session_id,
         &body.output,
         &body.known_secrets,

@@ -217,7 +217,7 @@ async fn create_skill_handler(
     ResolvedDb(db): ResolvedDb,
     Json(mut req): Json<CreateSkillRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    req.user_id = Some(auth.user_id);
+    req.user_id = Some(auth.effective_user_id());
     let skill = skills::create_skill(&db, req).await?;
     Ok((StatusCode::CREATED, Json(json!(skill))))
 }
@@ -231,8 +231,14 @@ async fn list_skills_handler(
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(params.limit, 50, 1000)?;
     let offset = clamp_offset(params.offset)?;
-    let skill_list =
-        skills::list_skills(&db, auth.user_id, params.agent.as_deref(), limit, offset).await?;
+    let skill_list = skills::list_skills(
+        &db,
+        auth.effective_user_id(),
+        params.agent.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
     Ok(Json(
         json!({ "skills": skill_list, "count": skill_list.len() }),
     ))
@@ -246,7 +252,7 @@ async fn search_skills_handler(
     Json(body): Json<SearchSkillsBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(body.limit, 20, 1000)?;
-    let results = search_skills(&db, &body.query, auth.user_id, limit).await?;
+    let results = search_skills(&db, &body.query, auth.effective_user_id(), limit).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
@@ -257,7 +263,7 @@ async fn get_skill_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let skill = skills::get_skill(&db, id, auth.user_id).await?;
+    let skill = skills::get_skill(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(skill)))
 }
 
@@ -268,7 +274,7 @@ async fn delete_skill_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::delete_skill(&db, id, auth.user_id).await?;
+    skills::delete_skill(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -280,7 +286,7 @@ async fn update_skill_handler(
     Path(id): Path<i64>,
     Json(req): Json<UpdateSkillRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let skill = skills::update_skill(&db, id, req, auth.user_id).await?;
+    let skill = skills::update_skill(&db, id, req, auth.effective_user_id()).await?;
     Ok(Json(json!(skill)))
 }
 
@@ -291,7 +297,7 @@ async fn recompute_skill_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let skill = skills::recompute_skill(&db, id, auth.user_id).await?;
+    let skill = skills::recompute_skill(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({
         "recomputed": true,
         "skill": skill,
@@ -310,7 +316,7 @@ async fn record_execution_handler(
     skills::record_execution(
         &db,
         id,
-        auth.user_id,
+        auth.effective_user_id(),
         body.success,
         body.duration_ms,
         body.error_type.as_deref(),
@@ -332,7 +338,7 @@ async fn get_executions_handler(
     Query(params): Query<GetExecutionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(params.limit, 20, 1000)?;
-    let executions = skills::get_executions(&db, id, auth.user_id, limit).await?;
+    let executions = skills::get_executions(&db, id, auth.effective_user_id(), limit).await?;
     Ok(Json(
         json!({ "executions": executions, "count": executions.len() }),
     ))
@@ -350,7 +356,7 @@ async fn judge_handler(
     let judgment = skills::add_judgment(
         &db,
         id,
-        auth.user_id,
+        auth.effective_user_id(),
         &body.judge_agent,
         body.score,
         body.rationale.as_deref(),
@@ -366,7 +372,7 @@ async fn get_judgments_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let judgments = skills::get_judgments(&db, id, auth.user_id).await?;
+    let judgments = skills::get_judgments(&db, id, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "judgments": judgments, "count": judgments.len() }),
     ))
@@ -380,7 +386,7 @@ async fn get_tags_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let tags = skills::get_skill_tags(&db, id, auth.user_id).await?;
+    let tags = skills::get_skill_tags(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "tags": tags })))
 }
 
@@ -391,7 +397,7 @@ async fn get_deps_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let deps = skills::get_tool_deps(&db, id, auth.user_id).await?;
+    let deps = skills::get_tool_deps(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deps": deps })))
 }
 
@@ -402,7 +408,7 @@ async fn get_lineage_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let lineage = skills::get_lineage(&db, id, auth.user_id).await?;
+    let lineage = skills::get_lineage(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "lineage": lineage })))
 }
 
@@ -459,7 +465,7 @@ async fn overview_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let overview = dashboard::get_overview(&db, auth.user_id).await?;
+    let overview = dashboard::get_overview(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(overview)))
 }
 
@@ -471,8 +477,13 @@ async fn stats_handler(
     Query(params): Query<StatsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(params.limit, 50, 1000)?;
-    let stats =
-        dashboard::get_skill_stats(&db, auth.user_id, params.sort_by.as_deref(), limit).await?;
+    let stats = dashboard::get_skill_stats(
+        &db,
+        auth.effective_user_id(),
+        params.sort_by.as_deref(),
+        limit,
+    )
+    .await?;
     Ok(Json(json!({ "stats": stats, "count": stats.len() })))
 }
 
@@ -483,7 +494,7 @@ async fn detail_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    skills::get_skill(&db, id, auth.user_id).await?;
+    skills::get_skill(&db, id, auth.effective_user_id()).await?;
     let detail = dashboard::get_skill_detail(&db, id).await?;
     Ok(Json(detail))
 }
@@ -498,7 +509,7 @@ async fn evolve_handler(
     Json(req): Json<evolver::EvolutionRequest>,
 ) -> Result<Json<Value>, AppError> {
     let llm = state.llm.as_deref();
-    let result = evolver::evolve(&db, llm, &req, "system", auth.user_id).await?;
+    let result = evolver::evolve(&db, llm, &req, "system", auth.effective_user_id()).await?;
     Ok(Json(json!(result)))
 }
 
@@ -511,7 +522,7 @@ async fn fix_handler(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let llm = state.llm.as_deref();
-    let result = evolver::fix_skill(&db, llm, id, "system", auth.user_id).await?;
+    let result = evolver::fix_skill(&db, llm, id, "system", auth.effective_user_id()).await?;
     Ok(Json(json!(result)))
 }
 
@@ -531,7 +542,7 @@ async fn derive_handler(
         &body.parent_ids,
         &body.direction,
         agent,
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok(Json(json!(result)))
@@ -547,7 +558,9 @@ async fn capture_handler(
 ) -> Result<Json<Value>, AppError> {
     let agent = body.agent.as_deref().unwrap_or("system");
     let llm = state.llm.as_deref();
-    let result = evolver::capture_skill(&db, llm, &body.description, agent, auth.user_id).await?;
+    let result =
+        evolver::capture_skill(&db, llm, &body.description, agent, auth.effective_user_id())
+            .await?;
     Ok(Json(json!(result)))
 }
 
@@ -560,7 +573,7 @@ async fn evolution_recent_handler(
 ) -> Result<Json<Value>, AppError> {
     let hours = params.hours.unwrap_or(24).clamp(1, 24 * 30);
     let limit = clamp_limit(params.limit, 50, 500)?;
-    let rows = skills::list_recent_evolutions(&db, auth.user_id, hours, limit).await?;
+    let rows = skills::list_recent_evolutions(&db, auth.effective_user_id(), hours, limit).await?;
     Ok(Json(json!({ "recent": rows, "count": rows.len() })))
 }
 
@@ -571,7 +584,7 @@ async fn usage_stats_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = analyzer::get_usage_stats(&db, auth.user_id).await?;
+    let stats = analyzer::get_usage_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(stats))
 }
 
@@ -584,7 +597,8 @@ async fn cloud_search_handler(
     Json(body): Json<CloudSearchBody>,
 ) -> Result<Json<Value>, AppError> {
     let limit = clamp_limit(body.limit, 20, 100)?;
-    let results = cloud::search_skills_cloud(&db, &body.query, limit, auth.user_id).await?;
+    let results =
+        cloud::search_skills_cloud(&db, &body.query, limit, auth.effective_user_id()).await?;
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
@@ -610,7 +624,7 @@ async fn cloud_upload_handler(
     let result = cloud::upload_skill_to_cloud(
         &db,
         &agent,
-        auth.user_id,
+        auth.effective_user_id(),
         &body.name,
         &body.description,
         &body.content,
@@ -695,7 +709,7 @@ async fn sync_skills_handler(
                             agent: "system".to_string(),
                             parent_skill_id: None,
                             metadata: None,
-                            user_id: Some(auth.user_id),
+                            user_id: Some(auth.effective_user_id()),
                             tags: Some(vec!["imported".to_string()]),
                             tool_deps: None,
                             // Skills Cloud (v50+): legacy /skills/sync path
@@ -746,13 +760,13 @@ async fn execute_skills_handler(
     };
 
     // Search for relevant skills
-    let search_results = search_skills(&db, task, auth.user_id, 5).await?;
+    let search_results = search_skills(&db, task, auth.effective_user_id(), 5).await?;
     let skill_names: Vec<String> = search_results.iter().map(|r| r.name.clone()).collect();
 
     // Build context from top skills
     let mut skill_context = String::new();
     for result in search_results.iter().take(3) {
-        if let Ok(skill) = skills::get_skill(&db, result.id, auth.user_id).await {
+        if let Ok(skill) = skills::get_skill(&db, result.id, auth.effective_user_id()).await {
             skill_context.push_str(&format!(
                 "<skill name=\"{}\">\n{}\n</skill>\n\n",
                 skill.name, skill.code
@@ -812,7 +826,7 @@ async fn upload_skill_handler(
         .unwrap_or("unknown");
 
     // Search for matching skill in DB
-    let skills_list = skills::list_skills(&db, auth.user_id, None, 100, 0).await?;
+    let skills_list = skills::list_skills(&db, auth.effective_user_id(), None, 100, 0).await?;
     let skill = skills_list.into_iter().find(|s| s.name == name);
 
     let Some(skill) = skill else {

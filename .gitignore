@@ -29,7 +29,6 @@ docs/benchmarks/
 # Node
 node_modules/
 gui/build/
-gui/.svelte-kit/
 
 # Temp/test files
 clippy_output.txt

@@ -19,7 +19,8 @@ async fn post_error(
     Auth(auth): Auth,
     Json(body): Json<LogErrorRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let id = errors_log::log_error(&state.db, body, Some(&auth.user_id.to_string())).await?;
+    let id =
+        errors_log::log_error(&state.db, body, Some(&auth.effective_user_id().to_string())).await?;
     Ok(Json(serde_json::json!({ "id": id })))
 }
 
@@ -28,7 +29,8 @@ async fn get_errors(
     Auth(auth): Auth,
     Query(query): Query<ListErrorsRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let events = errors_log::list_errors(&state.db, &auth.user_id.to_string(), query).await?;
+    let events =
+        errors_log::list_errors(&state.db, &auth.effective_user_id().to_string(), query).await?;
     let count = events.len();
     let items = serde_json::to_value(events).map_err(kleos_lib::EngError::Serialization)?;
     Ok(Json(serde_json::json!({ "items": items, "count": count })))

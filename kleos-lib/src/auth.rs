@@ -123,12 +123,30 @@ pub struct IdentityCtx {
 pub struct AuthContext {
     pub key: ApiKey,
     pub user_id: i64,
+    /// When set, the authenticated caller is acting inside this owner's shard
+    /// via an authorized act-as delegation (Space Sharing). `user_id` always
+    /// remains the REAL caller -- it drives control-plane authorization (key,
+    /// grant, and space management) and audit attribution, so a delegated
+    /// session can never manage another user's account. Only tenant DATA
+    /// operations follow the delegation, via `effective_user_id()`.
+    pub act_as: Option<i64>,
     pub identity: Option<IdentityCtx>,
 }
 
 impl AuthContext {
     pub fn has_scope(&self, scope: &Scope) -> bool {
         self.key.scopes.contains(scope) || self.key.scopes.contains(&Scope::Admin)
+    }
+
+    /// The user id that tenant DATA operations (shard resolution and in-shard
+    /// `user_id` predicates) should scope to: the act-as target when a
+    /// delegation is active, otherwise the real caller. Control-plane checks
+    /// must keep using `user_id` so delegation never crosses into account
+    /// management. A handler that forgets to use this still scopes to the real
+    /// caller inside the owner's shard, which returns nothing -- fail-closed,
+    /// never a cross-user leak.
+    pub fn effective_user_id(&self) -> i64 {
+        self.act_as.unwrap_or(self.user_id)
     }
 }
 
@@ -494,6 +512,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     Ok(AuthContext {
         key: api_key,
         user_id,
+        act_as: None,
         identity: None,
     })
 }

@@ -49,7 +49,7 @@ async fn register_agent(
     // atomically instead of a check-then-insert race (TOCTOU).
     let result = match agents::insert_agent(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         &body.name,
         body.category.as_deref(),
         body.description.as_deref(),
@@ -84,7 +84,7 @@ async fn list_agents(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let agents = agents::list_agents(&db, auth.user_id).await?;
+    let agents = agents::list_agents(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "agents": agents })))
 }
 
@@ -93,7 +93,7 @@ async fn get_agent(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = agents::get_agent_by_id(&db, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&db, id, auth.effective_user_id())
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
@@ -126,7 +126,7 @@ async fn revoke_agent(
     Json(body): Json<RevokeBody>,
 ) -> Result<Json<Value>, AppError> {
     let reason = body.reason.as_deref().unwrap_or("revoked");
-    agents::revoke_agent(&db, id, auth.user_id, reason).await?;
+    agents::revoke_agent(&db, id, auth.effective_user_id(), reason).await?;
     Ok(Json(json!({ "revoked": true, "agent_id": id })))
 }
 
@@ -135,7 +135,7 @@ async fn get_passport(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = agents::get_agent_by_id(&db, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&db, id, auth.effective_user_id())
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
@@ -148,7 +148,7 @@ async fn get_passport(
     let issued_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let payload = json!({
         "agent_id": agent.id,
-        "user_id": auth.user_id,
+        "user_id": auth.effective_user_id(),
         "name": agent.name,
         "trust_score": agent.trust_score,
         "issued_at": issued_at,
@@ -157,7 +157,7 @@ async fn get_passport(
     let signature = sign_value(&payload)?;
     Ok(Json(json!({
         "agent_id": agent.id,
-        "user_id": auth.user_id,
+        "user_id": auth.effective_user_id(),
         "name": agent.name,
         "trust_score": agent.trust_score,
         "issued_at": issued_at,
@@ -173,12 +173,12 @@ async fn link_key(
     Path(id): Path<i64>,
     Json(body): Json<LinkKeyBody>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = agents::get_agent_by_id(&db, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&db, id, auth.effective_user_id())
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
     // api_keys lives in the system DB, not the tenant shard.
-    agents::link_key_to_agent(&state.db, agent.id, body.key_id, auth.user_id).await?;
+    agents::link_key_to_agent(&state.db, agent.id, body.key_id, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "linked": true, "agent_id": id, "key_id": body.key_id }),
     ))
@@ -191,12 +191,13 @@ async fn get_executions(
     Query(params): Query<ExecutionsQuery>,
 ) -> Result<Json<Value>, AppError> {
     // Verify agent belongs to user
-    let agent = agents::get_agent_by_id(&db, id, auth.user_id)
+    let agent = agents::get_agent_by_id(&db, id, auth.effective_user_id())
         .await?
         .ok_or_else(|| AppError(kleos_lib::EngError::NotFound("Agent not found".into())))?;
 
     let limit = params.limit.unwrap_or(50).min(1000);
-    let executions = agents::get_agent_executions(&db, agent.id, auth.user_id, limit).await?;
+    let executions =
+        agents::get_agent_executions(&db, agent.id, auth.effective_user_id(), limit).await?;
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 

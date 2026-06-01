@@ -192,76 +192,71 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
         })
         .await?;
 
-    // -- Phase 2b: Normalize edge weights to 0..1 ----------------------------------
-    // Raw similarity scores cluster in a narrow band (e.g. 0.63-1.0 for cosine).
-    // The GUI force simulation thresholds expect a full 0-1 range, so we min-max
-    // normalize to spread them out.
+    // -- Phase 2b: edge weights are real cosine similarity, left untouched. ---------
+    // The GUI maps continuous similarity to force parameters. Normalizing per fetch
+    // would make the same edge mean different things depending on what else appears.
     let mut edges = edges;
-    if edges.len() > 1 {
-        let min_w = edges.iter().map(|e| e.weight).fold(f32::INFINITY, f32::min);
-        let max_w = edges
-            .iter()
-            .map(|e| e.weight)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let range = max_w - min_w;
-        if range > 0.001 {
-            for edge in &mut edges {
-                edge.weight = (edge.weight - min_w) / range;
+
+    // -- Phase 3: optional small-component pruning (default: keep everything). ------
+    let min_component = opts.min_component.max(1);
+    if min_component > 1 {
+        let adj: HashMap<&str, Vec<&str>> = {
+            let mut m: HashMap<&str, Vec<&str>> = HashMap::new();
+            for e in &edges {
+                m.entry(e.source.as_str())
+                    .or_default()
+                    .push(e.target.as_str());
+                m.entry(e.target.as_str())
+                    .or_default()
+                    .push(e.source.as_str());
             }
-        }
-    }
+            m
+        };
 
-    // -- Phase 3: Keep only large connected components -----------------------------
-    // Small disconnected clusters (< 10 nodes) scatter the force layout since
-    // nothing links them to the main graph. BFS to find components, keep the big ones.
-    let adj: HashMap<&str, Vec<&str>> = {
-        let mut m: HashMap<&str, Vec<&str>> = HashMap::new();
-        for e in &edges {
-            m.entry(e.source.as_str())
-                .or_default()
-                .push(e.target.as_str());
-            m.entry(e.target.as_str())
-                .or_default()
-                .push(e.source.as_str());
-        }
-        m
-    };
+        let node_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut keep_ids: HashSet<String> = HashSet::new();
 
-    let node_ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-    let mut visited: HashSet<&str> = HashSet::new();
-    let mut keep_ids: HashSet<String> = HashSet::new();
-    const MIN_COMPONENT_SIZE: usize = 10;
-
-    for nid in &node_ids {
-        if visited.contains(nid) {
-            continue;
-        }
-        let mut component: Vec<&str> = Vec::new();
-        let mut queue: VecDeque<&str> = VecDeque::new();
-        queue.push_back(nid);
-        while let Some(cur) = queue.pop_front() {
-            if !visited.insert(cur) {
+        for nid in &node_ids {
+            if visited.contains(nid) {
                 continue;
             }
-            component.push(cur);
-            if let Some(neighbors) = adj.get(cur) {
-                for nb in neighbors {
-                    if node_ids.contains(nb) && !visited.contains(nb) {
-                        queue.push_back(nb);
+            let mut component: Vec<&str> = Vec::new();
+            let mut queue: VecDeque<&str> = VecDeque::new();
+            queue.push_back(nid);
+            while let Some(cur) = queue.pop_front() {
+                if !visited.insert(cur) {
+                    continue;
+                }
+                component.push(cur);
+                if let Some(neighbors) = adj.get(cur) {
+                    for nb in neighbors {
+                        if node_ids.contains(nb) && !visited.contains(nb) {
+                            queue.push_back(nb);
+                        }
                     }
                 }
             }
-        }
-        if component.len() >= MIN_COMPONENT_SIZE {
-            for id in component {
-                keep_ids.insert(id.to_string());
+            if component.len() >= min_component {
+                for id in component {
+                    keep_ids.insert(id.to_string());
+                }
             }
         }
-    }
 
-    let mut nodes = nodes;
-    nodes.retain(|n| keep_ids.contains(&n.id));
-    edges.retain(|e| keep_ids.contains(&e.source) && keep_ids.contains(&e.target));
+        let mut nodes = nodes;
+        nodes.retain(|n| keep_ids.contains(&n.id));
+        edges.retain(|e| keep_ids.contains(&e.source) && keep_ids.contains(&e.target));
+
+        info!(
+            nodes = nodes.len(),
+            edges = edges.len(),
+            user_id,
+            "graph_built"
+        );
+
+        return Ok(GraphBuildResult { nodes, edges });
+    }
 
     info!(
         nodes = nodes.len(),
@@ -274,9 +269,11 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
 }
 
 #[cfg(test)]
+/// Tests for graph payload structure and graph type parsing helpers.
 mod tests {
     use super::*;
 
+    /// Verifies that graph build results keep node and edge vectors intact.
     #[test]
     fn test_graph_build_result_structure() {
         let result = GraphBuildResult {
@@ -312,6 +309,7 @@ mod tests {
         assert_eq!(result.nodes[0].id, "m1");
     }
 
+    /// Verifies compatibility aliases for database link type strings.
     #[test]
     fn test_parse_link_type() {
         assert_eq!(LinkType::parse("cite"), LinkType::Cite);
@@ -323,6 +321,7 @@ mod tests {
         assert_eq!(LinkType::parse("unknown_type"), LinkType::Cite);
     }
 
+    /// Verifies graph labels truncate long content at the expected length.
     #[test]
     fn test_label_truncation() {
         let long_content = "a".repeat(100);
@@ -338,5 +337,11 @@ mod tests {
             long_content.clone()
         };
         assert_eq!(label.len(), 63); // 60 chars + "..."
+    }
+
+    /// Verifies graph build options keep all components by default.
+    #[test]
+    fn graph_build_options_keep_all_components_by_default() {
+        assert_eq!(GraphBuildOptions::default().min_component, 1);
     }
 }
