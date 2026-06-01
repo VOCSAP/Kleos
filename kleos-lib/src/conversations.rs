@@ -198,9 +198,7 @@ pub struct SearchMessagesRequest {
     pub include_unscoped: Option<bool>,
 }
 
-// ---------------------------------------------------------------------------
-// Row mappers
-// ---------------------------------------------------------------------------
+// --- Row mappers ---
 
 fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
     Ok(Conversation {
@@ -258,31 +256,13 @@ fn row_to_message_search_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<Mes
     })
 }
 
-fn sanitize_fts_query(query: &str) -> String {
-    let sanitized: String = query
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    sanitized
-        .split_whitespace()
-        .filter(|w| w.len() >= 2)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+use crate::memory::fts::sanitize_fts_query;
 
 fn metadata_to_string(meta: &Option<serde_json::Value>) -> Option<String> {
     meta.as_ref().map(|v| v.to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Conversation CRUD
-// ---------------------------------------------------------------------------
+// --- Conversation CRUD ---
 
 #[tracing::instrument(skip(db, req), fields(agent = %req.agent, session_id = ?req.session_id, user_id))]
 pub async fn create_conversation(
@@ -302,11 +282,11 @@ pub async fn create_conversation(
     let new_id: i64 = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO conversations (agent, session_id, title, metadata, space_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![agent, session_id, title, meta_str, space_id],
+                "INSERT INTO conversations (agent, session_id, title, metadata, space_id, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![agent, session_id, title, meta_str, space_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -317,16 +297,15 @@ pub async fn create_conversation(
 pub async fn get_conversation_for_user(
     db: &Database,
     id: i64,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Conversation> {
     let sql = format!(
-        "SELECT {} FROM conversations WHERE id = ?1",
+        "SELECT {} FROM conversations WHERE id = ?1 AND user_id = ?2",
         CONVERSATION_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![id], row_to_conversation)
-            .optional()
-            .map_err(rusqlite_to_eng_error)?
+        conn.query_row(&sql, params![id, user_id], row_to_conversation)
+            .optional()?
             .ok_or_else(|| EngError::NotFound(format!("conversation {} not found", id)))
     })
     .await
@@ -337,20 +316,20 @@ pub async fn get_conversation_by_session(
     db: &Database,
     agent: &str,
     session_id: &str,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Option<Conversation>> {
     let agent = agent.to_string();
     let session_id = session_id.to_string();
     let sql = format!(
-        "SELECT {} FROM conversations WHERE agent = ?1 AND session_id = ?2 ORDER BY started_at DESC LIMIT 1",
+        "SELECT {} FROM conversations WHERE agent = ?1 AND session_id = ?2 AND user_id = ?3 ORDER BY started_at DESC LIMIT 1",
         CONVERSATION_COLUMNS
     );
     db.read(move |conn| {
-        conn.query_row(&sql, params![agent, session_id], |row| {
-            row_to_conversation(row)
-        })
-        .optional()
-        .map_err(rusqlite_to_eng_error)
+        Ok(conn
+            .query_row(&sql, params![agent, session_id, user_id], |row| {
+                row_to_conversation(row)
+            })
+            .optional()?)
     })
     .await
 }
@@ -366,13 +345,22 @@ pub async fn list_conversations(
     space_id: Option<i64>,
     include_unscoped: Option<bool>,
 ) -> Result<Vec<ConversationListItem>> {
-    let (space_clause, params_vec) =
+    let (space_clause, mut params_vec) =
         build_space_filter("c.space_id", space_id, include_unscoped, user_id);
+    // Always scope to the caller's own conversations (single-DB owner
+    // isolation), in addition to the optional Patch 33 space filter.
+    let user_idx = params_vec.len() + 1;
+    let where_clause = if space_clause.is_empty() {
+        format!("WHERE c.user_id = ?{user_idx}")
+    } else {
+        format!("{space_clause} AND c.user_id = ?{user_idx}")
+    };
+    params_vec.push(rusqlite::types::Value::Integer(user_id));
+    let limit_idx = params_vec.len() + 1;
     let sql = format!(
-        "SELECT {cols} FROM conversations c {space_clause} \
+        "SELECT {cols} FROM conversations c {where_clause} \
          ORDER BY c.updated_at DESC LIMIT ?{limit_idx}",
         cols = CONVERSATION_LIST_COLUMNS,
-        limit_idx = params_vec.len() + 1,
     );
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
@@ -386,7 +374,7 @@ pub async fn list_conversations(
             .map_err(rusqlite_to_eng_error)?;
         let mut convs = Vec::new();
         for row in rows {
-            convs.push(row.map_err(rusqlite_to_eng_error)?);
+            convs.push(row?);
         }
         Ok(convs)
     })
@@ -407,11 +395,14 @@ pub async fn list_conversations_by_agent(
     let (space_clause, mut params_vec) =
         build_space_filter("c.space_id", space_id, include_unscoped, user_id);
     let agent_idx = params_vec.len() + 1;
-    let limit_idx = agent_idx + 1;
+    let user_idx = agent_idx + 1;
+    let limit_idx = user_idx + 1;
+    // Always scope to the caller's own conversations (single-DB owner
+    // isolation), in addition to the agent and optional Patch 33 space filter.
     let where_clause = if space_clause.is_empty() {
-        format!("WHERE c.agent = ?{agent_idx}")
+        format!("WHERE c.agent = ?{agent_idx} AND c.user_id = ?{user_idx}")
     } else {
-        format!("{space_clause} AND c.agent = ?{agent_idx}")
+        format!("{space_clause} AND c.agent = ?{agent_idx} AND c.user_id = ?{user_idx}")
     };
     let sql = format!(
         "SELECT {cols} FROM conversations c {where_clause} \
@@ -419,6 +410,7 @@ pub async fn list_conversations_by_agent(
         cols = CONVERSATION_LIST_COLUMNS,
     );
     params_vec.push(rusqlite::types::Value::Text(agent));
+    params_vec.push(rusqlite::types::Value::Integer(user_id));
     params_vec.push(rusqlite::types::Value::Integer(limit as i64));
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
@@ -429,7 +421,7 @@ pub async fn list_conversations_by_agent(
             .map_err(rusqlite_to_eng_error)?;
         let mut convs = Vec::new();
         for row in rows {
-            convs.push(row.map_err(rusqlite_to_eng_error)?);
+            convs.push(row?);
         }
         Ok(convs)
     })
@@ -448,10 +440,10 @@ pub async fn update_conversation(
     db.write(move |conn| {
         conn.execute(
             "UPDATE conversations SET title = COALESCE(?1, title), metadata = COALESCE(?2, metadata), \
-             updated_at = datetime('now') WHERE id = ?3",
-            params![title, meta_str, id],
+             updated_at = datetime('now') WHERE id = ?3 AND user_id = ?4",
+            params![title, meta_str, id, user_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
@@ -459,11 +451,13 @@ pub async fn update_conversation(
 }
 
 #[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
-pub async fn delete_conversation(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+pub async fn delete_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            conn.execute("DELETE FROM conversations WHERE id = ?1", params![id])
-                .map_err(rusqlite_to_eng_error)
+            Ok(conn.execute(
+                "DELETE FROM conversations WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )?)
         })
         .await?;
     if affected == 0 {
@@ -473,21 +467,18 @@ pub async fn delete_conversation(db: &Database, id: i64, _user_id: i64) -> Resul
 }
 
 #[tracing::instrument(skip(db), fields(conversation_id = id, user_id))]
-pub async fn touch_conversation(db: &Database, id: i64, _user_id: i64) -> Result<()> {
+pub async fn touch_conversation(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
         conn.execute(
-            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1",
-            params![id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+            "UPDATE conversations SET updated_at = datetime('now') WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )?;
         Ok(())
     })
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Message operations
-// ---------------------------------------------------------------------------
+// --- Message operations ---
 
 #[tracing::instrument(skip(db, credd, req), fields(conversation_id, user_id, role = %req.role))]
 pub async fn add_message(
@@ -510,7 +501,7 @@ pub async fn add_message(
                 "INSERT INTO messages (conversation_id, role, content, metadata) VALUES (?1, ?2, ?3, ?4)",
                 params![conversation_id, role, content, meta_str],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -531,8 +522,7 @@ pub async fn add_message(
     );
     db.read(move |conn| {
         conn.query_row(&sql, params![new_id], row_to_message)
-            .optional()
-            .map_err(rusqlite_to_eng_error)?
+            .optional()?
             .ok_or_else(|| EngError::Internal("failed to fetch newly created message".into()))
     })
     .await
@@ -542,16 +532,18 @@ pub async fn add_message(
 pub async fn list_messages(
     db: &Database,
     conversation_id: i64,
-    _user_id: i64,
+    user_id: i64,
     limit: usize,
     offset: usize,
 ) -> Result<Vec<Message>> {
     // Defense-in-depth: route layer also calls get_conversation_for_user
-    // before invoking this, but library functions must not trust callers.
+    // before invoking this, but library functions must not trust callers. The
+    // c.user_id predicate scopes messages via their parent conversation's owner
+    // (the messages table carries no user_id of its own).
     let sql = format!(
         "SELECT {} FROM messages m
          INNER JOIN conversations c ON m.conversation_id = c.id
-         WHERE m.conversation_id = ?1
+         WHERE m.conversation_id = ?1 AND c.user_id = ?4
          ORDER BY m.created_at ASC LIMIT ?2 OFFSET ?3",
         MESSAGE_COLUMNS
             .split(", ")
@@ -560,16 +552,14 @@ pub async fn list_messages(
             .join(", ")
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let rows = stmt
-            .query_map(
-                params![conversation_id, limit as i64, offset as i64],
-                row_to_message,
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            params![conversation_id, limit as i64, offset as i64, user_id],
+            row_to_message,
+        )?;
         let mut msgs = Vec::new();
         for row in rows {
-            msgs.push(row.map_err(rusqlite_to_eng_error)?);
+            msgs.push(row?);
         }
         Ok(msgs)
     })
@@ -601,18 +591,22 @@ pub async fn search_messages(
         format!(" AND {}", space_clause.trim_start_matches("WHERE ").trim())
     };
     let query_idx = space_params.len() + 1;
-    let limit_idx = query_idx + 1;
+    // Always scope FTS hits to the caller's own conversations via the joined
+    // owner (single-DB owner isolation), in addition to the space filter.
+    let user_idx = query_idx + 1;
+    let limit_idx = user_idx + 1;
     let sql = format!(
         "SELECT m.id, m.conversation_id, m.role, m.content, m.metadata, m.created_at, \
          c.agent, c.title as conv_title \
          FROM messages_fts f \
          JOIN messages m ON f.rowid = m.id \
          JOIN conversations c ON m.conversation_id = c.id \
-         WHERE messages_fts MATCH ?{query_idx}{space_and} \
+         WHERE messages_fts MATCH ?{query_idx}{space_and} AND c.user_id = ?{user_idx} \
          ORDER BY m.created_at DESC LIMIT ?{limit_idx}"
     );
     let mut all_params: Vec<rusqlite::types::Value> = space_params;
     all_params.push(rusqlite::types::Value::Text(sanitized));
+    all_params.push(rusqlite::types::Value::Integer(user_id));
     all_params.push(rusqlite::types::Value::Integer(limit as i64));
     match db
         .read(move |conn| {
@@ -625,7 +619,7 @@ pub async fn search_messages(
                 .map_err(rusqlite_to_eng_error)?;
             let mut results = Vec::new();
             for row in rows {
-                results.push(row.map_err(rusqlite_to_eng_error)?);
+                results.push(row?);
             }
             Ok(results)
         })
@@ -639,9 +633,7 @@ pub async fn search_messages(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Bulk and Upsert
-// ---------------------------------------------------------------------------
+// --- Bulk and Upsert ---
 
 #[tracing::instrument(skip(db, credd, req), fields(agent = %req.agent, message_count = req.messages.len(), user_id))]
 pub async fn bulk_insert_conversation(
@@ -661,13 +653,12 @@ pub async fn bulk_insert_conversation(
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race.
     let conv_id: i64 = db
         .write(move |conn| {
-            conn.query_row(
-                "INSERT INTO conversations (agent, session_id, title, metadata, space_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-                params![agent, session_id, title, meta_str, space_id],
+            Ok(conn.query_row(
+                "INSERT INTO conversations (agent, session_id, title, metadata, space_id, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+                params![agent, session_id, title, meta_str, space_id, user_id],
                 |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await?;
     for msg in req.messages {
@@ -752,9 +743,7 @@ pub async fn upsert_conversation(
     get_conversation_for_user(db, conv.id, user_id).await
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

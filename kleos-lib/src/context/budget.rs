@@ -183,28 +183,15 @@ pub fn truncate_to_token_budget(content: &str, max_memory_tokens: usize) -> Stri
         return content.to_string();
     }
     let max_chars = max_memory_tokens * 4;
+    let safe_window = crate::validation::truncate_on_char_boundary(content, max_chars);
     // Try to find a sentence boundary (". ") within the last 40% of the allowed range
-    if let Some(cut_point) = content[..max_chars.min(content.len())].rfind(". ") {
+    if let Some(cut_point) = safe_window.rfind(". ") {
         let threshold = (max_chars as f64 * 0.6) as usize;
         if cut_point > threshold {
-            return format!("{}. [truncated]", &content[..cut_point]);
+            return format!("{}. [truncated]", &safe_window[..cut_point]);
         }
     }
-    // Hard truncation
-    let end = max_chars.min(content.len());
-    // Avoid cutting in the middle of a multi-byte char
-    let safe_end = if end < content.len() {
-        // MSRV 1.85: floor_char_boundary is stable since 1.91, so walk back
-        // from `end` to the nearest UTF-8 char boundary manually.
-        let mut i = end;
-        while i > 0 && !content.is_char_boundary(i) {
-            i -= 1;
-        }
-        i
-    } else {
-        end
-    };
-    format!("{}... [truncated]", &content[..safe_end])
+    format!("{}... [truncated]", safe_window)
 }
 
 #[cfg(test)]

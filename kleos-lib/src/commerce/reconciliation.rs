@@ -3,7 +3,7 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
 use super::types::{PaymentMethodCounts, ReconciliationResponse, ServiceSpend};
 
@@ -21,9 +21,10 @@ pub async fn get_reconciliation(
 
     db.read(move |conn| {
         // Per-service breakdown from settlements.
-        let mut stmt = conn
-            .prepare(
-                "SELECT pq.service_id, COUNT(*), COALESCE(SUM(CAST(ps.amount AS REAL)), 0)
+        // Uses GROUP_CONCAT to collect text amounts, then sums with Decimal in
+        // Rust to avoid float drift from SQL CAST AS REAL.
+        let mut stmt = conn.prepare(
+            "SELECT pq.service_id, COUNT(*), COALESCE(GROUP_CONCAT(ps.amount, ','), '')
                  FROM payment_settlements ps
                  JOIN payment_quotes pq ON ps.quote_id = pq.id
                  WHERE ps.user_id = ?1
@@ -31,21 +32,23 @@ pub async fn get_reconciliation(
                    AND ps.created_at LIKE ?2
                  GROUP BY pq.service_id
                  ORDER BY pq.service_id",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         let breakdown: Vec<ServiceSpend> = stmt
             .query_map(params![user_id, date_prefix], |row| {
+                let amounts_csv: String = row.get(2)?;
+                let amount = amounts_csv
+                    .split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| Decimal::from_str(s.trim()).unwrap_or(Decimal::ZERO))
+                    .fold(Decimal::ZERO, |acc, d| acc + d);
                 Ok(ServiceSpend {
                     service: row.get(0)?,
                     calls: row.get(1)?,
-                    amount: Decimal::from_str(&format!("{:.6}", row.get::<_, f64>(2)?))
-                        .unwrap_or(Decimal::ZERO),
+                    amount,
                 })
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         let total_spent = breakdown
             .iter()

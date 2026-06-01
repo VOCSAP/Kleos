@@ -126,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Ensure cred_secrets table exists
     db.write(|conn| {
-        conn.execute_batch(
+        Ok(conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS cred_secrets (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER NOT NULL,
@@ -139,8 +139,7 @@ async fn main() -> anyhow::Result<()> {
                 updated_at TEXT NOT NULL,
                 UNIQUE(user_id, category, name)
             );",
-        )
-        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+        )?)
     })
     .await?;
 

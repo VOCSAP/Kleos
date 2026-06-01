@@ -8,7 +8,7 @@ pub mod server;
 pub mod state;
 
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, FromRef},
     middleware,
     routing::{delete, get, post},
     Router,
@@ -33,7 +33,11 @@ pub const CREDD_REQUEST_TIMEOUT_SECS: u64 = 30;
 /// tests. Tests previously used a slimmed-down version that bypassed the
 /// preauth rate limiter; sharing this builder keeps brute-force regressions
 /// covered.
-pub fn build_router(state: AppState) -> Router {
+pub fn credd_routes<S>(state: AppState) -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    AppState: FromRef<S>,
+{
     Router::new()
         // Secret management
         .route("/secrets", get(secrets::list_handler))
@@ -78,9 +82,14 @@ pub fn build_router(state: AppState) -> Router {
             Duration::from_secs(CREDD_REQUEST_TIMEOUT_SECS),
         ))
         .layer(TraceLayer::new_for_http())
-        .with_state(state)
 }
 
+/// Build a complete credd app with concrete AppState installed.
+pub fn build_router(state: AppState) -> Router {
+    credd_routes::<AppState>(state.clone()).with_state(state)
+}
+
+/// Return the unauthenticated health response body.
 async fn health_handler() -> &'static str {
     "ok"
 }

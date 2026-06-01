@@ -2,11 +2,7 @@
 
 use super::types::MemoryHealthReport;
 use crate::db::Database;
-use crate::{EngError, Result};
-
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
+use crate::Result;
 
 /// Generate a health report for a user's memory store.
 #[tracing::instrument(skip(db))]
@@ -19,8 +15,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0",
                     [],
                     |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?
+                )?
                 .unwrap_or(0);
 
             // Without embeddings
@@ -30,8 +25,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                      WHERE is_forgotten = 0 AND embedding_vec_1024 IS NULL",
                     [],
                     |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?
+                )?
                 .unwrap_or(0);
 
             // Archived
@@ -40,8 +34,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     "SELECT COUNT(*) FROM memories WHERE is_archived = 1",
                     [],
                     |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?
+                )?
                 .unwrap_or(0);
 
             // Superseded
@@ -50,8 +43,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     "SELECT COUNT(*) FROM memories WHERE is_superseded = 1",
                     [],
                     |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?
+                )?
                 .unwrap_or(0);
 
             // With links
@@ -62,8 +54,7 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                      WHERE m.is_forgotten = 0",
                     [],
                     |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?
+                )?
                 .unwrap_or(0);
 
             // Average importance
@@ -72,18 +63,15 @@ pub async fn memory_health(db: &Database) -> Result<MemoryHealthReport> {
                     "SELECT AVG(importance) FROM memories WHERE is_forgotten = 0",
                     [],
                     |row| row.get::<_, Option<f64>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?
+                )?
                 .unwrap_or(0.0);
 
             // Oldest memory
-            let oldest: Option<String> = conn
-                .query_row(
-                    "SELECT MIN(created_at) FROM memories WHERE is_forgotten = 0",
-                    [],
-                    |row| row.get::<_, Option<String>>(0),
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            let oldest: Option<String> = conn.query_row(
+                "SELECT MIN(created_at) FROM memories WHERE is_forgotten = 0",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )?;
 
             let coverage = if total > 0 {
                 ((total - no_emb) as f64 / total as f64 * 100.0 * 100.0).round() / 100.0

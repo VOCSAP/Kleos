@@ -26,9 +26,9 @@ async fn register_agent_happy_path() {
     assert_eq!(body["name"], "test-agent-alpha");
 }
 
-// POST /agents with same name returns 400 (UNIQUE constraint mapped to InvalidInput)
+// POST /agents with same name returns 409 (UNIQUE constraint mapped to Conflict)
 #[tokio::test]
-async fn register_agent_duplicate_name_returns_400() {
+async fn register_agent_duplicate_name_returns_409() {
     let (app, _state, _tmp) = test_app_with_sharding().await;
     let key = bootstrap_admin_key(&app).await;
     post(&app, "/agents", &key, json!({ "name": "duplicate-agent" })).await;
@@ -36,8 +36,8 @@ async fn register_agent_duplicate_name_returns_400() {
     let (status, _body) = post(&app, "/agents", &key, json!({ "name": "duplicate-agent" })).await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
-        "expected 400 on duplicate agent"
+        StatusCode::CONFLICT,
+        "expected 409 on duplicate agent"
     );
 }
 

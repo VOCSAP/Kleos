@@ -3,15 +3,19 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use crate::db::Database;
-use crate::{EngError, Result};
-
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
+use crate::Result;
 
 // ---------------------------------------------------------------------------
 // In-memory rate limiter (sliding window with burst support, per process)
 // ---------------------------------------------------------------------------
+
+/// Hard cap on the number of distinct keys tracked in memory at once.
+///
+/// SECURITY: without a cap, an attacker rotating keys (e.g. spoofed
+/// X-Forwarded-For values) grows `windows` unbounded between `prune()` calls.
+/// When the table is full of live (unexpired) keys, new keys are denied
+/// fail-closed so memory stays bounded.
+const MAX_TRACKED_KEYS: usize = 100_000;
 
 /// Sliding-window rate limiter with optional burst allowance.
 ///
@@ -25,6 +29,38 @@ pub struct RateLimiter {
     windows: Mutex<HashMap<String, VecDeque<Instant>>>,
     requests_per_minute: u32,
     burst: u32,
+    /// Maximum number of distinct keys held before new keys are rejected.
+    max_keys: usize,
+}
+
+/// Decide whether `key` can occupy a slot in the limiter's key table.
+///
+/// Returns true when `key` is already tracked or there is room for it,
+/// pruning expired windows inline first when the table is at capacity.
+/// Returns false only when the table is full of live keys, in which case the
+/// caller must reject the request to keep memory bounded.
+fn has_room_for_key(
+    map: &mut HashMap<String, VecDeque<Instant>>,
+    key: &str,
+    now: Instant,
+    window: Duration,
+    max_keys: usize,
+) -> bool {
+    if map.contains_key(key) || map.len() < max_keys {
+        return true;
+    }
+    // At capacity with an unseen key: prune expired windows, then re-check.
+    map.retain(|_, deque| {
+        while let Some(&front) = deque.front() {
+            if now.duration_since(front) > window {
+                deque.pop_front();
+            } else {
+                break;
+            }
+        }
+        !deque.is_empty()
+    });
+    map.contains_key(key) || map.len() < max_keys
 }
 
 /// Information returned on a successful (allowed) rate-limit check.
@@ -55,6 +91,7 @@ impl RateLimiter {
             windows: Mutex::new(HashMap::new()),
             requests_per_minute,
             burst,
+            max_keys: MAX_TRACKED_KEYS,
         }
     }
 
@@ -88,6 +125,16 @@ impl RateLimiter {
         };
 
         let key_str = key.to_string();
+        if !has_room_for_key(&mut map, &key_str, now, window, self.max_keys) {
+            tracing::warn!(
+                max_keys = self.max_keys,
+                "rate limiter key table full; denying new key fail-closed"
+            );
+            return Err(RateLimitExceeded {
+                retry_after_secs: window.as_secs().max(1),
+                limit: max_requests,
+            });
+        }
         let deque = map.entry(key_str.clone()).or_insert_with(VecDeque::new);
 
         // Prune timestamps older than the sliding window.
@@ -166,6 +213,13 @@ impl RateLimiter {
             }
         };
 
+        if !has_room_for_key(&mut map, &key, now, window, self.max_keys) {
+            tracing::warn!(
+                max_keys = self.max_keys,
+                "rate limiter key table full; denying new key fail-closed"
+            );
+            return Err(window.as_secs().max(1));
+        }
         let deque = map.entry(key.clone()).or_insert_with(VecDeque::new);
 
         while let Some(&front) = deque.front() {
@@ -246,25 +300,20 @@ pub async fn check_rate_limit(
     let key_owned = key.to_string();
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")
-            .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![key_owned.clone()])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt =
+            conn.prepare("SELECT count, window_start FROM rate_limits WHERE key = ?1")?;
+        let mut rows = stmt.query(rusqlite::params![key_owned.clone()])?;
 
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let count: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let window_start: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next()? {
+            let count: i64 = row.get(0)?;
+            let window_start: String = row.get(1)?;
 
             // Check if window expired
-            let expired: i64 = conn
-                .query_row(
-                    "SELECT (strftime('%s', 'now') - strftime('%s', ?1)) > ?2",
-                    rusqlite::params![window_start, window_seconds],
-                    |r| r.get(0),
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            let expired: i64 = conn.query_row(
+                "SELECT (strftime('%s', 'now') - strftime('%s', ?1)) > ?2",
+                rusqlite::params![window_start, window_seconds],
+                |r| r.get(0),
+            )?;
 
             if expired != 0 {
                 // Window has expired -- will reset on next write
@@ -295,8 +344,7 @@ pub async fn increment_counter(db: &Database, key: &str) -> Result<()> {
                  count = count + 1,
                  updated_at = datetime('now')",
             rusqlite::params![key_owned],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -340,7 +388,7 @@ pub async fn check_and_increment(
                 rusqlite::params![key_owned, window_seconds],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(count <= max_requests)
     })
@@ -379,7 +427,7 @@ pub async fn check_and_increment_by(
                 rusqlite::params![key_owned, window_seconds, cost],
                 |row| row.get(0),
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         Ok(count <= max_requests)
     })
@@ -394,13 +442,11 @@ pub async fn check_and_increment_by(
 #[tracing::instrument(skip(db), fields(grace_seconds))]
 pub async fn cleanup_expired_rows(db: &Database, grace_seconds: i64) -> Result<u64> {
     db.write(move |conn| {
-        let deleted = conn
-            .execute(
-                "DELETE FROM rate_limits
+        let deleted = conn.execute(
+            "DELETE FROM rate_limits
                  WHERE (strftime('%s', 'now') - strftime('%s', window_start)) > ?1",
-                rusqlite::params![grace_seconds],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+            rusqlite::params![grace_seconds],
+        )?;
         Ok(deleted as u64)
     })
     .await

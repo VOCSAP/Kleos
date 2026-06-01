@@ -62,9 +62,11 @@ fn sniff_content(text: &str) -> Option<SupportedFormat> {
         }
     }
 
-    // JSON array sniffing for chat exports
+    // JSON array sniffing for chat exports.
+    // Only parse a bounded prefix to avoid O(n) DOM allocation on huge inputs.
     if trimmed.starts_with('[') {
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(text) {
+        let sniff_input = crate::validation::truncate_on_char_boundary(trimmed, 8192);
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(sniff_input) {
             if let Some(arr) = parsed.as_array() {
                 if let Some(first) = arr.first() {
                     if let Some(obj) = first.as_object() {

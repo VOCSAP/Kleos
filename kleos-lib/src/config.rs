@@ -595,6 +595,11 @@ pub struct Config {
     pub pagerank_dirty_threshold: u32,
     pub pagerank_max_concurrent: usize,
     pub pagerank_enabled: bool,
+    /// Whether consolidation endpoints are available. Default false --
+    /// consolidation merges memories into vague summaries and hides the
+    /// originals, degrading search quality.
+    #[serde(default)]
+    pub consolidation_enabled: bool,
     /// Whether to run the background dreamer/consolidation task.
     #[serde(default = "default_dreamer_enabled")]
     pub dreamer_enabled: bool,
@@ -714,7 +719,11 @@ impl Default for Config {
             reranker_enabled: true,
             reranker_top_k: 12,
             reranker_model_dir: None,
-            data_dir: "./data".to_string(),
+            data_dir: dirs::data_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("kleos")
+                .to_string_lossy()
+                .into_owned(),
             lance_index_path: None,
             vector_dimensions: 1024,
             use_lance_index: true,
@@ -725,6 +734,7 @@ impl Default for Config {
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
             pagerank_enabled: true,
+            consolidation_enabled: false,
             dreamer_enabled: default_dreamer_enabled(),
             dream_interval_secs: default_dream_interval_secs(),
             dream_idle_threshold_secs: default_dream_idle_threshold_secs(),
@@ -1001,6 +1011,9 @@ impl Config {
         }
         if let Ok(v) = std::env::var("ENGRAM_PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = std::env::var("KLEOS_CONSOLIDATION_ENABLED") {
+            config.consolidation_enabled = v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Ok(v) = std::env::var("ENGRAM_DREAMER_ENABLED") {
             config.dreamer_enabled = v != "0" && !v.eq_ignore_ascii_case("false");

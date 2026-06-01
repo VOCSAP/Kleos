@@ -257,6 +257,17 @@ pub struct UserStats {
     pub categories: BTreeMap<String, i64>,
 }
 
+/// Inline artifact attachment for the /store endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InlineArtifactInput {
+    /// Display filename for the artifact.
+    pub filename: String,
+    /// MIME type (defaults to application/octet-stream if absent).
+    pub mime_type: Option<String>,
+    /// Base64-encoded file data.
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreRequest {
     pub content: String,
@@ -282,6 +293,12 @@ pub struct StoreRequest {
     #[serde(default)]
     pub space: Option<String>,
     pub parent_memory_id: Option<i64>,
+    /// Externally-assigned sync identifier for cross-device deduplication.
+    #[serde(default)]
+    pub sync_id: Option<String>,
+    /// Inline artifact attachments (max 10 per store call).
+    #[serde(default)]
+    pub artifacts: Option<Vec<InlineArtifactInput>>,
 }
 fn default_category() -> String {
     "general".to_string()
@@ -291,6 +308,81 @@ fn default_source() -> String {
 }
 fn default_importance() -> i32 {
     5
+}
+
+impl Default for StoreRequest {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            category: default_category(),
+            source: default_source(),
+            importance: default_importance(),
+            tags: None,
+            embedding: None,
+            chunk_embeddings: None,
+            session_id: None,
+            is_static: None,
+            user_id: None,
+            space_id: None,
+            space: None,
+            parent_memory_id: None,
+            sync_id: None,
+            artifacts: None,
+        }
+    }
+}
+
+impl Default for SearchRequest {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            embedding: None,
+            limit: None,
+            category: None,
+            source: None,
+            tags: None,
+            threshold: None,
+            user_id: None,
+            space_id: None,
+            space: None,
+            include_unscoped: None,
+            include_forgotten: None,
+            mode: None,
+            question_type: None,
+            expand_relationships: false,
+            include_links: false,
+            latest_only: true,
+            source_filter: None,
+            include_archived: None,
+            include_noise: None,
+            exclude_consolidated: None,
+            budget: None,
+        }
+    }
+}
+
+/// Controls how much of the hybrid search pipeline executes for a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchBudget {
+    /// Runs only vector retrieval.
+    Low = 0,
+    /// Runs vector retrieval plus lexical FTS retrieval.
+    Mid = 1,
+    /// Runs the full vector, FTS, and graph expansion pipeline.
+    High = 2,
+}
+
+impl SearchBudget {
+    /// Parses a budget string, defaulting unknown values to the full pipeline.
+    pub fn parse(value: &str) -> Self {
+        match value.to_lowercase().as_str() {
+            "low" => Self::Low,
+            "mid" | "medium" => Self::Mid,
+            "high" => Self::High,
+            _ => Self::High,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +427,10 @@ pub struct SearchRequest {
     pub source_filter: Option<String>,
     pub include_archived: Option<bool>,
     pub include_noise: Option<bool>,
+    pub exclude_consolidated: Option<bool>,
+    /// Optional budget that trims hybrid search stages for latency-sensitive callers.
+    #[serde(default)]
+    pub budget: Option<SearchBudget>,
 }
 fn default_true() -> bool {
     true
@@ -381,6 +477,8 @@ pub struct SearchResult {
     pub stat_boost: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contradiction: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matching_chunk: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub linked: Option<Vec<LinkedMemory>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -567,6 +665,39 @@ pub struct FtsHit {
     pub bm25_score: f64,
 }
 
+#[cfg(test)]
+mod search_budget_tests {
+    use super::{SearchBudget, SearchRequest};
+
+    /// Accepts canonical and legacy budget spellings while defaulting safely.
+    #[test]
+    fn parse_budget_variants() {
+        assert_eq!(SearchBudget::parse("low"), SearchBudget::Low);
+        assert_eq!(SearchBudget::parse("mid"), SearchBudget::Mid);
+        assert_eq!(SearchBudget::parse("high"), SearchBudget::High);
+        assert_eq!(SearchBudget::parse("LOW"), SearchBudget::Low);
+        assert_eq!(SearchBudget::parse("MID"), SearchBudget::Mid);
+        assert_eq!(SearchBudget::parse("HIGH"), SearchBudget::High);
+        assert_eq!(SearchBudget::parse("garbage"), SearchBudget::High);
+        assert_eq!(SearchBudget::parse(""), SearchBudget::High);
+    }
+
+    /// Orders budgets from the cheapest search to the fullest search.
+    #[test]
+    fn budget_ordering() {
+        assert!(SearchBudget::Low < SearchBudget::Mid);
+        assert!(SearchBudget::Mid < SearchBudget::High);
+        assert!(SearchBudget::Low < SearchBudget::High);
+    }
+
+    /// Leaves the budget unset by default so existing callers keep full behavior.
+    #[test]
+    fn default_search_request_has_no_budget() {
+        let req = SearchRequest::default();
+        assert!(req.budget.is_none());
+    }
+}
+
 /// Result from vector ANN search -- id, distance (cosine distance from LanceDB),
 /// and rank position (0-based, ascending similarity).
 ///
@@ -579,4 +710,5 @@ pub struct VectorHit {
     pub memory_id: i64,
     pub distance: Option<f32>,
     pub rank: usize,
+    pub matching_chunk_text: Option<String>,
 }

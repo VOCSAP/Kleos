@@ -97,7 +97,15 @@ pub fn chunk_document(doc: &ParsedDocument, options: Option<&ChunkerOptions>) ->
     let mut pos = 0;
 
     while pos < text.len() {
+        // Snap pos to a char boundary (needed after byte-offset advance)
+        while pos < text.len() && !text.is_char_boundary(pos) {
+            pos += 1;
+        }
         let mut end = (pos + max_size).min(text.len());
+        // Snap end to a char boundary before slicing
+        while end > pos && !text.is_char_boundary(end) {
+            end -= 1;
+        }
 
         if end < text.len() && respect_structure {
             let window = &text[pos..end];

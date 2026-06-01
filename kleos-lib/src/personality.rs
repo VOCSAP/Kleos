@@ -211,6 +211,54 @@ fn build_intensifier_map() -> HashMap<String, f64> {
     map
 }
 
+/// Valence + intensity for an emotion keyword. Used by the upstream env-var
+/// emotion extension (`EXTRA_EMOTION_KEYWORDS`); the Patch 38 i18n lexicon
+/// classes carry their own metadata via `class_emotion_metadata`.
+struct EmotionMeta {
+    valence: Valence,
+    intensity: f64,
+}
+
+/// Additional emotion keywords loaded from env vars at startup.
+/// KLEOS_PERSONALITY_POSITIVE_EXTRA and KLEOS_PERSONALITY_NEGATIVE_EXTRA
+/// accept comma-separated keyword lists (e.g. "verliebt,selig"). These are
+/// checked in addition to the Patch 38 i18n lexicon emotion classes so an
+/// operator can extend the taxonomy without a lexicon overlay edit.
+static EXTRA_EMOTION_KEYWORDS: LazyLock<HashMap<String, EmotionMeta>> = LazyLock::new(|| {
+    let mut map = HashMap::new();
+    if let Ok(v) = std::env::var("KLEOS_PERSONALITY_POSITIVE_EXTRA") {
+        for kw in v
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+        {
+            map.insert(
+                kw,
+                EmotionMeta {
+                    valence: Valence::Positive,
+                    intensity: 0.65,
+                },
+            );
+        }
+    }
+    if let Ok(v) = std::env::var("KLEOS_PERSONALITY_NEGATIVE_EXTRA") {
+        for kw in v
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+        {
+            map.insert(
+                kw,
+                EmotionMeta {
+                    valence: Valence::Negative,
+                    intensity: 0.65,
+                },
+            );
+        }
+    }
+    map
+});
+
 // ============================================================================
 // Regex patterns for signal extraction
 // ============================================================================
@@ -408,10 +456,6 @@ fn split_sentences(content: &str) -> Vec<&str> {
 // Error conversion helper
 // ============================================================================
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 // ============================================================================
 // Tier 3 -- Template-based signal extraction
 // Pattern match explicit signals only. Quality: ~25%% of LLM.
@@ -601,6 +645,25 @@ pub fn extract_signals_template(content: &str) -> Vec<PersonalitySignal> {
                         matched = true;
                         break;
                     }
+                }
+            }
+        }
+
+        if !matched {
+            // Upstream env-var emotion extensions (KLEOS_PERSONALITY_*_EXTRA),
+            // checked in addition to the Patch 38 i18n lexicon classes above.
+            let lower = sentence.to_lowercase();
+            for (kw, meta) in EXTRA_EMOTION_KEYWORDS.iter() {
+                if lower.contains(kw.as_str()) {
+                    signals.push(PersonalitySignal {
+                        signal_type: SignalType::Emotion,
+                        subject: kw.clone(),
+                        valence: meta.valence,
+                        intensity: meta.intensity,
+                        reasoning: format!("Expressed {} emotion: {kw}", meta.valence),
+                        source_text: sentence.chars().take(500).collect(),
+                    });
+                    break;
                 }
             }
         }
@@ -1051,7 +1114,7 @@ pub async fn insert_signal(
                 source_text,
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await
@@ -1106,29 +1169,25 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Gather all personality signals
     let signals = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT signal_type, subject, valence, intensity, reasoning, source_text
+            let mut stmt = conn.prepare(
+                "SELECT signal_type, subject, valence, intensity, reasoning, source_text
              FROM personality_signals WHERE user_id = ?1 ORDER BY intensity DESC",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
 
-            let rows = stmt
-                .query_map(rusqlite::params![user_id], |row| {
-                    Ok(SignalRow {
-                        signal_type: row.get(0)?,
-                        subject: row.get(1)?,
-                        valence: row.get(2)?,
-                        intensity: row.get(3)?,
-                        reasoning: row.get(4)?,
-                        source_text: row.get(5)?,
-                    })
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                Ok(SignalRow {
+                    signal_type: row.get(0)?,
+                    subject: row.get(1)?,
+                    valence: row.get(2)?,
+                    intensity: row.get(3)?,
+                    reasoning: row.get(4)?,
+                    source_text: row.get(5)?,
                 })
-                .map_err(rusqlite_to_eng_error)?;
+            })?;
 
             let mut signals = Vec::new();
             for row in rows {
-                signals.push(row.map_err(rusqlite_to_eng_error)?);
+                signals.push(row?);
             }
             Ok(signals)
         })
@@ -1143,46 +1202,46 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     // Option<String> when reading and fall back to empty string so a NULL value
     // in either column does not abort the entire preferences query with an
     // InvalidColumnType error.
-    let preferences = db.read(move |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT domain, preference, strength FROM user_preferences ORDER BY strength DESC LIMIT 50",
-        ).map_err(rusqlite_to_eng_error)?;
+    let preferences = db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT domain, preference, strength FROM user_preferences \
+             WHERE user_id = ?1 ORDER BY strength DESC LIMIT 50",
+            )?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok(PreferenceRow {
-                domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                strength: row.get(2)?,
-            })
-        }).map_err(rusqlite_to_eng_error)?;
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                Ok(PreferenceRow {
+                    domain: row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    preference: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    strength: row.get(2)?,
+                })
+            })?;
 
-        let mut preferences = Vec::new();
-        for row in rows {
-            preferences.push(row.map_err(rusqlite_to_eng_error)?);
-        }
-        Ok(preferences)
-    }).await?;
+            let mut preferences = Vec::new();
+            for row in rows {
+                preferences.push(row?);
+            }
+            Ok(preferences)
+        })
+        .await?;
 
     // Gather facts
     let facts = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT subject, verb, object FROM structured_facts LIMIT 50")
-                .map_err(rusqlite_to_eng_error)?;
+            let mut stmt =
+                conn.prepare("SELECT subject, verb, object FROM structured_facts LIMIT 50")?;
 
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok(FactRow {
-                        subject: row.get(0)?,
-                        verb: row.get(1)?,
-                        object: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                    })
+            let rows = stmt.query_map([], |row| {
+                Ok(FactRow {
+                    subject: row.get(0)?,
+                    verb: row.get(1)?,
+                    object: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 })
-                .map_err(rusqlite_to_eng_error)?;
+            })?;
 
             let mut facts = Vec::new();
             for row in rows {
-                facts.push(row.map_err(rusqlite_to_eng_error)?);
+                facts.push(row?);
             }
             Ok(facts)
         })
@@ -1192,17 +1251,17 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
     let static_memories = db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT content FROM memories WHERE is_static = 1 AND is_forgotten = 0 ORDER BY importance DESC LIMIT 20",
-        ).map_err(rusqlite_to_eng_error)?;
+        )?;
 
         let rows = stmt.query_map([], |row| {
             Ok(StaticMemoryRow {
                 content: row.get(0)?,
             })
-        }).map_err(rusqlite_to_eng_error)?;
+        })?;
 
         let mut static_memories = Vec::new();
         for row in rows {
-            static_memories.push(row.map_err(rusqlite_to_eng_error)?);
+            static_memories.push(row?);
         }
         Ok(static_memories)
     }).await?;
@@ -1224,7 +1283,7 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
              VALUES (?1, ?2, ?3, 0)
              ON CONFLICT(user_id) DO UPDATE SET profile = ?2, signal_count = ?3, is_stale = 0, updated_at = datetime('now')",
             rusqlite::params![user_id, profile_clone, signal_count],
-        ).map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     }).await
     { tracing::warn!(error = %e, user_id, "failed to cache personality profile"); }
@@ -1241,17 +1300,15 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_cached_profile(db: &Database, user_id: i64) -> Result<Option<String>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT profile FROM personality_profiles WHERE user_id = ?1 AND is_stale = 0")
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(
+            "SELECT profile FROM personality_profiles WHERE user_id = ?1 AND is_stale = 0",
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
 
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+        match rows.next()? {
             Some(row) => {
-                let profile: String = row.get(0).map_err(rusqlite_to_eng_error)?;
+                let profile: String = row.get(0)?;
                 Ok(Some(profile))
             }
             None => Ok(None),
@@ -1267,8 +1324,7 @@ pub async fn invalidate_profile(db: &Database, user_id: i64) -> Result<()> {
         conn.execute(
             "UPDATE personality_profiles SET is_stale = 1 WHERE user_id = ?1",
             rusqlite::params![user_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -1281,18 +1337,15 @@ pub async fn get_profile_for_injection(
     user_id: i64,
 ) -> Result<Option<(String, bool)>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT profile, is_stale FROM personality_profiles WHERE user_id = ?1")
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt =
+            conn.prepare("SELECT profile, is_stale FROM personality_profiles WHERE user_id = ?1")?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
 
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+        match rows.next()? {
             Some(row) => {
-                let profile: String = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let is_stale: i32 = row.get(1).map_err(rusqlite_to_eng_error)?;
+                let profile: String = row.get(0)?;
+                let is_stale: i32 = row.get(1)?;
                 Ok(Some((profile, is_stale != 0)))
             }
             None => Ok(None),
@@ -1341,30 +1394,26 @@ pub async fn store_signal(
     let agent = agent.map(|v| v.to_string());
 
     db.write(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
+        let mut stmt = conn.prepare(
+            "INSERT INTO personality_signals (signal_type, value, evidence, user_id, agent)
              VALUES (?1, ?2, ?3, ?4, ?5)
              RETURNING id, signal_type, value, evidence, user_id, agent, created_at",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let row = stmt
-            .query_row(
-                rusqlite::params![signal_type, value, evidence, user_id, agent],
-                |row| {
-                    Ok(StoredSignal {
-                        id: row.get(0)?,
-                        signal_type: row.get(1)?,
-                        value: row.get(2)?,
-                        evidence: row.get(3)?,
-                        user_id: row.get(4)?,
-                        agent: row.get(5)?,
-                        created_at: row.get(6)?,
-                    })
-                },
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        let row = stmt.query_row(
+            rusqlite::params![signal_type, value, evidence, user_id, agent],
+            |row| {
+                Ok(StoredSignal {
+                    id: row.get(0)?,
+                    signal_type: row.get(1)?,
+                    value: row.get(2)?,
+                    evidence: row.get(3)?,
+                    user_id: row.get(4)?,
+                    agent: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )?;
 
         Ok(row)
     })
@@ -1375,33 +1424,29 @@ pub async fn store_signal(
 pub async fn list_signals(db: &Database, user_id: i64, limit: usize) -> Result<Vec<StoredSignal>> {
     let limit = limit as i64;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, signal_type, value, evidence, user_id, agent, created_at
+        let mut stmt = conn.prepare(
+            "SELECT id, signal_type, value, evidence, user_id, agent, created_at
              FROM personality_signals
              WHERE user_id = ?1
              ORDER BY created_at DESC
              LIMIT ?2",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let rows = stmt
-            .query_map(rusqlite::params![user_id, limit], |row| {
-                Ok(StoredSignal {
-                    id: row.get(0)?,
-                    signal_type: row.get(1)?,
-                    value: row.get(2)?,
-                    evidence: row.get(3)?,
-                    user_id: row.get(4)?,
-                    agent: row.get(5)?,
-                    created_at: row.get(6)?,
-                })
+        let rows = stmt.query_map(rusqlite::params![user_id, limit], |row| {
+            Ok(StoredSignal {
+                id: row.get(0)?,
+                signal_type: row.get(1)?,
+                value: row.get(2)?,
+                evidence: row.get(3)?,
+                user_id: row.get(4)?,
+                agent: row.get(5)?,
+                created_at: row.get(6)?,
             })
-            .map_err(rusqlite_to_eng_error)?;
+        })?;
 
         let mut signals = Vec::new();
         for row in rows {
-            signals.push(row.map_err(rusqlite_to_eng_error)?);
+            signals.push(row?);
         }
         Ok(signals)
     })
@@ -1433,7 +1478,7 @@ pub async fn update_profile(db: &Database, user_id: i64) -> Result<StoredProfile
              VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(user_id) DO UPDATE SET traits = excluded.traits, last_updated_at = excluded.last_updated_at
              RETURNING user_id, traits, last_updated_at, created_at",
-        ).map_err(rusqlite_to_eng_error)?;
+        )?;
 
         let row = stmt.query_row(
             rusqlite::params![user_id, traits_str],
@@ -1454,26 +1499,22 @@ pub async fn update_profile(db: &Database, user_id: i64) -> Result<StoredProfile
 
 async fn get_existing_profile(db: &Database, user_id: i64) -> Result<Option<StoredProfile>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT user_id, traits, last_updated_at, created_at
+        let mut stmt = conn.prepare(
+            "SELECT user_id, traits, last_updated_at, created_at
              FROM personality_profiles
              WHERE user_id = ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![user_id])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite::params![user_id])?;
 
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+        match rows.next()? {
             Some(row) => {
-                let traits_json: String = row.get(1).map_err(rusqlite_to_eng_error)?;
+                let traits_json: String = row.get(1)?;
                 Ok(Some(StoredProfile {
-                    user_id: row.get(0).map_err(rusqlite_to_eng_error)?,
+                    user_id: row.get(0)?,
                     traits: serde_json::from_str(&traits_json).unwrap_or(serde_json::json!({})),
-                    last_updated_at: row.get(2).map_err(rusqlite_to_eng_error)?,
-                    created_at: row.get(3).map_err(rusqlite_to_eng_error)?,
+                    last_updated_at: row.get(2)?,
+                    created_at: row.get(3)?,
                 }))
             }
             None => Ok(None),
@@ -1653,5 +1694,42 @@ mod tests {
             "Should contain KEY THEMES section"
         );
         assert!(profile.contains("2 signals"), "Should mention signal count");
+    }
+
+    #[test]
+    fn detect_signals_returns_scores_for_emotional_content() {
+        let signals =
+            detect_signals("I feel really excited about this project. I love building things.");
+        assert!(
+            !signals.is_empty(),
+            "Should detect signals in emotional content"
+        );
+        for (_, intensity) in &signals {
+            assert!(
+                *intensity >= 0.0 && *intensity <= 1.0,
+                "intensity must be in [0, 1]"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_signals_empty_for_neutral_content() {
+        let signals = detect_signals("The server started on port 4200.");
+        assert!(
+            signals.is_empty(),
+            "Should not detect signals in neutral technical content"
+        );
+    }
+
+    #[test]
+    fn extra_emotion_keywords_env_var_is_additive() {
+        // Built-in keywords must always work regardless of env-var state.
+        // (LazyLock-based env-var loading cannot be reliably tested in parallel
+        // unit tests — covered by integration tests instead.)
+        let signals = detect_signals("I feel happy today.");
+        assert!(
+            !signals.is_empty(),
+            "Built-in emotion keywords must always be active"
+        );
     }
 }

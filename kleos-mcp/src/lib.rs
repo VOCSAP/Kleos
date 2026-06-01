@@ -1,9 +1,10 @@
-//! kleos-mcp -- Model Context Protocol server that proxies MCP `tools/call`
-//! requests onto kleos-server HTTP routes, signing each request with the
+//! kleos-mcp -- MCP transport adapter that forwards JSON-RPC requests to
+//! the server-side POST /mcp endpoint, signing each request with the
 //! local PIV / Ed25519 identity.
 //!
-//! Every tool corresponds to one entry in `kleos_client::routes::ROUTES`.
-//! Adding a new tool means adding a route entry; no per-tool handler code.
+//! The server handles all dispatch, scope enforcement, rate limiting, and
+//! tool registry. This binary is a thin bridge between the MCP stdio/HTTP
+//! transport and the authenticated server endpoint.
 
 pub mod tools;
 pub mod transport;
@@ -62,16 +63,6 @@ impl App {
     }
 }
 
-/// Returns the MCP protocol version this server speaks.
-fn protocol_version() -> &'static str {
-    "2024-11-05"
-}
-
-/// Builds a JSON-RPC success response.
-fn response(id: Value, result: Value) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "result": result})
-}
-
 /// Builds a JSON-RPC error response with the given code and message.
 fn error_response(id: Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message }})
@@ -82,66 +73,14 @@ fn request_id(req: &Value) -> Option<Value> {
     req.get("id").cloned()
 }
 
-/// Handles one JSON-RPC request and returns the response envelope (or None for notifications).
+/// Forwards one JSON-RPC request to the server-side POST /mcp endpoint.
+/// Returns the server's response, or None for notifications.
+/// On transport errors, wraps the error as a JSON-RPC error envelope.
 #[tracing::instrument(skip(app, req), fields(method = req.get("method").and_then(|v| v.as_str()).unwrap_or("")))]
 pub async fn handle_jsonrpc(app: &App, req: Value) -> Option<Value> {
     let id = request_id(&req);
-    let method = req.get("method")?.as_str()?;
-
-    let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
-    match method {
-        "initialize" => {
-            let id = id?;
-            Some(response(
-                id,
-                json!({
-                    "protocolVersion": protocol_version(),
-                    "capabilities": { "tools": {} },
-                    "serverInfo": {
-                        "name": "kleos-mcp",
-                        "version": env!("CARGO_PKG_VERSION")
-                    }
-                }),
-            ))
-        }
-        "notifications/initialized" => None,
-        "tools/list" => {
-            let id = id?;
-            Some(response(id, json!({ "tools": tools::registry() })))
-        }
-        "tools/call" => {
-            let id = id?;
-            let name = params
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let arguments = params
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            let call_result = tools::dispatch(app, &name, arguments).await;
-            match call_result {
-                Ok(value) => Some(response(
-                    id,
-                    json!({
-                        "content": [{
-                            "type": "text",
-                            "text": serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-                        }],
-                        "structuredContent": value,
-                        "isError": false
-                    }),
-                )),
-                Err(message) => Some(response(
-                    id,
-                    json!({
-                        "content": [{ "type": "text", "text": message }],
-                        "isError": true
-                    }),
-                )),
-            }
-        }
-        _ => id.map(|id| error_response(id, -32601, "method not found")),
+    match app.client.post_mcp(&req).await {
+        Ok(resp) => resp,
+        Err(e) => id.map(|id| error_response(id, -32603, &e)),
     }
 }

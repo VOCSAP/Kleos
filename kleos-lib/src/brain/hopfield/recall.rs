@@ -7,10 +7,6 @@ use super::edges::{self, EdgeType};
 use super::network::{self, HopfieldNetwork};
 use super::pattern::{self, BrainPattern};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Causal keyword tables -- ported from eidolon absorb.rs
 // Patch 38 L2 site 6 -- sourced from the i18n lexicon (causal_strong,
@@ -279,7 +275,7 @@ async fn load_memory_content(
             placeholders.join(", ")
         );
 
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
 
         let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(ids_cap.len());
         for id in &ids_cap {
@@ -293,9 +289,8 @@ async fn load_memory_content(
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 Ok((id, content))
-            })
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error))
+            })?
+            .map(|r| r.map_err(EngError::from))
             .collect::<Result<std::collections::HashMap<i64, String>>>()?;
 
         Ok(map)

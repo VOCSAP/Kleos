@@ -1,6 +1,6 @@
 [package]
 name = "kleos-server"
-version = "1.1.2"
+version = "1.2.1"
 edition = "2021"
 rust-version.workspace = true
 description = "HTTP server for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
@@ -21,15 +21,17 @@ default = ["piv"]
 piv = ["kleos-mcp/piv"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["sqlcipher"] }
-kleos-cred = { path = "../kleos-cred", version = "1.1.2" }
-kleos-mcp = { path = "../kleos-mcp", version = "1.1.2", default-features = false }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
+kleos-client = { path = "../kleos-client", version = "1.2.1", default-features = false }
+kleos-mcp = { path = "../kleos-mcp", version = "1.2.1", default-features = false }
+percent-encoding = "2.3"
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 subtle = { workspace = true }
-tower = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 tower-http = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -46,6 +48,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 futures = { workspace = true }
 async-stream = "0.3"
+dashmap = "6"
 rusqlite = { workspace = true }
 secrecy = { workspace = true }
 mimalloc = { workspace = true }
@@ -53,12 +56,14 @@ metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 rust_decimal = { workspace = true }
 dirs = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["test-utils"] }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true }
 tempfile = { workspace = true }
+ed25519-dalek = { workspace = true }
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-{ target }{ archive-suffix }"

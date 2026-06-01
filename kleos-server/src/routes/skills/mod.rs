@@ -10,6 +10,7 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::auth::Scope;
+use kleos_lib::llm::{CallOptions, Priority};
 use kleos_lib::skills::{
     self, aliases as skill_aliases, analyzer, bundles as skill_bundles, cloud, dashboard, evolver,
     materializations as skill_materializations,
@@ -78,9 +79,7 @@ fn is_path_allowed(dir: &str, allowlist: &[std::path::PathBuf]) -> bool {
     allowlist.iter().any(|root| canon.starts_with(root))
 }
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 /// Register all `/skills`, `/tools`, and `/bundles` routes onto a shared Axum router.
 pub fn router() -> Router<AppState> {
@@ -92,7 +91,6 @@ pub fn router() -> Router<AppState> {
         )
         .route("/skills/search", post(search_skills_handler))
         .route("/skills/sync", post(sync_skills_handler))
-        .route("/skills/execute", post(execute_skills_handler))
         .route("/skills/upload", post(upload_skill_handler))
         .route(
             "/skills/{id}",
@@ -120,7 +118,9 @@ pub fn router() -> Router<AppState> {
         .route("/skills/{id}/detail", get(detail_handler))
         // Evolution (read-only)
         .route("/skills/evolution/recent", get(evolution_recent_handler))
-        // Evolution (LLM-backed, needs longer timeout than the global 120s)
+        // Interactive skill execution (single LLM call, bounded lane).
+        .merge(execute_route())
+        // Evolution (LLM-backed, needs a longer timeout than the global default).
         .merge(llm_routes())
         // Analyzer
         .route("/skills/usage-stats", get(usage_stats_handler))
@@ -164,15 +164,21 @@ pub fn router() -> Router<AppState> {
         )
 }
 
+/// Per-call LLM timeout budget in milliseconds, from `OLLAMA_TIMEOUT_BG_MS`
+/// (default 60s). Shared by every LLM-backed skill route so one env var governs
+/// the whole family of timeouts.
+fn per_call_timeout_ms() -> u64 {
+    std::env::var("OLLAMA_TIMEOUT_BG_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60_000)
+}
+
 /// Builds the sub-router for LLM-backed evolution routes with a per-request timeout.
 /// Some endpoints (fix, derive) make multiple sequential LLM calls, so the
 /// route timeout must exceed `per_call_timeout * max_calls`. Fix makes 3 calls.
 fn llm_routes() -> Router<AppState> {
-    let per_call_ms: u64 = std::env::var("OLLAMA_TIMEOUT_BG_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60_000);
-    let route_timeout_ms = per_call_ms.saturating_mul(4);
+    let route_timeout_ms = per_call_timeout_ms().saturating_mul(4);
     Router::new()
         .route("/skills/evolve", post(evolve_handler))
         .route("/skills/{id}/fix", post(fix_handler))
@@ -184,9 +190,25 @@ fn llm_routes() -> Router<AppState> {
         ))
 }
 
-// ---------------------------------------------------------------------------
-// CRUD handlers
-// ---------------------------------------------------------------------------
+/// Builds the bounded sub-router for the interactive `/skills/execute` endpoint.
+///
+/// `execute` makes a single LLM completion, but with `Priority::Background` it can
+/// park on the concurrency-limited Ollama semaphore with no per-wait deadline
+/// (`kleos_lib::llm::local`), leaving the global 30-minute request timeout
+/// (`server.rs`) as the only backstop -- i.e. a silent multi-minute hang under
+/// load. Sizing this route for one call plus a short queue grace turns LLM
+/// saturation into a prompt 408 the caller can record and fall back on.
+fn execute_route() -> Router<AppState> {
+    let route_timeout_ms = per_call_timeout_ms().saturating_mul(2);
+    Router::new()
+        .route("/skills/execute", post(execute_skills_handler))
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            Duration::from_millis(route_timeout_ms),
+        ))
+}
+
+// --- CRUD handlers ---
 
 /// Create a new skill record owned by the authenticated user and return it with 201.
 #[tracing::instrument(skip_all)]
@@ -276,9 +298,7 @@ async fn recompute_skill_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Execution handlers
-// ---------------------------------------------------------------------------
+// --- Execution handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn record_execution_handler(
@@ -318,9 +338,7 @@ async fn get_executions_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Judgment handlers
-// ---------------------------------------------------------------------------
+// --- Judgment handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn judge_handler(
@@ -354,9 +372,7 @@ async fn get_judgments_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Tags, deps, lineage handlers
-// ---------------------------------------------------------------------------
+// --- Tags, deps, lineage handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn get_tags_handler(
@@ -390,9 +406,7 @@ async fn get_lineage_handler(
     Ok(Json(json!({ "lineage": lineage })))
 }
 
-// ---------------------------------------------------------------------------
-// Tool quality handlers
-// ---------------------------------------------------------------------------
+// --- Tool quality handlers ---
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 #[tracing::instrument(skip_all)]
@@ -427,9 +441,7 @@ async fn get_tool_quality_handler(
     Ok(Json(json!(quality)))
 }
 
-// ---------------------------------------------------------------------------
-// Dashboard handlers
-// ---------------------------------------------------------------------------
+// --- Dashboard handlers ---
 
 // SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
 #[tracing::instrument(skip_all)]
@@ -476,9 +488,7 @@ async fn detail_handler(
     Ok(Json(detail))
 }
 
-// ---------------------------------------------------------------------------
-// Evolution handlers (hybrid: need state.llm for LLM-driven transforms)
-// ---------------------------------------------------------------------------
+// --- Evolution handlers (hybrid: need state.llm for LLM-driven transforms) ---
 
 #[tracing::instrument(skip_all)]
 async fn evolve_handler(
@@ -554,9 +564,7 @@ async fn evolution_recent_handler(
     Ok(Json(json!({ "recent": rows, "count": rows.len() })))
 }
 
-// ---------------------------------------------------------------------------
-// Analyzer handlers
-// ---------------------------------------------------------------------------
+// --- Analyzer handlers ---
 
 #[tracing::instrument(skip_all)]
 async fn usage_stats_handler(
@@ -567,9 +575,7 @@ async fn usage_stats_handler(
     Ok(Json(stats))
 }
 
-// ---------------------------------------------------------------------------
-// Cloud handlers (no DB access, just external HTTP)
-// ---------------------------------------------------------------------------
+// --- Cloud handlers (no DB access, just external HTTP) ---
 
 #[tracing::instrument(skip_all)]
 async fn cloud_search_handler(
@@ -615,9 +621,7 @@ async fn cloud_upload_handler(
     Ok(Json(json!({ "uploaded": true, "id": result })))
 }
 
-// ---------------------------------------------------------------------------
-// Sync, Execute, Upload handlers (parity with original kleos)
-// ---------------------------------------------------------------------------
+// --- Sync, Execute, Upload handlers (parity with original kleos) ---
 
 /// Sync skills from filesystem directories.
 /// Note: In the Rust version, skills are primarily stored in the database.
@@ -774,9 +778,17 @@ async fn execute_skills_handler(
         &serde_json::json!({ "skill_context_block": skill_context_block }),
     );
 
-    // Call LLM
+    // Call LLM with an explicit bounded budget. Background priority keeps the
+    // shared Ollama queue fair; the per-call timeout bounds the HTTP request and
+    // the route-level deadline (`execute_route`) bounds the queue wait, so a
+    // saturated model surfaces as a prompt error rather than an open-ended hang.
+    let opts = CallOptions {
+        priority: Priority::Background,
+        timeout_ms: Some(per_call_timeout_ms()),
+        ..Default::default()
+    };
     let response = llm
-        .call(&system, task, None)
+        .call(&system, task, Some(opts))
         .await
         .map_err(|e| AppError::from(kleos_lib::EngError::Internal(e.to_string())))?;
 
@@ -832,9 +844,7 @@ async fn upload_skill_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Skills Cloud (v50+) handlers
-// ---------------------------------------------------------------------------
+// --- Skills Cloud (v50+) handlers ---
 
 // POST /skills/find -- hybrid search returning ranked candidates with
 // per-signal score breakdown. Replaces the role of /skills/search for the

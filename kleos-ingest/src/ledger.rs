@@ -2,6 +2,16 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 
+/// File-ingest progress ledger backed by a single SQLite connection.
+///
+/// The connection is guarded by a `std::sync::Mutex`, and every method runs a
+/// single short synchronous query while holding the lock. The lock is never
+/// held across an `.await`, so it cannot stall the async scheduler the way a
+/// std mutex held across a suspension point would. Each operation is a
+/// sub-millisecond keyed lookup/upsert at file-tail frequency (one batch per
+/// file-change event), so running synchronous SQLite directly on the runtime
+/// thread is an acceptable trust boundary here rather than a `spawn_blocking`
+/// hop. Revisit if the ledger ever moves onto a hot, high-concurrency path.
 pub struct Ledger {
     conn: Mutex<Connection>,
 }

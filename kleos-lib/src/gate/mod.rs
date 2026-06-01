@@ -54,7 +54,6 @@ pub fn approval_timeout_secs() -> u64 {
 fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
     EngError::DatabaseMessage(err.to_string())
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateCheckRequest {
     pub command: String,
@@ -67,9 +66,10 @@ pub struct GateCheckRequest {
     /// requests with complete-latest calls.
     #[serde(default)]
     pub session_id: Option<String>,
-    /// Skip the human-approval long-poll. Set to true when the caller
-    /// already handles its own permission layer (e.g. Claude Code hooks).
-    #[serde(default)]
+    /// Skip the human-approval long-poll. Server-only -- never honored
+    /// from client request bodies to prevent untrusted callers from
+    /// bypassing mandatory approval gates.
+    #[serde(skip_deserializing, default)]
     pub skip_approval: bool,
 }
 
@@ -505,8 +505,7 @@ pub async fn respond_to_gate(
                     rusqlite::params![gate_id, user_id],
                     |row| row.get(0),
                 )
-                .optional()
-                .map_err(rusqlite_to_eng_error)?;
+                .optional()?;
             return match existing {
                 None => Err(EngError::NotFound(format!(
                     "gate request {} not found",
@@ -520,13 +519,11 @@ pub async fn respond_to_gate(
         }
 
         if approved_copy {
-            let mut stmt = conn
-                .prepare("SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2")
-                .map_err(rusqlite_to_eng_error)?;
+            let mut stmt =
+                conn.prepare("SELECT command FROM gate_requests WHERE id = ?1 AND user_id = ?2")?;
             let command: Option<String> = stmt
                 .query_row(rusqlite::params![gate_id, user_id], |row| row.get(0))
-                .optional()
-                .map_err(rusqlite_to_eng_error)?;
+                .optional()?;
             if let Some(cmd) = command {
                 return Ok(serde_json::json!({ "ok": true, "approved": true, "command": cmd }));
             }
@@ -576,19 +573,19 @@ pub async fn read_gate_decision(
     user_id: i64,
 ) -> Result<Option<GateDecision>> {
     db.read(move |conn| {
-        conn.query_row(
-            "SELECT status, reason, command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![gate_id, user_id],
-            |row| {
-                Ok(GateDecision {
-                    status: row.get(0)?,
-                    reason: row.get(1)?,
-                    command: row.get(2)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(rusqlite_to_eng_error)
+        Ok(conn
+            .query_row(
+                "SELECT status, reason, command FROM gate_requests WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![gate_id, user_id],
+                |row| {
+                    Ok(GateDecision {
+                        status: row.get(0)?,
+                        reason: row.get(1)?,
+                        command: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
     })
     .await
 }
@@ -611,7 +608,7 @@ pub async fn complete_gate(
              WHERE id = ?2 AND user_id = ?3",
                 rusqlite::params![scrubbed, gate_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         if rows_affected == 0 {
             return Err(EngError::NotFound(format!(
@@ -640,15 +637,15 @@ pub async fn complete_latest_gate(
     // Step 1: find the most recent open gate for this session
     let row: Option<(i64, String, String)> = db
         .read(move |conn| {
-            conn.query_row(
-                "SELECT id, agent, created_at FROM gate_requests
+            Ok(conn
+                .query_row(
+                    "SELECT id, agent, created_at FROM gate_requests
                  WHERE user_id = ?1 AND session_id = ?2 AND output IS NULL
                  ORDER BY id DESC LIMIT 1",
-                rusqlite::params![uid, sid],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                    rusqlite::params![uid, sid],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?)
         })
         .await?;
 
@@ -664,13 +661,12 @@ pub async fn complete_latest_gate(
     let opened_filter = opened_at.clone();
     let stored_count: i64 = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories
                  WHERE source = ?1 AND created_at >= ?2",
                 rusqlite::params![agent_filter, opened_filter],
                 |row| row.get::<_, i64>(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
 
@@ -724,7 +720,7 @@ pub async fn store_gate_request(db: &Database, request: GateRequestInsert<'_>) -
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             rusqlite::params![user_id, agent, command, context, status, reason, session_id],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(conn.last_insert_rowid())
     })

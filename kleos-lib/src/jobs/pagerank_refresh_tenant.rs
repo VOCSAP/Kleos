@@ -21,14 +21,10 @@ const CONVERGENCE_THRESHOLD: f64 = 1e-6;
 async fn compute_pagerank_for_tenant(db: &Database) -> Result<Vec<(i64, f64)>> {
     let memories: Vec<i64> = db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT id FROM memories WHERE is_forgotten = 0 AND is_latest = 1")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| r.get::<_, i64>(0))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            let mut stmt =
+                conn.prepare("SELECT id FROM memories WHERE is_forgotten = 0 AND is_latest = 1")?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -41,14 +37,9 @@ async fn compute_pagerank_for_tenant(db: &Database) -> Result<Vec<(i64, f64)>> {
 
     let links: Vec<(i64, i64)> = db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare("SELECT source_id, target_id FROM memory_links")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+            let mut stmt = conn.prepare("SELECT source_id, target_id FROM memory_links")?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?;
+            Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
         })
         .await?;
 
@@ -134,21 +125,19 @@ async fn persist_pagerank_for_tenant(db: &Database, scores: Vec<(i64, f64)>) -> 
 
 async fn get_memory_count(db: &Database) -> Result<i64> {
     db.read(|conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0 AND is_latest = 1",
             [],
             |row| row.get(0),
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        )?)
     })
     .await
 }
 
 async fn get_pagerank_count(db: &Database) -> Result<i64> {
-    db.read(|conn| {
-        conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
-    })
+    db.read(
+        |conn| Ok(conn.query_row("SELECT COUNT(*) FROM memory_pagerank", [], |row| row.get(0))?),
+    )
     .await
 }
 
@@ -296,8 +285,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO memories (content, category) VALUES (?1, ?2)",
                 rusqlite::params!["test content", "test"],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -316,8 +304,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO memories (content, category) VALUES (?1, ?2)",
                 rusqlite::params!["test content", "test"],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -328,12 +315,11 @@ mod tests {
 
         let stored_score: f64 = db
             .read(|conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT score FROM memory_pagerank WHERE memory_id = 1",
                     [],
                     |row| row.get(0),
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                )?)
             })
             .await
             .unwrap();
@@ -353,8 +339,7 @@ mod tests {
                 conn.execute(
                     "INSERT INTO memories (content, category) VALUES (?1, ?2)",
                     rusqlite::params![content, "test"],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 Ok(())
             })
             .await

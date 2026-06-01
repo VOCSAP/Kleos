@@ -1,18 +1,8 @@
 //! Audit logging for credential access.
 
 use kleos_lib::db::Database;
-use kleos_lib::EngError;
 
 use crate::{CredError, Result};
-
-#[allow(dead_code)]
-fn rusqlite_to_cred_error(err: rusqlite::Error) -> CredError {
-    CredError::Database(err.to_string())
-}
-
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Audit log entry.
 #[derive(Debug, Clone)]
@@ -105,7 +95,7 @@ pub async fn log_audit(
                 now
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -118,10 +108,8 @@ fn collect_audit_rows(
     params: &[&dyn rusqlite::types::ToSql],
 ) -> kleos_lib::Result<Vec<AuditEntry>> {
     let v: Vec<AuditEntry> = stmt
-        .query_map(params, row_to_audit_entry)
-        .map_err(rusqlite_to_eng_error)?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(rusqlite_to_eng_error)?;
+        .query_map(params, row_to_audit_entry)?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(v)
 }
 
@@ -149,7 +137,7 @@ pub async fn query_audit(
                          ORDER BY timestamp DESC
                          LIMIT ?4",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 collect_audit_rows(&mut stmt, rusqlite::params![user_id, cat, agent, limit_i64])
             }
             (Some(cat), None) => {
@@ -161,7 +149,7 @@ pub async fn query_audit(
                          ORDER BY timestamp DESC
                          LIMIT ?3",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 collect_audit_rows(&mut stmt, rusqlite::params![user_id, cat, limit_i64])
             }
             (None, Some(agent)) => {
@@ -173,7 +161,7 @@ pub async fn query_audit(
                          ORDER BY timestamp DESC
                          LIMIT ?3",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 collect_audit_rows(&mut stmt, rusqlite::params![user_id, agent, limit_i64])
             }
             (None, None) => {
@@ -185,7 +173,7 @@ pub async fn query_audit(
                          ORDER BY timestamp DESC
                          LIMIT ?2",
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                 collect_audit_rows(&mut stmt, rusqlite::params![user_id, limit_i64])
             }
         }
@@ -216,7 +204,7 @@ pub async fn get_secret_audit(
                  ORDER BY timestamp DESC
                  LIMIT ?4",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_audit_rows(
             &mut stmt,
@@ -261,12 +249,10 @@ pub async fn prune_audit(db: &Database, user_id: i64, days_to_keep: u32) -> Resu
         .to_string();
 
     db.write(move |conn| {
-        let affected = conn
-            .execute(
-                "DELETE FROM cred_audit WHERE user_id = ?1 AND timestamp < ?2",
-                rusqlite::params![user_id, cutoff],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        let affected = conn.execute(
+            "DELETE FROM cred_audit WHERE user_id = ?1 AND timestamp < ?2",
+            rusqlite::params![user_id, cutoff],
+        )?;
         Ok(affected)
     })
     .await
@@ -293,8 +279,7 @@ mod tests {
                     timestamp TEXT NOT NULL
                 )",
                 [],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+            )?;
             Ok(())
         })
         .await

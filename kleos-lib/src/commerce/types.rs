@@ -1,9 +1,7 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// Service pricing
-// ---------------------------------------------------------------------------
+// --- Service pricing ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServicePricing {
@@ -26,9 +24,7 @@ pub struct VolumeDiscount {
     pub amount: Decimal,
 }
 
-// ---------------------------------------------------------------------------
-// Payment quotes
-// ---------------------------------------------------------------------------
+// --- Payment quotes ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentQuote {
@@ -79,9 +75,7 @@ impl std::str::FromStr for QuoteStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Settlements
-// ---------------------------------------------------------------------------
+// --- Settlements ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentSettlement {
@@ -133,9 +127,7 @@ impl SettlementStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Account balances
-// ---------------------------------------------------------------------------
+// --- Account balances ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountBalance {
@@ -145,9 +137,7 @@ pub struct AccountBalance {
     pub updated_at: String,
 }
 
-// ---------------------------------------------------------------------------
-// Daily spend
-// ---------------------------------------------------------------------------
+// --- Daily spend ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DailySpend {
@@ -157,9 +147,7 @@ pub struct DailySpend {
     pub call_count: i64,
 }
 
-// ---------------------------------------------------------------------------
-// API request/response types
-// ---------------------------------------------------------------------------
+// --- API request/response types ---
 
 #[derive(Debug, Deserialize)]
 pub struct CreateQuoteRequest {

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-lib"
-version = "1.1.2"
+version = "1.2.1"
 edition = "2021"
 rust-version.workspace = true
 description = "Core library for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
@@ -66,6 +66,8 @@ arrow-array = { workspace = true }
 arrow-schema = { workspace = true }
 futures = { workspace = true }
 lru = { workspace = true }
+arc-swap = { workspace = true }
+walkdir = { workspace = true }
 lancedb = { workspace = true }
 flate2 = { workspace = true }
 hex = { workspace = true }

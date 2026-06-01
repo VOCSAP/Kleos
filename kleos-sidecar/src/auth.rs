@@ -73,9 +73,12 @@ pub async fn require_token(
 /// Generate a fresh 32-byte token encoded as lowercase hex.
 #[allow(dead_code)]
 pub fn generate_token() -> String {
-    use rand::Rng;
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
     let mut raw = [0u8; 32];
-    rand::rng().fill(&mut raw);
+    OsRng
+        .try_fill_bytes(&mut raw)
+        .expect("OS CSPRNG must be available");
     let mut out = String::with_capacity(64);
     for byte in raw {
         use std::fmt::Write;

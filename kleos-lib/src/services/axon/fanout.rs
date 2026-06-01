@@ -4,7 +4,7 @@
 //! event payloads to registered webhook URLs via fire-and-forget HTTP POST.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 
 /// A resolved webhook delivery target extracted from an `axon_subscriptions` row.
 #[derive(Debug)]
@@ -15,11 +15,6 @@ pub struct WebhookTarget {
     pub webhook_url: String,
     /// Optional event-type filter. `None` means the subscription matches all event types.
     pub filter_type: Option<String>,
-}
-
-/// Maps a `rusqlite::Error` to an [`EngError::DatabaseMessage`].
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
 }
 
 /// Queries `axon_subscriptions` for webhook targets matching a channel and event type.
@@ -39,16 +34,14 @@ pub async fn get_webhook_targets(
     db.read(move |conn| {
         let sql = "SELECT agent, webhook_url, filter_type FROM axon_subscriptions \
                    WHERE channel = ?1 AND webhook_url IS NOT NULL";
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![channel_s])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
+        let mut rows = stmt.query(rusqlite::params![channel_s])?;
 
         let mut targets = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let agent: String = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let webhook_url: String = row.get(1).map_err(rusqlite_to_eng_error)?;
-            let filter_type: Option<String> = row.get(2).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next()? {
+            let agent: String = row.get(0)?;
+            let webhook_url: String = row.get(1)?;
+            let filter_type: Option<String> = row.get(2)?;
 
             // Skip subscriptions whose filter_type does not match the event type.
             if let Some(ref ft) = filter_type {
@@ -68,15 +61,21 @@ pub async fn get_webhook_targets(
     .await
 }
 
-/// Delivers `event_json` to each target's webhook URL via fire-and-forget HTTP POST.
+/// Delivers `event_json` to each target's webhook URL concurrently.
 ///
-/// Spawns a Tokio task per target. Failures are logged as warnings and do not
-/// propagate -- delivery is best-effort. The reqwest client uses a 5-second timeout.
-pub fn deliver_webhooks(targets: &[WebhookTarget], event_json: &serde_json::Value) {
+/// Returns a `JoinSet` so the caller (or the runtime shutdown) can await
+/// completion instead of detached spawns escaping the shutdown drain.
+/// Failures are logged as warnings -- delivery is best-effort.
+pub fn deliver_webhooks(
+    targets: &[WebhookTarget],
+    event_json: &serde_json::Value,
+) -> tokio::task::JoinSet<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()
         .unwrap_or_default();
+
+    let mut set = tokio::task::JoinSet::new();
 
     for target in targets {
         let client = client.clone();
@@ -84,7 +83,7 @@ pub fn deliver_webhooks(targets: &[WebhookTarget], event_json: &serde_json::Valu
         let agent = target.agent.clone();
         let body = event_json.clone();
 
-        tokio::spawn(async move {
+        set.spawn(async move {
             match client.post(&url).json(&body).send().await {
                 Ok(resp) => {
                     if !resp.status().is_success() {
@@ -107,6 +106,8 @@ pub fn deliver_webhooks(targets: &[WebhookTarget], event_json: &serde_json::Valu
             }
         });
     }
+
+    set
 }
 
 /// Publishes an event and fans out to all matching webhook subscribers.
@@ -122,7 +123,11 @@ pub async fn publish_and_fanout(
 
     let event_json = serde_json::to_value(&event)?;
     let targets = get_webhook_targets(db, &event.channel, &event.action).await?;
-    deliver_webhooks(&targets, &event_json);
+    let mut set = deliver_webhooks(&targets, &event_json);
+
+    // Drain the JoinSet so deliveries complete before the caller drops the future.
+    // Each delivery has a 5-second timeout so this won't block indefinitely.
+    while set.join_next().await.is_some() {}
 
     Ok(event)
 }

@@ -18,6 +18,7 @@ use kleos_lib::tenant::TenantRegistry;
 use kleos_lib::EngError;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -110,14 +111,9 @@ pub fn new_stats_handle() -> DreamerStatsHandle {
 
 async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
     db.read(|conn| {
-        let mut stmt = conn
-            .prepare("SELECT id FROM users ORDER BY id")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        let mut stmt = conn.prepare("SELECT id FROM users ORDER BY id")?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     })
     .await
 }
@@ -148,6 +144,11 @@ pub fn start_dreamer_task(
         // Sub-interval gate for the skill evolution phase. `None` on startup
         // forces the first eligible tick to run the evolution pass.
         let mut last_evolution_run_at: Option<Instant> = None;
+
+        // Per-tenant sub-interval gate for skill evolution in the tenant pass.
+        // Without this, every tenant shard re-ran skill evolution on every
+        // dreamer tick regardless of `skill_evolution_interval_secs`.
+        let mut tenant_evolution_last_run: HashMap<String, Instant> = HashMap::new();
 
         loop {
             tokio::select! {
@@ -188,6 +189,7 @@ pub fn start_dreamer_task(
                             llm.as_ref(),
                             &config,
                             &stats,
+                            &mut tenant_evolution_last_run,
                         )
                         .await;
                     }
@@ -248,7 +250,10 @@ async fn run_cycle(
     let mut last_report: Option<Value> = None;
 
     for user_id in &users {
-        match default_pipeline().run(db, *user_id).await {
+        match default_pipeline(config.consolidation_enabled)
+            .run(db, *user_id)
+            .await
+        {
             Ok(report) => {
                 total_ok += report.ok_count;
                 total_failed += report.failed_count;
@@ -688,6 +693,7 @@ async fn run_cycle_tenants(
     llm: Option<&Arc<LocalModelClient>>,
     config: &Config,
     _stats: &DreamerStatsHandle,
+    tenant_last_run: &mut HashMap<String, Instant>,
 ) {
     let tenants = match registry.list() {
         Ok(t) => t,
@@ -722,19 +728,16 @@ async fn run_cycle_tenants(
         // routing); parse to the numeric form the downstream pipeline expects.
         let users: Vec<i64> = match tenant_row.user_id.parse::<i64>() {
             Ok(uid) => vec![uid],
-            Err(e) => {
-                warn!(
-                    tenant = %tenant_row.tenant_id,
-                    user_id = %tenant_row.user_id,
-                    error = %e,
-                    "dreamer: tenant user_id is not numeric; skipping"
-                );
+            Err(_) => {
                 continue;
             }
         };
 
         for user_id in &users {
-            if let Err(e) = default_pipeline().run(&tenant_db, *user_id).await {
+            if let Err(e) = default_pipeline(config.consolidation_enabled)
+                .run(&tenant_db, *user_id)
+                .await
+            {
                 warn!(
                     tenant = %tenant_row.tenant_id,
                     user_id = *user_id,
@@ -791,7 +794,15 @@ async fn run_cycle_tenants(
             }
         }
 
-        if config.skill_evolution_enabled {
+        // Gated by the enable flag AND a per-tenant interval so a shard does not
+        // re-derive on every dreamer tick (mirrors the primary path's
+        // `skill_evolution_interval_secs`).
+        if config.skill_evolution_enabled
+            && should_run_evolution(
+                &tenant_last_run.get(&tenant_row.tenant_id).copied(),
+                config.skill_evolution_interval_secs,
+            )
+        {
             if let Some(llm_ref) = llm {
                 let report =
                     run_skill_evolution(&tenant_db, llm_ref.as_ref(), config, &users).await;
@@ -805,6 +816,9 @@ async fn run_cycle_tenants(
                     derives_succeeded = report.derives_succeeded,
                     "dreamer: skill evolution complete"
                 );
+                // Record the run so the per-tenant interval gate applies on
+                // subsequent ticks.
+                tenant_last_run.insert(tenant_row.tenant_id.clone(), Instant::now());
             }
         }
 

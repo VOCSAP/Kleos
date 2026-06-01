@@ -282,6 +282,7 @@ async fn test_retry_exhaustion_returns_503() {
     let mut state = build_test_state(upstream_url, Some(token.to_string()));
     state.max_pending_per_session = 10;
     state.batch_size = 200; // high threshold so flush happens at the hard cap only
+    state.retain_every_n = 100_000; // disable turn-based drains so queue fills to max_pending
     let app =
         routes::router(state.clone()).layer(axum::extract::DefaultBodyLimit::max(8 * 1024 * 1024));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -634,6 +635,7 @@ async fn test_idle_session_sweep() {
         s.add_observation(Observation {
             tool_name: "Read".to_string(),
             content: "recent".to_string(),
+            role: "tool".to_string(),
             importance: 1,
             category: "d".to_string(),
             timestamp: chrono::Utc::now(),
@@ -676,7 +678,11 @@ async fn test_partial_batch_requeues_failed_and_counts_only_successes() {
     ms.set_batch_fail_after(Some(3));
 
     let token = "test-token-partial";
-    let (sidecar_url, state, _sidecar) = spawn_sidecar(upstream_url, Some(token.to_string())).await;
+    let mut state = build_test_state(upstream_url, Some(token.to_string()));
+    // Disable overlap so drain_with_overlap behaves like drain_pending -- this
+    // test validates partial-batch requeue semantics, not retain/overlap.
+    state.overlap_turns = 0;
+    let (sidecar_url, state, _sidecar) = spawn_sidecar_with_state(state).await;
     let c = client(Some(token));
 
     let r = c

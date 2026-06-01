@@ -3,9 +3,7 @@ use crate::brain::hopfield::network::HopfieldNetwork;
 use crate::brain::hopfield::recall;
 use crate::db::Database;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// --- Helpers ---
 
 fn make_pattern(dim: usize, seed: u8) -> Vec<f32> {
     (0..dim)
@@ -22,9 +20,7 @@ async fn seed_patterns(db: &Database, network: &mut HopfieldNetwork, user_id: i6
     }
 }
 
-// ---------------------------------------------------------------------------
-// StageReport
-// ---------------------------------------------------------------------------
+// --- StageReport ---
 
 #[test]
 fn stage_report_fields() {
@@ -40,9 +36,7 @@ fn stage_report_fields() {
     assert_eq!(r.duration_ms, 42);
 }
 
-// ---------------------------------------------------------------------------
-// Individual stage tests (in-memory DB)
-// ---------------------------------------------------------------------------
+// --- Individual stage tests (in-memory DB) ---
 
 #[tokio::test]
 async fn test_replay_empty_network() {
@@ -218,9 +212,7 @@ async fn test_resolve_empty_network() {
     assert_eq!(report.items_changed, 0);
 }
 
-// ---------------------------------------------------------------------------
-// Full dream cycle driver
-// ---------------------------------------------------------------------------
+// --- Full dream cycle driver ---
 
 #[tokio::test]
 async fn test_run_dream_cycle_empty() {
@@ -273,7 +265,7 @@ async fn test_dream_run_persisted() {
     // Verify the run was written to the DB
     let (db_id, db_user, finished_at) = db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, user_id, finished_at FROM brain_dream_runs WHERE id = ?1",
                 rusqlite::params![result.run_id],
                 |row| {
@@ -282,8 +274,7 @@ async fn test_dream_run_persisted() {
                     let finished: Option<String> = row.get(2)?;
                     Ok((id, user, finished))
                 },
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .expect("run row should exist");

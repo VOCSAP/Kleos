@@ -4,6 +4,8 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use base64::Engine;
+use kleos_lib::artifacts::{self, ArtifactSummary, StoreArtifactOpts};
 use kleos_lib::graph::entities::extract_and_link_entities;
 use kleos_lib::intelligence::extraction::fast_extract_facts;
 use kleos_lib::memory::{
@@ -17,8 +19,10 @@ use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
 use crate::{
+    brain_absorber::absorb_activity_to_brain,
     error::AppError,
     extractors::{Auth, ResolvedDb},
+    routes::fsrs::record_recall_good,
     state::AppState,
 };
 
@@ -126,12 +130,16 @@ async fn store_memory(
     req.space = None;
 
     let content = req.content.clone();
+    let brain_category = req.category.clone();
+    let brain_source = req.source.clone();
+    let brain_importance = req.importance as f64;
+    let inline_artifacts = req.artifacts.take();
     let embedder = state.current_embedder().await;
     let pre_embedded = req.embedding.is_some();
     let result = if let Some(ref e) = embedder {
         memory::store_with_chunks(&db, e.as_ref(), req).await?
     } else {
-        memory::store(&db, req).await?
+        memory::store(&db, req, None, false).await?
     };
     let embedded = pre_embedded || embedder.is_some();
     if let Some(existing_id) = result.duplicate_of {
@@ -143,6 +151,68 @@ async fn store_memory(
                 "distance": Value::Null,
             })),
         ));
+    }
+
+    // Process inline artifact attachments (max 10 per store call).
+    let mut artifact_summaries: Vec<ArtifactSummary> = Vec::new();
+    if let Some(ref inline_arts) = inline_artifacts {
+        if inline_arts.len() > 10 {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "at most 10 inline artifacts per store call".into(),
+            )));
+        }
+        for art in inline_arts {
+            if art.filename.is_empty() {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(
+                    "inline artifact filename must not be empty".into(),
+                )));
+            }
+            if art.data_base64.is_empty() {
+                return Err(AppError(kleos_lib::EngError::InvalidInput(
+                    "inline artifact data_base64 must not be empty".into(),
+                )));
+            }
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(&art.data_base64)
+                .map_err(|e| {
+                    AppError(kleos_lib::EngError::InvalidInput(format!(
+                        "invalid base64 in artifact '{}': {e}",
+                        art.filename
+                    )))
+                })?;
+            let mime = art
+                .mime_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let size_bytes = data.len() as i64;
+            let sha256 = artifacts::sha256_hex(&data);
+            let indexable_content = artifacts::extract_indexable_content(&mime, &data);
+            let opts = StoreArtifactOpts {
+                content: indexable_content,
+                ..StoreArtifactOpts::default()
+            };
+            let art_id = artifacts::store_artifact(
+                &db,
+                result.id,
+                &art.filename,
+                &art.filename,
+                &mime,
+                size_bytes,
+                &sha256,
+                "inline",
+                Some(data),
+                None,
+                false,
+                &opts,
+            )
+            .await?;
+            artifact_summaries.push(ArtifactSummary {
+                id: art_id,
+                filename: art.filename.clone(),
+                mime_type: mime,
+                size_bytes,
+            });
+        }
     }
 
     // Background: extract facts, preferences, and state from the new memory.
@@ -199,6 +269,8 @@ async fn store_memory(
         });
     }
 
+    let content_for_brain = content.clone();
+
     // Background: extract and link named entities from the new memory.
     // Uses the same fact_extract_sem semaphore (H-005) and shutdown token (M-008).
     // Runs in a separate spawn from fact_extract so a failure in one does not
@@ -253,16 +325,45 @@ async fn store_memory(
         });
     }
 
+    // Background: absorb new memory into the Hopfield brain.
+    // Fire-and-forget, best-effort — never fails the store response.
+    // Bounded by brain_absorb_sem (H-005); shutdown-propagated via shutdown_token (M-008).
+    if let Some(brain) = state.brain.clone() {
+        let embedder = state.embedder.clone();
+        let memory_id = result.id;
+        let user_id = auth.user_id;
+        match state.brain_absorb_sem.clone().acquire_owned().await {
+            Ok(permit) => {
+                let shutdown = state.shutdown_token.clone();
+                let mut bg = state.background_tasks.lock().await;
+                bg.spawn(async move {
+                    let _permit = permit;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::debug!("background brain_absorb drained on shutdown");
+                        }
+                        _ = absorb_activity_to_brain(
+                            brain, embedder, user_id, memory_id, content_for_brain,
+                            brain_category, brain_importance, brain_source,
+                        ) => {}
+                    }
+                });
+            }
+            Err(_) => tracing::warn!("brain_absorb semaphore closed; skipping brain absorption"),
+        }
+    }
+
     let mem = memory::get(&db, result.id, auth.user_id).await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "stored": true, "id": result.id, "created_at": mem.created_at,
-            "importance": mem.importance, "embedded": embedded,
-            "tags": parse_tags(&mem.tags),
-            "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-        })),
-    ))
+    let mut response = json!({
+        "stored": true, "id": result.id, "created_at": mem.created_at,
+        "importance": mem.importance, "embedded": embedded,
+        "tags": parse_tags(&mem.tags),
+        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
+    });
+    if !artifact_summaries.is_empty() {
+        response["artifacts"] = json!(artifact_summaries);
+    }
+    Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// POST /search -- hybrid keyword + semantic memory search.
@@ -321,8 +422,8 @@ async fn search_memories(
         include_links: body.include_links.unwrap_or(false),
         latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
-        include_archived: None,
-        include_noise: None,
+        budget: body.budget,
+        ..Default::default()
     };
 
     // SEC-recall-1.5: route the rerank through the library wrapper so any
@@ -335,6 +436,12 @@ async fn search_memories(
 
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
     let abstained = results.is_empty();
+
+    // Batch-load artifact summaries for all returned memories.
+    let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
+    let artifact_map = artifacts::enrich_with_artifacts(&db, &memory_ids)
+        .await
+        .unwrap_or_default();
 
     let result_items: Vec<Value> = results
         .iter()
@@ -375,12 +482,16 @@ async fn search_memories(
             if let Some(s) = r.temporal_boost {
                 item["temporal_boost"] = json!(s);
             }
+            if let Some(s) = r.personality_signal_score {
+                item["personality_signal_score"] = json!(s);
+            }
             if let Some(ref linked) = r.linked {
                 item["linked"] = json!(linked);
             }
             if let Some(ref vc) = r.version_chain {
                 item["version_chain"] = json!(vc);
             }
+            item["artifacts"] = json!(artifact_map.get(&r.memory.id).cloned().unwrap_or_default());
             item
         })
         .collect();
@@ -450,8 +561,8 @@ async fn explain_search(
         include_links: body.include_links.unwrap_or(false),
         latest_only: body.latest_only.unwrap_or(true),
         source_filter: body.source_filter,
-        include_archived: None,
-        include_noise: None,
+        budget: body.budget,
+        ..Default::default()
     };
 
     let hybrid_start = std::time::Instant::now();
@@ -578,10 +689,6 @@ async fn recall(
         query: query.clone(),
         embedding: query_embedding,
         limit: Some(limit),
-        category: None,
-        source: None,
-        tags: None,
-        threshold: None,
         user_id: Some(user_id),
         space_id: resolved_space_id,
         space: None,
@@ -595,6 +702,7 @@ async fn recall(
         source_filter: None,
         include_archived: None,
         include_noise: None,
+        ..Default::default()
     };
     let semantic_results = hybrid_search(&db, semantic_req).await?;
 
@@ -680,6 +788,30 @@ async fn recall(
     }
 
     output.truncate(limit);
+
+    // Background: update FSRS state (grade=Good) for every recalled memory.
+    // Fire-and-forget — never delays or fails the recall response.
+    {
+        let recalled_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+        let db_clone = db.clone();
+        tokio::spawn(async move {
+            for id in recalled_ids {
+                record_recall_good(&db_clone, id).await;
+            }
+        });
+    }
+
+    // Batch-load artifact summaries for all recalled memories.
+    let recall_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+    let recall_art_map = artifacts::enrich_with_artifacts(&db, &recall_ids)
+        .await
+        .unwrap_or_default();
+    for item in &mut output {
+        if let Some(mid) = item["id"].as_i64() {
+            item["artifacts"] = json!(recall_art_map.get(&mid).cloned().unwrap_or_default());
+        }
+    }
+
     let count = output.len();
 
     // Build compat profile from static memories for legacy clients
@@ -782,7 +914,7 @@ async fn update_memory(
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.user_id).await?;
+    let updated = memory::update(&db, id, req, auth.user_id, false).await?;
     Ok(Json(memory_to_json(&updated)))
 }
 

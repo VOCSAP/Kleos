@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 // First-class kind discrimination for the Skills Cloud (v50+).
 //
@@ -256,17 +255,6 @@ impl std::fmt::Display for PatchType {
             Self::Patch => write!(f, "patch"),
         }
     }
-}
-
-/// Lightweight metadata bundle for a discovered or imported skill.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SkillMeta {
-    pub name: String,
-    pub description: String,
-    #[serde(default)]
-    pub category: Option<String>,
-    #[serde(default)]
-    pub tags: Option<Vec<String>>,
 }
 
 /// A single result row returned by the skill search endpoint.
@@ -577,15 +565,6 @@ pub struct ConversationMessage {
     pub content: String,
     #[serde(default)]
     pub priority: Option<u8>,
-}
-
-/// A skill file found during a filesystem plugin scan.
-#[derive(Debug, Clone)]
-pub struct DiscoveredSkill {
-    pub skill_id: String,
-    pub path: PathBuf,
-    pub content: String,
-    pub meta: SkillMeta,
 }
 
 /// Structured analysis of a single skill execution outcome.

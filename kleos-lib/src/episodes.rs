@@ -3,10 +3,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpisodeRow {
     pub id: i64,
@@ -44,15 +40,18 @@ pub struct AssignMemoriesRequest {
 }
 
 #[tracing::instrument(skip(db, req), fields(has_title = req.title.is_some()))]
-pub async fn create_episode(db: &Database, req: CreateEpisodeRequest) -> Result<EpisodeRow> {
+pub async fn create_episode(
+    db: &Database,
+    req: CreateEpisodeRequest,
+    user_id: i64,
+) -> Result<EpisodeRow> {
     let id = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO episodes (title, session_id, agent, summary)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![req.title, req.session_id, req.agent, req.summary],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+                "INSERT INTO episodes (title, session_id, agent, summary, user_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![req.title, req.session_id, req.agent, req.summary, user_id],
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -61,35 +60,36 @@ pub async fn create_episode(db: &Database, req: CreateEpisodeRequest) -> Result<
         conn.query_row(
             "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
              FROM episodes
-             WHERE id = ?1",
-            params![id],
-            row_to_episode,
+             WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+            |row| row_to_episode(row, user_id),
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 EngError::Internal("failed to create episode".into())
             }
-            other => rusqlite_to_eng_error(other),
+            other => EngError::Database(other),
         })
     })
     .await
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn list_episodes(db: &Database, limit: usize) -> Result<Vec<EpisodeRow>> {
+pub async fn list_episodes(db: &Database, user_id: i64, limit: usize) -> Result<Vec<EpisodeRow>> {
     db.read(move |conn| {
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
                  FROM episodes
+                 WHERE user_id = ?1
                  ORDER BY started_at DESC
-                 LIMIT ?1",
+                 LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
-            .query_map(params![limit as i64], |row| {
-                row_to_episode(row).map_err(|e| {
+            .query_map(params![user_id, limit as i64], |row| {
+                row_to_episode(row, user_id).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Null,
@@ -97,7 +97,7 @@ pub async fn list_episodes(db: &Database, limit: usize) -> Result<Vec<EpisodeRow
                     )
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_episodes(rows)
     })
@@ -107,6 +107,7 @@ pub async fn list_episodes(db: &Database, limit: usize) -> Result<Vec<EpisodeRow
 #[tracing::instrument(skip(db, after, before))]
 pub async fn list_episodes_by_time_range(
     db: &Database,
+    user_id: i64,
     after: &str,
     before: &str,
     limit: usize,
@@ -119,15 +120,15 @@ pub async fn list_episodes_by_time_range(
             .prepare(
                 "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
                  FROM episodes
-                 WHERE started_at >= ?1 AND started_at <= ?2
+                 WHERE user_id = ?4 AND started_at >= ?1 AND started_at <= ?2
                  ORDER BY started_at DESC
                  LIMIT ?3",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
-            .query_map(params![after, before, limit as i64], |row| {
-                row_to_episode(row).map_err(|e| {
+            .query_map(params![after, before, limit as i64, user_id], |row| {
+                row_to_episode(row, user_id).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Null,
@@ -135,7 +136,7 @@ pub async fn list_episodes_by_time_range(
                     )
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_episodes(rows)
     })
@@ -145,6 +146,7 @@ pub async fn list_episodes_by_time_range(
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
 pub async fn search_episodes_fts(
     db: &Database,
+    user_id: i64,
     query: &str,
     limit: usize,
 ) -> Result<Vec<EpisodeRow>> {
@@ -155,15 +157,15 @@ pub async fn search_episodes_fts(
             .prepare(
                 "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
                  FROM episodes
-                 WHERE title LIKE ?1 OR summary LIKE ?1
+                 WHERE user_id = ?3 AND (title LIKE ?1 OR summary LIKE ?1)
                  ORDER BY started_at DESC
                  LIMIT ?2",
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         let rows = stmt
-            .query_map(params![like, limit as i64], |row| {
-                row_to_episode(row).map_err(|e| {
+            .query_map(params![like, limit as i64, user_id], |row| {
+                row_to_episode(row, user_id).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Null,
@@ -171,7 +173,7 @@ pub async fn search_episodes_fts(
                     )
                 })
             })
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
         collect_episodes(rows)
     })
@@ -179,20 +181,20 @@ pub async fn search_episodes_fts(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn get_episode_for_user(db: &Database, id: i64) -> Result<EpisodeRow> {
+pub async fn get_episode_for_user(db: &Database, id: i64, user_id: i64) -> Result<EpisodeRow> {
     db.read(move |conn| {
         conn.query_row(
             "SELECT id, title, session_id, agent, summary, memory_count, duration_seconds, decay_score, started_at, ended_at, created_at
              FROM episodes
-             WHERE id = ?1",
-            params![id],
-            row_to_episode,
+             WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+            |row| row_to_episode(row, user_id),
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
                 EngError::NotFound(format!("episode {}", id))
             }
-            other => rusqlite_to_eng_error(other),
+            other => EngError::Database(other),
         })
     })
     .await
@@ -202,34 +204,30 @@ pub async fn get_episode_for_user(db: &Database, id: i64) -> Result<EpisodeRow> 
 pub async fn get_episode_memories(
     db: &Database,
     episode_id: i64,
-    _user_id: i64,
+    user_id: i64,
 ) -> Result<Vec<serde_json::Value>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, source, importance, created_at
+        let mut stmt = conn.prepare(
+            "SELECT id, content, category, source, importance, created_at
                  FROM memories
-                 WHERE episode_id = ?1 AND is_forgotten = 0
+                 WHERE episode_id = ?1 AND user_id = ?2 AND is_forgotten = 0 \
+                   AND is_latest = 1 AND is_archived = 0
                  ORDER BY created_at DESC",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![episode_id], |row| {
-                let id: i64 = row.get(0)?;
-                let content: String = row.get(1)?;
-                let category: String = row.get(2)?;
-                let source: Option<String> = row.get(3)?;
-                let importance: i32 = row.get(4)?;
-                let created_at: String = row.get(5)?;
-                Ok((id, content, category, source, importance, created_at))
-            })
-            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt.query_map(params![episode_id, user_id], |row| {
+            let id: i64 = row.get(0)?;
+            let content: String = row.get(1)?;
+            let category: String = row.get(2)?;
+            let source: Option<String> = row.get(3)?;
+            let importance: i32 = row.get(4)?;
+            let created_at: String = row.get(5)?;
+            Ok((id, content, category, source, importance, created_at))
+        })?;
 
         let mut memories = Vec::new();
         for row in rows {
-            let (id, content, category, source, importance, created_at) =
-                row.map_err(rusqlite_to_eng_error)?;
+            let (id, content, category, source, importance, created_at) = row?;
             memories.push(serde_json::json!({
                 "id": id,
                 "content": content,
@@ -248,6 +246,7 @@ pub async fn get_episode_memories(
 pub async fn update_episode_for_user(
     db: &Database,
     id: i64,
+    user_id: i64,
     req: &UpdateEpisodeRequest,
 ) -> Result<()> {
     let title = req.title.clone();
@@ -260,10 +259,9 @@ pub async fn update_episode_for_user(
              SET title = COALESCE(?1, title),
                  summary = COALESCE(?2, summary),
                  ended_at = COALESCE(?3, ended_at)
-             WHERE id = ?4",
-            params![title, summary, ended_at, id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+             WHERE id = ?4 AND user_id = ?5",
+            params![title, summary, ended_at, id, user_id],
+        )?;
         Ok(())
     })
     .await
@@ -273,19 +271,29 @@ pub async fn update_episode_for_user(
 pub async fn assign_memories_to_episode(
     db: &Database,
     episode_id: i64,
+    user_id: i64,
     memory_ids: &[i64],
 ) -> Result<i64> {
     let memory_ids = memory_ids.to_vec();
 
     db.write(move |conn| {
+        // The episode must belong to the caller before any memory is linked.
+        let owns_episode: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM episodes WHERE id = ?1 AND user_id = ?2",
+            params![episode_id, user_id],
+            |row| row.get(0),
+        )?;
+        if owns_episode == 0 {
+            return Err(EngError::NotFound(format!("episode {}", episode_id)));
+        }
+
         let mut assigned = 0_i64;
         for memory_id in &memory_ids {
-            let count = conn
-                .execute(
-                    "UPDATE memories SET episode_id = ?1 WHERE id = ?2",
-                    params![episode_id, *memory_id],
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            let count = conn.execute(
+                "UPDATE memories SET episode_id = ?1 \
+                     WHERE id = ?2 AND user_id = ?3 AND is_latest = 1 AND is_archived = 0",
+                params![episode_id, *memory_id, user_id],
+            )?;
             assigned += count as i64;
         }
 
@@ -294,10 +302,9 @@ pub async fn assign_memories_to_episode(
              SET memory_count = (
                  SELECT COUNT(*) FROM memories WHERE episode_id = ?1
              )
-             WHERE id = ?1",
-            params![episode_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+             WHERE id = ?1 AND user_id = ?2",
+            params![episode_id, user_id],
+        )?;
 
         Ok(assigned)
     })
@@ -305,7 +312,7 @@ pub async fn assign_memories_to_episode(
 }
 
 #[tracing::instrument(skip(db))]
-pub async fn finalize_episode(db: &Database, id: i64) -> Result<EpisodeRow> {
+pub async fn finalize_episode(db: &Database, id: i64, user_id: i64) -> Result<EpisodeRow> {
     db.write(move |conn| {
         conn.execute(
             "UPDATE episodes
@@ -313,15 +320,14 @@ pub async fn finalize_episode(db: &Database, id: i64) -> Result<EpisodeRow> {
                  memory_count = (
                      SELECT COUNT(*) FROM memories WHERE episode_id = ?1
                  )
-             WHERE id = ?1",
-            params![id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+             WHERE id = ?1 AND user_id = ?2",
+            params![id, user_id],
+        )?;
         Ok(())
     })
     .await?;
 
-    get_episode_for_user(db, id).await
+    get_episode_for_user(db, id, user_id).await
 }
 
 fn collect_episodes<I>(rows: I) -> Result<Vec<EpisodeRow>>
@@ -330,19 +336,21 @@ where
 {
     let mut episodes = Vec::new();
     for row in rows {
-        episodes.push(row.map_err(rusqlite_to_eng_error)?);
+        episodes.push(row?);
     }
     Ok(episodes)
 }
 
-fn row_to_episode(row: &rusqlite::Row<'_>) -> rusqlite::Result<EpisodeRow> {
+// The SELECT column lists omit user_id; every read scopes by it in the WHERE
+// clause, so the row belongs to `owner_user_id` and the field is set from it.
+fn row_to_episode(row: &rusqlite::Row<'_>, owner_user_id: i64) -> rusqlite::Result<EpisodeRow> {
     Ok(EpisodeRow {
         id: row.get(0)?,
         title: row.get(1)?,
         session_id: row.get(2)?,
         agent: row.get(3)?,
         summary: row.get(4)?,
-        user_id: 1,
+        user_id: owner_user_id,
         memory_count: row.get::<_, i64>(5).unwrap_or(0),
         duration_seconds: row.get(6)?,
         decay_score: row.get(7)?,

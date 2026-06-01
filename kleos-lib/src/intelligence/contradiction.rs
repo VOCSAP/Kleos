@@ -4,14 +4,9 @@
 use super::types::Contradiction;
 use crate::db::Database;
 use crate::memory::types::Memory;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use tracing::{info, warn};
-
-/// Convert a rusqlite error into the crate's canonical error type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Detect contradictions between a new memory and existing facts.
 ///
@@ -26,13 +21,11 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
     // Get structured facts for this memory (tenant-scoped)
     let new_facts: Vec<(i64, String, String, String, f64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, subject, predicate, object, confidence \
+            let mut stmt = conn.prepare(
+                "SELECT id, subject, predicate, object, confidence \
                      FROM structured_facts \
                      WHERE memory_id = ?1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
             let rows = stmt
                 .query_map(params![memory_id], |row| {
                     Ok((
@@ -42,10 +35,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                         row.get::<_, String>(3)?,
                         row.get::<_, f64>(4)?,
                     ))
-                })
-                .map_err(rusqlite_to_eng_error)?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await?;
@@ -61,23 +52,22 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 
         let existing: Vec<(i64, String, i64, f64)> = db
             .read(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        // Patch 37.1 -- partition single-path detection by the
-                        // new memory's space_id so online contradiction checks
-                        // never cross spaces. Sibling of Patch 37 which covered
-                        // scan_all_contradictions + detect_fact_contradictions
-                        // but missed this fn. Same JOIN shape as temporal.rs:
-                        // m_cand for the candidate fact's owner, m_new for the
-                        // new memory bound via the existing ?3 placeholder.
-                        // NULL legacy memories isolate naturally (NULL = NULL
-                        // is false in SQL) -- safe-by-default during the
-                        // Patch 33 transition window.
-                        // Patch 38.3 -- also exclude soft-deleted (is_forgotten)
-                        // memories, aligning on the discipline of every other
-                        // intelligence pass (duplicates.rs, temporal.rs,
-                        // consolidation.rs); this fn was the lone exception.
-                        "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
+                let mut stmt = conn.prepare(
+                    // Patch 37.1 -- partition single-path detection by the
+                    // new memory's space_id so online contradiction checks
+                    // never cross spaces. Sibling of Patch 37 which covered
+                    // scan_all_contradictions + detect_fact_contradictions
+                    // but missed this fn. Same JOIN shape as temporal.rs:
+                    // m_cand for the candidate fact's owner, m_new for the
+                    // new memory bound via the existing ?3 placeholder.
+                    // NULL legacy memories isolate naturally (NULL = NULL
+                    // is false in SQL) -- safe-by-default during the
+                    // Patch 33 transition window.
+                    // Patch 38.3 -- also exclude soft-deleted (is_forgotten)
+                    // memories, aligning on the discipline of every other
+                    // intelligence pass (duplicates.rs, temporal.rs,
+                    // consolidation.rs); this fn was the lone exception.
+                    "SELECT sf.id, sf.object, sf.memory_id, sf.confidence \
                          FROM structured_facts sf \
                          JOIN memories m_cand ON m_cand.id = sf.memory_id \
                          JOIN memories m_new ON m_new.id = ?3 \
@@ -88,8 +78,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                            AND m_cand.is_forgotten = 0 \
                            AND m_new.is_forgotten = 0 \
                          ORDER BY sf.confidence DESC",
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
+                )?;
                 let rows = stmt
                     .query_map(params![subject_c, predicate_c, memory_id, nfid], |row| {
                         Ok((
@@ -98,10 +87,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                             row.get::<_, i64>(2)?,
                             row.get::<_, f64>(3)?,
                         ))
-                    })
-                    .map_err(rusqlite_to_eng_error)?
-                    .collect::<std::result::Result<Vec<_>, _>>()
-                    .map_err(rusqlite_to_eng_error)?;
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
                 Ok(rows)
             })
             .await?;
@@ -144,8 +131,7 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                              (source_id, target_id, similarity, type) \
                              VALUES (?1, ?2, ?3, 'contradicts')",
                             params![memory_id, mem_b_id, conf_f64],
-                        )
-                        .map_err(rusqlite_to_eng_error)?;
+                        )?;
                         Ok(())
                     })
                     .await
@@ -168,18 +154,17 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
 pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec<Contradiction>> {
     let rows: Vec<(i64, i64, String, String, String, String, f64, f64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    // Patch 37 -- partition pair detection by space_id so
-                    // contradictions never cross spaces (aligns with the
-                    // discipline applied to duplicates/consolidation in
-                    // Patch 33 part 1). NULL legacy memories isolate
-                    // naturally because NULL = NULL evaluates to false in
-                    // SQL, so legacy rows neither merge with each other
-                    // nor with spaced rows -- safe-by-default in transition.
-                    // Patch 38.3 -- also exclude soft-deleted (is_forgotten)
-                    // memories on both sides, aligning on duplicates.rs:30.
-                    "SELECT sf1.memory_id, sf2.memory_id, \
+            let mut stmt = conn.prepare(
+                // Patch 37 -- partition pair detection by space_id so
+                // contradictions never cross spaces (aligns with the
+                // discipline applied to duplicates/consolidation in
+                // Patch 33 part 1). NULL legacy memories isolate
+                // naturally because NULL = NULL evaluates to false in
+                // SQL, so legacy rows neither merge with each other
+                // nor with spaced rows -- safe-by-default in transition.
+                // Patch 38.3 -- also exclude soft-deleted (is_forgotten)
+                // memories on both sides, aligning on duplicates.rs:30.
+                "SELECT sf1.memory_id, sf2.memory_id, \
                             sf1.subject, sf1.predicate, sf1.object, sf2.object, \
                             sf1.confidence, sf2.confidence \
                      FROM structured_facts sf1 \
@@ -193,8 +178,7 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                        AND m1.is_forgotten = 0 \
                        AND m2.is_forgotten = 0 \
                      LIMIT 500",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
@@ -207,10 +191,8 @@ pub async fn scan_all_contradictions(db: &Database, _user_id: i64) -> Result<Vec
                         row.get::<_, f64>(6)?,
                         row.get::<_, f64>(7)?,
                     ))
-                })
-                .map_err(rusqlite_to_eng_error)?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(rows)
         })
         .await?;

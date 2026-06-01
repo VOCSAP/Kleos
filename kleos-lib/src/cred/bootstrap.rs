@@ -40,6 +40,14 @@ pub enum CredError {
     /// credd response did not include a `key` field.
     #[error("credd response is missing the 'key' field")]
     MissingKey,
+
+    /// ECDH bootstrap failed with PIV configured and no fallback allowed.
+    #[error("ECDH bootstrap failed (PIV configured, no fallback): {0}")]
+    EcdhFailed(String),
+
+    /// Caller supplied an invalid argument (e.g. an unsafe agent slot).
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
 }
 
 /// Cached entry: the resolved bearer plus when it goes stale.
@@ -53,10 +61,13 @@ struct CacheEntry {
 // triggers a fresh fetch from credd.
 static KEY_CACHE: Mutex<Option<HashMap<String, CacheEntry>>> = Mutex::new(None);
 
+/// Retrieve a cached bearer for `slot`, evicting it if expired.
 fn cache_get(slot: &str) -> Option<String> {
-    let guard = KEY_CACHE.lock().unwrap();
-    let entry = guard.as_ref()?.get(slot)?.clone();
+    let mut guard = KEY_CACHE.lock().unwrap();
+    let map = guard.as_mut()?;
+    let entry = map.get(slot)?.clone();
     if SystemTime::now() >= entry.expires_at {
+        map.remove(slot);
         return None;
     }
     Some(entry.key)
@@ -108,6 +119,20 @@ fn read_hostname() -> String {
 
 /// Resolve the Kleos API key for `agent_slot`. See module docs for order.
 pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
+    // SECURITY (L7): agent_slot is interpolated into the credd request path
+    // (/bootstrap/kleos-bearer?agent=...). Reject anything outside a safe
+    // identifier charset so it cannot inject extra query parameters, path
+    // segments, or CR/LF into the request line.
+    if agent_slot.is_empty()
+        || !agent_slot
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    {
+        return Err(CredError::InvalidInput(format!(
+            "invalid agent slot: {agent_slot:?} (allowed: alphanumeric, '-', '_', '.')"
+        )));
+    }
+
     // Env overrides (test/debug).
     if let Ok(k) = env::var("KLEOS_API_KEY") {
         if !k.is_empty() {
@@ -145,10 +170,22 @@ pub async fn resolve_api_key(agent_slot: &str) -> Result<String, CredError> {
                 // through to token path.
             }
             Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "ECDH bootstrap failed, falling through to token path"
-                );
+                // PIV is configured but ECDH failed for a reason other than
+                // NotConfigured. Default to hard error to prevent silent
+                // downgrade to the weaker legacy token path.
+                if env::var("KLEOS_ALLOW_CRED_FALLBACK").as_deref() == Ok("1") {
+                    tracing::error!(
+                        error = %e,
+                        "ECDH bootstrap failed, KLEOS_ALLOW_CRED_FALLBACK=1 allows token fallback"
+                    );
+                } else {
+                    tracing::error!(
+                        error = %e,
+                        "ECDH bootstrap failed with PIV configured -- refusing legacy fallback \
+                         (set KLEOS_ALLOW_CRED_FALLBACK=1 to override)"
+                    );
+                    return Err(CredError::EcdhFailed(e.to_string()));
+                }
             }
         }
     }
@@ -499,6 +536,11 @@ mod ecdh {
     use super::{parse_expires_at, piv_pubkey_path};
 
     const ECDH_PROTOCOL: &str = "ecdh-v1";
+    // z02-015: this salt is the client half of the credd ECDH handshake and
+    // MUST stay byte-identical to ECDH_HKDF_SALT in
+    // kleos-credd/src/handlers/bootstrap_bearer.rs. Changing one without the
+    // other silently breaks key derivation. Kept duplicated rather than shared
+    // to avoid a crypto-constant dependency edge between the crates.
     const ECDH_HKDF_SALT: &[u8] = b"credd-ecdh-v1";
 
     #[derive(Debug, Error)]
@@ -611,18 +653,14 @@ mod ecdh {
         Ok(sig.to_bytes().to_vec())
     }
 
-    /// PIV slot 9A ECDSA-SHA256 sign, via Python yubikit subprocess.
-    /// Same pattern as kleos_cred::piv::piv_sign but local to avoid a
-    /// dependency cycle (kleos-cred already depends on kleos-lib).
-    fn piv_sign_9a(payload: &[u8]) -> Result<Vec<u8>, EcdhClientError> {
-        let payload_hex = hex::encode(payload);
-        let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
-        let piv_pin = std::env::var("PIV_PIN").unwrap_or_else(|_| "123456".to_string());
-        // NOTE: yubikit's PivSession.sign(message, hash_algorithm=SHA256())
-        // hashes the message INTERNALLY when hash_algorithm is set. Pre-hashing
-        // and passing the digest causes a double-hash and verification failure
-        // on the server. Pass the raw payload bytes.
-        let script = format!(
+    /// Builds the PIV 9A signing Python script.
+    ///
+    /// The script reads the PIN and serial from the process environment
+    /// (`PIV_PIN`, `YKSERIAL`) so neither secret is interpolated into the
+    /// program text passed on `python3 -c` argv (which is world-visible in
+    /// `/proc/<pid>/cmdline`). Only the hex `payload` is interpolated.
+    fn build_piv_sign_9a_script(payload_hex: &str) -> String {
+        format!(
             r#"
 import sys, os, base64
 from ykman.device import list_all_devices
@@ -631,8 +669,8 @@ from yubikit.core.smartcard import SmartCardConnection
 from cryptography.hazmat.primitives import hashes
 
 payload = bytes.fromhex("{payload}")
-target_serial = "{yk_serial}" if "{yk_serial}" else None
-piv_pin = "{piv_pin}"
+target_serial = os.environ.get("YKSERIAL") or None
+piv_pin = os.environ["PIV_PIN"]
 
 devices = list_all_devices()
 if not devices:
@@ -659,12 +697,31 @@ with dev.open_connection(SmartCardConnection) as conn:
     sys.stdout.write(base64.b16encode(sig).decode().lower())
 "#,
             payload = payload_hex,
-            yk_serial = yk_serial,
-            piv_pin = piv_pin,
-        );
+        )
+    }
 
+    /// PIV slot 9A ECDSA-SHA256 sign, via Python yubikit subprocess.
+    /// Same pattern as kleos_cred::piv::piv_sign but local to avoid a
+    /// dependency cycle (kleos-cred already depends on kleos-lib).
+    fn piv_sign_9a(payload: &[u8]) -> Result<Vec<u8>, EcdhClientError> {
+        let payload_hex = hex::encode(payload);
+        let yk_serial = std::env::var("YKSERIAL").unwrap_or_default();
+        let piv_pin = crate::auth_piv::runtime_piv_pin().map_err(|e| {
+            EcdhClientError::Sign(format!(
+                "PIV PIN not configured: {e} (export PIV_PIN to a non-default value)"
+            ))
+        })?;
+        // NOTE: yubikit's PivSession.sign(message, hash_algorithm=SHA256())
+        // hashes the message INTERNALLY when hash_algorithm is set. Pre-hashing
+        // and passing the digest causes a double-hash and verification failure
+        // on the server. Pass the raw payload bytes.
+        let script = build_piv_sign_9a_script(&payload_hex);
+
+        // Secrets travel through the child environment, never on argv.
         let out = Command::new("python3")
             .args(["-c", &script])
+            .env("PIV_PIN", piv_pin.as_str())
+            .env("YKSERIAL", &yk_serial)
             .output()
             .map_err(|e| EcdhClientError::Sign(format!("python3 spawn: {}", e)))?;
 
@@ -793,5 +850,24 @@ with dev.open_connection(SmartCardConnection) as conn:
 
         serde_json::from_slice(body)
             .map_err(|e| EcdhClientError::BadResponse(format!("JSON parse: {}", e)))
+    }
+
+    /// Verifies the PIV signing script never embeds secrets in its argv text.
+    #[cfg(test)]
+    mod tests {
+        use super::build_piv_sign_9a_script;
+
+        /// The 9A signing script must read secrets from env, never interpolate them.
+        #[test]
+        fn sign_9a_script_never_embeds_pin_or_serial() {
+            let script = build_piv_sign_9a_script("deadbeef");
+            assert!(script.contains(r#"piv_pin = os.environ["PIV_PIN"]"#));
+            assert!(script.contains(r#"target_serial = os.environ.get("YKSERIAL")"#));
+            // No leftover interpolation tokens for the secrets.
+            assert!(!script.contains("{piv_pin}"));
+            assert!(!script.contains("{yk_serial}"));
+            // The payload is still interpolated (it is non-secret hex).
+            assert!(script.contains(r#"bytes.fromhex("deadbeef")"#));
+        }
     }
 }

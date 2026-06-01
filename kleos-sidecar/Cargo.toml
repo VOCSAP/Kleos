@@ -1,6 +1,6 @@
 [package]
 name = "kleos-sidecar"
-version = "1.1.2"
+version = "1.2.1"
 edition = "2021"
 rust-version.workspace = true
 license = "Elastic-2.0"
@@ -11,7 +11,7 @@ name = "kleos-sidecar"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2" }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
 tokio = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
@@ -34,7 +34,7 @@ metrics-exporter-prometheus = { workspace = true }
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }
 
 [dev-dependencies]
 tempfile = "3"

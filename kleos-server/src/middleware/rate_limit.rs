@@ -20,10 +20,12 @@ const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
 ///
 /// Patch 28 (2026-05-23): the const is the upstream-aligned default. Operators
 /// can override at runtime via `KLEOS_PREAUTH_IP_LIMIT` (positive integer).
-/// Patch 26 confirmed that 20/min is too tight for multi-client dev hosts
-/// (sidecar + TUI + CLI + hooks sharing a single source IP); the override
-/// unblocks those workloads without changing the safe upstream default.
-const DEFAULT_PREAUTH_IP_LIMIT: i64 = 20;
+/// Patch 26 confirmed that 20/min was too tight for multi-client dev hosts
+/// (sidecar + TUI + CLI + hooks sharing a single source IP); upstream merge
+/// aa6a0bec independently raised the baseline to 60/min for bursty MCP
+/// sessions, so the default tracks that value while the override still
+/// unblocks heavier workloads.
+const DEFAULT_PREAUTH_IP_LIMIT: i64 = 60;
 
 /// Patch 28 (2026-05-23): read `KLEOS_PREAUTH_IP_LIMIT` per-request. Invalid
 /// or non-positive values silently fall back to `DEFAULT_PREAUTH_IP_LIMIT` so
@@ -102,7 +104,7 @@ fn too_many_requests(retry_after: i64) -> Response {
 
 /// Return the cost multiplier for a given request path and method.
 /// Default cost is 1 for reads, 2 for writes.
-fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
+pub(crate) fn endpoint_cost(path: &str, method: &axum::http::Method) -> i64 {
     // Admin table-scale operations. These walk the entire corpus or
     // rebuild an ANN index; a single call can cost minutes of CPU +
     // embedding + vector-index work. Charging the full budget prevents

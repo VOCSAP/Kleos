@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 use subtle::ConstantTimeEq;
 
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 
 /// Hash version for API keys.
 /// v1 = legacy SHA-256(raw_key)
@@ -45,13 +45,7 @@ fn get_pepper() -> Option<[u8; 32]> {
     })
 }
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> crate::EngError {
-    crate::EngError::DatabaseMessage(err.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// Scope
-// ---------------------------------------------------------------------------
+// --- Scope ---
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -87,9 +81,7 @@ impl std::str::FromStr for Scope {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ApiKey
-// ---------------------------------------------------------------------------
+// --- ApiKey ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
@@ -113,9 +105,7 @@ fn default_hash_version() -> i32 {
     HASH_VERSION_LEGACY
 }
 
-// ---------------------------------------------------------------------------
-// AuthContext
-// ---------------------------------------------------------------------------
+// --- AuthContext ---
 
 #[derive(Debug, Clone)]
 pub struct IdentityCtx {
@@ -142,9 +132,7 @@ impl AuthContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// --- Internal helpers ---
 
 /// Hash a raw key with SHA-256 (v1 legacy, no pepper).
 fn hash_key_v1(raw_key: &str) -> String {
@@ -223,16 +211,19 @@ fn normalize_key(raw_key: &str) -> Option<String> {
 /// to validate via [`validate_key`]. Debug builds keep the v1 fallback for
 /// local development ergonomics.
 fn generate_key() -> Result<(String, String, String, i32)> {
-    use rand::Rng;
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
     let mut raw = [0u8; 16];
-    rand::rng().fill(&mut raw);
+    OsRng
+        .try_fill_bytes(&mut raw)
+        .expect("OS CSPRNG must be available");
     let mut raw_hex = String::with_capacity(32);
     for byte in raw {
         use std::fmt::Write;
         let _ = write!(&mut raw_hex, "{:02x}", byte);
     }
 
-    let full_key = format!("engram_{}", raw_hex);
+    let full_key = format!("kleos_{}", raw_hex);
     // key_prefix = first 8 chars of the hex portion (chars 7..15 of full_key)
     let key_prefix = raw_hex[..8].to_string();
 
@@ -263,7 +254,7 @@ fn generate_key() -> Result<(String, String, String, i32)> {
 }
 
 /// Parse a comma-separated scopes string into a Vec<Scope>.
-fn parse_scopes(s: &str) -> Vec<Scope> {
+pub fn parse_scopes(s: &str) -> Vec<Scope> {
     // Legacy "*" means "all scopes". Without this translation legacy keys
     // stored before the stricter scope model would parse to an empty Vec and
     // lose all access when scope checks were introduced.
@@ -288,7 +279,7 @@ fn parse_scopes(s: &str) -> Vec<Scope> {
 }
 
 /// Serialize a slice of Scope values to a comma-separated string.
-fn scopes_to_string(scopes: &[Scope]) -> String {
+pub fn scopes_to_string(scopes: &[Scope]) -> String {
     scopes
         .iter()
         .map(|s| s.to_string())
@@ -296,9 +287,7 @@ fn scopes_to_string(scopes: &[Scope]) -> String {
         .join(",")
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+// --- Public API ---
 
 /// Create a new API key for a user and store it in the database.
 /// Returns (ApiKey, raw_key). The raw_key is shown once and never stored.
@@ -356,22 +345,20 @@ pub async fn create_key_with_expiry(
                 expires_at
             ],
         )
-        .map_err(rusqlite_to_eng_error)?;
+        ?;
         Ok(())
     })
     .await?;
 
     let api_key = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+            let mut stmt = conn.prepare(
+                "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
                             agent_id, last_used_at, expires_at, created_at, hash_version
                      FROM api_keys
                      WHERE key_prefix = ?1 AND key_hash = ?2
                      LIMIT 1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
 
             let key = stmt
                 .query_row(
@@ -382,7 +369,7 @@ pub async fn create_key_with_expiry(
                     rusqlite::Error::QueryReturnedNoRows => {
                         crate::EngError::Internal("failed to fetch newly created key".into())
                     }
-                    other => rusqlite_to_eng_error(other),
+                    other => EngError::Database(other),
                 })?;
 
             Ok(key)
@@ -404,9 +391,15 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
         .ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
     let key_prefix = hex_portion[..8].to_string();
 
-    // Compute hashes for both versions upfront
+    // Compute hashes for the current canonical form (`kleos_<hex>`)
     let hash_v1 = hash_key_v1(&normalized_key);
     let hash_v2 = hash_key_v2(&normalized_key);
+
+    // Legacy keys were hashed as `engram_<hex>` -- compute those too so
+    // existing DB rows still validate without a migration step.
+    let legacy_form = format!("engram_{}", hex_portion);
+    let legacy_hash_v1 = hash_key_v1(&legacy_form);
+    let legacy_hash_v2 = hash_key_v2(&legacy_form);
 
     let api_key = db
         .read(move |conn| {
@@ -418,24 +411,27 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                      FROM api_keys
                      WHERE key_prefix = ?1 AND is_active = 1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
             let mut rows = stmt
                 .query(rusqlite::params![key_prefix])
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
 
-            // Check each candidate against the appropriate hash version
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            // Check each candidate against the appropriate hash version.
+            // Try both kleos_ and legacy engram_ canonical forms since
+            // existing DB rows were hashed with the engram_ prefix.
+            while let Some(row) = rows.next()? {
                 let hash_version: i32 = row.get(11).unwrap_or(HASH_VERSION_LEGACY);
-                let stored_hash: String = row.get(12).map_err(rusqlite_to_eng_error)?;
+                let stored_hash: String = row.get(12)?;
 
-                let expected_hash = match hash_version {
-                    HASH_VERSION_PEPPERED => hash_v2.as_ref(),
+                // Build candidate hashes: current prefix first, legacy fallback second
+                let candidates: Vec<Option<&String>> = match hash_version {
+                    HASH_VERSION_PEPPERED => {
+                        vec![hash_v2.as_ref(), legacy_hash_v2.as_ref()]
+                    }
                     _ => {
                         // SECURITY (SEC-C5): reject v1 (unpeppered) keys when
-                        // pepper is configured. This prevents a downgrade attack
-                        // where an attacker who can modify the api_keys table
-                        // flips hash_version to bypass the pepper.
+                        // pepper is configured.
                         if hash_v2.is_some() {
                             tracing::warn!(
                                 key_prefix = %key_prefix,
@@ -443,36 +439,34 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
                             );
                             continue;
                         }
-                        Some(&hash_v1)
+                        vec![Some(&hash_v1), Some(&legacy_hash_v1)]
                     }
                 };
 
                 // SECURITY (SEC-C2): constant-time comparison to prevent
                 // timing oracle attacks on hash values.
-                let matches = match expected_hash {
-                    Some(expected) => {
-                        expected.len() == stored_hash.len()
-                            && expected
-                                .as_bytes()
-                                .ct_eq(stored_hash.as_bytes())
-                                .unwrap_u8()
-                                == 1
+                let matches = candidates.iter().any(|expected_hash| {
+                    match expected_hash {
+                        Some(expected) => {
+                            expected.len() == stored_hash.len()
+                                && expected
+                                    .as_bytes()
+                                    .ct_eq(stored_hash.as_bytes())
+                                    .unwrap_u8()
+                                    == 1
+                        }
+                        None => false,
                     }
-                    None => false,
-                };
+                });
 
                 if matches {
-                    // R8 S-005: surface v1 (legacy, unpeppered) key acceptance
-                    // so operators can track migration progress. The reject
-                    // path for peppered deployments already logs at line 408.
                     if hash_version != HASH_VERSION_PEPPERED {
-                        metrics::counter!("engram_auth_v1_key_accept_total").increment(1);
+                        metrics::counter!("kleos_auth_v1_key_accept_total").increment(1);
                         tracing::warn!(
                             key_prefix = %key_prefix,
                             "v1 (unpeppered) api key accepted; configure ENGRAM_API_KEY_PEPPER and re-migrate keys"
                         );
                     }
-                    // Found matching key -- reconstruct without key_hash column
                     return row_to_api_key_rusqlite_with_offset(row);
                 }
             }
@@ -503,8 +497,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
             conn.execute(
                 "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?1",
                 rusqlite::params![key_id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+            )?;
             Ok(())
         })
         .await;
@@ -528,8 +521,7 @@ pub async fn revoke_key(db: &Database, user_id: i64, key_id: i64) -> Result<()> 
         conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![key_id, user_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -542,8 +534,7 @@ pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
         conn.execute(
             "UPDATE api_keys SET is_active = 0 WHERE id = ?1",
             rusqlite::params![key_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -554,15 +545,13 @@ pub async fn revoke_key_admin(db: &Database, key_id: i64) -> Result<()> {
 pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> {
     let api_key = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+            let mut stmt = conn.prepare(
+                "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
                             agent_id, last_used_at, expires_at, created_at, hash_version
                      FROM api_keys
                      WHERE id = ?1 AND is_active = 1
                      LIMIT 1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
 
             let key = stmt
                 .query_row(rusqlite::params![key_id], row_to_api_key_rusqlite)
@@ -570,7 +559,7 @@ pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> 
                     rusqlite::Error::QueryReturnedNoRows => {
                         crate::EngError::Auth("invalid or revoked key".into())
                     }
-                    other => rusqlite_to_eng_error(other),
+                    other => EngError::Database(other),
                 })?;
 
             Ok(key)
@@ -593,22 +582,19 @@ pub async fn get_active_key_by_id(db: &Database, key_id: i64) -> Result<ApiKey> 
 #[tracing::instrument(skip(db))]
 pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
                         agent_id, last_used_at, expires_at, created_at, hash_version
                  FROM api_keys
                  WHERE user_id = ?1 AND is_active = 1
                  ORDER BY created_at DESC",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
         let keys = stmt
             .query_map(rusqlite::params![user_id], |row| {
                 row_to_api_key_rusqlite(row)
-            })
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error))
+            })?
+            .map(|r| r.map_err(EngError::from))
             .collect::<Result<Vec<ApiKey>>>()?;
 
         Ok(keys)
@@ -616,9 +602,7 @@ pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     .await
 }
 
-// ---------------------------------------------------------------------------
-// Row mapping
-// ---------------------------------------------------------------------------
+// --- Row mapping ---
 
 /// Standard row mapping: expects columns 0-11 in order:
 /// id, user_id, key_prefix, name, scopes, rate_limit, is_active,
@@ -656,17 +640,17 @@ fn row_to_api_key_rusqlite(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiKey> 
 /// Variant for validate_key: same columns but with key_hash at position 12.
 /// We read hash_version from position 11, skip key_hash.
 fn row_to_api_key_rusqlite_with_offset(row: &rusqlite::Row<'_>) -> crate::Result<ApiKey> {
-    let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-    let user_id: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
-    let key_prefix: String = row.get(2).map_err(rusqlite_to_eng_error)?;
-    let name: String = row.get(3).map_err(rusqlite_to_eng_error)?;
-    let scopes_str: String = row.get(4).map_err(rusqlite_to_eng_error)?;
-    let rate_limit: i32 = row.get(5).map_err(rusqlite_to_eng_error)?;
-    let is_active_int: i32 = row.get(6).map_err(rusqlite_to_eng_error)?;
-    let agent_id: Option<i64> = row.get(7).map_err(rusqlite_to_eng_error)?;
-    let last_used_at: Option<String> = row.get(8).map_err(rusqlite_to_eng_error)?;
-    let expires_at: Option<String> = row.get(9).map_err(rusqlite_to_eng_error)?;
-    let created_at: String = row.get(10).map_err(rusqlite_to_eng_error)?;
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let key_prefix: String = row.get(2)?;
+    let name: String = row.get(3)?;
+    let scopes_str: String = row.get(4)?;
+    let rate_limit: i32 = row.get(5)?;
+    let is_active_int: i32 = row.get(6)?;
+    let agent_id: Option<i64> = row.get(7)?;
+    let last_used_at: Option<String> = row.get(8)?;
+    let expires_at: Option<String> = row.get(9)?;
+    let created_at: String = row.get(10)?;
     let hash_version: i32 = row.get(11).unwrap_or(HASH_VERSION_LEGACY);
     // position 12 is key_hash, not needed in ApiKey struct
 
@@ -708,12 +692,11 @@ mod tests {
     async fn make_user(db: &Database, username: &str) -> i64 {
         let username = username.to_string();
         db.write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO users (username, role, is_admin) VALUES (?1, 'admin', 1) RETURNING id",
                 rusqlite::params![username],
                 |row| row.get::<_, i64>(0),
-            )
-            .map_err(rusqlite_to_eng_error)
+            )?)
         })
         .await
         .unwrap()

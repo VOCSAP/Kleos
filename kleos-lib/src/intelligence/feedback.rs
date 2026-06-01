@@ -8,10 +8,6 @@ use crate::{EngError, Result};
 use rusqlite::params;
 use std::collections::HashMap;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 const VALID_RATINGS: &[&str] = &["helpful", "irrelevant", "off-topic", "outdated"];
 
 /// Record user feedback on a memory and adjust its importance accordingly.
@@ -29,18 +25,17 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
     // Validate memory exists and belongs to user
     let _mem = memory::get(db, req.memory_id, user_id).await?;
 
-    // Insert feedback record
+    // Insert feedback record with user_id so single-DB mode can scope by owner.
     let memory_id = req.memory_id;
     let rating = req.rating.clone();
     let context = req.context.clone();
 
     db.write(move |conn| {
         conn.execute(
-            "INSERT INTO memory_feedback (memory_id, rating, context) \
-             VALUES (?1, ?2, ?3)",
-            params![memory_id, rating, context],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+            "INSERT INTO memory_feedback (memory_id, user_id, rating, context) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![memory_id, user_id, rating, context],
+        )?;
         Ok(())
     })
     .await?;
@@ -66,32 +61,32 @@ pub async fn record_feedback(db: &Database, user_id: i64, req: &FeedbackRequest)
 /// returned value per category is the mean contribution across feedback rows
 /// on memories of that category, naturally in `[-1.0, 1.0]`.
 ///
+/// The WHERE f.user_id = ?1 predicate enforces single-DB isolation so one
+/// user's feedback does not influence another user's retrieval scoring.
+///
 /// Used by retrieval scoring to boost/demote categories the user has
 /// consistently marked helpful or unhelpful.
-#[tracing::instrument(skip(db))]
-pub async fn category_preferences(db: &Database) -> Result<HashMap<String, f64>> {
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn category_preferences(db: &Database, user_id: i64) -> Result<HashMap<String, f64>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT m.category, f.rating, COUNT(*) \
+        let mut stmt = conn.prepare(
+            "SELECT m.category, f.rating, COUNT(*) \
                  FROM memory_feedback f \
                  JOIN memories m ON m.id = f.memory_id \
+                 WHERE f.user_id = ?1 \
                  GROUP BY m.category, f.rating",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![], |row| {
-                let cat: String = row.get(0)?;
-                let rating: String = row.get(1)?;
-                let count: i64 = row.get(2)?;
-                Ok((cat, rating, count))
-            })
-            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            let cat: String = row.get(0)?;
+            let rating: String = row.get(1)?;
+            let count: i64 = row.get(2)?;
+            Ok((cat, rating, count))
+        })?;
 
         let mut totals: HashMap<String, (f64, f64)> = HashMap::new();
         for row in rows {
-            let (cat, rating, count) = row.map_err(rusqlite_to_eng_error)?;
+            let (cat, rating, count) = row?;
             let weight: f64 = match rating.as_str() {
                 "helpful" => 1.0,
                 "irrelevant" | "off-topic" | "outdated" => -1.0,
@@ -114,24 +109,23 @@ pub async fn category_preferences(db: &Database) -> Result<HashMap<String, f64>>
     .await
 }
 
-/// Get aggregated feedback statistics for a user.
-#[tracing::instrument(skip(db))]
-pub async fn feedback_stats(db: &Database) -> Result<FeedbackStats> {
+/// Get aggregated feedback statistics for the given user.
+/// The WHERE user_id = ?1 predicate enforces single-DB isolation so stats
+/// reflect only the requesting user's feedback history.
+#[tracing::instrument(skip(db), fields(user_id))]
+pub async fn feedback_stats(db: &Database, user_id: i64) -> Result<FeedbackStats> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT rating, COUNT(*) FROM memory_feedback \
+        let mut stmt = conn.prepare(
+            "SELECT rating, COUNT(*) FROM memory_feedback \
+                 WHERE user_id = ?1 \
                  GROUP BY rating",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let rows = stmt
-            .query_map(params![], |row| {
-                let rating: String = row.get(0)?;
-                let count: i64 = row.get(1)?;
-                Ok((rating, count))
-            })
-            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt.query_map(params![user_id], |row| {
+            let rating: String = row.get(0)?;
+            let count: i64 = row.get(1)?;
+            Ok((rating, count))
+        })?;
 
         let mut stats = FeedbackStats {
             helpful: 0,
@@ -142,7 +136,7 @@ pub async fn feedback_stats(db: &Database) -> Result<FeedbackStats> {
         };
 
         for row in rows {
-            let (rating, count) = row.map_err(rusqlite_to_eng_error)?;
+            let (rating, count) = row?;
             match rating.as_str() {
                 "helpful" => stats.helpful = count,
                 "irrelevant" => stats.irrelevant = count,
@@ -168,21 +162,13 @@ mod tests {
             content: content.to_string(),
             category: category.to_string(),
             source: "test".to_string(),
-            importance: 5,
-            tags: None,
-            embedding: None,
-            session_id: None,
-            is_static: None,
             user_id: Some(user_id),
-            space_id: None,
-            space: None,
-            parent_memory_id: None,
-            chunk_embeddings: None,
+            ..Default::default()
         }
     }
 
     async fn seed_memory(db: &Database, content: &str, category: &str, user_id: i64) -> i64 {
-        crate::memory::store(db, store_req(content, category, user_id))
+        crate::memory::store(db, store_req(content, category, user_id), None, false)
             .await
             .expect("store")
             .id
@@ -205,7 +191,7 @@ mod tests {
     #[tokio::test]
     async fn category_preferences_empty_when_no_feedback() {
         let db = Database::connect_memory().await.expect("in-mem db");
-        let prefs = category_preferences(&db).await.expect("prefs");
+        let prefs = category_preferences(&db, 1).await.expect("prefs");
         assert!(prefs.is_empty());
     }
 
@@ -217,7 +203,7 @@ mod tests {
         let m2 = seed_memory(&db, "beta unique rust fact two", "code", uid).await;
         add_feedback(&db, m1, uid, "helpful").await;
         add_feedback(&db, m2, uid, "irrelevant").await;
-        let prefs = category_preferences(&db).await.expect("prefs");
+        let prefs = category_preferences(&db, uid).await.expect("prefs");
         assert!((prefs["code"] - 0.0).abs() < 1e-9);
     }
 
@@ -229,7 +215,7 @@ mod tests {
         let m2 = seed_memory(&db, "delta handbook chapter three", "docs", uid).await;
         add_feedback(&db, m1, uid, "outdated").await;
         add_feedback(&db, m2, uid, "off-topic").await;
-        let prefs = category_preferences(&db).await.expect("prefs");
+        let prefs = category_preferences(&db, uid).await.expect("prefs");
         assert!((prefs["docs"] - (-1.0)).abs() < 1e-9);
     }
 
@@ -241,24 +227,27 @@ mod tests {
         let disliked = seed_memory(&db, "zeta idle chatter stream", "chatter", uid).await;
         add_feedback(&db, liked, uid, "helpful").await;
         add_feedback(&db, disliked, uid, "irrelevant").await;
-        let prefs = category_preferences(&db).await.expect("prefs");
+        let prefs = category_preferences(&db, uid).await.expect("prefs");
         assert!((prefs["notes"] - 1.0).abs() < 1e-9);
         assert!((prefs["chatter"] - (-1.0)).abs() < 1e-9);
     }
 
     #[tokio::test]
     async fn category_preferences_isolated_per_user() {
-        // After user_id drop, memory_feedback is global (single-tenant shard).
-        // Feedback on any memory is visible regardless of the caller's user_id.
+        // user_id is now scoped on memory_feedback, so user 2 sees an empty
+        // preference set even though user 1 has feedback recorded.
         let db = Database::connect_memory().await.expect("in-mem db");
         let mine = seed_memory(&db, "eta private note item", "code", 1).await;
         add_feedback(&db, mine, 1, "helpful").await;
-        // user_id=2 sees the same global feedback -- not empty.
-        let prefs = category_preferences(&db).await.expect("prefs");
+        // user_id=2 must see empty prefs -- their feedback bucket is empty.
+        let prefs_2 = category_preferences(&db, 2).await.expect("prefs");
         assert!(
-            !prefs.is_empty(),
-            "single-tenant: all feedback is visible globally"
+            prefs_2.is_empty(),
+            "user 2 must not see user 1's feedback preferences"
         );
-        assert!((prefs["code"] - 1.0).abs() < 1e-9);
+        // user_id=1 sees their own feedback.
+        let prefs_1 = category_preferences(&db, 1).await.expect("prefs");
+        assert!(!prefs_1.is_empty(), "user 1 must see their own preferences");
+        assert!((prefs_1["code"] - 1.0).abs() < 1e-9);
     }
 }

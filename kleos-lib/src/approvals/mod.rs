@@ -61,14 +61,16 @@ async fn create_approval_inner(
     let gate_id_param = gate_id;
 
     db.write(move |conn| {
-        // Patch 21: the optional gate_id column was added by migration v56
-        // (tenant) / v64 (main). We always attempt the INSERT including the
-        // column; on legacy deployments where the migration has not yet
-        // run, rusqlite returns an "no such column" error which we fall
-        // back from by issuing the legacy INSERT.
+        // Patch 21 (renumbered at the aa6a0bec merge): the optional gate_id
+        // column was added by migration v72 (tenant) / v84 (main). We always
+        // attempt the INSERT including both gate_id (Patch 21 correlation) and
+        // the upstream user_id column. On legacy deployments where the gate_id
+        // migration has not yet run, rusqlite returns a "no such column" error
+        // which we fall back from by issuing the INSERT without gate_id
+        // (user_id is migrated earlier so it is retained in the fallback).
         let res = conn.execute(
-            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, gate_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, gate_id, user_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 id_clone,
                 action,
@@ -78,18 +80,19 @@ async fn create_approval_inner(
                 created_str,
                 expires_str,
                 gate_id_param,
+                user_id,
             ],
         );
         if let Err(err) = res {
-            // Fallback: legacy schema without gate_id. We still create the
-            // row so a `POST /approvals` workflow keeps working, but the
-            // gate correlation is lost (the caller will time out via the
-            // existing path).
+            // Fallback: schema without gate_id (gate_id migration not yet run).
+            // We still create the row so a `POST /approvals` workflow keeps
+            // working, but the gate correlation is lost (the caller will time
+            // out via the existing path). user_id is retained.
             let msg = err.to_string();
             if msg.contains("no such column") || msg.contains("has no column named") {
                 conn.execute(
-                    "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    "INSERT INTO approvals (id, action, context, requester, status, created_at, expires_at, user_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                     rusqlite::params![
                         id_clone,
                         action,
@@ -98,6 +101,7 @@ async fn create_approval_inner(
                         "pending",
                         created_str,
                         expires_str,
+                        user_id,
                     ],
                 )
                 .map_err(rusqlite_to_eng_error)?;
@@ -130,19 +134,15 @@ async fn create_approval_inner(
 pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Option<Approval>> {
     let id = id.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, action, context, requester, status, decision_by, decision_reason,
+        let mut stmt = conn.prepare(
+            "SELECT id, action, context, requester, status, decision_by, decision_reason,
                         created_at, expires_at, decided_at
-                 FROM approvals WHERE id = ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+                 FROM approvals WHERE id = ?1 AND user_id = ?2",
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![id])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
 
-        match rows.next().map_err(rusqlite_to_eng_error)? {
+        match rows.next()? {
             Some(row) => Ok(Some(row_to_approval(row, user_id)?)),
             None => Ok(None),
         }
@@ -154,26 +154,22 @@ pub async fn get_approval(db: &Database, id: &str, user_id: i64) -> Result<Optio
 #[tracing::instrument(skip(db))]
 pub async fn list_pending(db: &Database, user_id: i64) -> Result<Vec<Approval>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, action, context, requester, status, decision_by, decision_reason,
+        let mut stmt = conn.prepare(
+            "SELECT id, action, context, requester, status, decision_by, decision_reason,
                         created_at, expires_at, decided_at
                  FROM approvals
-                 WHERE status = 'pending'
+                 WHERE status = 'pending' AND user_id = ?1
                  ORDER BY expires_at ASC",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let rows = stmt
-            .query_map([], |row| {
-                // query_map requires a rusqlite::Result return; we map inside
-                Ok(row_to_approval(row, user_id))
-            })
-            .map_err(rusqlite_to_eng_error)?;
+        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+            // query_map requires a rusqlite::Result return; we map inside
+            Ok(row_to_approval(row, user_id))
+        })?;
 
         let mut approvals = Vec::new();
         for item in rows {
-            let approval = item.map_err(rusqlite_to_eng_error)??;
+            let approval = item??;
             approvals.push(approval);
         }
         Ok(approvals)
@@ -206,10 +202,9 @@ pub async fn decide(
         let id_str = id.to_string();
         db.write(move |conn| {
             conn.execute(
-                "UPDATE approvals SET status = 'expired' WHERE id = ?1",
-                rusqlite::params![id_str],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+                "UPDATE approvals SET status = 'expired' WHERE id = ?1 AND user_id = ?2",
+                rusqlite::params![id_str, user_id],
+            )?;
             Ok(())
         })
         .await?;
@@ -234,10 +229,9 @@ pub async fn decide(
         conn.execute(
             "UPDATE approvals
              SET status = ?1, decision_by = ?2, decision_reason = ?3, decided_at = ?4
-             WHERE id = ?5",
-            rusqlite::params![new_status, decided_by, reason, decided_str, id_str],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+             WHERE id = ?5 AND user_id = ?6",
+            rusqlite::params![new_status, decided_by, reason, decided_str, id_str, user_id],
+        )?;
         Ok(())
     })
     .await?;
@@ -291,13 +285,11 @@ pub async fn read_gate_id_for_approval(db: &Database, id: &str) -> Result<Option
 pub async fn expire_stale(db: &Database) -> Result<u64> {
     let now = Utc::now().to_rfc3339();
     db.write(move |conn| {
-        let rows = conn
-            .execute(
-                "UPDATE approvals SET status = 'expired'
+        let rows = conn.execute(
+            "UPDATE approvals SET status = 'expired'
                  WHERE status = 'pending' AND expires_at < ?1",
-                rusqlite::params![now],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+            rusqlite::params![now],
+        )?;
         Ok(rows as u64)
     })
     .await
@@ -496,14 +488,11 @@ mod tests {
         assert_eq!(fetched.status, ApprovalStatus::Expired);
     }
 
-    /// Phase 5.5 dropped user_id from approvals: tenant isolation is
-    /// enforced at the database level (one shard per tenant), so a
-    /// shared in-memory DB no longer separates user 1 and user 2.
-    ///
-    /// The shard-level invariant is now covered by:
-    ///   kleos-lib/tests/tenant_isolation.rs::approvals_isolated_across_tenants
+    /// Single-DB isolation: with user_id restored (monolith migration 66 /
+    /// tenant v57), one shared in-memory DB again separates user 1 and user 2.
+    /// The cross-shard invariant is also covered by
+    /// kleos-lib/tests/tenant_isolation.rs::approvals_isolated_across_tenants.
     #[tokio::test]
-    #[ignore]
     async fn test_tenant_isolation() {
         let db = Database::connect_memory().await.expect("in-memory db");
 

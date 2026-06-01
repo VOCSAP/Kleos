@@ -32,8 +32,10 @@ fn parse_csv_line(line: &str) -> Vec<String> {
                         break;
                     }
                 } else {
-                    field.push(bytes[i] as char);
-                    i += 1;
+                    // Decode full UTF-8 char (bytes[i] as char is mojibake for multi-byte)
+                    let ch = line[i..].chars().next().unwrap();
+                    field.push(ch);
+                    i += ch.len_utf8();
                 }
             }
             fields.push(field);

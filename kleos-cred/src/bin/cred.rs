@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use argon2::{password_hash::SaltString, Argon2, Params, PasswordHasher};
 use clap::{Parser, Subcommand};
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use sha2::{Digest, Sha256};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -521,7 +522,9 @@ fn mint_get_session_grant(path: &Path, ttl_secs: i64) -> Result<String> {
 
     let now = chrono::Utc::now().timestamp();
     let mut token_bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut token_bytes);
+    OsRng
+        .try_fill_bytes(&mut token_bytes)
+        .expect("OS CSPRNG must be available");
     let token = hex::encode(token_bytes);
     token_bytes.zeroize();
 
@@ -1778,9 +1781,7 @@ async fn cmd_agent_key(db: &Database, action: AgentKeyAction) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TUI
-// ---------------------------------------------------------------------------
+// --- TUI ---
 
 /// A secret loaded for TUI display (decrypted).
 struct TuiSecret {
@@ -2355,9 +2356,7 @@ fn draw_detail_modal(f: &mut Frame, secret: &TuiSecret, show_value: bool) {
     f.render_widget(detail, modal_area);
 }
 
-// ---------------------------------------------------------------------------
-// credd fallback for secret resolution
-// ---------------------------------------------------------------------------
+// --- credd fallback for secret resolution ---
 
 async fn resolve_via_credd(
     master_key: &[u8; KEY_SIZE],
@@ -2406,9 +2405,7 @@ async fn resolve_via_credd(
     Ok((row, data))
 }
 
-// ---------------------------------------------------------------------------
-// Bootstrap blob (CBv1) wrap / unwrap
-// ---------------------------------------------------------------------------
+// --- Bootstrap blob (CBv1) wrap / unwrap ---
 
 /// On-disk magic for the credd bootstrap blob.
 const BOOTSTRAP_MAGIC: &[u8; 4] = b"CBv1";
@@ -2546,9 +2543,7 @@ async fn cmd_bootstrap_unwrap(
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// cred piv subcommand
-// ---------------------------------------------------------------------------
+// --- cred piv subcommand ---
 
 async fn cmd_piv(cmd: PivCmd) -> Result<()> {
     use kleos_cred::piv::{
@@ -2714,9 +2709,7 @@ async fn cmd_piv(cmd: PivCmd) -> Result<()> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// cred ssh-ca subcommand
-// ---------------------------------------------------------------------------
+// --- cred ssh-ca subcommand ---
 
 const PKCS11_LIB_PATHS: &[&str] = &[
     "/usr/lib/libykcs11.so",
@@ -2761,8 +2754,16 @@ fn ssh_ca_sign_impl(identity: &str, principal: &str, ttl: &str, pubkey: &Path) -
         pubkey.display()
     );
 
-    let pin =
-        std::env::var("YKMAN_PIN").unwrap_or_else(|_| kleos_cred::piv::DEFAULT_PIN.to_string());
+    let pin = std::env::var("YKMAN_PIN")
+        .or_else(|_| std::env::var("PIV_PIN"))
+        .ok()
+        .filter(|p| !p.is_empty() && p != kleos_cred::piv::DEFAULT_PIN)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "PIV PIN not available: set YKMAN_PIN or PIV_PIN to a non-default value \
+             (refusing factory-default to avoid burning PIN retries)"
+            )
+        })?;
     let askpass = std::env::temp_dir().join("cred-ssh-ca-askpass.sh");
     std::fs::write(&askpass, format!("#!/bin/sh\necho '{}'\n", pin))
         .context("write askpass helper")?;
@@ -2983,12 +2984,11 @@ mod user_id_migration_tests {
 
     async fn count_rows(db: &Database, user_id: i64) -> i64 {
         db.read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM cred_secrets WHERE user_id = ?1",
                 rusqlite::params![user_id],
                 |row| row.get(0),
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .unwrap()

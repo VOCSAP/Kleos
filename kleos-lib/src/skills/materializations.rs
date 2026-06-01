@@ -14,7 +14,7 @@
 //! materialize invocation and avoid clobbering hand-edited .md files.
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
@@ -49,8 +49,7 @@ pub async fn record(
                 content_hash_at_materialize = excluded.content_hash_at_materialize, \
                 materialized_at = datetime('now')",
             params![skill_id, path, hash],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
         Ok(())
     })
     .await
@@ -60,32 +59,17 @@ pub async fn record(
 // been written to disk (or the row was cleared).
 pub async fn get(db: &Database, skill_id: i64) -> Result<Option<SkillMaterialization>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
+        let mut stmt = conn.prepare(
+            "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
                  FROM skill_materializations WHERE skill_id = ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let mut rows = stmt
-            .query(params![skill_id])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        if let Some(row) = rows
-            .next()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-        {
+        )?;
+        let mut rows = stmt.query(params![skill_id])?;
+        if let Some(row) = rows.next()? {
             Ok(Some(SkillMaterialization {
-                skill_id: row
-                    .get(0)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?,
-                target_path: row
-                    .get(1)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?,
-                materialized_at: row
-                    .get(2)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?,
-                content_hash_at_materialize: row
-                    .get(3)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?,
+                skill_id: row.get(0)?,
+                target_path: row.get(1)?,
+                materialized_at: row.get(2)?,
+                content_hash_at_materialize: row.get(3)?,
             }))
         } else {
             Ok(None)
@@ -98,25 +82,21 @@ pub async fn get(db: &Database, skill_id: i64) -> Result<Option<SkillMaterializa
 // flag which agent skills are currently on disk.
 pub async fn list_all(db: &Database) -> Result<Vec<SkillMaterialization>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
+        let mut stmt = conn.prepare(
+            "SELECT skill_id, target_path, materialized_at, content_hash_at_materialize \
                  FROM skill_materializations ORDER BY materialized_at DESC",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![], |r| {
-                Ok(SkillMaterialization {
-                    skill_id: r.get(0)?,
-                    target_path: r.get(1)?,
-                    materialized_at: r.get(2)?,
-                    content_hash_at_materialize: r.get(3)?,
-                })
+        )?;
+        let rows = stmt.query_map(params![], |r| {
+            Ok(SkillMaterialization {
+                skill_id: r.get(0)?,
+                target_path: r.get(1)?,
+                materialized_at: r.get(2)?,
+                content_hash_at_materialize: r.get(3)?,
             })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        })?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -128,12 +108,10 @@ pub async fn list_all(db: &Database) -> Result<Vec<SkillMaterialization>> {
 // testable and lets the CLI handle real-world filesystem errors.
 pub async fn forget(db: &Database, skill_id: i64) -> Result<usize> {
     db.write(move |conn| {
-        let n = conn
-            .execute(
-                "DELETE FROM skill_materializations WHERE skill_id = ?1",
-                params![skill_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let n = conn.execute(
+            "DELETE FROM skill_materializations WHERE skill_id = ?1",
+            params![skill_id],
+        )?;
         Ok(n)
     })
     .await

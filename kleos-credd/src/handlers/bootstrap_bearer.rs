@@ -30,7 +30,8 @@ use kleos_cred::crypto::decrypt;
 use kleos_cred::piv::{ecdh_agree, PivSlot};
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::Signature;
-use rand::RngCore;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use tracing::{error, warn};
@@ -140,7 +141,11 @@ pub async fn get_bootstrap_kleos_bearer(
             CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
         })?;
 
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
@@ -268,7 +273,11 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
             CredError::InvalidInput("credd misconfigured: KLEOS_URL not set".into())
         })?;
 
-    let http = reqwest::Client::new();
+    let http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
     let resp = http
         .get(format!("{}/list", kleos_url.trim_end_matches('/')))
         .header(
@@ -354,6 +363,8 @@ async fn resolve_agent_bearer(state: &AppState, agent: &str) -> Result<String, A
 /// ECDH-derived key from one protocol version cannot be replayed on
 /// another. Bump the version suffix when the wire format changes.
 const ECDH_PROTOCOL: &str = "ecdh-v1";
+// z02-015: server half of the credd ECDH handshake; MUST stay byte-identical
+// to ECDH_HKDF_SALT in kleos-lib/src/cred/bootstrap.rs (ecdh module).
 const ECDH_HKDF_SALT: &[u8] = b"credd-ecdh-v1";
 
 #[derive(Deserialize)]
@@ -450,7 +461,9 @@ pub async fn post_bootstrap_kleos_bearer_ecdh(
     // AES-256-GCM with a fresh random 12-byte nonce.
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&bearer_key));
     let mut nonce_bytes = [0u8; 12];
-    rand::rng().fill_bytes(&mut nonce_bytes);
+    OsRng
+        .try_fill_bytes(&mut nonce_bytes)
+        .expect("OS CSPRNG must be available");
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, bare_bearer.as_bytes())

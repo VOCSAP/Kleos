@@ -10,9 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// API types (matches engram-credd response shapes)
-// ---------------------------------------------------------------------------
+// --- API types (matches engram-credd response shapes) ---
 
 #[derive(Debug, Clone, Deserialize)]
 struct SecretListItem {
@@ -47,9 +45,7 @@ struct StoreRequest {
     data: serde_json::Value,
 }
 
-// ---------------------------------------------------------------------------
-// Messages between background worker and UI
-// ---------------------------------------------------------------------------
+// --- Messages between background worker and UI ---
 
 enum WorkerMsg {
     List(Vec<SecretListItem>),
@@ -66,9 +62,7 @@ enum UiCmd {
     Delete(String, String),
 }
 
-// ---------------------------------------------------------------------------
-// HTTP worker
-// ---------------------------------------------------------------------------
+// --- HTTP worker ---
 
 fn spawn_worker(
     credd_url: String,
@@ -216,9 +210,7 @@ fn urlencod(s: &str) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// UI state
-// ---------------------------------------------------------------------------
+// --- UI state ---
 
 #[derive(Default)]
 struct AddDialog {
@@ -298,9 +290,7 @@ impl CredApp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// egui rendering
-// ---------------------------------------------------------------------------
+// --- egui rendering ---
 
 impl eframe::App for CredApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -518,9 +508,7 @@ impl eframe::App for CredApp {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
+// --- Entry point ---
 
 fn main() {
     let credd_url =

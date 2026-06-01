@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -16,13 +16,7 @@ use crate::db::Database;
 use crate::embeddings::EmbeddingProvider;
 use crate::{EngError, Result};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// BrainBackend trait -- unifies subprocess and in-process Hopfield
-// ---------------------------------------------------------------------------
+// --- BrainBackend trait -- unifies subprocess and in-process Hopfield ---
 
 /// Trait that abstracts over different brain implementations. The server
 /// routes call these methods without knowing whether the brain is a
@@ -76,9 +70,7 @@ pub trait BrainBackend: Send + Sync {
         self.stop().await;
     }
 }
-// ---------------------------------------------------------------------------
-// Types (from types.ts)
-// ---------------------------------------------------------------------------
+// --- Types (from types.ts) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrainMemory {
@@ -189,19 +181,6 @@ pub enum BrainCommand {
         seq: Option<i64>,
     },
 }
-// ---------------------------------------------------------------------------
-// Oracle types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OracleResult {
-    pub answer: String,
-    pub sources: Vec<i64>,
-    pub confidence: f64,
-    pub contradictions: Vec<BrainContradiction>,
-    pub hallucination_flags: Vec<String>,
-    pub fallback: bool,
-}
 
 #[derive(Debug, Deserialize)]
 pub struct BrainQueryOptions {
@@ -235,9 +214,7 @@ pub struct DecayRequest {
 fn default_ticks() -> u32 {
     1
 }
-// ---------------------------------------------------------------------------
-// Brain query state (from state.ts)
-// ---------------------------------------------------------------------------
+// --- Brain query state (from state.ts) ---
 
 pub struct BrainQueryState {
     last_query_time: AtomicU64,
@@ -273,14 +250,10 @@ impl Default for BrainQueryState {
         Self::new()
     }
 }
-// ---------------------------------------------------------------------------
-// Brain Manager (from manager.ts)
-// ---------------------------------------------------------------------------
+// --- Brain Manager (from manager.ts) ---
 
 const REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MAX_RESTART_ATTEMPTS: u32 = 3;
-#[allow(dead_code)]
-const RESTART_BACKOFF_MS: u64 = 2_000;
 
 struct PendingRequest {
     tx: tokio::sync::oneshot::Sender<BrainResponse>,
@@ -798,17 +771,19 @@ impl BrainBackend for BrainManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HopfieldBrainManager -- in-process Hopfield network backend
-// ---------------------------------------------------------------------------
+// --- HopfieldBrainManager -- in-process Hopfield network backend ---
 
 #[cfg(feature = "brain_hopfield")]
 pub struct HopfieldBrainManager {
-    network: Mutex<crate::brain::hopfield::HopfieldNetwork>,
+    /// In-process Hopfield network. RwLock so reads (query, stats) don't
+    /// block each other; writes (absorb, dream, feedback, instincts) get
+    /// exclusive access.
+    network: RwLock<crate::brain::hopfield::HopfieldNetwork>,
     db: Arc<Database>,
     ready: std::sync::atomic::AtomicBool,
     pub query_state: BrainQueryState,
-    evolution: Mutex<crate::brain::evolution::EvolutionState>,
+    /// Evolution state for neuroevolution training loop.
+    evolution: RwLock<crate::brain::evolution::EvolutionState>,
 }
 
 #[cfg(feature = "brain_hopfield")]
@@ -838,11 +813,11 @@ impl HopfieldBrainManager {
         let evolution = crate::brain::evolution::EvolutionState::load_state(&db).await;
 
         Ok(Self {
-            network: Mutex::new(network),
+            network: RwLock::new(network),
             db,
             ready: std::sync::atomic::AtomicBool::new(true),
             query_state: BrainQueryState::new(),
-            evolution: Mutex::new(evolution),
+            evolution: RwLock::new(evolution),
         })
     }
 }
@@ -872,7 +847,7 @@ impl BrainBackend for HopfieldBrainManager {
         let top_k = options.top_k.unwrap_or(10);
         let beta = options.beta.map(|b| b as f32).unwrap_or(DEFAULT_BETA);
 
-        let network = self.network.lock().await;
+        let network = self.network.read().await;
         let results =
             recall::recall_pattern(&self.db, &network, &embedding, user_id, top_k, beta).await?;
 
@@ -911,7 +886,7 @@ impl BrainBackend for HopfieldBrainManager {
         let embedding = embedder.embed(&memory.content).await?;
         let importance = memory.importance.round() as i32;
 
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
 
         // Store pattern and create causal edges to temporal neighbours.
         recall::store_pattern_with_causal_edges(
@@ -952,7 +927,7 @@ impl BrainBackend for HopfieldBrainManager {
             return Ok(());
         }
 
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
         let stats = recall::decay_tick(&self.db, &mut network, user_id, ticks).await?;
 
         info!(
@@ -969,7 +944,7 @@ impl BrainBackend for HopfieldBrainManager {
     async fn stats(&self, user_id: i64) -> Result<BrainStats> {
         use crate::brain::hopfield::pattern;
 
-        let network = self.network.lock().await;
+        let network = self.network.read().await;
         let db_patterns = pattern::list_patterns(&self.db, user_id).await?;
 
         let total_strength: f32 = db_patterns.iter().map(|p| p.strength).sum();
@@ -996,7 +971,7 @@ impl BrainBackend for HopfieldBrainManager {
         // now this consolidates against pattern-owner 1 (operator namespace)
         // and is gated to admin scope at the route boundary.
         let user_id: i64 = 1;
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
 
         // Full 6-stage consolidation: replay, merge, prune, discover, decorrelate, resolve.
         // Budget caps items processed per stage so a long idle period does not
@@ -1022,7 +997,7 @@ impl BrainBackend for HopfieldBrainManager {
         use crate::brain::evolution::FeedbackSignal;
         use crate::brain::hopfield::recall;
 
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
 
         let mut reinforced = Vec::new();
         for id in &memory_ids {
@@ -1054,7 +1029,7 @@ impl BrainBackend for HopfieldBrainManager {
             useful,
             timestamp,
         };
-        self.evolution.lock().await.record_feedback(signal);
+        self.evolution.write().await.record_feedback(signal);
 
         Ok(BrainResponse {
             seq: None,
@@ -1068,7 +1043,7 @@ impl BrainBackend for HopfieldBrainManager {
     }
 
     async fn evolution_train(&self) -> Result<BrainResponse> {
-        let mut evo = self.evolution.lock().await;
+        let mut evo = self.evolution.write().await;
         let before = evo.generation;
         evo.train_step();
         let after = evo.generation;
@@ -1090,7 +1065,7 @@ impl BrainBackend for HopfieldBrainManager {
     async fn evolution_stats(&self) -> Result<BrainResponse> {
         use crate::brain::evolution::EvolutionStatsResult;
 
-        let evo = self.evolution.lock().await;
+        let evo = self.evolution.read().await;
         let stats = EvolutionStatsResult::from(&*evo);
 
         Ok(BrainResponse {
@@ -1109,7 +1084,7 @@ impl BrainBackend for HopfieldBrainManager {
 
         // Admin-gated at the route layer; scoped to operator namespace.
         let user_id: i64 = 1;
-        let mut network = self.network.lock().await;
+        let mut network = self.network.write().await;
         let report = instincts::reapply_instincts(&self.db, &mut network, user_id).await?;
 
         Ok(BrainResponse {
@@ -1127,25 +1102,21 @@ impl BrainBackend for HopfieldBrainManager {
 #[cfg(feature = "brain_hopfield")]
 async fn load_brain_memory(db: &Database, memory_id: i64) -> Result<BrainMemory> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, content, category, source, importance, created_at, tags
+        let mut stmt = conn.prepare(
+            "SELECT id, content, category, source, importance, created_at, tags
                  FROM memories WHERE id = ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![memory_id])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite::params![memory_id])?;
 
-        if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
-            let category: String = row.get(2).map_err(rusqlite_to_eng_error)?;
-            let source: String = row.get(3).map_err(rusqlite_to_eng_error)?;
-            let importance: f64 = row.get(4).map_err(rusqlite_to_eng_error)?;
-            let created_at: Option<String> = row.get(5).map_err(rusqlite_to_eng_error)?;
-            let tags_raw: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
+        if let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let content: String = row.get(1)?;
+            let category: String = row.get(2)?;
+            let source: String = row.get(3)?;
+            let importance: f64 = row.get(4)?;
+            let created_at: Option<String> = row.get(5)?;
+            let tags_raw: Option<String> = row.get(6)?;
             let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
 
             Ok(BrainMemory {
@@ -1289,28 +1260,25 @@ pub async fn get_memory_for_absorb(
             "SELECT id, content, category, source, importance, created_at, tags
              FROM memories WHERE id = ?1"
         };
-        let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(sql)?;
 
         let mut rows = if scoped {
-            stmt.query(rusqlite::params![id, user_id])
-                .map_err(rusqlite_to_eng_error)?
+            stmt.query(rusqlite::params![id, user_id])?
         } else {
-            stmt.query(rusqlite::params![id])
-                .map_err(rusqlite_to_eng_error)?
+            stmt.query(rusqlite::params![id])?
         };
 
         let row = rows
-            .next()
-            .map_err(rusqlite_to_eng_error)?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("memory {}", id)))?;
 
-        let mem_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-        let content: String = row.get(1).map_err(rusqlite_to_eng_error)?;
-        let category: String = row.get(2).map_err(rusqlite_to_eng_error)?;
-        let source: String = row.get(3).map_err(rusqlite_to_eng_error)?;
-        let importance: f64 = row.get(4).map_err(rusqlite_to_eng_error)?;
-        let created_at: String = row.get(5).map_err(rusqlite_to_eng_error)?;
-        let tags_raw: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
+        let mem_id: i64 = row.get(0)?;
+        let content: String = row.get(1)?;
+        let category: String = row.get(2)?;
+        let source: String = row.get(3)?;
+        let importance: f64 = row.get(4)?;
+        let created_at: String = row.get(5)?;
+        let tags_raw: Option<String> = row.get(6)?;
 
         let tags = tags_raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok());
 
@@ -1374,343 +1342,24 @@ pub async fn verify_memory_ownership(
                 placeholders_joined,
             )
         };
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params_from_iter(params_vec.iter().cloned()))
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(rusqlite::params_from_iter(params_vec.iter().cloned()))?;
 
         let row = rows
-            .next()
-            .map_err(rusqlite_to_eng_error)?
+            .next()?
             .ok_or_else(|| EngError::Internal("count query failed".into()))?;
-        let count: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
+        let count: i64 = row.get(0)?;
 
         Ok(count == expected)
     })
     .await
 }
-// ---------------------------------------------------------------------------
-// Oracle (from oracle.ts)
-// ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-const ORACLE_SYSTEM_PROMPT: &str = "You are Eidolon, a living memory system. You answer questions \nusing ONLY the memories provided below. You are not a general AI assistant - you are a specific \nintelligence that knows what it has been taught and nothing else.";
-
-pub fn build_user_prompt(query: &str, result: &BrainQueryResult, context: Option<&str>) -> String {
-    let mut lines = Vec::new();
-
-    lines.push(format!("QUERY: {}", query));
-    lines.push(String::new());
-
-    if result.activated.is_empty() {
-        lines.push("MEMORIES: none activated".into());
-    } else {
-        lines.push("MEMORIES (sorted by activation, highest first):".into());
-        let mut sorted = result.activated.clone();
-        sorted.sort_by(|a, b| {
-            b.activation
-                .partial_cmp(&a.activation)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let top = sorted.into_iter().take(8);
-        for mem in top {
-            let age = mem.created_at.as_deref().unwrap_or("");
-            let age_str = if age.is_empty() {
-                String::new()
-            } else {
-                format!("created: {}", age)
-            };
-            lines.push(format!(
-                "  [#{}] activation={:.4} importance={} {}",
-                mem.id, mem.activation, mem.importance, age_str
-            ));
-            let truncated = if mem.content.len() > 300 {
-                format!("{}...", &mem.content[..300])
-            } else {
-                mem.content.clone()
-            };
-            lines.push(format!("  {}", truncated));
-            lines.push(String::new());
-        }
-    }
-
-    if !result.contradictions.is_empty() {
-        lines.push("CONTRADICTIONS DETECTED:".into());
-        for c in &result.contradictions {
-            lines.push(format!(
-                "  winner=#{} (activation={:.4}) vs loser=#{} (activation={:.4}): {}",
-                c.winner_id, c.winner_activation, c.loser_id, c.loser_activation, c.reason
-            ));
-        }
-        lines.push(String::new());
-    }
-
-    if let Some(ctx) = context {
-        lines.push("CONVERSATION CONTEXT:".into());
-        lines.push(ctx.to_string());
-        lines.push(String::new());
-    }
-
-    lines.join(
-        "
-",
-    )
-}
-
-pub fn extract_claims(text: &str) -> Vec<String> {
-    text.split(['.', '!', '?'])
-        .map(|s| s.trim().to_string())
-        .filter(|s| s.len() > 20)
-        .collect()
-}
-
-pub fn detect_hallucinations(answer: &str, result: &BrainQueryResult) -> Vec<String> {
-    if result.activated.is_empty() {
-        return Vec::new();
-    }
-
-    let memory_corpus: String = result
-        .activated
-        .iter()
-        .map(|m| m.content.to_lowercase())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let claims = extract_claims(answer);
-    let mut flags = Vec::new();
-
-    // Patch 38 L2 site 7 + normalize -- stopwords from the i18n lexicon
-    // folded with fold_for_matching (stopwords class declares stem =
-    // false, so the fold is lowercase + diacritic strip only). Source
-    // tokens are folded the same way before the .contains() check
-    // below so "été" in a claim matches "ete" in the stopword set.
-    let stopwords: HashSet<String> = crate::lexicon::supported_languages()
-        .iter()
-        .flat_map(|lang| {
-            let lang = lang.clone();
-            crate::lexicon::word_class(&lang, "stopwords")
-                .into_iter()
-                .map(move |w| crate::lexicon::fold_word_for_class(&w, &lang, "stopwords"))
-        })
-        .collect();
-
-    for claim in &claims {
-        let keywords: Vec<String> = claim
-            .to_lowercase()
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == ' ' {
-                    c
-                } else {
-                    ' '
-                }
-            })
-            .collect::<String>()
-            .split_whitespace()
-            .filter(|w| {
-                w.len() > 4 && {
-                    // Fold the token the same way the stopword set was
-                    // built (lowercase + diacritic strip; no stemming).
-                    let folded = crate::lexicon::fold_for_matching(w, "en", false);
-                    !stopwords.contains(&folded)
-                }
-            })
-            .map(String::from)
-            .collect();
-
-        if keywords.is_empty() {
-            continue;
-        }
-
-        let matched = keywords
-            .iter()
-            .filter(|kw| memory_corpus.contains(kw.as_str()))
-            .count();
-        let ratio = matched as f64 / keywords.len() as f64;
-
-        if ratio < 0.25 {
-            // Patch 39: utf-8 safe truncation -- raw &claim[..80] panics
-            // when byte 80 lands inside a multi-byte glyph.
-            let truncated = if claim.len() > 80 {
-                format!("{}...", crate::str_safe::truncate_at_char(claim, 80))
-            } else {
-                claim.clone()
-            };
-            flags.push(format!("Claim not grounded in memories: \"{}\"", truncated));
-        }
-    }
-
-    flags
-}
-
-pub fn format_fallback(result: &BrainQueryResult) -> OracleResult {
-    let sources: Vec<i64> = result.activated.iter().map(|m| m.id).collect();
-    let confidence = if result.activated.is_empty() {
-        0.0
-    } else {
-        let top: Vec<&BrainMemory> = result.activated.iter().take(5).collect();
-        top.iter().map(|m| m.activation).sum::<f64>() / top.len() as f64
-    };
-
-    let answer = if result.activated.is_empty() {
-        "I do not have information about that.".to_string()
-    } else {
-        let top_str: Vec<String> = result
-            .activated
-            .iter()
-            .take(3)
-            .map(|m| format!("[#{}] {}", m.id, m.content))
-            .collect();
-        format!(
-            "[Fallback - LLM unavailable] Relevant memories: {}",
-            top_str.join("; ")
-        )
-    };
-
-    OracleResult {
-        answer,
-        sources,
-        confidence,
-        contradictions: result.contradictions.clone(),
-        hallucination_flags: Vec::new(),
-        fallback: true,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_extract_claims() {
-        let text = "The server runs on port 8080. It also handles websockets! Is it fast? Yes.";
-        let claims = extract_claims(text);
-        assert_eq!(claims.len(), 2);
-        assert!(claims[0].contains("server runs on port"));
-        assert!(claims[1].contains("handles websockets"));
-    }
-
-    #[test]
-    fn test_detect_hallucinations_empty_memories() {
-        let result = BrainQueryResult {
-            activated: vec![],
-            contradictions: vec![],
-        };
-        let flags = detect_hallucinations("Some random answer about things.", &result);
-        assert!(flags.is_empty());
-    }
-
-    #[test]
-    fn test_detect_hallucinations_grounded() {
-        let result = BrainQueryResult {
-            activated: vec![BrainMemory {
-                id: 1,
-                content: "The database server runs PostgreSQL version 15 on port 5432".into(),
-                category: "infra".into(),
-                source: "manual".into(),
-                importance: 1.0,
-                activation: 0.9,
-                created_at: None,
-                tags: None,
-            }],
-            contradictions: vec![],
-        };
-        let flags =
-            detect_hallucinations("The database server runs PostgreSQL on port 5432.", &result);
-        assert!(flags.is_empty(), "Expected no flags, got {:?}", flags);
-    }
-
-    #[test]
-    fn test_detect_hallucinations_ungrounded() {
-        let result = BrainQueryResult {
-            activated: vec![BrainMemory {
-                id: 1,
-                content: "The database runs PostgreSQL on port 5432".into(),
-                category: "infra".into(),
-                source: "manual".into(),
-                importance: 1.0,
-                activation: 0.9,
-                created_at: None,
-                tags: None,
-            }],
-            contradictions: vec![],
-        };
-        let flags = detect_hallucinations(
-            "The kubernetes cluster deploys microservices through ArgoCD pipelines.",
-            &result,
-        );
-        assert!(!flags.is_empty());
-    }
-
-    #[test]
-    fn test_format_fallback_no_memories() {
-        let result = BrainQueryResult {
-            activated: vec![],
-            contradictions: vec![],
-        };
-        let oracle = format_fallback(&result);
-        assert!(oracle.fallback);
-        assert_eq!(oracle.confidence, 0.0);
-        assert!(oracle.answer.contains("do not have information"));
-    }
-
-    #[test]
-    fn test_format_fallback_with_memories() {
-        let result = BrainQueryResult {
-            activated: vec![BrainMemory {
-                id: 42,
-                content: "Engram stores memories in SQLite".into(),
-                category: "docs".into(),
-                source: "manual".into(),
-                importance: 0.8,
-                activation: 0.95,
-                created_at: None,
-                tags: None,
-            }],
-            contradictions: vec![],
-        };
-        let oracle = format_fallback(&result);
-        assert!(oracle.fallback);
-        assert!(oracle.confidence > 0.0);
-        assert!(oracle.answer.contains("Fallback"));
-        assert!(oracle.answer.contains("[#42]"));
-    }
-
-    #[test]
-    fn test_build_user_prompt_empty() {
-        let result = BrainQueryResult {
-            activated: vec![],
-            contradictions: vec![],
-        };
-        let prompt = build_user_prompt("What is engram?", &result, None);
-        assert!(prompt.contains("QUERY: What is engram?"));
-        assert!(prompt.contains("none activated"));
-    }
-
-    #[test]
-    fn test_build_user_prompt_with_context() {
-        let result = BrainQueryResult {
-            activated: vec![BrainMemory {
-                id: 1,
-                content: "Engram is a memory system".into(),
-                category: "docs".into(),
-                source: "manual".into(),
-                importance: 1.0,
-                activation: 0.8,
-                created_at: Some("2025-01-01".into()),
-                tags: None,
-            }],
-            contradictions: vec![],
-        };
-        let prompt = build_user_prompt("test?", &result, Some("previous conversation"));
-        assert!(prompt.contains("CONVERSATION CONTEXT:"));
-        assert!(prompt.contains("previous conversation"));
-        assert!(prompt.contains("[#1]"));
-    }
 
     #[test]
     fn test_brain_query_state() {

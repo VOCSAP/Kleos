@@ -13,9 +13,7 @@ use crate::{EngError, Result};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
+// --- Public types ---
 
 /// Observable circuit state returned by [`CircuitBreaker::state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,9 +33,7 @@ impl std::fmt::Display for CircuitState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal state
-// ---------------------------------------------------------------------------
+// --- Internal state ---
 
 enum State {
     Closed {
@@ -52,9 +48,7 @@ enum State {
     },
 }
 
-// ---------------------------------------------------------------------------
-// CircuitBreaker
-// ---------------------------------------------------------------------------
+// --- CircuitBreaker ---
 
 /// Thread-safe circuit breaker.
 ///
@@ -186,9 +180,7 @@ impl CircuitBreaker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Legacy adapter types (re-exported from resilience::) for backwards compat
-// ---------------------------------------------------------------------------
+// --- Legacy adapter types (re-exported from resilience::) for backwards compat ---
 
 /// Legacy configuration struct used by existing code (e.g. reranker).
 /// New code should call [`CircuitBreaker::new`] directly.
@@ -344,9 +336,7 @@ impl LegacyCircuitBreaker {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

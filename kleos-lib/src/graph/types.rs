@@ -16,6 +16,25 @@ pub enum LinkType {
     Resolves,
 }
 
+impl LinkType {
+    /// Parse a link type string from the database into a typed variant.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "cite" | "similarity" | "related" => Self::Cite,
+            "mentions" | "about" => Self::Mentions,
+            "association" | "Association" => Self::Association,
+            "temporal" | "Temporal" => Self::Temporal,
+            "contradicts" | "contradiction" | "Contradiction" => Self::Contradicts,
+            "causal" | "causes" | "caused_by" | "Causal" => Self::Causal,
+            "resolves" | "Resolves" => Self::Resolves,
+            "refines" | "updates" | "corrects" => Self::Refines,
+            "generalizes" | "consolidates" => Self::Generalizes,
+            "has_fact" => Self::HasFact,
+            _ => Self::Cite,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryLink {
     pub id: String,

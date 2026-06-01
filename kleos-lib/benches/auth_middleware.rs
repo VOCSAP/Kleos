@@ -56,7 +56,7 @@ fn bench_auth_rejected_request(c: &mut Criterion) {
     let rt = common::bench_runtime();
     let _guard = rt.enter();
     let fx = setup(&rt);
-    let bad = "engram_00000000000000000000000000000000";
+    let bad = "kleos_00000000000000000000000000000000";
 
     let mut group = c.benchmark_group("auth_middleware/rejected");
     group.throughput(Throughput::Elements(1));

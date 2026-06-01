@@ -121,38 +121,37 @@ fn step_b_dedup_growth(conn: &Connection, execute: bool) -> Result<usize> {
 
     struct GrowthRow {
         id: i64,
-        prefix: String,
+        content: String,
         _importance: f64,
         _created_at: String,
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id, substr(content, 1, 100) as prefix, importance, created_at \
+        "SELECT id, content, importance, created_at \
          FROM memories WHERE category = 'growth' \
-         ORDER BY substr(content, 1, 100), importance DESC, created_at ASC",
+         ORDER BY content, importance DESC, created_at ASC",
     )?;
 
     let rows: Vec<GrowthRow> = stmt
         .query_map([], |row| {
             Ok(GrowthRow {
                 id: row.get(0)?,
-                prefix: row.get(1)?,
+                content: row.get(1)?,
                 _importance: row.get(2)?,
                 _created_at: row.get(3)?,
             })
         })?
         .collect::<Result<Vec<_>>>()?;
 
-    // Group by prefix, keep first per group, archive the rest
+    // Group by full content, keep first per group, archive the rest
     let mut to_archive: Vec<i64> = Vec::new();
-    let mut current_prefix: Option<String> = None;
+    let mut current_content: Option<String> = None;
     let mut seen_first = false;
 
     for row in &rows {
-        if current_prefix.as_deref() != Some(&row.prefix) {
-            current_prefix = Some(row.prefix.clone());
+        if current_content.as_deref() != Some(&row.content) {
+            current_content = Some(row.content.clone());
             seen_first = true;
-            // This is the keeper for this prefix group
         } else if seen_first {
             to_archive.push(row.id);
         }

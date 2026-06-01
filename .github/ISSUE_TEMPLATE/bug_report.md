@@ -1,8 +1,8 @@
 ---
 name: Bug report
-about: Report a bug in Engram
+about: Report a bug in Kleos
 title: ''
-labels: bug
+labels: bug, enhancement
 assignees: ''
 
 ---

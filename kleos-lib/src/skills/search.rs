@@ -1,24 +1,23 @@
 use super::{row_to_skill, Skill, SKILL_COLUMNS};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Search skills using FTS.
+/// Search skills using FTS, scoped to the calling user.
 ///
-/// `_user_id` is retained in the signature for API compatibility with
-/// callers in handlers that have not yet dropped the param. The
-/// `skill_records.user_id` column was removed by migration 42
-/// (drop_user_id_skills) so the query no longer filters on it.
+/// Results are filtered to rows where `skill_records.user_id = user_id` so
+/// that single-DB mode cannot leak one user's skills into another's search
+/// results. Migration 78 (monolith) / v69 (tenant) restored the column.
 #[tracing::instrument(skip(db, query), fields(query_len = query.len(), limit))]
 pub async fn search_skills(
     db: &Database,
     query: &str,
-    _user_id: i64,
+    user_id: i64,
     limit: usize,
 ) -> Result<Vec<Skill>> {
-    // Sanitize query for FTS5
+    // Sanitize query for FTS5.
     let sanitized: String = query
         .chars()
         .map(|c| {
@@ -42,20 +41,16 @@ pub async fn search_skills(
     let sql = format!(
         "SELECT {} FROM skill_records sr \
          JOIN (SELECT rowid FROM skills_fts WHERE skills_fts MATCH ?1) fts ON fts.rowid = sr.id \
-         WHERE sr.is_active = 1 \
+         WHERE sr.is_active = 1 AND sr.user_id = ?3 \
          ORDER BY sr.trust_score DESC LIMIT ?2",
         SKILL_COLUMNS
     );
 
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare(&sql)?;
         let skills = stmt
-            .query_map(params![sanitized, limit as i64], row_to_skill)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .query_map(params![sanitized, limit as i64, user_id], row_to_skill)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(skills)
     })
     .await
@@ -114,23 +109,7 @@ impl Score {
     }
 }
 
-/// Strips non-alphanumeric characters and short tokens for safe FTS5 input.
-fn sanitize_fts(query: &str) -> String {
-    let s: String = query
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c.is_whitespace() {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    s.split_whitespace()
-        .filter(|w| w.len() >= 2)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
+use crate::memory::fts::sanitize_fts_query as sanitize_fts;
 
 /// Hybrid skill search combining FTS5, alias, fuzzy, and vector signals.
 #[tracing::instrument(skip(db, query), fields(query_len = query.len()))]
@@ -250,22 +229,18 @@ async fn fts_candidates(db: &Database, sanitized: &str, limit: usize) -> Result<
     let q = sanitized.to_string();
     let limit_i = limit as i64;
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT sr.id FROM skill_records sr \
+        let mut stmt = conn.prepare(
+            "SELECT sr.id FROM skill_records sr \
                  JOIN (SELECT rowid FROM skills_fts WHERE skills_fts MATCH ?1) fts \
                  ON fts.rowid = sr.id \
                  WHERE sr.is_active = 1 \
                  ORDER BY sr.trust_score DESC \
                  LIMIT ?2",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![q, limit_i], |r| r.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
+        let rows = stmt.query_map(params![q, limit_i], |r| r.get::<_, i64>(0))?;
         let mut out = Vec::new();
         for (idx, r) in rows.enumerate() {
-            let id = r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let id = r?;
             out.push((id, idx));
         }
         Ok(out)
@@ -295,17 +270,13 @@ async fn fetch_by_ids(db: &Database, ids: &[i64], include_deprecated: bool) -> R
         dep = dep_clause
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare(&sql)?;
         let bound: Vec<&dyn rusqlite::ToSql> =
             ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        let rows = stmt
-            .query_map(bound.as_slice(), row_to_skill)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt.query_map(bound.as_slice(), row_to_skill)?;
         let mut out = Vec::new();
         for r in rows {
-            out.push(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.push(r?);
         }
         Ok(out)
     })
@@ -327,20 +298,16 @@ async fn ids_with_tag(
         ph = placeholders
     );
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut bound: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + ids.len());
         bound.push(&tag);
         for id in &ids {
             bound.push(id);
         }
-        let rows = stmt
-            .query_map(bound.as_slice(), |r| r.get::<_, i64>(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt.query_map(bound.as_slice(), |r| r.get::<_, i64>(0))?;
         let mut out = std::collections::HashSet::new();
         for r in rows {
-            out.insert(r.map_err(|e| EngError::DatabaseMessage(e.to_string()))?);
+            out.insert(r?);
         }
         Ok(out)
     })

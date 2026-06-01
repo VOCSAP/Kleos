@@ -4,14 +4,14 @@
 //! This recovery key is encrypted with the master encryption key and stored.
 //! If the YubiKey is lost, the recovery key can be used to re-derive the master key.
 
-use rand::Rng;
+use rand::rngs::OsRng;
+use rand::TryRngCore;
 use rusqlite::params;
 
 use crate::crypto::{decrypt_secret, encrypt_secret, KEY_SIZE};
 use crate::types::SecretData;
 use crate::{CredError, Result};
 use kleos_lib::db::Database;
-use kleos_lib::EngError;
 
 /// Recovery key length (256 bits = 32 bytes, displayed as 64 hex chars).
 pub const RECOVERY_KEY_SIZE: usize = 32;
@@ -34,7 +34,9 @@ pub struct RecoveryInfo {
 /// and store it securely offline.
 pub fn generate_recovery_key() -> [u8; RECOVERY_KEY_SIZE] {
     let mut key = [0u8; RECOVERY_KEY_SIZE];
-    rand::rng().fill(&mut key);
+    OsRng
+        .try_fill_bytes(&mut key)
+        .expect("OS CSPRNG must be available");
     key
 }
 
@@ -92,16 +94,14 @@ pub async fn store_recovery_key(
         conn.execute(
             "DELETE FROM cred_recovery WHERE user_id = ?1",
             params![user_id],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         // Store the new recovery key
         conn.execute(
             "INSERT INTO cred_recovery (user_id, encrypted_master, recovery_hint, created_at)
              VALUES (?1, ?2, ?3, ?4)",
             params![user_id, encrypted_blob, hint_owned, now],
-        )
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         Ok(conn.last_insert_rowid())
     })
@@ -118,22 +118,14 @@ pub async fn recover_master_key(
 ) -> Result<[u8; KEY_SIZE]> {
     let encrypted_blob: Option<Vec<u8>> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut stmt =
+                conn.prepare("SELECT encrypted_master FROM cred_recovery WHERE user_id = ?1")?;
 
-            let mut rows = stmt
-                .query(params![user_id])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut rows = stmt.query(params![user_id])?;
 
-            match rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            {
+            match rows.next()? {
                 Some(row) => {
-                    let blob: Vec<u8> = row
-                        .get(0)
-                        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                    let blob: Vec<u8> = row.get(0)?;
                     Ok(Some(blob))
                 }
                 None => Ok(None),
@@ -178,18 +170,11 @@ pub async fn recover_master_key(
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare("SELECT id FROM cred_recovery WHERE user_id = ?1")?;
 
-        let mut rows = stmt
-            .query(params![user_id])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut rows = stmt.query(params![user_id])?;
 
-        let found = rows
-            .next()
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            .is_some();
+        let found = rows.next()?.is_some();
 
         Ok(found)
     })
@@ -201,24 +186,18 @@ pub async fn has_recovery_key(db: &Database, user_id: i64) -> Result<bool> {
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<RecoveryInfo>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, recovery_hint, created_at FROM cred_recovery WHERE user_id = ?1",
+        )?;
 
-        let mut rows = stmt
-            .query(params![user_id])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut rows = stmt.query(params![user_id])?;
 
-        match rows.next().map_err(|e| EngError::DatabaseMessage(e.to_string()))? {
+        match rows.next()? {
             Some(row) => {
-                let id: i64 = row.get(0).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let uid: i64 = row.get(1).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let hint: Option<String> =
-                    row.get(2).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                let created_at: String =
-                    row.get(3).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                let id: i64 = row.get(0)?;
+                let uid: i64 = row.get(1)?;
+                let hint: Option<String> = row.get(2)?;
+                let created_at: String = row.get(3)?;
 
                 Ok(Some(RecoveryInfo {
                     id,
@@ -239,12 +218,10 @@ pub async fn get_recovery_info(db: &Database, user_id: i64) -> Result<Option<Rec
 pub async fn delete_recovery_key(db: &Database, user_id: i64) -> Result<()> {
     let affected = db
         .write(move |conn| {
-            let n = conn
-                .execute(
-                    "DELETE FROM cred_recovery WHERE user_id = ?1",
-                    params![user_id],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let n = conn.execute(
+                "DELETE FROM cred_recovery WHERE user_id = ?1",
+                params![user_id],
+            )?;
             Ok(n)
         })
         .await
@@ -274,8 +251,7 @@ mod tests {
                     created_at TEXT NOT NULL
                 )",
                 [],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await

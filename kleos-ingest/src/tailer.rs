@@ -59,6 +59,13 @@ pub async fn tail_file(
     }
 
     let mut current_offset = offset;
+    // The ledger offset only advances to a line once everything up to and
+    // including it has been durably stored. `stalled` latches on the first
+    // failed store so the offset freezes at the last durable line; that line
+    // is then re-read and re-attempted on the next pass instead of being
+    // skipped (prevents data loss on a transient outage).
+    let mut durable_offset = offset;
+    let mut stalled = false;
     let mut line = String::new();
     let mut memories_this_pass = 0;
 
@@ -70,6 +77,9 @@ pub async fn tail_file(
                 current_offset += n as i64;
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
+                    if !stalled {
+                        durable_offset = current_offset;
+                    }
                     continue;
                 }
 
@@ -92,10 +102,20 @@ pub async fn tail_file(
                                 if w.store(candidate).await {
                                     ledger.increment_memories(&session_id);
                                     memories_this_pass += 1;
+                                } else {
+                                    // Durable write failed: freeze the ledger
+                                    // offset so this line is re-read next pass.
+                                    stalled = true;
                                 }
                             }
                         }
                     }
+                }
+
+                // Advance the durable offset past this fully-handled line only
+                // while no earlier store in this pass has failed.
+                if !stalled {
+                    durable_offset = current_offset;
                 }
             }
             Err(e) => {
@@ -105,7 +125,7 @@ pub async fn tail_file(
         }
     }
 
-    ledger.set_offset(&path_str, current_offset, &project, &session_id);
+    ledger.set_offset(&path_str, durable_offset, &project, &session_id);
 
     if memories_this_pass > 0 {
         tracing::info!(

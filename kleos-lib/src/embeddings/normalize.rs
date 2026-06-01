@@ -40,6 +40,9 @@ pub fn weighted_mean_pool(embeddings: &[Vec<f32>], weights: &[f32]) -> Vec<f32> 
     }
     let dim = embeddings[0].len();
     let total_weight: f32 = weights.iter().sum();
+    if total_weight.abs() < f32::EPSILON {
+        return vec![0.0f32; dim];
+    }
     let mut pooled = vec![0.0f32; dim];
     for (emb, &w) in embeddings.iter().zip(weights.iter()) {
         let normalized_w = w / total_weight;

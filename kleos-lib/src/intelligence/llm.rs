@@ -1,5 +1,5 @@
-//! LLM helper -- configurable endpoint for calling a local model (Ollama, etc).
-//! Ported from llm/local.ts.
+//! LLM helper -- calls any OpenAI-compatible /v1/chat/completions endpoint.
+//! Provider-agnostic: works with mistral.rs, vLLM, llama.cpp, Ollama, cloud APIs.
 
 use super::types::LlmOptions;
 use serde::{Deserialize, Serialize};
@@ -16,40 +16,67 @@ static LLM_CLIENT: std::sync::LazyLock<reqwest::Client> = std::sync::LazyLock::n
         .expect("safe_client_builder failed at LLM client startup")
 });
 
-/// Check whether a local LLM endpoint is configured and reachable.
+/// Check whether an LLM endpoint is configured.
 pub fn is_llm_available() -> bool {
-    std::env::var("ENGRAM_LLM_URL").is_ok()
+    llm_url().is_some()
 }
 
-/// Get the configured LLM URL.
-fn llm_url() -> String {
-    std::env::var("ENGRAM_LLM_URL")
-        .unwrap_or_else(|_| "http://localhost:11434/api/generate".to_string())
+/// Resolve the LLM endpoint URL.
+/// KLEOS_LLM_URL (canonical) -> ENGRAM_LLM_URL (legacy) -> OLLAMA_URL (legacy) -> None.
+fn llm_url() -> Option<String> {
+    std::env::var("KLEOS_LLM_URL")
+        .ok()
+        .or_else(|| std::env::var("ENGRAM_LLM_URL").ok())
+        .or_else(|| std::env::var("OLLAMA_URL").ok())
 }
 
-/// Ollama-compatible request body.
+/// Resolve the LLM API key.
+/// KLEOS_LLM_API_KEY (canonical) -> LLM_API_KEY (legacy) -> None.
+fn llm_api_key() -> Option<String> {
+    std::env::var("KLEOS_LLM_API_KEY")
+        .ok()
+        .or_else(|| std::env::var("LLM_API_KEY").ok())
+}
+
+/// Resolve the LLM model name.
+/// KLEOS_LLM_MODEL (canonical) -> OLLAMA_MODEL (legacy) -> ENGRAM_LLM_MODEL (legacy).
+fn llm_model() -> String {
+    std::env::var("KLEOS_LLM_MODEL")
+        .or_else(|_| std::env::var("OLLAMA_MODEL"))
+        .or_else(|_| std::env::var("ENGRAM_LLM_MODEL"))
+        .unwrap_or_else(|_| "llama3.2:3b".to_string())
+}
+
+/// OpenAI-compatible request body (/v1/chat/completions).
 #[derive(Debug, Serialize)]
-struct OllamaRequest {
+struct OpenAiRequest {
     model: String,
-    system: String,
-    prompt: String,
+    messages: Vec<OpenAiMessage>,
+    temperature: f64,
+    max_tokens: u32,
     stream: bool,
-    /// Patch 14: explicit Ollama thinking-mode flag. See
-    /// `kleos_lib::llm::think_enabled` for the env-var contract.
-    think: bool,
-    options: OllamaOptions,
 }
 
 #[derive(Debug, Serialize)]
-struct OllamaOptions {
-    temperature: f64,
-    num_predict: u32,
+struct OpenAiMessage {
+    role: &'static str,
+    content: String,
 }
 
-/// Ollama-compatible response body.
+/// OpenAI-compatible response body.
 #[derive(Debug, Deserialize)]
-struct OllamaResponse {
-    response: Option<String>,
+struct OpenAiResponse {
+    choices: Option<Vec<OpenAiChoice>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoice {
+    message: Option<OpenAiChoiceMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiChoiceMessage {
+    content: Option<String>,
 }
 
 /// Call the local LLM with a system prompt and user content.
@@ -61,35 +88,39 @@ pub async fn call_llm(
     opts: Option<LlmOptions>,
 ) -> Result<String, String> {
     let opts = opts.unwrap_or_default();
-    let url = llm_url();
-    let model = std::env::var("ENGRAM_LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".to_string());
+    let url = llm_url().ok_or_else(|| "No LLM URL configured (set KLEOS_LLM_URL)".to_string())?;
+    let model = llm_model();
+    let api_key = llm_api_key();
 
-    // Patch 14: opt-out of Ollama thinking mode by default; flip via
-    // `LLM_THINK=true` when serving a thinking-aware model.
-    let body = OllamaRequest {
+    let body = OpenAiRequest {
         model,
-        system: system.to_string(),
-        prompt: user.to_string(),
+        messages: vec![
+            OpenAiMessage {
+                role: "system",
+                content: system.to_string(),
+            },
+            OpenAiMessage {
+                role: "user",
+                content: user.to_string(),
+            },
+        ],
+        temperature: opts.temperature,
+        max_tokens: opts.max_tokens,
         stream: false,
-        think: crate::llm::think_enabled(),
-        options: OllamaOptions {
-            temperature: opts.temperature,
-            num_predict: opts.max_tokens,
-        },
     };
 
-    let resp = LLM_CLIENT
-        .post(&url)
-        .json(&body)
+    let mut req = LLM_CLIENT.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("LLM request failed: {}", e))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        // R8 R-007: surface body-read errors instead of silently
-        // returning an empty string -- the caller needs to know the
-        // error bucket (network vs decode) to pick a retry policy.
         let body_text = match resp.text().await {
             Ok(t) => t,
             Err(e) => format!("<failed to read body: {e}>"),
@@ -97,14 +128,17 @@ pub async fn call_llm(
         return Err(format!("LLM returned {}: {}", status, body_text));
     }
 
-    let parsed: OllamaResponse = resp
+    let parsed: OpenAiResponse = resp
         .json()
         .await
         .map_err(|e| format!("LLM response parse error: {}", e))?;
 
     parsed
-        .response
-        .ok_or_else(|| "LLM response missing 'response' field".to_string())
+        .choices
+        .and_then(|c| c.into_iter().next())
+        .and_then(|c| c.message)
+        .and_then(|m| m.content)
+        .ok_or_else(|| "LLM response missing content".to_string())
 }
 
 /// Attempt to parse a JSON value from raw LLM output.
@@ -198,8 +232,9 @@ mod tests {
 
     #[test]
     fn test_is_llm_available_default() {
-        // Without env var, should be false
+        std::env::remove_var("KLEOS_LLM_URL");
         std::env::remove_var("ENGRAM_LLM_URL");
+        std::env::remove_var("OLLAMA_URL");
         assert!(!is_llm_available());
     }
 }

@@ -409,8 +409,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
                 "INSERT INTO activity_log (agent, action, summary, category, importance, project, user_id, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))",
                 rusqlite::params![agent, action, summary, category, importance, project, user_id],
-            )
-            .map_err(|e| crate::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await?;
@@ -435,7 +434,7 @@ pub async fn process_activity(db: &Database, report: &ActivityReport, user_id: i
         }
         Err(e) => return Err(e),
     };
-    heartbeat(db, agent_id, None).await?;
+    heartbeat(db, agent_id, user_id, None).await?;
 
     // Publish Axon event
     let channel = action_to_channel(&report.action).to_string();

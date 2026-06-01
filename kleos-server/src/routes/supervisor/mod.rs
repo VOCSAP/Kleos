@@ -100,7 +100,7 @@ async fn inject_handler(
                     body.message,
                 ],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
             Ok(conn.last_insert_rowid())
         })
         .await?;

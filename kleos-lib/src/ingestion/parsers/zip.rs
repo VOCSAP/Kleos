@@ -84,9 +84,15 @@ pub fn parse(input: &[u8]) -> Result<Vec<ParsedDocument>> {
                 crate::EngError::Internal(format!("ZIP read error for {}: {}", name, e))
             })?;
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| {
-                crate::EngError::Internal(format!("Failed to read ZIP entry {}: {}", name, e))
-            })?;
+            // Cap actual decompressed read to the declared limit, ignoring the
+            // central-directory uncompressed_size which a malicious archive can lie about.
+            entry
+                .by_ref()
+                .take(MAX_ZIP_ENTRY_SIZE_U64)
+                .read_to_end(&mut buf)
+                .map_err(|e| {
+                    crate::EngError::Internal(format!("Failed to read ZIP entry {}: {}", name, e))
+                })?;
             buf
         };
 
