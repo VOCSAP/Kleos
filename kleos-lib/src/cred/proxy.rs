@@ -9,6 +9,27 @@ use crate::db::Database;
 use crate::webhooks::resolve_and_validate_url;
 use crate::{EngError, Result};
 
+/// Response headers that must not be relayed from the upstream service back
+/// through the credential proxy. These carry upstream auth/session state
+/// (cookies, challenge headers) that belong to the proxy<->upstream leg only
+/// and would otherwise leak to, or be replayed by, the proxy caller.
+const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
+    "set-cookie",
+    "set-cookie2",
+    "www-authenticate",
+    "proxy-authenticate",
+    "authorization",
+    "proxy-authorization",
+];
+
+/// True when an upstream response header should be dropped before forwarding.
+/// Comparison is case-insensitive; reqwest already lowercases header names.
+fn is_stripped_response_header(name: &str) -> bool {
+    STRIPPED_RESPONSE_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 impl CreddClient {
     pub async fn proxy(
         &self,
@@ -87,6 +108,9 @@ impl CreddClient {
 
         let mut headers = HashMap::new();
         for (name, value) in response.headers().iter() {
+            if is_stripped_response_header(name.as_str()) {
+                continue;
+            }
             if let Ok(text) = value.to_str() {
                 headers.insert(name.to_string(), text.to_string());
             }

@@ -10,9 +10,7 @@ use crate::{EngError, Result};
 
 type HmacSha256 = Hmac<Sha256>;
 
-// ---------------------------------------------------------------------------
-// Signature algorithm enum
-// ---------------------------------------------------------------------------
+// --- Signature algorithm enum ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureAlgo {
@@ -39,9 +37,7 @@ impl SignatureAlgo {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Auth tier
-// ---------------------------------------------------------------------------
+// --- Auth tier ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthTier {
@@ -62,9 +58,7 @@ impl AuthTier {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Canonical envelope
-// ---------------------------------------------------------------------------
+// --- Canonical envelope ---
 
 pub struct CanonicalEnvelope {
     method: String,
@@ -130,9 +124,7 @@ impl CanonicalEnvelope {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Signature verification
-// ---------------------------------------------------------------------------
+// --- Signature verification ---
 
 pub fn verify_signature(
     algo: SignatureAlgo,
@@ -207,6 +199,14 @@ fn pem_to_ed25519_pubkey(pem: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+/// Parse a PEM-encoded Ed25519 public key into a VerifyingKey.
+/// Used by MCP token verification to check signatures against enrolled keys.
+pub fn pem_to_ed25519_verifying_key(pem: &str) -> Result<ed25519_dalek::VerifyingKey> {
+    let bytes = pem_to_ed25519_pubkey(pem)?;
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+        .map_err(|e| EngError::InvalidInput(format!("invalid Ed25519 public key bytes: {}", e)))
+}
+
 fn decode_pem_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
     let begin = format!("-----BEGIN {expected_label}-----");
     let end = format!("-----END {expected_label}-----");
@@ -223,9 +223,7 @@ fn decode_pem_der(pem: &str, expected_label: &str) -> Result<Vec<u8>> {
         .map_err(|e| EngError::InvalidInput(format!("PEM base64 decode failed: {e}")))
 }
 
-// ---------------------------------------------------------------------------
-// HKDF identity derivation
-// ---------------------------------------------------------------------------
+// --- HKDF identity derivation ---
 
 pub fn derive_identity_hash(pubkey_der: &[u8], host: &str, agent: &str, model: &str) -> [u8; 16] {
     use hkdf::Hkdf;
@@ -241,9 +239,7 @@ pub fn identity_hash_hex(pubkey_der: &[u8], host: &str, agent: &str, model: &str
     hex::encode(derive_identity_hash(pubkey_der, host, agent, model))
 }
 
-// ---------------------------------------------------------------------------
-// Replay guard
-// ---------------------------------------------------------------------------
+// --- Replay guard ---
 
 const REPLAY_WINDOW_MS: u64 = 60_000;
 const NONCE_TTL: Duration = Duration::from_secs(90);
@@ -319,27 +315,56 @@ impl Default for ReplayGuard {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Session tokens
-// ---------------------------------------------------------------------------
+// --- Session tokens ---
 
-const SESSION_TTL: Duration = Duration::from_secs(900); // 15 minutes
+/// Default sliding-window TTL: each verified session call extends the token
+/// expiry by this much. Overridable via KLEOS_SESSION_TTL_SECS.
+const DEFAULT_SESSION_TTL_SECS: u64 = 900; // 15 minutes
+
+/// Default absolute lifetime cap from initial mint. Even with continuous
+/// activity, a session token must be replaced via fresh PIV signing once it
+/// exceeds this age. Overridable via KLEOS_SESSION_MAX_LIFETIME_SECS.
+const DEFAULT_SESSION_MAX_LIFETIME_SECS: u64 = 86_400; // 24 hours
 
 pub struct SessionManager {
     key: [u8; 32],
     sessions: Arc<Mutex<HashMap<String, SessionEntry>>>,
+    ttl: Duration,
+    max_lifetime: Duration,
 }
 
 struct SessionEntry {
     identity_id: i64,
+    issued_at: Instant,
     expires_at: Instant,
 }
 
 impl SessionManager {
+    /// Construct a SessionManager with the given HMAC key and default
+    /// TTL / max-lifetime. Tests use this directly; production goes through
+    /// `from_env_or_generate`.
     pub fn new(key: [u8; 32]) -> Self {
+        Self::with_durations(
+            key,
+            Duration::from_secs(DEFAULT_SESSION_TTL_SECS),
+            Duration::from_secs(DEFAULT_SESSION_MAX_LIFETIME_SECS),
+        )
+    }
+
+    /// Construct a SessionManager with explicit TTL and absolute-lifetime
+    /// caps. If `max_lifetime < ttl` the caller's intent is incoherent, so
+    /// we floor `max_lifetime` at `ttl` to keep refresh logic monotonic.
+    pub fn with_durations(key: [u8; 32], ttl: Duration, max_lifetime: Duration) -> Self {
+        let max_lifetime = if max_lifetime < ttl {
+            ttl
+        } else {
+            max_lifetime
+        };
         Self {
             key,
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            ttl,
+            max_lifetime,
         }
     }
 
@@ -358,25 +383,55 @@ impl SessionManager {
             arr
         } else {
             let mut key = [0u8; 32];
-            use rand::Rng;
-            rand::rng().fill(&mut key);
+            use rand::rngs::OsRng;
+            use rand::TryRngCore;
+            OsRng
+                .try_fill_bytes(&mut key)
+                .expect("OS CSPRNG must be available");
             tracing::warn!("KLEOS_SESSION_KEY not set, generated ephemeral key (sessions will not survive restart)");
             key
         };
-        Ok(Self::new(key))
+
+        let ttl = parse_positive_secs_env("KLEOS_SESSION_TTL_SECS", DEFAULT_SESSION_TTL_SECS);
+        let max_lifetime = parse_positive_secs_env(
+            "KLEOS_SESSION_MAX_LIFETIME_SECS",
+            DEFAULT_SESSION_MAX_LIFETIME_SECS,
+        );
+        if max_lifetime < ttl {
+            tracing::warn!(
+                ttl_secs = ttl.as_secs(),
+                max_lifetime_secs = max_lifetime.as_secs(),
+                "KLEOS_SESSION_MAX_LIFETIME_SECS is below KLEOS_SESSION_TTL_SECS; clamping max to ttl",
+            );
+        }
+
+        Ok(Self::with_durations(key, ttl, max_lifetime))
     }
 
+    /// Generate a fresh session token bound to `identity_id` with a new
+    /// sliding window. Records `issued_at` for the absolute-lifetime cap
+    /// enforced by `refresh`.
     pub fn mint(&self, identity_id: i64) -> String {
-        let expires_at = Instant::now() + SESSION_TTL;
+        let now = Instant::now();
+        self.mint_with_issue(identity_id, now, now + self.ttl)
+    }
+
+    /// Internal helper: build and store a SessionEntry. Used by `mint` (which
+    /// stamps a new `issued_at`) and `refresh` (which inherits the original
+    /// `issued_at` so the hard cap is anchored to the first mint).
+    fn mint_with_issue(&self, identity_id: i64, issued_at: Instant, expires_at: Instant) -> String {
         let expires_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
-            + SESSION_TTL.as_millis() as u64;
+            + (expires_at.saturating_duration_since(Instant::now())).as_millis() as u64;
 
         let mut random_8 = [0u8; 8];
-        use rand::Rng;
-        rand::rng().fill(&mut random_8);
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut random_8)
+            .expect("OS CSPRNG must be available");
 
         let mut mac = HmacSha256::new_from_slice(&self.key).unwrap();
         mac.update(&identity_id.to_le_bytes());
@@ -387,11 +442,16 @@ impl SessionManager {
         use base64::Engine;
         let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag);
 
-        let mut sessions = self.sessions.lock().unwrap();
+        // Recover from poison rather than cascading a panic to all future callers.
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         sessions.insert(
             token.clone(),
             SessionEntry {
                 identity_id,
+                issued_at,
                 expires_at,
             },
         );
@@ -402,8 +462,15 @@ impl SessionManager {
         token
     }
 
+    /// Verify a session token and return the identity ID if the token is
+    /// known and not past its current `expires_at`. Does not extend the
+    /// session; callers wanting sliding-window behavior must also call
+    /// `refresh`.
     pub fn verify(&self, token: &str) -> Result<i64> {
-        let sessions = self.sessions.lock().unwrap();
+        let sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let entry = sessions
             .get(token)
             .ok_or_else(|| EngError::Auth("unknown session token".into()))?;
@@ -414,11 +481,75 @@ impl SessionManager {
 
         Ok(entry.identity_id)
     }
+
+    /// Roll an active session forward by minting a replacement token that
+    /// inherits the original `issued_at` (anchoring the hard cap) and gets
+    /// a fresh `expires_at = now + ttl`.
+    ///
+    /// The OLD token is intentionally left in the map until its own
+    /// `expires_at` fires. This is required for concurrency safety: two
+    /// near-simultaneous requests carrying the same cached session token
+    /// must both verify successfully, even though only the first triggers
+    /// a refresh. Pre-emptively removing the old token would race the
+    /// second request into a spurious 401.
+    ///
+    /// The client picks up the new token from `x-kleos-session-issued`
+    /// and uses it on subsequent calls. The old token simply ages out.
+    ///
+    /// Returns:
+    /// - `Ok(new_token)` on successful refresh.
+    /// - `Err` if the token is unknown, already expired, or has crossed
+    ///   `max_lifetime` since its original mint (forcing fresh PIV re-auth).
+    pub fn refresh(&self, token: &str) -> Result<String> {
+        let now = Instant::now();
+        let (identity_id, issued_at) = {
+            let sessions = self
+                .sessions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let entry = sessions
+                .get(token)
+                .ok_or_else(|| EngError::Auth("unknown session token".into()))?;
+
+            if entry.expires_at <= now {
+                return Err(EngError::Auth("session token expired".into()));
+            }
+
+            if now.saturating_duration_since(entry.issued_at) >= self.max_lifetime {
+                return Err(EngError::Auth(
+                    "session token exceeded absolute lifetime cap".into(),
+                ));
+            }
+
+            (entry.identity_id, entry.issued_at)
+        };
+
+        let expires_at = now + self.ttl;
+        Ok(self.mint_with_issue(identity_id, issued_at, expires_at))
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Timestamp check (shared between replay guard and standalone use)
-// ---------------------------------------------------------------------------
+/// Read an env var as positive u64 seconds. Falls back to `default_secs` if
+/// the var is missing, malformed, zero, or negative.
+fn parse_positive_secs_env(var: &str, default_secs: u64) -> Duration {
+    match std::env::var(var) {
+        Ok(raw) => match raw.trim().parse::<u64>() {
+            Ok(v) if v > 0 => Duration::from_secs(v),
+            Ok(_) => {
+                tracing::warn!(var, "value must be > 0; using default");
+                Duration::from_secs(default_secs)
+            }
+            Err(e) => {
+                tracing::warn!(var, error = %e, "could not parse as u64; using default");
+                Duration::from_secs(default_secs)
+            }
+        },
+        Err(_) => Duration::from_secs(default_secs),
+    }
+}
+
+// --- Timestamp check (shared between replay guard and standalone use) ---
 
 pub fn check_timestamp(ts_ms: u64) -> Result<()> {
     let now_ms = SystemTime::now()
@@ -435,20 +566,19 @@ pub fn check_timestamp(ts_ms: u64) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Nonce generation
-// ---------------------------------------------------------------------------
+// --- Nonce generation ---
 
 pub fn generate_nonce() -> String {
     let mut buf = [0u8; 12];
-    use rand::Rng;
-    rand::rng().fill(&mut buf);
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
+    OsRng
+        .try_fill_bytes(&mut buf)
+        .expect("OS CSPRNG must be available");
     hex::encode(buf)
 }
 
-// ---------------------------------------------------------------------------
-// Client-side request signing
-// ---------------------------------------------------------------------------
+// --- Client-side request signing ---
 
 enum SigningBackend {
     Ed25519(ed25519_dalek::SigningKey),
@@ -456,14 +586,35 @@ enum SigningBackend {
     Piv(Mutex<yubikey::YubiKey>),
 }
 
-/// Verify PIV PIN then sign a SHA-256 digest with slot 9A. Nano 5.7.4+ firmware requires PIN before signing.
+/// Read the PIV PIN required for runtime signing. Refuses to fall back to
+/// the YubiKey factory-default PIN ("123456"); a missing or factory-default
+/// PIV_PIN is treated as a hard configuration error so callers never burn
+/// PIN retries against a hardened YubiKey. Always available, irrespective
+/// of the `piv` cargo feature, because callers include Python-subprocess
+/// signing paths that do not link the `yubikey` Rust crate.
+pub fn runtime_piv_pin() -> std::result::Result<String, &'static str> {
+    match std::env::var("PIV_PIN") {
+        Ok(p) if p.is_empty() => Err("PIV_PIN is set but empty"),
+        Ok(p) if p == "123456" => {
+            Err("PIV_PIN equals the YubiKey factory-default; refusing to use it")
+        }
+        Ok(p) => Ok(p),
+        Err(_) => Err("PIV_PIN environment variable is not set"),
+    }
+}
+
+/// Verify PIV PIN then sign a SHA-256 digest with slot 9A. Nano 5.7.4+
+/// firmware requires PIN before signing. If `PIV_PIN` is unset or equal to
+/// the factory default this returns `AuthenticationError` BEFORE touching
+/// the YubiKey, so no PIN retries are consumed against a misconfigured env.
 #[cfg(feature = "piv")]
 fn piv_verify_and_sign(
     yk: &mut yubikey::YubiKey,
     digest: &[u8],
 ) -> std::result::Result<Vec<u8>, yubikey::Error> {
-    let pin = std::env::var("PIV_PIN").unwrap_or_else(|_| "123456".to_string());
-    let _ = yk.verify_pin(pin.as_bytes());
+    let pin = runtime_piv_pin().map_err(|_| yubikey::Error::AuthenticationError)?;
+    yk.verify_pin(pin.as_bytes())
+        .map_err(|_| yubikey::Error::AuthenticationError)?;
     yubikey::piv::sign_data(
         yk,
         digest,
@@ -577,9 +728,12 @@ impl RequestSigner {
     }
 
     pub fn from_file(path: &std::path::Path, host: &str, agent: &str, model: &str) -> Result<Self> {
-        let raw = std::fs::read(path).map_err(|e| {
+        // The file holds raw private-key material. Every heap buffer that
+        // touches the secret (file bytes, decoded DER, hex-decoded bytes) is
+        // wrapped in Zeroizing so it is scrubbed when this function returns.
+        let raw = zeroize::Zeroizing::new(std::fs::read(path).map_err(|e| {
             EngError::Internal(format!("cannot read identity key {}: {e}", path.display()))
-        })?;
+        })?);
 
         if raw.len() == 32 {
             let mut arr = [0u8; 32];
@@ -592,7 +746,7 @@ impl RequestSigner {
         })?;
 
         if text.contains("PRIVATE KEY") {
-            let der = decode_pem_der(text, "PRIVATE KEY")?;
+            let der = zeroize::Zeroizing::new(decode_pem_der(text, "PRIVATE KEY")?);
             // PKCS8 Ed25519 private key: 16-byte prefix + 34-byte wrapped key
             // The 34 bytes are: 04 20 <32 bytes of private key>
             if der.len() == 48 && der[14] == 0x04 && der[15] == 0x20 {
@@ -605,9 +759,9 @@ impl RequestSigner {
             ));
         }
 
-        let decoded = hex::decode(text.trim()).map_err(|_| {
+        let decoded = zeroize::Zeroizing::new(hex::decode(text.trim()).map_err(|_| {
             EngError::InvalidInput("identity key file is not 32-byte raw, PEM, or hex".into())
-        })?;
+        })?);
         if decoded.len() != 32 {
             return Err(EngError::InvalidInput(format!(
                 "hex-encoded key must be 32 bytes, got {}",
@@ -680,8 +834,11 @@ impl RequestSigner {
         }
 
         let mut secret = [0u8; 32];
-        use rand::Rng;
-        rand::rng().fill(&mut secret);
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
 
         std::fs::write(&key_path, hex::encode(secret))
             .map_err(|e| EngError::Internal(format!("cannot write key file: {e}")))?;
@@ -772,6 +929,16 @@ impl RequestSigner {
 
     pub fn fingerprint(&self) -> &str {
         &self.fingerprint
+    }
+
+    /// Return the raw Ed25519 secret key bytes (32 bytes).
+    /// Returns `None` if the backend is PIV (hardware key -- cannot extract).
+    pub fn ed25519_secret_bytes(&self) -> Option<[u8; 32]> {
+        match &self.backend {
+            SigningBackend::Ed25519(sk) => Some(sk.to_bytes()),
+            #[cfg(feature = "piv")]
+            SigningBackend::Piv(_) => None,
+        }
     }
 
     pub fn identity_hash(&self) -> &str {
@@ -875,8 +1042,11 @@ impl RequestSigner {
 
     pub fn generate_keypair() -> ([u8; 32], String) {
         let mut secret = [0u8; 32];
-        use rand::Rng;
-        rand::rng().fill(&mut secret);
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
         let sk = ed25519_dalek::SigningKey::from_bytes(&secret);
         let vk = sk.verifying_key();
 
@@ -923,9 +1093,7 @@ fn dirs_for_key_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {
@@ -1085,9 +1253,13 @@ mod tests {
     #[test]
     fn ed25519_sign_verify_roundtrip() {
         use ed25519_dalek::{Signer, SigningKey};
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
 
         let mut secret = [0u8; 32];
-        rand::Rng::fill(&mut rand::rng(), &mut secret);
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
         let sk = SigningKey::from_bytes(&secret);
         let vk = sk.verifying_key();
 
@@ -1106,9 +1278,13 @@ mod tests {
     #[test]
     fn ed25519_bad_sig_rejected() {
         use ed25519_dalek::SigningKey;
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
 
         let mut secret = [0u8; 32];
-        rand::Rng::fill(&mut rand::rng(), &mut secret);
+        OsRng
+            .try_fill_bytes(&mut secret)
+            .expect("OS CSPRNG must be available");
         let sk = SigningKey::from_bytes(&secret);
         let vk = sk.verifying_key();
         let pubkey_pem = ed25519_pubkey_to_pem(vk.as_bytes());
@@ -1185,5 +1361,151 @@ mod tests {
         let token = mgr1.mint(5);
         let result = mgr2.verify(&token);
         assert!(result.is_err());
+    }
+
+    // -- Sliding-window refresh tests --
+    //
+    // These use short Durations + thread::sleep to exercise the timing
+    // logic. Bounds are generous enough (40ms+ between checks) to remain
+    // reliable on slow CI runners.
+
+    #[test]
+    fn session_refresh_returns_new_token_and_keeps_old_valid_until_expiry() {
+        // Concurrency safety: two near-simultaneous requests carrying the
+        // same cached token must both verify, so refresh leaves the old
+        // entry in the map until its own expires_at fires.
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+        );
+        let old = mgr.mint(11);
+        let new = mgr.refresh(&old).expect("refresh succeeds");
+        assert_ne!(old, new, "refresh must mint a distinct token");
+        assert_eq!(mgr.verify(&new).expect("new token valid"), 11);
+        assert_eq!(
+            mgr.verify(&old)
+                .expect("old token still verifies until natural expiry"),
+            11,
+        );
+    }
+
+    #[test]
+    fn session_refresh_is_concurrency_safe() {
+        // N threads racing to refresh the same token: every thread should
+        // either get Ok(new_token) or, if max_lifetime is hit, Err -- but
+        // never panic, never produce a verify-fail for the original token
+        // while still within its TTL, and the verify of every returned
+        // token should succeed.
+        let mgr = Arc::new(SessionManager::with_durations(
+            [7u8; 32],
+            Duration::from_secs(60),
+            Duration::from_secs(3600),
+        ));
+        let original = mgr.mint(99);
+
+        let threads = 16;
+        let barrier = Arc::new(std::sync::Barrier::new(threads));
+        let mut handles = Vec::with_capacity(threads);
+        for _ in 0..threads {
+            let mgr = mgr.clone();
+            let token = original.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                let new = mgr.refresh(&token).expect("concurrent refresh");
+                let id = mgr.verify(&new).expect("refreshed token verifies");
+                assert_eq!(id, 99);
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread joined");
+        }
+
+        // The original is still valid after the storm.
+        assert_eq!(mgr.verify(&original).expect("original still valid"), 99);
+    }
+
+    #[test]
+    fn session_refresh_unknown_token_rejected() {
+        let mgr = SessionManager::new([42u8; 32]);
+        let err = mgr.refresh("bogus").unwrap_err().to_string();
+        assert!(err.contains("unknown"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn session_refresh_expired_token_rejected() {
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_millis(40),
+            Duration::from_secs(60),
+        );
+        let token = mgr.mint(3);
+        std::thread::sleep(Duration::from_millis(80));
+        let err = mgr.refresh(&token).unwrap_err().to_string();
+        assert!(err.contains("expired"), "unexpected err: {err}");
+    }
+
+    #[test]
+    fn session_sliding_window_carries_past_original_ttl() {
+        // ttl=60ms, cap=10s. Original token would die at t=60ms; refresh
+        // before then and the new token outlives the original window.
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_millis(60),
+            Duration::from_secs(10),
+        );
+        let t0 = mgr.mint(9);
+        std::thread::sleep(Duration::from_millis(30));
+        let t1 = mgr.refresh(&t0).expect("refresh while still alive");
+        std::thread::sleep(Duration::from_millis(50));
+        // t=80ms now -- t0 would have expired by 60ms, but t1 (issued at
+        // t=30, expires at t=90) is still alive.
+        assert_eq!(
+            mgr.verify(&t1).expect("rolled-forward token still valid"),
+            9
+        );
+        assert!(
+            mgr.verify(&t0).is_err(),
+            "original token must not be reusable after refresh"
+        );
+    }
+
+    #[test]
+    fn session_hard_cap_blocks_refresh_even_when_current_token_valid() {
+        // ttl=80ms, cap=100ms. After a refresh at t=40ms the current token
+        // is valid until t=120ms, but at t=110ms the absolute lifetime
+        // (t > 100ms since original issue) blocks further refresh -- the
+        // caller must re-PIV-sign to get a fresh session.
+        let mgr = SessionManager::with_durations(
+            [42u8; 32],
+            Duration::from_millis(80),
+            Duration::from_millis(100),
+        );
+        let t0 = mgr.mint(4);
+        std::thread::sleep(Duration::from_millis(40));
+        let t1 = mgr.refresh(&t0).expect("first refresh inside cap");
+        std::thread::sleep(Duration::from_millis(70));
+        // t=110ms: t1 still verifies (issued at 40, expires at 120)
+        assert_eq!(mgr.verify(&t1).expect("current token still alive"), 4);
+        // but refresh declines because issued_at=0 and now > 100ms
+        let err = mgr.refresh(&t1).unwrap_err().to_string();
+        assert!(
+            err.contains("absolute lifetime") || err.contains("lifetime cap"),
+            "unexpected err: {err}"
+        );
+    }
+
+    #[test]
+    fn session_with_durations_floors_max_lifetime_to_ttl() {
+        // An incoherent config (max < ttl) is clamped, not rejected, so a
+        // misconfigured server never has refresh logic running backwards.
+        let mgr = SessionManager::with_durations(
+            [0u8; 32],
+            Duration::from_secs(600),
+            Duration::from_secs(60),
+        );
+        assert_eq!(mgr.ttl, Duration::from_secs(600));
+        assert_eq!(mgr.max_lifetime, Duration::from_secs(600));
     }
 }

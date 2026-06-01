@@ -215,7 +215,7 @@ fn apply_pragmas(
         // to emit the raw SQL without quoting.
         let mut key_sql = format!(
             "PRAGMA key = {};",
-            crate::encryption::format_pragma_key(key)
+            crate::encryption::format_pragma_key(key).as_str()
         );
         let pragma_result = conn.execute_batch(&key_sql);
         use zeroize::Zeroize;
@@ -285,14 +285,16 @@ fn migrate_legacy_passphrase_to_raw_hex(
     key: &[u8; crate::encryption::KEY_SIZE],
 ) -> Result<()> {
     use zeroize::Zeroize;
-    let hex_str = hex::encode(key);
+    // Both the hex key and the derived passphrase embed the raw key; wrap them
+    // in Zeroizing so they are scrubbed on drop rather than left on the heap.
+    let hex_str = zeroize::Zeroizing::new(hex::encode(key));
     let raw_key_pragma = crate::encryption::format_pragma_key(key);
 
     // The legacy passphrase: old format_pragma_key returned x'<hex>' (no
     // double quotes). rusqlite's pragma_update wrapped that in SQL string
     // quotes with internal ' doubled: PRAGMA key = 'x''<hex>'''. SQLCipher
     // received the passphrase x'<hex>' and derived the key via PBKDF2.
-    let legacy_passphrase = format!("x'{hex_str}'");
+    let legacy_passphrase = zeroize::Zeroizing::new(format!("x'{}'", hex_str.as_str()));
     let mut legacy_key_sql = format!("PRAGMA key = '{}';", legacy_passphrase.replace('\'', "''"));
 
     let conn = deadpool_sqlite::rusqlite::Connection::open(db_path).map_err(|e| {
@@ -314,7 +316,7 @@ fn migrate_legacy_passphrase_to_raw_hex(
         })?;
 
     // Rekey to raw hex mode
-    let mut rekey_sql = format!("PRAGMA rekey = {};", &raw_key_pragma);
+    let mut rekey_sql = format!("PRAGMA rekey = {};", raw_key_pragma.as_str());
     conn.execute_batch(&rekey_sql)
         .map_err(|e| EngError::DatabaseMessage(format!("PRAGMA rekey failed on {db_path}: {e}")))?;
     rekey_sql.zeroize();
@@ -357,7 +359,7 @@ fn migrate_plaintext_to_encrypted(
     let mut attach_sql = format!(
         "ATTACH DATABASE '{}' AS encrypted KEY {};",
         encrypted_path.replace('\'', "''"),
-        &raw_key_pragma
+        raw_key_pragma.as_str()
     );
     conn.execute_batch(&attach_sql).map_err(|e| {
         EngError::DatabaseMessage(format!("ATTACH encrypted DB failed on {db_path}: {e}"))
@@ -458,30 +460,28 @@ mod tests {
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS pool_test_rollback (id INTEGER PRIMARY KEY)",
                 [],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await?;
 
         let result = db
             .transaction(|tx| {
-                tx.execute("INSERT INTO pool_test_rollback (id) VALUES (1)", [])
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-                tx.execute("INSERT INTO pool_test_missing DEFAULT VALUES", [])
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                tx.execute("INSERT INTO pool_test_rollback (id) VALUES (1)", [])?;
+                tx.execute("INSERT INTO pool_test_missing DEFAULT VALUES", [])?;
                 Ok(())
             })
             .await;
 
-        assert!(matches!(result, Err(EngError::DatabaseMessage(_))));
+        assert!(matches!(result, Err(EngError::Database(_))));
 
         let count = db
             .read(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM pool_test_rollback", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+                Ok(
+                    conn.query_row("SELECT COUNT(*) FROM pool_test_rollback", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?,
+                )
             })
             .await?;
 

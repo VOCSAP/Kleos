@@ -18,8 +18,10 @@ use axum::{
 };
 use metrics::{counter, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 use std::time::Instant;
+use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
 
@@ -84,7 +86,10 @@ async fn metrics_handler(headers: axum::http::HeaderMap) -> impl IntoResponse {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .unwrap_or("");
-        if provided != expected {
+        // Constant-time comparison via SHA-256 digest to avoid timing leaks.
+        let expected_hash = Sha256::digest(expected.as_bytes());
+        let provided_hash = Sha256::digest(provided.as_bytes());
+        if expected_hash.ct_eq(&provided_hash).unwrap_u8() != 1 {
             return (StatusCode::UNAUTHORIZED, "unauthorized".to_string());
         }
     }

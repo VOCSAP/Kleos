@@ -1,0 +1,26 @@
+[package]
+name = "kleos-phylaxd"
+version = "1.2.1"
+edition = "2021"
+rust-version.workspace = true
+description = "Phylax credential authority daemon -- credd with agent security extensions"
+license = "Elastic-2.0"
+
+[[bin]]
+name = "phylaxd"
+path = "src/main.rs"
+
+[dependencies]
+kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
+kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
+kleos-credd = { path = "../kleos-credd", version = "1.2.1" }
+kleos-phylax = { path = "../kleos-phylax", version = "1.2.1" }
+
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+zeroize.workspace = true
+anyhow = "1"
+dirs.workspace = true

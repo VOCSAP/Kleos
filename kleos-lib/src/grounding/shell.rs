@@ -63,6 +63,10 @@ fn load_base_dir() -> Option<PathBuf> {
 /// quotes, with no glob/brace/variable expansion. Returns Err on
 /// unterminated quotes. This is deliberately tiny: anything complex
 /// should go through a native Rust API, not this function.
+///
+/// z12-008: backslash is NOT an escape character here -- it is treated as an
+/// ordinary literal both inside and outside quotes. Unlike a POSIX shell,
+/// `a\ b` tokenizes as two args and `"\n"` yields a literal backslash-n.
 fn split_argv(cmd: &str) -> Result<Vec<String>, &'static str> {
     let mut out = Vec::new();
     let mut cur = String::new();
@@ -105,7 +109,9 @@ fn split_argv(cmd: &str) -> Result<Vec<String>, &'static str> {
 /// canonicalized absolute path must start with the base. Returns an
 /// error on traversal, missing base dir, or unresolvable path.
 // NOTE: TOCTOU between canonicalize and use. Mitigated by restricting base dir write access.
-fn confine_path(path: &str) -> Result<PathBuf, String> {
+// L18: canonicalize runs via tokio::fs (spawn_blocking) so the blocking
+// filesystem stat does not stall the async runtime thread.
+async fn confine_path(path: &str) -> Result<PathBuf, String> {
     let base = load_base_dir()
         .ok_or_else(|| format!("{} not configured; file operations denied", ENV_BASE_DIR))?;
     let p = Path::new(path);
@@ -114,8 +120,9 @@ fn confine_path(path: &str) -> Result<PathBuf, String> {
     } else {
         base.join(p)
     };
-    let canonical =
-        std::fs::canonicalize(&joined).map_err(|e| format!("path cannot be resolved: {}", e))?;
+    let canonical = tokio::fs::canonicalize(&joined)
+        .await
+        .map_err(|e| format!("path cannot be resolved: {}", e))?;
     if !canonical.starts_with(&base) {
         return Err(format!(
             "path {} escapes base directory {}",
@@ -289,7 +296,7 @@ impl ShellProvider {
         // cwd is optional; if present it must also confine inside the
         // configured base dir.
         let cwd_resolved = match args.get("cwd").and_then(|v| v.as_str()) {
-            Some(cwd) => match confine_path(cwd) {
+            Some(cwd) => match confine_path(cwd).await {
                 Ok(p) => Some(p),
                 Err(e) => return shell_error(e),
             },
@@ -354,27 +361,40 @@ impl ShellProvider {
             return shell_error("path required");
         }
         // SECURITY (SEC-CRIT-4 / SEC-HIGH-7): canonicalize and confine.
-        let resolved = match confine_path(path) {
+        let resolved = match confine_path(path).await {
             Ok(p) => p,
             Err(e) => return shell_error(e),
         };
-        match tokio::fs::read_to_string(&resolved).await {
-            Ok(mut content) => {
-                if let Some(max) = args.get("max_lines").and_then(|v| v.as_u64()) {
-                    let lines: Vec<&str> = content.lines().take(max as usize).collect();
-                    content = lines.join("\n");
-                }
-                if content.len() > MAX_OUTPUT_SIZE {
-                    content.truncate(MAX_OUTPUT_SIZE);
-                }
-                ToolResult {
-                    status: ToolStatus::Success,
-                    content: json!(content),
-                    error: None,
-                    execution_time_ms: None,
-                }
-            }
-            Err(_) => shell_error("read failed"),
+        // SECURITY (L18): bound the read to MAX_OUTPUT_SIZE bytes so a huge
+        // file cannot OOM us before the truncation below (the previous
+        // read_to_string slurped the entire file first).
+        use tokio::io::AsyncReadExt;
+        let file = match tokio::fs::File::open(&resolved).await {
+            Ok(f) => f,
+            Err(_) => return shell_error("read failed"),
+        };
+        let mut buf = Vec::new();
+        if file
+            .take(MAX_OUTPUT_SIZE as u64)
+            .read_to_end(&mut buf)
+            .await
+            .is_err()
+        {
+            return shell_error("read failed");
+        }
+        let mut content = String::from_utf8_lossy(&buf).into_owned();
+        if let Some(max) = args.get("max_lines").and_then(|v| v.as_u64()) {
+            let lines: Vec<&str> = content.lines().take(max as usize).collect();
+            content = lines.join("\n");
+        }
+        // Boundary-safe final cap (lossy decode may expand past the byte cap).
+        let content =
+            crate::validation::truncate_on_char_boundary(&content, MAX_OUTPUT_SIZE).to_string();
+        ToolResult {
+            status: ToolStatus::Success,
+            content: json!(content),
+            error: None,
+            execution_time_ms: None,
         }
     }
 
@@ -386,7 +406,7 @@ impl ShellProvider {
             .unwrap_or(false);
         // SECURITY (SEC-CRIT-4): confine to base dir, then walk via
         // std::fs so we never touch a shell.
-        let resolved = match confine_path(path) {
+        let resolved = match confine_path(path).await {
             Ok(p) => p,
             Err(e) => return shell_error(e),
         };

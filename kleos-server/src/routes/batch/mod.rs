@@ -28,9 +28,7 @@ use kleos_lib::validation::MAX_BATCH_OPS;
 mod types;
 use types::{BatchOp, BatchRequest, BatchResult, LinkBody, StoreBody, UpdateBody};
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -38,9 +36,7 @@ pub fn router() -> Router<AppState> {
         .layer(DefaultBodyLimit::max(16_384)) // 16 KB for batch payloads
 }
 
-// ---------------------------------------------------------------------------
-// Handler
-// ---------------------------------------------------------------------------
+// --- Handler ---
 
 // M-R3-007: routes/batch wrote to state.db, so on a sharded deployment a
 // /batch caller's writes landed in the monolith while /memory writes went
@@ -101,9 +97,7 @@ async fn batch_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Per-op dispatch
-// ---------------------------------------------------------------------------
+// --- Per-op dispatch ---
 
 async fn execute_op(
     state: &AppState,
@@ -147,15 +141,13 @@ async fn execute_store(
         space_id: body.space_id,
         space: None,
         user_id: Some(user_id),
-        embedding: None,
-        parent_memory_id: None,
-        chunk_embeddings: None,
+        ..Default::default()
     };
 
     let store_outcome = if let Some(embedder) = state.current_embedder().await {
         memory::store_with_chunks(db, embedder.as_ref(), req).await
     } else {
-        memory::store(db, req).await
+        memory::store(db, req, None, false).await
     };
 
     match store_outcome {
@@ -210,7 +202,7 @@ async fn execute_update(
         chunk_embeddings: None,
     };
 
-    match memory::update(db, body.id, req, user_id).await {
+    match memory::update(db, body.id, req, user_id, false).await {
         Ok(mem) => BatchResult {
             index,
             op: "update".to_string(),

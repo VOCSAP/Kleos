@@ -3,10 +3,6 @@ pub use super::types::BrainPattern;
 use crate::db::Database;
 use crate::{EngError, Result};
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // Blob serialization (little-endian f32)
 // ---------------------------------------------------------------------------
@@ -58,8 +54,7 @@ pub async fn store_pattern(db: &Database, pattern: &BrainPattern) -> Result<()> 
                 last_activated_at,
                 created_at
             ],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -69,21 +64,16 @@ pub async fn store_pattern(db: &Database, pattern: &BrainPattern) -> Result<()> 
 #[tracing::instrument(skip(db), fields(pattern_id = id, user_id))]
 pub async fn get_pattern(db: &Database, id: i64, user_id: i64) -> Result<BrainPattern> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, pattern, strength, importance, access_count, \
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, pattern, strength, importance, access_count, \
                         last_activated_at, created_at \
                  FROM brain_patterns WHERE id = ?1 AND user_id = ?2",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
-        let mut rows = stmt
-            .query(rusqlite::params![id, user_id])
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(rusqlite::params![id, user_id])?;
 
         let row = rows
-            .next()
-            .map_err(rusqlite_to_eng_error)?
+            .next()?
             .ok_or_else(|| EngError::NotFound(format!("brain pattern {}", id)))?;
 
         row_to_pattern(row)
@@ -97,19 +87,16 @@ pub async fn get_pattern(db: &Database, id: i64, user_id: i64) -> Result<BrainPa
 #[tracing::instrument(skip(db))]
 pub async fn list_all_patterns(db: &Database) -> Result<Vec<BrainPattern>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, pattern, strength, importance, access_count, \
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, pattern, strength, importance, access_count, \
                         last_activated_at, created_at \
                  FROM brain_patterns \
                  ORDER BY id",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
         let patterns = stmt
-            .query_map([], |row| Ok(row_to_pattern(row)))
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            .query_map([], |row| Ok(row_to_pattern(row)))?
+            .map(|r| r.map_err(EngError::from).and_then(|inner| inner))
             .collect::<Result<Vec<BrainPattern>>>()?;
 
         Ok(patterns)
@@ -122,19 +109,16 @@ pub async fn list_all_patterns(db: &Database) -> Result<Vec<BrainPattern>> {
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn list_patterns(db: &Database, user_id: i64) -> Result<Vec<BrainPattern>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, user_id, pattern, strength, importance, access_count, \
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, pattern, strength, importance, access_count, \
                         last_activated_at, created_at \
                  FROM brain_patterns WHERE user_id = ?1 \
                  ORDER BY id",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
         let patterns = stmt
-            .query_map(rusqlite::params![user_id], |row| Ok(row_to_pattern(row)))
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error).and_then(|inner| inner))
+            .query_map(rusqlite::params![user_id], |row| Ok(row_to_pattern(row)))?
+            .map(|r| r.map_err(EngError::from).and_then(|inner| inner))
             .collect::<Result<Vec<BrainPattern>>>()?;
 
         Ok(patterns)
@@ -146,12 +130,10 @@ pub async fn list_patterns(db: &Database, user_id: i64) -> Result<Vec<BrainPatte
 #[tracing::instrument(skip(db), fields(pattern_id = id, user_id, strength))]
 pub async fn update_strength(db: &Database, id: i64, user_id: i64, strength: f32) -> Result<()> {
     db.write(move |conn| {
-        let affected = conn
-            .execute(
-                "UPDATE brain_patterns SET strength = ?1 WHERE id = ?2 AND user_id = ?3",
-                rusqlite::params![strength as f64, id, user_id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        let affected = conn.execute(
+            "UPDATE brain_patterns SET strength = ?1 WHERE id = ?2 AND user_id = ?3",
+            rusqlite::params![strength as f64, id, user_id],
+        )?;
 
         if affected == 0 {
             return Err(EngError::NotFound(format!("brain pattern {}", id)));
@@ -171,8 +153,7 @@ pub async fn touch_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> {
                  last_activated_at = datetime('now') \
              WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -185,14 +166,12 @@ pub async fn delete_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> 
         conn.execute(
             "DELETE FROM brain_patterns WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         // Also clean up edges referencing this pattern
         conn.execute(
             "DELETE FROM brain_edges WHERE (source_id = ?1 OR target_id = ?1)",
             rusqlite::params![id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await
@@ -204,16 +183,14 @@ pub async fn delete_pattern(db: &Database, id: i64, user_id: i64) -> Result<()> 
 pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -> Result<usize> {
     db.write(move |conn| {
         // First collect IDs so we can clean edges
-        let mut stmt = conn
-            .prepare("SELECT id FROM brain_patterns WHERE user_id = ?1 AND strength < ?2")
-            .map_err(rusqlite_to_eng_error)?;
+        let mut stmt =
+            conn.prepare("SELECT id FROM brain_patterns WHERE user_id = ?1 AND strength < ?2")?;
 
         let dead_ids: Vec<i64> = stmt
             .query_map(rusqlite::params![user_id, threshold as f64], |row| {
                 row.get(0)
-            })
-            .map_err(rusqlite_to_eng_error)?
-            .map(|r| r.map_err(rusqlite_to_eng_error))
+            })?
+            .map(|r| r.map_err(EngError::from))
             .collect::<Result<Vec<i64>>>()?;
 
         if dead_ids.is_empty() {
@@ -226,16 +203,14 @@ pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -
         conn.execute(
             "DELETE FROM brain_patterns WHERE user_id = ?1 AND strength < ?2",
             rusqlite::params![user_id, threshold as f64],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
 
         // Clean edges referencing dead patterns
         for id in &dead_ids {
             conn.execute(
                 "DELETE FROM brain_edges WHERE (source_id = ?1 OR target_id = ?1)",
                 rusqlite::params![*id],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+            )?;
         }
 
         Ok(count)
@@ -247,12 +222,11 @@ pub async fn delete_weak_patterns(db: &Database, user_id: i64, threshold: f32) -
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn count_patterns(db: &Database, user_id: i64) -> Result<i64> {
     db.read(move |conn| {
-        conn.query_row(
+        Ok(conn.query_row(
             "SELECT COUNT(*) FROM brain_patterns WHERE user_id = ?1",
             rusqlite::params![user_id],
             |row| row.get(0),
-        )
-        .map_err(rusqlite_to_eng_error)
+        )?)
     })
     .await
 }
@@ -262,14 +236,14 @@ pub async fn count_patterns(db: &Database, user_id: i64) -> Result<i64> {
 // ---------------------------------------------------------------------------
 
 fn row_to_pattern(row: &rusqlite::Row<'_>) -> Result<BrainPattern> {
-    let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-    let user_id: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
-    let blob: Vec<u8> = row.get(2).map_err(rusqlite_to_eng_error)?;
-    let strength: f64 = row.get(3).map_err(rusqlite_to_eng_error)?;
-    let importance: i32 = row.get(4).map_err(rusqlite_to_eng_error)?;
-    let access_count: i32 = row.get(5).map_err(rusqlite_to_eng_error)?;
-    let last_activated_at: Option<String> = row.get(6).map_err(rusqlite_to_eng_error)?;
-    let created_at: String = row.get(7).map_err(rusqlite_to_eng_error)?;
+    let id: i64 = row.get(0)?;
+    let user_id: i64 = row.get(1)?;
+    let blob: Vec<u8> = row.get(2)?;
+    let strength: f64 = row.get(3)?;
+    let importance: i32 = row.get(4)?;
+    let access_count: i32 = row.get(5)?;
+    let last_activated_at: Option<String> = row.get(6)?;
+    let created_at: String = row.get(7)?;
 
     Ok(BrainPattern {
         id,

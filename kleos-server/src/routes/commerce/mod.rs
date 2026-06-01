@@ -21,9 +21,7 @@ pub fn router() -> Router<AppState> {
         .route("/commerce/pricing", get(list_pricing))
 }
 
-// ---------------------------------------------------------------------------
-// POST /commerce/quotes
-// ---------------------------------------------------------------------------
+// --- POST /commerce/quotes ---
 
 async fn create_quote(
     State(state): State<AppState>,
@@ -105,9 +103,7 @@ async fn create_quote(
     Ok((StatusCode::CREATED, Json(json!(resp))))
 }
 
-// ---------------------------------------------------------------------------
-// GET /commerce/quotes/:id
-// ---------------------------------------------------------------------------
+// --- GET /commerce/quotes/:id ---
 
 async fn get_quote(
     State(state): State<AppState>,
@@ -132,9 +128,7 @@ async fn get_quote(
     Ok(Json(json!(quote)))
 }
 
-// ---------------------------------------------------------------------------
-// POST /commerce/check
-// ---------------------------------------------------------------------------
+// --- POST /commerce/check ---
 
 async fn budget_check(
     State(state): State<AppState>,
@@ -207,9 +201,7 @@ async fn budget_check(
     Ok(Json(json!(resp)))
 }
 
-// ---------------------------------------------------------------------------
-// GET /commerce/reconciliation
-// ---------------------------------------------------------------------------
+// --- GET /commerce/reconciliation ---
 
 #[derive(Deserialize)]
 struct ReconciliationQuery {
@@ -233,9 +225,7 @@ async fn get_reconciliation(
     Ok(Json(json!(report)))
 }
 
-// ---------------------------------------------------------------------------
-// GET /commerce/balance
-// ---------------------------------------------------------------------------
+// --- GET /commerce/balance ---
 
 async fn get_balance(
     State(state): State<AppState>,
@@ -257,9 +247,7 @@ async fn get_balance(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// GET /commerce/pricing
-// ---------------------------------------------------------------------------
+// --- GET /commerce/pricing ---
 
 // H-R3-002: Auth(_auth) is intentional. Service pricing is operator-wide
 // configuration (every tenant sees the same price list). No tenant data

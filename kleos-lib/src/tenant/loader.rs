@@ -4,15 +4,17 @@
 //! - They've been idle longer than `idle_timeout`
 //! - The number of resident tenants exceeds `max_resident`
 
-use super::types::{TenantConfig, TenantHandle, TenantRow, TenantStatus};
+use super::types::{QuotaConfig, TenantConfig, TenantHandle, TenantRow, TenantStatus};
 use crate::db::Database;
 use crate::vector::LanceIndex;
 use crate::{EngError, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::{debug, info, warn};
 
 /// Manages lazy loading and eviction of tenant handles.
@@ -26,6 +28,9 @@ pub struct TenantLoader {
     /// Currently loaded tenant handles.
     handles: RwLock<HashMap<String, Arc<TenantHandle>>>,
 
+    /// Per-tenant locks that collapse concurrent first-touch loads into one open path.
+    load_guards: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+
     /// Dimension of embedding vectors.
     vector_dimensions: usize,
 
@@ -34,8 +39,17 @@ pub struct TenantLoader {
 
     /// Encryption key for tenant databases (None = unencrypted).
     encryption_key: Option<[u8; 32]>,
+
+    /// Counts how many times tests enter the slow tenant load path.
+    #[cfg(test)]
+    test_load_count: Arc<AtomicUsize>,
+
+    /// Adds a deterministic delay before tests open tenant resources.
+    #[cfg(test)]
+    test_load_delay: Option<std::time::Duration>,
 }
 
+/// Implements tenant loader cache lookup, single-flight loading, and eviction.
 impl TenantLoader {
     /// Create a new tenant loader.
     pub fn new(
@@ -49,9 +63,14 @@ impl TenantLoader {
             data_root,
             config,
             handles: RwLock::new(HashMap::new()),
+            load_guards: AsyncMutex::new(HashMap::new()),
             vector_dimensions,
             use_chunk_vector_search,
             encryption_key,
+            #[cfg(test)]
+            test_load_count: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            test_load_delay: None,
         }
     }
 
@@ -68,7 +87,26 @@ impl TenantLoader {
             }
         }
 
-        // Slow path: load the tenant
+        // Slow path: serialize first-touch loads for this tenant only.
+        let load_guard = {
+            let mut guards = self.load_guards.lock().await;
+            guards
+                .entry(tenant_id.to_string())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _load_guard = load_guard.lock().await;
+
+        // Another task may have loaded the tenant while we waited.
+        {
+            let handles = self.handles.read().await;
+            if let Some(handle) = handles.get(tenant_id) {
+                handle.touch();
+                return Ok(handle.clone());
+            }
+        }
+
+        // Load the tenant once the per-tenant gate is held.
         self.load_tenant(tenant_id, row).await
     }
 
@@ -80,6 +118,14 @@ impl TenantLoader {
         }
         if row.status == TenantStatus::Deleting {
             return Err(EngError::NotFound("tenant is being deleted".to_string()));
+        }
+
+        #[cfg(test)]
+        {
+            self.test_load_count.fetch_add(1, Ordering::SeqCst);
+            if let Some(delay) = self.test_load_delay {
+                tokio::time::sleep(delay).await;
+            }
         }
 
         // Evict if necessary before loading
@@ -134,16 +180,26 @@ impl TenantLoader {
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
         // `Database::open_tenant`.
         let db_path = tenant_dir.join("kleos.db").to_string_lossy().into_owned();
+        // The registry user_id is `auth.user_id.to_string()` for real user
+        // shards, so it parses back to the integer owner; the reserved handoffs
+        // shard and similar use non-numeric ids and resolve to None.
+        let owner_user_id = row.user_id.parse::<i64>().ok();
         let mut db = Database::open_tenant(
             &db_path,
             Some(Arc::clone(&vector_index)),
             self.encryption_key,
+            owner_user_id,
         )
         .await?;
         db.use_chunk_vector_search = self.use_chunk_vector_search;
         db.chunk_vector_index = chunk_vector_index;
         let db = Arc::new(db);
 
+        let initial_quota = QuotaConfig {
+            content_bytes: row.quota_bytes,
+            memory_count: row.quota_memories,
+            disk_bytes: None,
+        };
         let handle = Arc::new(TenantHandle {
             tenant_id: tenant_id.to_string(),
             user_id: row.user_id.clone(),
@@ -152,6 +208,10 @@ impl TenantLoader {
             created_at: SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(row.created_at as u64),
             last_access: std::sync::Mutex::new(Instant::now()),
+            quota: arc_swap::ArcSwap::from_pointee(initial_quota),
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            read_only: std::sync::atomic::AtomicBool::new(false),
+            shard_path: tenant_dir.clone(),
         });
 
         // Store in cache
@@ -254,18 +314,40 @@ impl TenantLoader {
         Ok(count)
     }
 
+    /// Return the handle for `user_id` if currently resident, without loading.
+    ///
+    /// Scans resident handles by user_id (O(n) over max_resident=512).
+    /// Used by admin quota update to refresh the ArcSwap without forcing a load.
+    pub async fn get_if_loaded(&self, user_id: &str) -> Option<Arc<TenantHandle>> {
+        let handles = self.handles.read().await;
+        handles.values().find(|h| h.user_id == user_id).cloned()
+    }
+
     /// Get all currently loaded tenant IDs.
     pub async fn loaded_tenant_ids(&self) -> Vec<String> {
         let handles = self.handles.read().await;
         handles.keys().cloned().collect()
     }
+
+    /// Return all currently resident handles as a snapshot Vec.
+    ///
+    /// Used by the disk sampler to iterate loaded tenants without re-loading
+    /// evicted ones. Snapshot is taken under a read lock; handles are Arcs so
+    /// the snapshot is cheap.
+    pub async fn snapshot_all_handles(&self) -> Vec<Arc<TenantHandle>> {
+        let handles = self.handles.read().await;
+        handles.values().cloned().collect()
+    }
 }
 
+/// Exercises tenant loader residency and first-touch concurrency behavior.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+    use tempfile::tempdir;
 
+    /// Builds a small tenant-loader configuration for fast tests.
     fn test_config() -> TenantConfig {
         TenantConfig {
             max_resident: 3,
@@ -274,6 +356,22 @@ mod tests {
         }
     }
 
+    /// Builds a representative active tenant row for loader tests.
+    fn test_row(tenant_id: &str, user_id: &str) -> TenantRow {
+        TenantRow {
+            tenant_id: tenant_id.to_string(),
+            user_id: user_id.to_string(),
+            created_at: 0,
+            status: TenantStatus::Active,
+            data_path: format!("/tmp/{tenant_id}"),
+            schema_version: 1,
+            quota_bytes: None,
+            quota_memories: None,
+            last_access: 0,
+        }
+    }
+
+    /// Confirms a new loader starts empty.
     #[tokio::test]
     async fn test_resident_count() {
         let loader =
@@ -281,5 +379,42 @@ mod tests {
 
         assert_eq!(loader.resident_count().await, 0);
         assert!(!loader.is_loaded("tenant_1").await);
+    }
+
+    /// Confirms concurrent first-touch requests collapse to one tenant open path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_touch_opens_one_pool() {
+        let dir = tempdir().expect("tempdir");
+        let mut loader = TenantLoader::new(dir.path().to_path_buf(), test_config(), 8, false, None);
+        loader.test_load_delay = Some(Duration::from_millis(50));
+        let loader = Arc::new(loader);
+        let row = test_row("tenant_4242", "user_4242");
+
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let loader = Arc::clone(&loader);
+            let row = row.clone();
+            tasks.push(tokio::spawn(async move {
+                loader.get_or_load(&row.tenant_id, &row).await
+            }));
+        }
+
+        let mut handles = Vec::new();
+        for task in tasks {
+            handles.push(task.await.expect("task join").expect("tenant handle"));
+        }
+
+        let first = handles.first().expect("first handle").clone();
+        for handle in handles.iter().skip(1) {
+            assert!(
+                Arc::ptr_eq(&first, handle),
+                "all callers should receive the same resident tenant handle"
+            );
+        }
+        assert_eq!(
+            loader.test_load_count.load(Ordering::SeqCst),
+            1,
+            "only one slow-path tenant open should execute"
+        );
     }
 }

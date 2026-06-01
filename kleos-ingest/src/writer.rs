@@ -8,7 +8,6 @@ pub struct KleosWriter {
     api_key: Option<String>,
     signer: Option<kleos_lib::auth_piv::RequestSigner>,
     signer_host: String,
-    retry_buffer: Vec<MemoryCandidate>,
 }
 
 impl KleosWriter {
@@ -25,7 +24,6 @@ impl KleosWriter {
             api_key: config.api_key.clone(),
             signer: None,
             signer_host: config.host.clone(),
-            retry_buffer: Vec::new(),
         }
     }
 
@@ -87,8 +85,14 @@ impl KleosWriter {
         }
     }
 
+    /// Store one candidate. Returns true only on a durable (HTTP 2xx) write.
+    ///
+    /// On failure the caller (the tailer) holds the ledger offset at this
+    /// line so it is re-read and re-attempted on the next pass, rather than
+    /// being silently dropped. The offset is the durability record; there is
+    /// no separate in-memory retry buffer (it would double-write against the
+    /// re-read on the next pass).
     pub async fn store(&mut self, candidate: MemoryCandidate) -> bool {
-        self.flush_retries().await;
         self.post_memory(candidate).await
     }
 
@@ -184,18 +188,6 @@ impl KleosWriter {
             Err(e) => {
                 tracing::warn!(error = %e, "kleos unreachable, buffering for retry");
                 false
-            }
-        }
-    }
-
-    async fn flush_retries(&mut self) {
-        if self.retry_buffer.is_empty() {
-            return;
-        }
-        let buffer = std::mem::take(&mut self.retry_buffer);
-        for candidate in buffer {
-            if !self.post_memory(candidate).await {
-                tracing::warn!("retry failed, dropping memory");
             }
         }
     }

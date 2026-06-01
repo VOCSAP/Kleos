@@ -65,14 +65,14 @@ async fn create_user(
                         username
                     ))
                 } else {
-                    kleos_lib::EngError::DatabaseMessage(e.to_string())
+                    kleos_lib::EngError::Database(e)
                 }
             })?;
 
             let id = conn.last_insert_rowid();
 
             // Read back the full row so the response reflects server defaults.
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT id, username, email, role, is_active, created_at
                  FROM users WHERE id = ?1",
                 params![id],
@@ -86,8 +86,7 @@ async fn create_user(
                         "created_at": row.get::<_, String>(5)?,
                     }))
                 },
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await;
 
@@ -127,9 +126,7 @@ async fn list_users(
                  FROM users WHERE is_active = 1 ORDER BY id"
             };
 
-            let mut stmt = conn
-                .prepare(sql)
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let mut stmt = conn.prepare(sql)?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -141,10 +138,8 @@ async fn list_users(
                         "is_active": row.get::<_, bool>(4)?,
                         "created_at": row.get::<_, String>(5)?,
                     }))
-                })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
             Ok(rows)
         })
@@ -177,12 +172,10 @@ async fn deactivate_user(
     let deactivated = state
         .db
         .write(move |conn| {
-            let affected = conn
-                .execute(
-                    "UPDATE users SET is_active = 0 WHERE id = ?1 AND is_active = 1",
-                    params![user_id],
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let affected = conn.execute(
+                "UPDATE users SET is_active = 0 WHERE id = ?1 AND is_active = 1",
+                params![user_id],
+            )?;
             Ok(affected > 0)
         })
         .await?;

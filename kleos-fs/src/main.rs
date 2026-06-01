@@ -261,14 +261,34 @@ fn cmd_kw(args: &[String]) -> ExitCode {
         }
     };
 
-    match std::fs::write(&target, &content) {
-        Ok(()) => {
-            eprintln!("Wrote {} bytes to {}", content.len(), target.display());
-            observe::fire_and_forget("kw", &target.to_string_lossy(), None);
-            ExitCode::SUCCESS
+    // Open with O_NOFOLLOW to prevent symlink-swap TOCTOU between
+    // canonicalize_within_roots and the actual write.
+    let open_result = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&target)
+    };
+    match open_result {
+        Ok(mut file) => {
+            use std::io::Write;
+            match file.write_all(content.as_bytes()) {
+                Ok(()) => {
+                    eprintln!("Wrote {} bytes to {}", content.len(), target.display());
+                    observe::fire_and_forget("kw", &target.to_string_lossy(), None);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("Error writing {}: {}", target.display(), e);
+                    ExitCode::from(1)
+                }
+            }
         }
         Err(e) => {
-            eprintln!("Error writing {}: {}", target.display(), e);
+            eprintln!("Error opening {}: {}", target.display(), e);
             ExitCode::from(1)
         }
     }

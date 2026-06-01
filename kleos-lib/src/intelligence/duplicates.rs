@@ -2,12 +2,8 @@
 
 use super::types::{DeduplicateResult, DuplicatePair};
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use tracing::warn;
-
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 /// Find duplicate memory pairs based on similarity links.
 #[tracing::instrument(skip(db))]
@@ -18,9 +14,8 @@ pub async fn find_duplicates(
     limit: i64,
 ) -> Result<Vec<DuplicatePair>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT ml.source_id, ml.target_id, ml.similarity, \
+        let mut stmt = conn.prepare(
+            "SELECT ml.source_id, ml.target_id, ml.similarity, \
                         ms.content, mt.content, ms.importance, mt.importance \
                  FROM memory_links ml \
                  JOIN memories ms ON ms.id = ml.source_id \
@@ -32,8 +27,7 @@ pub async fn find_duplicates(
                    AND ms.space_id = mt.space_id \
                  ORDER BY ml.similarity DESC \
                  LIMIT ?2",
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        )?;
 
         let pairs = stmt
             .query_map(rusqlite::params![threshold, limit], |row| {
@@ -46,10 +40,8 @@ pub async fn find_duplicates(
                     importance_a: row.get(5)?,
                     importance_b: row.get(6)?,
                 })
-            })
-            .map_err(rusqlite_to_eng_error)?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(rusqlite_to_eng_error)?;
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(pairs)
     })
@@ -93,13 +85,11 @@ pub async fn deduplicate(
 
         let affected = db
             .write(move |conn| {
-                let n = conn
-                    .execute(
-                        "UPDATE memories SET is_superseded = 1, updated_at = datetime('now') \
+                let n = conn.execute(
+                    "UPDATE memories SET is_superseded = 1, updated_at = datetime('now') \
                          WHERE id = ?1 AND is_superseded = 0",
-                        rusqlite::params![supersede_id],
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
+                    rusqlite::params![supersede_id],
+                )?;
                 Ok(n)
             })
             .await?;
@@ -113,7 +103,7 @@ pub async fn deduplicate(
                          VALUES (?1, ?2, ?3, 'supersedes')",
                         rusqlite::params![keep_id, supersede_id, similarity],
                     )
-                    .map_err(rusqlite_to_eng_error)?;
+                    ?;
                     Ok(())
                 })
                 .await

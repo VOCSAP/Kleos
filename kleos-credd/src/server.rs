@@ -1,6 +1,11 @@
 //! HTTP server setup for credd.
 
-use kleos_cred::crypto::KEY_SIZE;
+use std::path::PathBuf;
+
+use axum::Router;
+use kleos_cred::agent_keys_file::FileAgentKeyStore;
+use kleos_cred::crypto::{derive_key, KEY_SIZE};
+use kleos_lib::config::{Config, EncryptionMode};
 use kleos_lib::db::migrations::run_migrations;
 use kleos_lib::db::Database;
 use zeroize::Zeroizing;
@@ -8,7 +13,175 @@ use zeroize::Zeroizing;
 use crate::build_router;
 use crate::listener;
 use crate::state::AppState;
-use kleos_cred::agent_keys_file::FileAgentKeyStore;
+
+/// Build the master encryption key from credd auth-mode inputs.
+///
+/// Supported modes are `yubikey` (default), `password`, and `keyfile`.
+fn resolve_master_key(
+    auth_mode: &str,
+    master_password: Option<String>,
+    keyfile: Option<PathBuf>,
+) -> anyhow::Result<[u8; KEY_SIZE]> {
+    match auth_mode {
+        "yubikey" => {
+            tracing::info!(auth_mode = "yubikey", "deriving master key from YubiKey");
+            kleos_cred::yubikey::derive_master_key()
+                .map_err(|e| anyhow::anyhow!("YubiKey unlock failed: {e}"))
+        }
+        "password" => {
+            let password = match master_password {
+                Some(pw) => pw,
+                None => {
+                    eprintln!("Enter master password: ");
+                    rpassword::read_password()?
+                }
+            };
+            tracing::info!(auth_mode = "password", "deriving master key from password");
+            let derived = derive_key(1, password.as_bytes(), None);
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&derived[..]);
+            Ok(key)
+        }
+        "keyfile" => {
+            let path = keyfile.unwrap_or_else(|| {
+                std::env::var("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|_| {
+                        std::env::var("HOME")
+                            .map(|h| PathBuf::from(h).join(".config"))
+                            .unwrap_or_else(|_| PathBuf::from("."))
+                    })
+                    .join("cred")
+                    .join("master.key")
+            });
+
+            let hex_str = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("failed to read keyfile {}: {e}", path.display()))?;
+            let bytes = hex::decode(hex_str.trim())
+                .map_err(|e| anyhow::anyhow!("keyfile {} is not valid hex: {e}", path.display()))?;
+
+            if bytes.len() != KEY_SIZE {
+                anyhow::bail!(
+                    "keyfile {} contains {} bytes, expected {}",
+                    path.display(),
+                    bytes.len(),
+                    KEY_SIZE
+                );
+            }
+
+            let mut key = [0u8; KEY_SIZE];
+            key.copy_from_slice(&bytes);
+            Ok(key)
+        }
+        other => {
+            anyhow::bail!(
+                "unknown CREDD_AUTH_MODE `{other}`; expected `yubikey`, `password`, or `keyfile`"
+            )
+        }
+    }
+}
+
+/// Resolve optional at-rest DB encryption key using the legacy credd path.
+fn resolve_db_encryption_key(enc_config: &Config) -> anyhow::Result<Option<[u8; 32]>> {
+    match enc_config.encryption.mode {
+        EncryptionMode::None => Ok(None),
+        EncryptionMode::Yubikey => {
+            tracing::info!("at-rest encryption mode: yubikey -- touch slot 2 to unlock database");
+            let challenge = kleos_cred::yubikey::get_or_create_challenge()
+                .map_err(|e| anyhow::anyhow!("YubiKey challenge: {e}"))?;
+            let response = kleos_cred::yubikey::challenge_response(&challenge)
+                .map_err(|e| anyhow::anyhow!("YubiKey response: {e}"))?;
+            let derived = derive_key(0, b"", Some(&response));
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&derived[..]);
+            Ok(Some(key))
+        }
+        _ => {
+            let mode_name = format!("{:?}", enc_config.encryption.mode).to_ascii_lowercase();
+            tracing::info!(mode = %mode_name, "resolving at-rest encryption key");
+            let key = kleos_lib::encryption::resolve_key(enc_config)
+                .map_err(|e| anyhow::anyhow!("encryption key: {e}"))?;
+            Ok(key)
+        }
+    }
+}
+
+/// Build the runtime router from app state and serve through existing listeners.
+#[tracing::instrument(
+    skip(master_key, bootstrap_master, file_agent_keys, encryption_key, build_router),
+    fields(listen = %listen, db_path = %db_path)
+)]
+// Run credd using a caller-provided router builder for composed daemons.
+pub async fn run_with_router_builder<B>(
+    listen: &str,
+    db_path: &str,
+    master_key: [u8; KEY_SIZE],
+    bootstrap_master: Option<Zeroizing<String>>,
+    file_agent_keys: FileAgentKeyStore,
+    encryption_key: Option<[u8; 32]>,
+    build_router: B,
+) -> anyhow::Result<()>
+where
+    B: FnOnce(AppState) -> Router,
+{
+    // Connect to database with optional at-rest encryption and apply schema updates.
+    let db = Database::connect_encrypted(db_path, encryption_key).await?;
+    db.write(|conn| run_migrations(conn)).await?;
+
+    let state = AppState::with_bootstrap(db, master_key, bootstrap_master, file_agent_keys);
+    let app = build_router(state);
+
+    // If neither CREDD_SOCKET nor CREDD_BIND is set, treat --listen as CREDD_BIND
+    // so old single-listener CLI behavior remains unchanged.
+    if std::env::var("CREDD_SOCKET").is_err() && std::env::var("CREDD_BIND").is_err() {
+        std::env::set_var("CREDD_BIND", listen);
+    }
+
+    listener::serve(app).await
+}
+
+/// Resolve startup inputs (auth mode + encryption mode) and run with a caller
+/// supplied router builder.
+#[tracing::instrument(
+    skip(master_password, keyfile, build_router),
+    fields(listen = %listen, db_path = %db_path, auth_mode = %auth_mode)
+)]
+// Resolve environment-backed startup inputs before serving a composed router.
+pub async fn run_with_env<B>(
+    listen: &str,
+    db_path: &str,
+    auth_mode: &str,
+    master_password: Option<String>,
+    keyfile: Option<PathBuf>,
+    build_router: B,
+) -> anyhow::Result<()>
+where
+    B: FnOnce(AppState) -> Router,
+{
+    let master_key = resolve_master_key(auth_mode, master_password, keyfile)?;
+    let enc_config = Config::from_env();
+    let encryption_key = resolve_db_encryption_key(&enc_config)?;
+    let bootstrap_master = crate::bootstrap::load_bootstrap_blob(&master_key).await?;
+    if bootstrap_master.is_some() {
+        tracing::info!(
+            "loaded bootstrap.enc from {}",
+            crate::bootstrap::blob_path().display()
+        );
+    }
+
+    let file_agent_keys = FileAgentKeyStore::load()?;
+
+    run_with_router_builder(
+        listen,
+        db_path,
+        master_key,
+        bootstrap_master,
+        file_agent_keys,
+        encryption_key,
+        build_router,
+    )
+    .await
+}
 
 /// Run the credd HTTP server.
 ///
@@ -29,6 +202,7 @@ use kleos_cred::agent_keys_file::FileAgentKeyStore;
     skip(master_key, bootstrap_master, file_agent_keys, encryption_key),
     fields(listen = %listen, db_path = %db_path)
 )]
+// Serve the standalone credd router using pre-resolved runtime inputs.
 pub async fn run(
     listen: &str,
     db_path: &str,
@@ -37,25 +211,14 @@ pub async fn run(
     file_agent_keys: FileAgentKeyStore,
     encryption_key: Option<[u8; 32]>,
 ) -> anyhow::Result<()> {
-    // Connect to database (with optional at-rest encryption)
-    let db = Database::connect_encrypted(db_path, encryption_key).await?;
-
-    // Run migrations
-    db.write(|conn| run_migrations(conn)).await?;
-
-    let state = AppState::with_bootstrap(db, master_key, bootstrap_master, file_agent_keys);
-
-    // Build the router via the shared builder so integration tests and the
-    // binary server exercise the same middleware stack (including the
-    // preauth brute-force throttle).
-    let app = build_router(state);
-
-    // If neither CREDD_SOCKET nor CREDD_BIND is set, treat the --listen
-    // CLI value as CREDD_BIND so the legacy single-listener flow keeps
-    // working.
-    if std::env::var("CREDD_SOCKET").is_err() && std::env::var("CREDD_BIND").is_err() {
-        std::env::set_var("CREDD_BIND", listen);
-    }
-
-    listener::serve(app).await
+    run_with_router_builder(
+        listen,
+        db_path,
+        master_key,
+        bootstrap_master,
+        file_agent_keys,
+        encryption_key,
+        build_router,
+    )
+    .await
 }

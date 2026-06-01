@@ -109,6 +109,8 @@ fn store_request(content: &str, user_id: i64) -> StoreRequest {
         space_id: None,
         parent_memory_id: None,
         chunk_embeddings: None,
+        sync_id: None,
+        artifacts: None,
     }
 }
 
@@ -132,6 +134,8 @@ fn search_request(args: &Args) -> SearchRequest {
         source_filter: None,
         include_archived: None,
         include_noise: None,
+        exclude_consolidated: None,
+        budget: None,
     }
 }
 
@@ -147,7 +151,7 @@ async fn build_dataset(db: &Database, args: &Args) -> kleos_lib::Result<(usize, 
             i * 17,
             i * 31
         );
-        let stored = memory::store(db, store_request(&content, args.user_id)).await?;
+        let stored = memory::store(db, store_request(&content, args.user_id), None, false).await?;
         if stored.created {
             ids.push(stored.id);
         }

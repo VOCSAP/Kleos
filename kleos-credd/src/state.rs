@@ -16,6 +16,13 @@ use zeroize::Zeroizing;
 use kleos_cred::agent_keys_file::FileAgentKeyStore;
 use kleos_lib::auth_piv::RequestSigner;
 
+/// Per-category domain allowlist for the credential proxy.
+///
+/// When present, the proxy only forwards requests to domains listed for
+/// the secret's category. Categories without an entry are denied.
+/// Loaded from `~/.config/cred/proxy-domains.json`.
+pub type ProxyDomainAllowlist = std::collections::HashMap<String, Vec<String>>;
+
 /// Application state shared across handlers.
 #[derive(Clone)]
 pub struct AppState {
@@ -47,6 +54,9 @@ pub struct AppState {
     /// PIV request signer for authenticating to Kleos API when resolving
     /// [CRED:v3] entries. Initialized at startup via from_env_or_file.
     pub kleos_signer: Option<Arc<RequestSigner>>,
+    /// Per-category domain allowlist for proxy requests. When `Some`, the
+    /// proxy denies requests to domains not listed for the category.
+    pub proxy_domain_allowlist: Option<Arc<ProxyDomainAllowlist>>,
 }
 
 impl AppState {
@@ -61,6 +71,7 @@ impl AppState {
             piv_9a_pubkeys,
             piv_9d_pubkey,
             kleos_signer: None,
+            proxy_domain_allowlist: load_proxy_domain_allowlist(),
         }
     }
 
@@ -84,6 +95,46 @@ impl AppState {
             piv_9a_pubkeys,
             piv_9d_pubkey,
             kleos_signer,
+            proxy_domain_allowlist: load_proxy_domain_allowlist(),
+        }
+    }
+}
+
+/// Load per-category proxy domain allowlist from
+/// `~/.config/cred/proxy-domains.json`. Format:
+/// ```json
+/// { "aws": ["*.amazonaws.com"], "github": ["api.github.com"], "*": ["*"] }
+/// ```
+/// The wildcard category `"*"` matches any category. Domain entries support
+/// leading `*.` prefix for subdomain matching. Returns None if the file
+/// does not exist (proxy will deny all requests when `CREDD_PROXY_STRICT=1`).
+fn load_proxy_domain_allowlist() -> Option<Arc<ProxyDomainAllowlist>> {
+    let path = cred_config_dir().join("proxy-domains.json");
+    if !path.exists() {
+        tracing::info!(
+            "no proxy domain allowlist at {}; proxy domain enforcement disabled",
+            path.display()
+        );
+        return None;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(json) => match serde_json::from_str::<ProxyDomainAllowlist>(&json) {
+            Ok(list) => {
+                tracing::info!(
+                    categories = list.len(),
+                    path = %path.display(),
+                    "loaded proxy domain allowlist"
+                );
+                Some(Arc::new(list))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, path = %path.display(), "proxy domain allowlist parse error");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::error!(error = %e, path = %path.display(), "proxy domain allowlist read error");
+            None
         }
     }
 }

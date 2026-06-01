@@ -15,7 +15,7 @@ use crate::{
 };
 
 mod types;
-use types::{CreateKeyBody, CreateSpaceBody, CreateUserBody, RotateKeyBody};
+use types::{CreateKeyBody, CreateSpaceBody, RotateKeyBody};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -49,12 +49,11 @@ async fn create_key(
         let exists: bool = state
             .db
             .read(move |conn| {
-                conn.query_row(
+                Ok(conn.query_row(
                     "SELECT EXISTS(SELECT 1 FROM users WHERE id = ?1)",
                     params![uid],
                     |row| row.get(0),
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                )?)
             })
             .await?;
         if !exists {
@@ -141,13 +140,13 @@ async fn revoke_key(
         let owner: Option<i64> = state
             .db
             .read(move |conn| {
-                conn.query_row(
-                    "SELECT user_id FROM api_keys WHERE id = ?1",
-                    params![id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                Ok(conn
+                    .query_row(
+                        "SELECT user_id FROM api_keys WHERE id = ?1",
+                        params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?)
             })
             .await?;
 
@@ -218,11 +217,10 @@ async fn rotate_key(
     state
         .db
         .write(move |conn| {
-            conn.execute(
+            Ok(conn.execute(
                 "UPDATE api_keys SET expires_at = ?1 WHERE id = ?2 AND user_id = ?3",
                 params![grace_expiry_clone, key_id, user_id],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
 
@@ -237,121 +235,6 @@ async fn rotate_key(
             grace_hours
         ),
     })))
-}
-
-// ---- User Management ----
-
-#[allow(dead_code)]
-async fn create_user(
-    State(state): State<AppState>,
-    Auth(auth_ctx): Auth,
-    Json(body): Json<CreateUserBody>,
-) -> Result<(StatusCode, Json<Value>), AppError> {
-    if !auth_ctx.has_scope(&auth::Scope::Admin) {
-        return Err(AppError(kleos_lib::EngError::Auth("Admin required".into())));
-    }
-
-    let valid_roles = ["admin", "writer", "reader"];
-    let role = body
-        .role
-        .as_deref()
-        .filter(|r| valid_roles.contains(r))
-        .unwrap_or("writer");
-    let is_admin = if role == "admin" { 1i64 } else { 0i64 };
-    let username = body.username.trim().to_string();
-    let email = body.email.clone();
-    let role = role.to_string();
-
-    let (id, created_at) = state
-        .db
-        .write(move |conn| {
-            conn.query_row(
-                "INSERT INTO users (username, email, role, is_admin) VALUES (?1, ?2, ?3, ?4) RETURNING id, created_at",
-                params![username, email, role, is_admin],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await?;
-
-    // Create default space (best-effort).
-    if let Err(e) = state
-        .db
-        .write(move |conn| {
-            conn.execute(
-                "INSERT INTO spaces (user_id, name) VALUES (?1, 'default')",
-                params![id],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-        })
-        .await
-    {
-        tracing::warn!(
-            user_id = id,
-            error = %e,
-            "failed to create default space after user provisioning",
-        );
-    }
-
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "id": id,
-            "username": body.username.trim(),
-            "created_at": created_at,
-        })),
-    ))
-}
-
-#[allow(dead_code)]
-async fn list_users(
-    State(state): State<AppState>,
-    Auth(auth_ctx): Auth,
-) -> Result<Json<Value>, AppError> {
-    if !auth_ctx.has_scope(&auth::Scope::Admin) {
-        return Err(AppError(kleos_lib::EngError::Auth("Admin required".into())));
-    }
-
-    let users: Vec<Value> = state
-        .db
-        .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, username, email, role, is_admin, created_at FROM users ORDER BY id",
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, i64>(4)?,
-                        r.get::<_, String>(5)?,
-                    ))
-                })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-
-            let mut result = Vec::new();
-            for row in rows {
-                let (id, username, email, role, is_admin, created_at) =
-                    row.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
-                result.push(json!({
-                    "id": id,
-                    "username": username,
-                    "email": email,
-                    "role": role,
-                    "is_admin": is_admin != 0,
-                    "created_at": created_at,
-                }));
-            }
-            Ok(result)
-        })
-        .await?;
-
-    Ok(Json(json!({ "users": users })))
 }
 
 // ---- Space Management ----
@@ -378,12 +261,11 @@ async fn create_space(
 
     let (id, created_at) = db
         .write(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id, created_at",
                 params![user_id, name_clone, description],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await?;
 
@@ -412,7 +294,7 @@ async fn list_spaces(
                 .prepare(
                     "SELECT id, name, description, created_at FROM spaces WHERE user_id = ?1 ORDER BY id",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params![user_id], |r| {
@@ -423,12 +305,12 @@ async fn list_spaces(
                         r.get::<_, String>(3)?,
                     ))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let mut result = Vec::new();
             for row in rows {
                 let (id, name, description, created_at) =
-                    row.map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                    row?;
                 result.push(json!({
                     "id": id,
                     "name": name,
@@ -453,13 +335,13 @@ async fn delete_space(
     // Verify ownership
     let row: Option<(i64, String)> = db
         .read(move |conn| {
-            conn.query_row(
-                "SELECT user_id, name FROM spaces WHERE id = ?1",
-                params![id],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            Ok(conn
+                .query_row(
+                    "SELECT user_id, name FROM spaces WHERE id = ?1",
+                    params![id],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()?)
         })
         .await?;
 
@@ -476,11 +358,10 @@ async fn delete_space(
         )));
     }
 
-    db.write(move |conn| {
-        conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-    })
-    .await?;
+    // Patch 34: delete from the tenant DB (`db` = ResolvedDb), not the main
+    // monolith, since the `spaces` table lives in the tenant schema.
+    db.write(move |conn| Ok(conn.execute("DELETE FROM spaces WHERE id = ?1", params![id])?))
+        .await?;
 
     Ok(Json(json!({ "deleted": true, "id": id })))
 }

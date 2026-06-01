@@ -56,6 +56,11 @@ async fn enroll_handler(
     let fingerprint = hex::encode(Sha256::digest(&pubkey_der));
 
     let user_id = auth.user_id;
+    // SECURITY (C3): the new key inherits the caller's own scopes, so a caller
+    // cannot mint a key more privileged than itself (mirrors the api-key
+    // SEC-MED-4 escalation cap). Stored comma-separated to match the
+    // api_keys.scopes / v53 identity_keys.scopes column format.
+    let scopes_csv = kleos_lib::auth::scopes_to_string(&auth.key.scopes);
     let tier = body.tier.clone();
     let algo_str = algo.as_str().to_string();
     let pubkey_pem = body.pubkey_pem.clone();
@@ -67,11 +72,11 @@ async fn enroll_handler(
     let id: i64 = state.db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO identity_keys (user_id, tier, algo, pubkey_pem, pubkey_fingerprint, host_label, label, serial)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![user_id, tier, algo_str, pubkey_pem, fpr, host, label, serial],
+                "INSERT INTO identity_keys (user_id, tier, algo, pubkey_pem, pubkey_fingerprint, host_label, label, serial, scopes)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![user_id, tier, algo_str, pubkey_pem, fpr, host, label, serial, scopes_csv],
             )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             Ok(conn.last_insert_rowid())
         })
@@ -116,7 +121,7 @@ async fn list_handler(
                      FROM identity_keys ORDER BY enrolled_at DESC",
                 )
             }
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             let rows = stmt
                 .query_map([], |row| {
@@ -134,9 +139,9 @@ async fn list_handler(
                         "is_active": row.get::<_, bool>(10)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })
@@ -159,7 +164,7 @@ async fn list_mine_handler(
                     "SELECT id, tier, algo, pubkey_fingerprint, host_label, label, serial, enrolled_at, last_seen_at, is_active
                      FROM identity_keys WHERE user_id = ?1 ORDER BY enrolled_at DESC",
                 )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             let rows = stmt
                 .query_map(params![user_id], |row| {
@@ -176,9 +181,9 @@ async fn list_mine_handler(
                         "is_active": row.get::<_, bool>(9)?,
                     }))
                 })
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?
+                ?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                ?;
 
             Ok(rows)
         })
@@ -214,7 +219,7 @@ async fn revoke_handler(
                     params![key_id, user_id, reason],
                 )
             }
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            ?;
 
             Ok(affected > 0)
         })
@@ -245,9 +250,12 @@ async fn create_invite_handler(
 
     // Generate 32 bytes of cryptographic randomness, then URL-safe
     // base64-encode them so the token is safe to paste into a CLI.
-    use rand::Rng;
+    use rand::rngs::OsRng;
+    use rand::TryRngCore;
     let mut raw_bytes = [0u8; 32];
-    rand::rng().fill(&mut raw_bytes);
+    OsRng
+        .try_fill_bytes(&mut raw_bytes)
+        .expect("OS CSPRNG must be available");
     use base64::Engine;
     let raw_token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw_bytes);
 
@@ -285,19 +293,16 @@ async fn create_invite_handler(
                 "INSERT INTO enrollment_invites (user_id, token_hash, method, expires_at)
                  VALUES (?1, ?2, ?3, datetime('now', 'utc', '+24 hours'))",
                 params![user_id, hash_clone, method_clone],
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            )?;
 
             let id = conn.last_insert_rowid();
 
             // Read back the server-computed expires_at timestamp.
-            let exp: String = conn
-                .query_row(
-                    "SELECT expires_at FROM enrollment_invites WHERE id = ?1",
-                    params![id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+            let exp: String = conn.query_row(
+                "SELECT expires_at FROM enrollment_invites WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )?;
 
             Ok((id, exp))
         })

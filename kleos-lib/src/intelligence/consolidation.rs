@@ -6,10 +6,6 @@ use crate::memory::types::Memory;
 use crate::{EngError, Result};
 use tracing::info;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 /// Consolidate a set of similar memories into a single merged memory.
 ///
 /// Merges content from the candidate memories, computes new importance
@@ -22,6 +18,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
             "memory_ids must not be empty".to_string(),
         ));
     }
+    if memory_ids.len() > MAX_CLUSTER_SIZE {
+        return Err(EngError::InvalidInput(format!(
+            "refusing to consolidate {} memories (max {})",
+            memory_ids.len(),
+            MAX_CLUSTER_SIZE
+        )));
+    }
 
     // Parse all IDs upfront before any async work.
     let ids: Vec<i64> = memory_ids
@@ -32,7 +35,9 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Fetch all source memories in one read -- MUST belong to caller.
+    // Fetch all source memories in one read -- MUST belong to caller. The
+    // `user_id = ?1` predicate makes that ownership guarantee real in single-DB
+    // (shared) mode; in a single-owner shard it is a no-op.
     let ids_for_read = ids.clone();
     let sources: Vec<(i64, String, String, i32)> = db
         .read(move |conn| {
@@ -43,18 +48,18 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 .join(",");
             let sql = format!(
                 "SELECT id, content, category, importance \
-                 FROM memories WHERE id IN ({}) AND is_forgotten = 0",
+                 FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0",
                 placeholders
             );
-            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
-            let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+            let mut stmt = conn.prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params![user_id])?;
             let mut result = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+            while let Some(row) = rows.next()? {
                 result.push((
-                    row.get::<_, i64>(0).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, String>(1).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, String>(2).map_err(rusqlite_to_eng_error)?,
-                    row.get::<_, i32>(3).map_err(rusqlite_to_eng_error)?,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i32>(3)?,
                 ));
             }
             Ok(result)
@@ -100,22 +105,21 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
     // All writes in a single transaction for atomicity.
     let new_id: i64 = db
         .transaction(move |tx| {
-            // Insert consolidated memory.
-            // N.B.: user_id is intentionally omitted -- tenant-shard DBs dropped
-            // the column in migration v22. The row inherits the shard owner's
-            // identity from the DB path itself.
+            // Insert consolidated memory, owned by the caller so single-DB mode
+            // isolates it like any other memory.
             tx.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, confidence, status, created_at, updated_at) \
-                 VALUES (?1, ?2, 'consolidation', ?3, 1, 1, ?4, 1, 0, 1.0, 'approved', datetime('now'), datetime('now'))",
+                 source_count, is_static, is_forgotten, confidence, status, user_id, created_at, updated_at) \
+                 VALUES (?1, ?2, 'consolidation', ?3, 1, 1, ?4, 1, 0, 1.0, 'approved', ?5, datetime('now'), datetime('now'))",
                 rusqlite::params![
                     merged_content,
                     category,
                     max_importance,
                     source_count,
+                    user_id,
                 ],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             let new_id = tx.last_insert_rowid();
 
@@ -126,22 +130,22 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                      VALUES (?1, ?2, 1.0, 'consolidates')",
                     rusqlite::params![new_id, source_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
                 tx.execute(
                     "UPDATE memories SET is_consolidated = 1, updated_at = datetime('now') \
                      WHERE id = ?1",
                     rusqlite::params![source_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
 
-            // Record consolidation.
+            // Record consolidation, owned by the caller.
             tx.execute(
-                "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence) \
-                 VALUES (?1, ?2, 'merge', 1.0)",
-                rusqlite::params![source_ids_json, new_id],
+                "INSERT INTO consolidations (source_ids, result_memory_id, strategy, confidence, user_id) \
+                 VALUES (?1, ?2, 'merge', 1.0, ?3)",
+                rusqlite::params![source_ids_json, new_id, user_id],
             )
-            .map_err(rusqlite_to_eng_error)?;
+            ?;
 
             Ok(new_id)
         })
@@ -170,11 +174,11 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                      valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated \
                      FROM memories WHERE id = ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let mut rows = stmt
                 .query(rusqlite::params![new_id])
-                .map_err(rusqlite_to_eng_error)?;
-            if let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+                ?;
+            if let Some(row) = rows.next()? {
                 row_to_memory(row)
             } else {
                 Err(EngError::Internal(
@@ -200,23 +204,22 @@ pub async fn find_consolidation_candidates(
     // Collect all similar pairs from the database.
     let pairs: Vec<(i64, i64)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    // Patch 17d -- exclude memories already consumed by a prior
-                    // consolidation. The `is_consolidated` flag is set on sources
-                    // by `consolidate()` line 131; this query is the missing
-                    // counterpart -- without it the same memories cycle back into
-                    // candidates and the dreamer accumulates consolidation outputs
-                    // indefinitely. The filter preserves the upstream-intended
-                    // multi-level capability: a fresh consolidation output starts
-                    // with `is_consolidated = 0` and remains eligible until a
-                    // higher-level sweep consumes it (sets the flag to 1).
-                    // Patch 33 -- anti-leak filter: never consolidate across
-                    // spaces. `ms.space_id = mt.space_id` naturally isolates
-                    // legacy NULL rows from each other (NULL != NULL in SQL)
-                    // and keeps the default-space cross-projet bucket as a
-                    // self-consistent partition.
-                    "SELECT ml.source_id, ml.target_id \
+            let mut stmt = conn.prepare(
+                // Patch 17d -- exclude memories already consumed by a prior
+                // consolidation. The `is_consolidated` flag is set on sources
+                // by `consolidate()` line 131; this query is the missing
+                // counterpart -- without it the same memories cycle back into
+                // candidates and the dreamer accumulates consolidation outputs
+                // indefinitely. The filter preserves the upstream-intended
+                // multi-level capability: a fresh consolidation output starts
+                // with `is_consolidated = 0` and remains eligible until a
+                // higher-level sweep consumes it (sets the flag to 1).
+                // Patch 33 -- anti-leak filter: never consolidate across
+                // spaces. `ms.space_id = mt.space_id` naturally isolates
+                // legacy NULL rows from each other (NULL != NULL in SQL)
+                // and keeps the default-space cross-projet bucket as a
+                // self-consistent partition.
+                "SELECT ml.source_id, ml.target_id \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
                      JOIN memories mt ON mt.id = ml.target_id \
@@ -229,15 +232,12 @@ pub async fn find_consolidation_candidates(
                        AND ms.space_id = mt.space_id \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
-                )
-                .map_err(rusqlite_to_eng_error)?;
-            let mut rows = stmt
-                .query(rusqlite::params![threshold as f64])
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
+            let mut rows = stmt.query(rusqlite::params![threshold as f64])?;
             let mut pairs = Vec::new();
-            while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-                let source_id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-                let target_id: i64 = row.get(1).map_err(rusqlite_to_eng_error)?;
+            while let Some(row) = rows.next()? {
+                let source_id: i64 = row.get(0)?;
+                let target_id: i64 = row.get(1)?;
                 pairs.push((source_id, target_id));
             }
             Ok(pairs)
@@ -293,22 +293,59 @@ pub async fn find_consolidation_candidates(
     Ok(result)
 }
 
+/// Maximum number of memories allowed in a single consolidation group.
+/// Larger clusters produce unreadable merged content and destroy source recall.
+const MAX_CLUSTER_SIZE: usize = 5;
+
+/// Maximum consolidations performed per sweep run to limit blast radius.
+const MAX_CONSOLIDATIONS_PER_SWEEP: i64 = 10;
+
+/// Minimum acceptable similarity threshold -- rejects sweeps that would merge
+/// loosely related memories.
+const MIN_SIMILARITY_THRESHOLD: f64 = 0.80;
+
 /// Run an automatic consolidation sweep: find candidate groups above the
 /// given similarity threshold and consolidate each group.
+///
+/// Safety guardrails:
+/// - Rejects thresholds below 0.80 to prevent loose matches
+/// - Skips clusters larger than 5 memories
+/// - Stops after 10 consolidations per sweep
 #[tracing::instrument(skip(db))]
 pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepResult> {
+    if threshold < MIN_SIMILARITY_THRESHOLD {
+        return Err(EngError::InvalidInput(format!(
+            "similarity threshold {threshold} is below minimum {MIN_SIMILARITY_THRESHOLD}"
+        )));
+    }
+
     let groups = find_consolidation_candidates(db, threshold as f32, user_id).await?;
     let pairs_found = groups.len() as i64;
     let mut consolidated = 0i64;
+    let mut skipped = 0i64;
 
     for group in &groups {
+        if consolidated >= MAX_CONSOLIDATIONS_PER_SWEEP {
+            skipped += 1;
+            continue;
+        }
         if group.len() < 2 {
+            continue;
+        }
+        if group.len() > MAX_CLUSTER_SIZE {
+            tracing::warn!(
+                cluster_size = group.len(),
+                user_id,
+                "skipping oversized consolidation cluster"
+            );
+            skipped += 1;
             continue;
         }
         match consolidate(db, group, user_id).await {
             Ok(_) => consolidated += 1,
             Err(e) => {
                 tracing::warn!(error = %e, "sweep_consolidation_failed");
+                skipped += 1;
             }
         }
     }
@@ -316,6 +353,7 @@ pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepR
     Ok(SweepResult {
         pairs_found,
         consolidated,
+        skipped,
     })
 }
 
@@ -323,27 +361,24 @@ pub async fn sweep(db: &Database, user_id: i64, threshold: f64) -> Result<SweepR
 #[tracing::instrument(skip(db), fields(limit))]
 pub async fn list_consolidations(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     limit: usize,
 ) -> Result<Vec<ConsolidationRecord>> {
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare(
-                "SELECT c.id, m.content \
+        let mut stmt = conn.prepare(
+            "SELECT c.id, m.content \
                  FROM consolidations c \
                  JOIN memories m ON m.id = c.result_memory_id \
+                 WHERE c.user_id = ?1 \
                  ORDER BY c.created_at DESC \
-                 LIMIT ?1",
-            )
-            .map_err(rusqlite_to_eng_error)?;
-        let mut rows = stmt
-            .query(rusqlite::params![limit as i64])
-            .map_err(rusqlite_to_eng_error)?;
+                 LIMIT ?2",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![user_id, limit as i64])?;
         let mut records = Vec::new();
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
+        while let Some(row) = rows.next()? {
             records.push(ConsolidationRecord {
-                id: row.get(0).map_err(rusqlite_to_eng_error)?,
-                summary: row.get(1).map_err(rusqlite_to_eng_error)?,
+                id: row.get(0)?,
+                summary: row.get(1)?,
             });
         }
         Ok(records)
@@ -353,55 +388,55 @@ pub async fn list_consolidations(
 
 fn row_to_memory(row: &rusqlite::Row<'_>) -> crate::Result<Memory> {
     Ok(Memory {
-        id: row.get(0).map_err(rusqlite_to_eng_error)?,
-        content: row.get(1).map_err(rusqlite_to_eng_error)?,
-        category: row.get(2).map_err(rusqlite_to_eng_error)?,
-        source: row.get(3).map_err(rusqlite_to_eng_error)?,
-        session_id: row.get(4).map_err(rusqlite_to_eng_error)?,
-        importance: row.get(5).map_err(rusqlite_to_eng_error)?,
+        id: row.get(0)?,
+        content: row.get(1)?,
+        category: row.get(2)?,
+        source: row.get(3)?,
+        session_id: row.get(4)?,
+        importance: row.get(5)?,
         embedding: None,
-        version: row.get(6).map_err(rusqlite_to_eng_error)?,
-        is_latest: row.get::<_, i32>(7).map_err(rusqlite_to_eng_error)? != 0,
-        parent_memory_id: row.get(8).map_err(rusqlite_to_eng_error)?,
-        root_memory_id: row.get(9).map_err(rusqlite_to_eng_error)?,
-        source_count: row.get(10).map_err(rusqlite_to_eng_error)?,
-        is_static: row.get::<_, i32>(11).map_err(rusqlite_to_eng_error)? != 0,
-        is_forgotten: row.get::<_, i32>(12).map_err(rusqlite_to_eng_error)? != 0,
-        is_archived: row.get::<_, i32>(13).map_err(rusqlite_to_eng_error)? != 0,
-        is_fact: row.get::<_, i32>(14).map_err(rusqlite_to_eng_error)? != 0,
-        is_decomposed: row.get::<_, i32>(15).map_err(rusqlite_to_eng_error)? != 0,
-        forget_after: row.get(16).map_err(rusqlite_to_eng_error)?,
-        forget_reason: row.get(17).map_err(rusqlite_to_eng_error)?,
-        model: row.get(18).map_err(rusqlite_to_eng_error)?,
-        recall_hits: row.get(19).map_err(rusqlite_to_eng_error)?,
-        recall_misses: row.get(20).map_err(rusqlite_to_eng_error)?,
-        adaptive_score: row.get(21).map_err(rusqlite_to_eng_error)?,
-        pagerank_score: row.get(22).map_err(rusqlite_to_eng_error)?,
-        last_accessed_at: row.get(23).map_err(rusqlite_to_eng_error)?,
-        access_count: row.get(24).map_err(rusqlite_to_eng_error)?,
-        tags: row.get(25).map_err(rusqlite_to_eng_error)?,
-        episode_id: row.get(26).map_err(rusqlite_to_eng_error)?,
-        decay_score: row.get(27).map_err(rusqlite_to_eng_error)?,
-        confidence: row.get(28).map_err(rusqlite_to_eng_error)?,
-        sync_id: row.get(29).map_err(rusqlite_to_eng_error)?,
-        status: row.get(30).map_err(rusqlite_to_eng_error)?,
-        user_id: row.get(31).map_err(rusqlite_to_eng_error)?,
-        space_id: row.get(32).map_err(rusqlite_to_eng_error)?,
-        fsrs_stability: row.get(33).map_err(rusqlite_to_eng_error)?,
-        fsrs_difficulty: row.get(34).map_err(rusqlite_to_eng_error)?,
-        fsrs_storage_strength: row.get(35).map_err(rusqlite_to_eng_error)?,
-        fsrs_retrieval_strength: row.get(36).map_err(rusqlite_to_eng_error)?,
-        fsrs_learning_state: row.get(37).map_err(rusqlite_to_eng_error)?,
-        fsrs_reps: row.get(38).map_err(rusqlite_to_eng_error)?,
-        fsrs_lapses: row.get(39).map_err(rusqlite_to_eng_error)?,
-        fsrs_last_review_at: row.get(40).map_err(rusqlite_to_eng_error)?,
-        valence: row.get(41).map_err(rusqlite_to_eng_error)?,
-        arousal: row.get(42).map_err(rusqlite_to_eng_error)?,
-        dominant_emotion: row.get(43).map_err(rusqlite_to_eng_error)?,
-        created_at: row.get(44).map_err(rusqlite_to_eng_error)?,
-        updated_at: row.get(45).map_err(rusqlite_to_eng_error)?,
-        is_superseded: row.get::<_, i32>(46).map_err(rusqlite_to_eng_error)? != 0,
-        is_consolidated: row.get::<_, i32>(47).map_err(rusqlite_to_eng_error)? != 0,
+        version: row.get(6)?,
+        is_latest: row.get::<_, i32>(7)? != 0,
+        parent_memory_id: row.get(8)?,
+        root_memory_id: row.get(9)?,
+        source_count: row.get(10)?,
+        is_static: row.get::<_, i32>(11)? != 0,
+        is_forgotten: row.get::<_, i32>(12)? != 0,
+        is_archived: row.get::<_, i32>(13)? != 0,
+        is_fact: row.get::<_, i32>(14)? != 0,
+        is_decomposed: row.get::<_, i32>(15)? != 0,
+        forget_after: row.get(16)?,
+        forget_reason: row.get(17)?,
+        model: row.get(18)?,
+        recall_hits: row.get(19)?,
+        recall_misses: row.get(20)?,
+        adaptive_score: row.get(21)?,
+        pagerank_score: row.get(22)?,
+        last_accessed_at: row.get(23)?,
+        access_count: row.get(24)?,
+        tags: row.get(25)?,
+        episode_id: row.get(26)?,
+        decay_score: row.get(27)?,
+        confidence: row.get(28)?,
+        sync_id: row.get(29)?,
+        status: row.get(30)?,
+        user_id: row.get(31)?,
+        space_id: row.get(32)?,
+        fsrs_stability: row.get(33)?,
+        fsrs_difficulty: row.get(34)?,
+        fsrs_storage_strength: row.get(35)?,
+        fsrs_retrieval_strength: row.get(36)?,
+        fsrs_learning_state: row.get(37)?,
+        fsrs_reps: row.get(38)?,
+        fsrs_lapses: row.get(39)?,
+        fsrs_last_review_at: row.get(40)?,
+        valence: row.get(41)?,
+        arousal: row.get(42)?,
+        dominant_emotion: row.get(43)?,
+        created_at: row.get(44)?,
+        updated_at: row.get(45)?,
+        is_superseded: row.get::<_, i32>(46)? != 0,
+        is_consolidated: row.get::<_, i32>(47)? != 0,
     })
 }
 

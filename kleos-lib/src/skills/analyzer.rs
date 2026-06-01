@@ -1,6 +1,6 @@
 use super::types::ExecutionAnalysis;
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use rusqlite::params;
 
 // -- Levenshtein edit distance --
@@ -36,13 +36,10 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 pub async fn correct_skill_id(db: &Database, name: &str, _user_id: i64) -> Result<Option<String>> {
     let name = name.to_string();
     db.read(move |conn| {
-        let mut stmt = conn
-            .prepare("SELECT name FROM skill_records WHERE is_active = 1")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare("SELECT name FROM skill_records WHERE is_active = 1")?;
 
         let names: Vec<String> = stmt
-            .query_map(params![], |row| row.get(0))
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .query_map(params![], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -116,25 +113,25 @@ pub async fn persist_analysis(
         conn.execute(
             "INSERT INTO execution_analyses (skill_id, success, duration_ms, error_type, error_message) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![skill_id, success as i32, duration_ms, error_type, notes],
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         // Insert judgment
         conn.execute(
             "INSERT INTO skill_judgments (skill_id, judge_agent, score, rationale) VALUES (?1, ?2, ?3, ?4)",
             params![skill_id, agent, score, rationale],
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         // Update counters on skill_records
         if success {
             conn.execute(
                 "UPDATE skill_records SET success_count = success_count + 1, execution_count = execution_count + 1, updated_at = datetime('now') WHERE id = ?1",
                 params![skill_id],
-            ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         } else {
             conn.execute(
                 "UPDATE skill_records SET failure_count = failure_count + 1, execution_count = execution_count + 1, updated_at = datetime('now') WHERE id = ?1",
                 params![skill_id],
-            ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
 
         // Update avg duration
@@ -142,14 +139,14 @@ pub async fn persist_analysis(
             conn.execute(
                 "UPDATE skill_records SET avg_duration_ms = COALESCE((avg_duration_ms * (execution_count - 1) + ?1) / execution_count, ?1), updated_at = datetime('now') WHERE id = ?2",
                 params![dur, skill_id],
-            ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
         }
 
         // Update trust_score as average of all judgments
         conn.execute(
             "UPDATE skill_records SET trust_score = (SELECT AVG(score) * 100.0 FROM skill_judgments WHERE skill_id = ?1), updated_at = datetime('now') WHERE id = ?1",
             params![skill_id],
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         Ok(())
     }).await
@@ -162,7 +159,7 @@ pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json:
         // Underused: active skills with < 5 executions
         let mut stmt = conn.prepare(
             "SELECT id, name, execution_count, trust_score FROM skill_records WHERE is_active = 1 AND execution_count < 5 ORDER BY execution_count ASC LIMIT 20"
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         let underused: Vec<serde_json::Value> = stmt.query_map(params![], |row| {
             Ok(serde_json::json!({
@@ -171,15 +168,14 @@ pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json:
                 "execution_count": row.get::<_, i32>(2)?,
                 "trust_score": row.get::<_, f64>(3)?,
             }))
-        })
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
         // Failing: active skills with success_rate < 50%
         let mut stmt = conn.prepare(
             "SELECT id, name, success_count, failure_count, trust_score FROM skill_records WHERE is_active = 1 AND execution_count > 0 AND CAST(success_count AS REAL) / execution_count < 0.5 ORDER BY trust_score ASC LIMIT 20"
-        ).map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
 
         let failing: Vec<serde_json::Value> = stmt.query_map(params![], |row| {
             let sc: i32 = row.get(2)?;
@@ -194,8 +190,7 @@ pub async fn get_usage_stats(db: &Database, _user_id: i64) -> Result<serde_json:
                 "success_rate": rate,
                 "trust_score": row.get::<_, f64>(4)?,
             }))
-        })
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+        })?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -238,9 +233,7 @@ pub async fn get_failing_skill_candidates(
                    ORDER BY (CAST(sr.success_count AS REAL) / sr.execution_count) ASC, \
                             sr.trust_score ASC \
                    LIMIT ?4";
-        let mut stmt = conn
-            .prepare(sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut stmt = conn.prepare(sql)?;
         let ids: Vec<i64> = stmt
             .query_map(
                 params![
@@ -250,8 +243,7 @@ pub async fn get_failing_skill_candidates(
                     limit as i64,
                 ],
                 |row| row.get::<_, i64>(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            )?
             .filter_map(|r| r.ok())
             .collect();
         Ok(ids)
@@ -268,20 +260,32 @@ pub async fn get_failing_skill_candidates(
 #[tracing::instrument(skip(db, capture_tag), fields(user_id, since_secs, limit))]
 pub async fn get_capture_candidates(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     capture_tag: &str,
     since_secs: u64,
     limit: usize,
 ) -> Result<Vec<String>> {
-    let tag_needle = format!("%\"{}\"%", capture_tag.replace('"', ""));
+    // SECURITY (L12): the tag is user-controlled and goes into a LIKE pattern,
+    // so '%' or '_' in it would act as wildcards and widen the match. Escape
+    // the backslash first, then both wildcards, and pair with an ESCAPE clause
+    // on the LIKE below.
+    let escaped_tag = capture_tag
+        .replace('"', "")
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let tag_needle = format!("%\"{}\"%", escaped_tag);
     let since_clause = format!("-{} seconds", since_secs as i64);
     db.read(move |conn| {
+        // The owner predicate (?4) keeps single-DB (shared) mode from surfacing
+        // another user's memories as capture candidates; a no-op in a shard.
         let sql = "SELECT DISTINCT m.content FROM memories m \
-                   WHERE m.is_forgotten = 0 \
+                   WHERE m.user_id = ?4 \
+                     AND m.is_forgotten = 0 \
                      AND m.is_archived = 0 \
                      AND m.is_latest = 1 \
                      AND m.tags IS NOT NULL \
-                     AND m.tags LIKE ?1 \
+                     AND m.tags LIKE ?1 ESCAPE '\\' \
                      AND m.created_at > datetime('now', ?2) \
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records sr \
@@ -294,14 +298,12 @@ pub async fn get_capture_candidates(
                    ORDER BY m.created_at DESC \
                    LIMIT ?3";
         let mut stmt = conn
-            .prepare(sql)
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            .prepare(sql)?;
         let rows: Vec<String> = stmt
             .query_map(
-                params![tag_needle, since_clause, limit as i64],
+                params![tag_needle, since_clause, limit as i64, user_id],
                 |row| row.get::<_, String>(0),
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            )?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
@@ -324,23 +326,19 @@ pub async fn get_derive_candidates(
     db.read(move |conn| {
         // Load tag sets for every active skill the user owns. Skills with no
         // tags are excluded; there is nothing for Jaccard to work with.
-        let mut stmt = conn
-            .prepare(
-                "SELECT sr.id, sr.name, st.tag \
+        let mut stmt = conn.prepare(
+            "SELECT sr.id, sr.name, st.tag \
                  FROM skill_records sr \
                  INNER JOIN skill_tags st ON st.skill_id = sr.id \
                  WHERE sr.is_active = 1 AND sr.is_deprecated = 0",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        )?;
+        let rows = stmt.query_map(params![], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
         let mut tags_by_skill: std::collections::BTreeMap<
             i64,
             (String, std::collections::BTreeSet<String>),
@@ -354,14 +352,11 @@ pub async fn get_derive_candidates(
 
         // Pull every (skill_id, parent_id) pair so we can reject pairs whose
         // derived child already exists.
-        let mut parents_stmt = conn
-            .prepare("SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp")
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-        let parent_rows = parents_stmt
-            .query_map(params![], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut parents_stmt =
+            conn.prepare("SELECT slp.skill_id, slp.parent_id FROM skill_lineage_parents slp")?;
+        let parent_rows = parents_stmt.query_map(params![], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut lineage: std::collections::HashMap<i64, std::collections::BTreeSet<i64>> =
             std::collections::HashMap::new();
         for r in parent_rows.flatten() {
@@ -474,8 +469,7 @@ mod tests {
                     executions - successes,
                     format!("-{} seconds", created_offset_secs),
                 ],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(conn.last_insert_rowid())
         })
         .await
@@ -488,8 +482,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO skill_tags (skill_id, tag) VALUES (?1, ?2)",
                 params![skill_id, tag],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -501,8 +494,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO skill_lineage_parents (skill_id, parent_id) VALUES (?1, ?2)",
                 params![child_id, parent_id],
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await
@@ -544,8 +536,7 @@ mod tests {
                      VALUES ('flaky-v2', 'test', '', '', 0, 0, 0, 1, 0, ?1, \
                              datetime('now', '-60 seconds'))",
                     params![parent],
-                )
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 Ok(conn.last_insert_rowid())
             })
             .await
@@ -569,8 +560,7 @@ mod tests {
                     VALUES ('use ripgrep over grep', '[\"skill_candidate\"]', 1); \
                  INSERT INTO memories (content, tags, is_latest) \
                     VALUES ('unrelated note', '[\"other\"]', 1);",
-            )
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            )?;
             Ok(())
         })
         .await

@@ -138,6 +138,27 @@ pub async fn get_handler(
     State(state): State<AppState>,
     Path((category, name)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
+    // This endpoint returns the secret plaintext directly (raw tier), so it
+    // requires raw privilege. Non-raw agents must use proxy resolve instead,
+    // which injects the secret server-side without exposing the bytes.
+    if !auth.can_access_raw() {
+        log_audit(
+            &state.db,
+            auth.user_id(),
+            auth.agent_name(),
+            AuditAction::Get,
+            &category,
+            &name,
+            Some(AccessTier::Raw),
+            false,
+        )
+        .await?;
+        return Err(CredError::PermissionDenied(
+            "raw secret retrieval requires raw access; use proxy resolve".into(),
+        )
+        .into());
+    }
+
     if !auth.can_access_category(&category) {
         log_audit(
             &state.db,

@@ -86,42 +86,26 @@ async fn main() {
         Arc::new(tokio::sync::RwLock::new(None));
 
     // Spawn background task to load embedding model.
-    // KLEOS_EMBEDDING_BACKEND=openai uses an OpenAI-compatible HTTP endpoint
-    // (Ollama, LiteLLM, etc.) instead of the local ONNX runtime.
+    // When KLEOS_EMBEDDING_URL is set, use the OpenAI-compatible HTTP provider
+    // instead of the in-process ONNX runtime (avoids libonnxruntime dependency).
     {
         let embedder = Arc::clone(&embedder);
         let config = config.clone();
-        let embedding_backend = std::env::var("KLEOS_EMBEDDING_BACKEND")
-            .unwrap_or_else(|_| std::env::var("ENGRAM_EMBEDDING_BACKEND").unwrap_or_default());
         tokio::spawn(async move {
-            if embedding_backend == "openai" {
-                let base_url = std::env::var("KLEOS_EMBEDDING_OPENAI_BASE_URL")
-                    .or_else(|_| std::env::var("ENGRAM_EMBEDDING_OPENAI_BASE_URL"))
-                    .ok();
-                let api_key = std::env::var("KLEOS_EMBEDDING_OPENAI_API_KEY")
-                    .or_else(|_| std::env::var("ENGRAM_EMBEDDING_OPENAI_API_KEY"))
-                    .unwrap_or_default();
-                let model = std::env::var("KLEOS_EMBEDDING_OPENAI_MODEL")
-                    .or_else(|_| std::env::var("ENGRAM_EMBEDDING_OPENAI_MODEL"))
-                    .ok();
-                tracing::info!(
-                    base_url = base_url.as_deref().unwrap_or("https://api.openai.com/v1"),
-                    model = model.as_deref().unwrap_or("text-embedding-3-small"),
-                    "OpenAI-compatible embedding provider starting"
-                );
-                let provider = OpenAiProvider::new(
-                    reqwest::Client::new(),
-                    base_url,
-                    api_key,
-                    model,
-                    config.embedding_dim,
-                );
-                match provider.embed("warmup").await {
-                    Ok(_) => tracing::info!("OpenAI embedding provider ready"),
-                    Err(e) => tracing::warn!("OpenAI embedding pre-warm failed: {}. Vector search may be degraded.", e),
+            let provider: Option<Arc<dyn EmbeddingProvider>> = if let Some(p) =
+                OpenAiProvider::from_env(reqwest::Client::new(), config.embedding_dim)
+            {
+                tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
+                match p.embed("warmup").await {
+                    Ok(_) => {
+                        tracing::info!("OpenAI-compatible embedding provider ready");
+                        Some(Arc::new(p))
+                    }
+                    Err(e) => {
+                        tracing::warn!("OpenAI-compatible embedding provider probe failed: {}. Vector search disabled.", e);
+                        None
+                    }
                 }
-                let mut guard = embedder.write().await;
-                *guard = Some(Arc::new(provider));
             } else {
                 tracing::info!("loading ONNX embedding model in background...");
                 match OnnxProvider::new(&config).await {
@@ -134,18 +118,21 @@ async fn main() {
                             ),
                             Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
                         }
-                        let mut guard = embedder.write().await;
-                        *guard = Some(Arc::new(provider));
                         tracing::info!("ONNX embedding provider ready");
+                        Some(Arc::new(provider))
                     }
                     Err(e) => {
                         tracing::warn!(
-                            "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
-                            e
-                        );
+                                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                                e
+                            );
+                        None
                     }
                 }
-            }
+            };
+
+            let mut guard = embedder.write().await;
+            *guard = provider;
         });
     }
 
@@ -288,6 +275,23 @@ async fn main() {
         );
     }
 
+    // E1: recover orphaned deprovisions left in Deleting state from a previous crash.
+    if let Some(ref reg) = tenant_registry {
+        match kleos_lib::tenant::teardown::recover_orphans(reg.registry_db(), &db_arc).await {
+            Ok(report) => {
+                tracing::info!(
+                    found = report.found,
+                    re_enqueued = report.re_enqueued,
+                    stuck_skipped = report.stuck_skipped,
+                    "deprovision orphan recovery complete"
+                );
+            }
+            Err(e) => {
+                tracing::error!("deprovision orphan recovery failed: {e}");
+            }
+        }
+    }
+
     // H-005: per-pattern semaphores cap concurrent fire-and-forget background tasks.
     // Each defaults to 64 permits; set KLEOS_BG_SEM_<NAME>=N to override.
     fn bg_sem(name: &str, default: usize) -> Arc<Semaphore> {
@@ -348,6 +352,11 @@ async fn main() {
             let (tx, _) = tokio::sync::broadcast::channel(4096);
             tx
         },
+        artifact_encryption: Arc::new({
+            let key_src = std::env::var("KLEOS_ARTIFACT_KEY").unwrap_or_default();
+            kleos_lib::artifacts_crypto::ArtifactEncryption::new(&key_src)
+                .expect("invalid KLEOS_ARTIFACT_KEY")
+        }),
     };
 
     // R8 R-008: every background task is described by a factory so the
@@ -413,7 +422,7 @@ async fn main() {
     // Register handlers before the worker starts consuming so a pending job
     // claimed on the first tick finds its handler. Handlers close over
     // Arc<Database> -- the handler Fn is itself Arc-wrapped by the registry.
-    register_job_handlers(Arc::clone(&state.db)).await;
+    register_job_handlers(Arc::clone(&state.db), state.tenant_registry.clone()).await;
 
     {
         let db = Arc::clone(&state.db);
@@ -426,8 +435,9 @@ async fn main() {
     {
         let db = Arc::clone(&state.db);
         let registry = state.tenant_registry.clone();
+        let embedder = state.embedder.clone();
         supervised.push(Supervised::spawn("vector-sync-replay", move || {
-            start_vector_sync_replay_task(Arc::clone(&db), registry.clone())
+            start_vector_sync_replay_task(Arc::clone(&db), registry.clone(), embedder.clone())
         }));
         tracing::info!("vector-sync-replay background task started");
     }
@@ -485,6 +495,33 @@ async fn main() {
         tracing::info!("session-reaper background task started");
     }
 
+    // E1: cluster lock heartbeat keeps the deprovision cluster lock alive.
+    // KLEOS_NODE_ID identifies this node; defaults to a random UUID per boot.
+    if let Some(ref reg) = state.tenant_registry {
+        let node_id =
+            std::env::var("KLEOS_NODE_ID").unwrap_or_else(|_| uuid::Uuid::new_v4().to_string());
+        if let Err(e) = kleos_lib::tenant::teardown::check_cluster_lock(reg.registry_db(), &node_id)
+        {
+            tracing::warn!("cluster lock check: {e}");
+        }
+        let rdb = reg.registry_db_arc();
+        let shutdown_clone = shutdown.clone();
+        let _heartbeat_handle =
+            kleos_lib::tenant::teardown::start_heartbeat_task(rdb, node_id, shutdown_clone);
+        tracing::info!("deprovision cluster lock heartbeat started");
+    }
+
+    // E1: tombstone purge runs every 24 hours, removing tombstoned tenants
+    // whose deleted_at is older than KLEOS_TOMBSTONE_HOLD_DAYS (default 90).
+    if let Some(ref reg) = state.tenant_registry {
+        let rdb = reg.registry_db_arc();
+        supervised.push(Supervised::spawn("tombstone-purge", move || {
+            let rdb = Arc::clone(&rdb);
+            start_tombstone_purge_task(rdb)
+        }));
+        tracing::info!("tombstone-purge background task started (24h interval)");
+    }
+
     // R8 R-008: shutdown token already created and wired to the signal above;
     // the supervisor uses the same token so SIGTERM propagates through both.
     let supervisor_handle = {
@@ -534,13 +571,54 @@ async fn main() {
     }
 }
 
+/// Spawn a periodic task that purges expired tombstone tenants.
+///
+/// Runs every 24 hours. Reads `KLEOS_TOMBSTONE_HOLD_DAYS` (default 90) to
+/// determine the retention window.
+fn start_tombstone_purge_task(
+    registry_db: Arc<kleos_lib::tenant::registry_db::RegistryDb>,
+) -> (CancellationToken, JoinHandle<()>) {
+    let token = CancellationToken::new();
+    let cancel = token.clone();
+    let handle = tokio::spawn(async move {
+        let interval = Duration::from_secs(86400);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    tracing::info!("tombstone-purge task shutting down");
+                    break;
+                }
+                _ = tokio::time::sleep(interval) => {
+                    let hold_days: i64 = std::env::var("KLEOS_TOMBSTONE_HOLD_DAYS")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(90);
+                    match registry_db.purge_expired_tombstones(hold_days) {
+                        Ok(n) if n > 0 => {
+                            tracing::info!(purged = n, hold_days, "purged expired tombstones");
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::error!("tombstone purge failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+    });
+    (token, handle)
+}
+
 /// Register every durable-job handler the server knows about. Handlers are
 /// registered exactly once at startup, before the worker loop begins
 /// consuming, so a pending job claimed on the first tick finds its handler.
 ///
 /// Each handler closure captures the `Arc<Database>` it needs. The registry
 /// wraps the closure in another `Arc`, so cheap handler clones are fine.
-async fn register_job_handlers(db: Arc<Database>) {
+async fn register_job_handlers(
+    db: Arc<Database>,
+    tenant_registry: Option<Arc<kleos_lib::tenant::TenantRegistry>>,
+) {
     // ingestion.fact_extract -- durable fast_extract_facts invocation.
     // Payload: { "memory_id": i64, "content": string, "user_id": i64,
     //            "episode_id": i64|null }
@@ -617,6 +695,25 @@ async fn register_job_handlers(db: Arc<Database>) {
                 .map(|_| ())
             }
         })
+        .await;
+    }
+
+    // deprovision_teardown -- E1 cross-store teardown job.
+    // Payload: { "deprovision_id": string, "user_id": i64, "tenant_id": string }
+    if let Some(ref registry) = tenant_registry {
+        let data_root =
+            std::path::PathBuf::from(std::env::var("ENGRAM_DATA_DIR").unwrap_or_else(|_| {
+                dirs::data_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join("kleos")
+                    .to_string_lossy()
+                    .into_owned()
+            }));
+        kleos_lib::jobs::deprovision::register_handler(
+            registry.registry_db_arc(),
+            Arc::clone(&db),
+            data_root,
+        )
         .await;
     }
 

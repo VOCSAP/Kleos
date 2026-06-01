@@ -42,9 +42,7 @@ pub fn router() -> Router<AppState> {
         .route("/loom/stats", get(get_stats_handler))
 }
 
-// ---------------------------------------------------------------------------
-// Workflow handlers
-// ---------------------------------------------------------------------------
+// --- Workflow handlers ---
 
 /// Handler for `GET /loom/workflows`.
 ///
@@ -110,9 +108,7 @@ async fn delete_workflow_handler(
     Ok(Json(json!({ "ok": true })))
 }
 
-// ---------------------------------------------------------------------------
-// Run handlers
-// ---------------------------------------------------------------------------
+// --- Run handlers ---
 
 /// Handler for `POST /loom/runs`.
 ///
@@ -201,9 +197,7 @@ async fn get_logs_handler(
     Ok(Json(json!({ "logs": logs })))
 }
 
-// ---------------------------------------------------------------------------
-// Step handlers
-// ---------------------------------------------------------------------------
+// --- Step handlers ---
 
 /// Handler for `POST /loom/steps/{id}/complete`.
 ///
@@ -231,9 +225,7 @@ async fn fail_step_handler(
     Ok(Json(json!(step)))
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
+// --- Stats ---
 
 /// Handler for `GET /loom/stats`.
 ///

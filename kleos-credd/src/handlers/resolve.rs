@@ -18,6 +18,26 @@ use crate::auth::Auth;
 use crate::handlers::AppError;
 use crate::state::AppState;
 
+/// Response headers that must not be relayed from the upstream service back
+/// to the proxy caller. They carry upstream auth/session state (cookies,
+/// challenge headers) scoped to the credd<->upstream leg only.
+const STRIPPED_RESPONSE_HEADERS: &[&str] = &[
+    "set-cookie",
+    "set-cookie2",
+    "www-authenticate",
+    "proxy-authenticate",
+    "authorization",
+    "proxy-authorization",
+];
+
+/// True when an upstream response header should be dropped before forwarding.
+/// Comparison is case-insensitive; reqwest already lowercases header names.
+fn is_stripped_response_header(name: &str) -> bool {
+    STRIPPED_RESPONSE_HEADERS
+        .iter()
+        .any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// Pattern for secret placeholders: {{secret:category/name}} or {{secret:category/name.field}}
 fn find_placeholders(text: &str) -> Vec<(usize, usize, String, String, Option<String>)> {
     let mut results = Vec::new();
@@ -65,10 +85,33 @@ pub async fn resolve_text_handler(
     State(state): State<AppState>,
     Json(body): Json<ResolveTextRequest>,
 ) -> Result<Json<ResolveTextResponse>, AppError> {
+    // Text substitution returns plaintext secret bytes in the response body,
+    // so it is a plaintext tier and requires the same privilege as raw
+    // retrieval. Non-raw agents (and bootstrap agents) must use proxy
+    // injection, which never returns the secret value to the caller.
+    if !auth.can_access_raw() {
+        log_audit(
+            &state.db,
+            auth.user_id(),
+            auth.agent_name(),
+            AuditAction::Resolve,
+            "",
+            "",
+            Some(AccessTier::Substitution),
+            false,
+        )
+        .await?;
+        return Err(CredError::PermissionDenied(
+            "text resolve exposes plaintext and requires raw access; use proxy resolve".into(),
+        )
+        .into());
+    }
+
     let placeholders = find_placeholders(&body.text);
     let mut result = body.text.clone();
     let mut offset: isize = 0;
     let mut substitutions = 0;
+    let mut denied_categories: Vec<String> = Vec::new();
 
     for (start, end, category, name, field) in placeholders {
         if !auth.can_access_category(&category) {
@@ -83,6 +126,7 @@ pub async fn resolve_text_handler(
                 false,
             )
             .await?;
+            denied_categories.push(category);
             continue;
         }
 
@@ -96,8 +140,18 @@ pub async fn resolve_text_handler(
                     None => data.primary_value(),
                 };
 
-                let adj_start = (start as isize + offset) as usize;
-                let adj_end = (end as isize + offset) as usize;
+                let adj_start_signed = start as isize + offset;
+                let adj_end_signed = end as isize + offset;
+                if adj_start_signed < 0
+                    || adj_end_signed < 0
+                    || adj_end_signed as usize > result.len()
+                    || !result.is_char_boundary(adj_start_signed as usize)
+                    || !result.is_char_boundary(adj_end_signed as usize)
+                {
+                    continue;
+                }
+                let adj_start = adj_start_signed as usize;
+                let adj_end = adj_end_signed as usize;
                 result.replace_range(adj_start..adj_end, &value);
                 offset += value.len() as isize - (end - start) as isize;
                 substitutions += 1;
@@ -130,6 +184,18 @@ pub async fn resolve_text_handler(
         }
     }
 
+    // Fail the entire request if any placeholder was denied -- never return
+    // partially substituted text with unresolved placeholders visible.
+    if !denied_categories.is_empty() {
+        denied_categories.sort();
+        denied_categories.dedup();
+        return Err(kleos_cred::CredError::PermissionDenied(format!(
+            "access denied for categories: {}",
+            denied_categories.join(", ")
+        ))
+        .into());
+    }
+
     Ok(Json(ResolveTextResponse {
         text: result,
         substitutions,
@@ -155,6 +221,42 @@ pub async fn proxy_handler(
     kleos_lib::webhooks::resolve_and_validate_url(&req.url)
         .await
         .map_err(|e| CredError::InvalidInput(format!("proxy target URL rejected: {}", e)))?;
+
+    // SECURITY (H4): per-category domain binding. When an allowlist is
+    // configured, only forward credentials to explicitly permitted domains.
+    if let Some(allowlist) = &state.proxy_domain_allowlist {
+        let target_host = url::Url::parse(&req.url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| h.to_lowercase()));
+        let target_host = target_host.as_deref().unwrap_or("");
+        let allowed_domains = allowlist
+            .get(&req.secret_category)
+            .or_else(|| allowlist.get("*"));
+        let permitted = match allowed_domains {
+            Some(domains) => domains.iter().any(|pattern| {
+                if pattern == "*" {
+                    true
+                } else if let Some(suffix) = pattern.strip_prefix("*.") {
+                    target_host == suffix || target_host.ends_with(&format!(".{}", suffix))
+                } else {
+                    target_host == pattern
+                }
+            }),
+            None => false,
+        };
+        if !permitted {
+            return Err(CredError::PermissionDenied(format!(
+                "proxy target domain '{}' not in allowlist for category '{}'",
+                target_host, req.secret_category
+            ))
+            .into());
+        }
+    } else if std::env::var("CREDD_PROXY_STRICT").as_deref() == Ok("1") {
+        return Err(CredError::PermissionDenied(
+            "proxy denied: no domain allowlist configured and CREDD_PROXY_STRICT=1 is set".into(),
+        )
+        .into());
+    }
 
     if !auth.can_access_category(&req.secret_category) {
         log_audit(
@@ -233,6 +335,9 @@ pub async fn proxy_handler(
     let status = response.status().as_u16();
     let mut headers = std::collections::HashMap::new();
     for (name, value) in response.headers().iter() {
+        if is_stripped_response_header(name.as_str()) {
+            continue;
+        }
         if let Ok(text) = value.to_str() {
             headers.insert(name.to_string(), text.to_string());
         }

@@ -7,12 +7,7 @@
 //! timestamp -- all in a single write transaction to prevent double-claiming.
 
 use crate::db::Database;
-use crate::{EngError, Result};
-
-/// Map a rusqlite error to the crate's EngError type.
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
+use crate::Result;
 
 /// Enqueue a new task for any agent to pick up.
 ///
@@ -29,34 +24,22 @@ pub async fn enqueue_task(
     summary: Option<&str>,
     user_id: i64,
 ) -> Result<super::tasks::Task> {
-    let req = super::tasks::CreateTaskRequest {
-        agent: "unassigned".to_string(),
-        project: project.to_string(),
-        title: title.to_string(),
-        status: Some("queued".to_string()),
-        summary: summary.map(|s| s.to_string()),
-        user_id: Some(user_id),
-        expected_output: None,
-        output_format: None,
-        condition: None,
-        guardrail_url: None,
-        heartbeat_interval: None,
-    };
-
-    // The task is queued but not yet assigned, so flip assigned back to 0.
-    // create_task defaults assigned to the DB column default of 1, so we
-    // update it immediately after insertion within a write call.
-    let task = super::tasks::create_task(db, req).await?;
-    let task_id = task.id;
-    db.write(move |conn| {
-        conn.execute(
-            "UPDATE chiasm_tasks SET assigned = 0 WHERE id = ?1",
-            rusqlite::params![task_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
-        Ok(())
-    })
-    .await?;
+    // Single-write INSERT with assigned = 0 to prevent a TOCTOU window where
+    // another agent could claim the task between INSERT and UPDATE.
+    let project_s = project.to_string();
+    let title_s = title.to_string();
+    let summary_s = summary.map(|s| s.to_string());
+    let task_id = db
+        .write(move |conn| {
+            conn.execute(
+                "INSERT INTO chiasm_tasks (agent, project, title, status, summary, \
+                 output_format, heartbeat_interval, assigned, user_id) \
+                 VALUES ('unassigned', ?1, ?2, 'queued', ?3, 'raw', 300, 0, ?4)",
+                rusqlite::params![project_s, title_s, summary_s, user_id],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await?;
     let task = super::tasks::get_task(db, task_id, user_id).await?;
     super::emit_chiasm_event(
         db,
@@ -95,28 +78,31 @@ pub async fn claim_next_task(
 
     let maybe_id: Option<i64> = db
         .write(move |conn| {
-            // Build SELECT with optional project filter.
+            // Build SELECT with optional project filter. Scoped to user_id so an
+            // agent only claims tasks queued by its own user in single-DB mode.
             let id: Option<i64> = if let Some(ref proj) = project_s {
                 let sql = "SELECT id FROM chiasm_tasks \
-                           WHERE status = 'queued' AND assigned = 0 AND project = ?1 \
+                           WHERE status = 'queued' AND assigned = 0 AND user_id = ?2 AND project = ?1 \
                            ORDER BY created_at ASC LIMIT 1";
-                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
+                let mut stmt = conn.prepare(sql)?;
                 let mut rows = stmt
-                    .query(rusqlite::params![proj])
-                    .map_err(rusqlite_to_eng_error)?;
+                    .query(rusqlite::params![proj, user_id])
+                    ?;
                 rows.next()
-                    .map_err(rusqlite_to_eng_error)?
-                    .map(|row| row.get::<_, i64>(0).map_err(rusqlite_to_eng_error))
+                    ?
+                    .map(|row| row.get::<_, i64>(0))
                     .transpose()?
             } else {
                 let sql = "SELECT id FROM chiasm_tasks \
-                           WHERE status = 'queued' AND assigned = 0 \
+                           WHERE status = 'queued' AND assigned = 0 AND user_id = ?1 \
                            ORDER BY created_at ASC LIMIT 1";
-                let mut stmt = conn.prepare(sql).map_err(rusqlite_to_eng_error)?;
-                let mut rows = stmt.query([]).map_err(rusqlite_to_eng_error)?;
+                let mut stmt = conn.prepare(sql)?;
+                let mut rows = stmt
+                    .query(rusqlite::params![user_id])
+                    ?;
                 rows.next()
-                    .map_err(rusqlite_to_eng_error)?
-                    .map(|row| row.get::<_, i64>(0).map_err(rusqlite_to_eng_error))
+                    ?
+                    .map(|row| row.get::<_, i64>(0))
                     .transpose()?
             };
 
@@ -126,10 +112,10 @@ pub async fn claim_next_task(
                     "UPDATE chiasm_tasks \
                      SET agent = ?1, status = 'active', assigned = 1, \
                          last_heartbeat = datetime('now'), updated_at = datetime('now') \
-                     WHERE id = ?2",
-                    rusqlite::params![agent_s, task_id],
+                     WHERE id = ?2 AND user_id = ?3",
+                    rusqlite::params![agent_s, task_id, user_id],
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             }
 
             Ok(id)

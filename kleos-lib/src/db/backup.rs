@@ -5,10 +5,6 @@ pub use super::types::{CheckpointMode, RestoreReport};
 use crate::{EngError, Result};
 use std::path::Path;
 
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
-
 /// Creates a consistent backup of the database using VACUUM INTO.
 /// The destination path must not contain single quotes.
 #[tracing::instrument(skip(db, dest))]
@@ -21,8 +17,7 @@ pub async fn vacuum_into(db: &crate::db::Database, dest: &Path) -> Result<()> {
     }
     let sql = format!("VACUUM INTO '{}'", path_str);
     db.write(move |conn| {
-        conn.execute(&sql, [])
-            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        conn.execute(&sql, [])?;
         Ok(())
     })
     .await
@@ -75,17 +70,13 @@ pub async fn restore_test(path: &Path) -> Result<RestoreReport> {
         )
         .map_err(|e| EngError::DatabaseMessage(format!("restore_test open: {e}")))?;
 
-        let schema_version: i64 = conn
-            .query_row("PRAGMA schema_version", [], |row| row.get(0))
-            .map_err(rusqlite_to_eng_error)?;
+        let schema_version: i64 = conn.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
 
-        let table_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)?;
+        let table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |row| row.get(0),
+        )?;
 
         let memory_count: Option<i64> = conn
             .query_row(
@@ -120,19 +111,20 @@ pub async fn wal_checkpoint(
     mode: CheckpointMode,
 ) -> Result<(i32, i32, i32)> {
     let mode_str = mode.as_str().to_string();
-    db.read(move |conn| {
+    // A WAL checkpoint takes the WAL write lock, so it must run on the writer
+    // pool, not a reader connection. Errors are propagated (not swallowed into
+    // a fake (0,0,0)) so callers can see and log a failed checkpoint.
+    db.write(move |conn| {
         let sql = format!("PRAGMA wal_checkpoint({})", mode_str);
-        conn.query_row(&sql, [], |row| {
+        Ok(conn.query_row(&sql, [], |row| {
             Ok((
                 row.get::<_, i32>(0).unwrap_or(0),
                 row.get::<_, i32>(1).unwrap_or(0),
                 row.get::<_, i32>(2).unwrap_or(0),
             ))
-        })
-        .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        })?)
     })
     .await
-    .or(Ok((0, 0, 0)))
 }
 
 #[cfg(test)]

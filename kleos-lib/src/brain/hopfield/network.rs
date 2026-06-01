@@ -1,9 +1,7 @@
 use ndarray::{Array1, Array2, Axis};
 use std::collections::HashMap;
 
-// ---------------------------------------------------------------------------
-// Constants -- ported from eidolon substrate.rs / decay.rs
-// ---------------------------------------------------------------------------
+// --- Constants -- ported from eidolon substrate.rs / decay.rs ---
 
 /// Temperature scaling for softmax attention in the modern Hopfield
 /// retrieval. Higher beta sharpens the distribution, lower beta makes
@@ -17,9 +15,7 @@ pub const ACTIVATION_THRESHOLD: f32 = 0.01;
 /// Default number of iterations for pattern completion.
 pub const DEFAULT_COMPLETE_ITERATIONS: usize = 5;
 
-// ---------------------------------------------------------------------------
-// HopfieldNetwork
-// ---------------------------------------------------------------------------
+// --- HopfieldNetwork ---
 
 /// A continuous/modern Hopfield network (Ramsauer et al. 2020).
 ///
@@ -361,9 +357,7 @@ impl Default for HopfieldNetwork {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Math utilities
-// ---------------------------------------------------------------------------
+// --- Math utilities ---
 
 /// L2-normalize a vector. Returns a zero vector if the input norm is zero.
 pub fn l2_normalize(v: &[f32]) -> Vec<f32> {
@@ -382,10 +376,13 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
     }
 
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    if !max.is_finite() {
+        return vec![1.0 / logits.len() as f32; logits.len()];
+    }
     let exps: Vec<f32> = logits.iter().map(|&l| (l - max).exp()).collect();
     let sum: f32 = exps.iter().sum();
 
-    if sum < 1e-10 {
+    if !sum.is_finite() || sum < 1e-10 {
         return vec![1.0 / logits.len() as f32; logits.len()];
     }
 
@@ -404,9 +401,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+// --- Tests ---
 
 #[cfg(test)]
 mod tests {

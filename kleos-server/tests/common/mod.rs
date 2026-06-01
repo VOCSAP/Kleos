@@ -86,6 +86,9 @@ pub async fn test_app() -> (Router, AppState) {
             let (tx, _) = tokio::sync::broadcast::channel(64);
             tx
         },
+        artifact_encryption: Arc::new(
+            kleos_lib::artifacts_crypto::ArtifactEncryption::new("").expect("disabled encryption"),
+        ),
     };
     let router = build_router(state.clone());
     (router, state)
@@ -147,6 +150,9 @@ pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
             let (tx, _) = tokio::sync::broadcast::channel(64);
             tx
         },
+        artifact_encryption: Arc::new(
+            kleos_lib::artifacts_crypto::ArtifactEncryption::new("").expect("disabled encryption"),
+        ),
     };
     let router = build_router(state.clone());
     (router, state, tmp)

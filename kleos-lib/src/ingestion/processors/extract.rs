@@ -96,23 +96,16 @@ pub async fn process(
                 content: fact.clone(),
                 category: options.category.clone(),
                 source: options.source.clone(),
-                importance: 5,
-                tags: None,
-                embedding: None,
-                session_id: None,
-                is_static: None,
                 user_id: Some(options.user_id),
                 space_id: options.space_id,
-                space: None,
-                parent_memory_id: None,
-                chunk_embeddings: None,
+                ..Default::default()
             };
 
             let store_outcome = match &ctx.embedder {
                 Some(embedder) => {
                     memory::store_with_chunks(db.as_ref(), embedder.as_ref(), req).await
                 }
-                None => memory::store(db.as_ref(), req).await,
+                None => memory::store(db.as_ref(), req, None, false).await,
             };
 
             match store_outcome {

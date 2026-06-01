@@ -45,9 +45,7 @@ use types::{
     SweepBody, TimeTravelBody, ValenceScoreBody,
 };
 
-// ---------------------------------------------------------------------------
-// Router
-// ---------------------------------------------------------------------------
+// --- Router ---
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -198,16 +196,20 @@ async fn dreamer_stats_handler(
     Ok(Json(json!(*stats)))
 }
 
-// ---------------------------------------------------------------------------
-// Consolidation
-// ---------------------------------------------------------------------------
+// --- Consolidation ---
 
 #[tracing::instrument(skip_all)]
 async fn consolidate_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<ConsolidateBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
+    if !state.config.consolidation_enabled {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "consolidation is disabled; set KLEOS_CONSOLIDATION_ENABLED=1 to re-enable".into(),
+        )));
+    }
     let ids: Vec<String> = body
         .memory_ids
         .into_iter()
@@ -220,10 +222,16 @@ async fn consolidate_handler(
 /// GET /intelligence/candidates -- list memory candidates for further intelligence processing.
 #[tracing::instrument(skip_all)]
 async fn candidates_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<CandidatesBody>,
 ) -> Result<Json<Value>, AppError> {
+    if !state.config.consolidation_enabled {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "consolidation is disabled; set KLEOS_CONSOLIDATION_ENABLED=1 to re-enable".into(),
+        )));
+    }
     let threshold = body.threshold.unwrap_or(0.7);
     let groups = find_consolidation_candidates(&db, threshold, auth.user_id).await?;
     Ok(Json(json!({ "groups": groups })))
@@ -241,9 +249,7 @@ async fn list_consolidations_handler(
     Ok(Json(json!({ "consolidations": items })))
 }
 
-// ---------------------------------------------------------------------------
-// Contradiction
-// ---------------------------------------------------------------------------
+// --- Contradiction ---
 
 #[tracing::instrument(skip_all)]
 async fn contradictions_handler(
@@ -266,9 +272,7 @@ async fn scan_contradictions_handler(
     Ok(Json(json!({ "contradictions": contradictions })))
 }
 
-// ---------------------------------------------------------------------------
-// Decomposition
-// ---------------------------------------------------------------------------
+// --- Decomposition ---
 
 #[tracing::instrument(skip_all)]
 async fn decompose_handler(
@@ -280,18 +284,19 @@ async fn decompose_handler(
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
-// ---------------------------------------------------------------------------
-// Temporal
-// ---------------------------------------------------------------------------
+// --- Temporal ---
 
 #[tracing::instrument(skip_all)]
 async fn detect_temporal_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let patterns = detect_patterns(&db).await?;
+    let patterns = detect_patterns(&db, auth.user_id).await?;
+    // detect_patterns already stores each pattern; these store calls are
+    // now redundant but kept for backwards-compat with existing routes that
+    // used to call store_pattern separately. They are scoped to auth.user_id.
     for pattern in &patterns {
-        if let Err(e) = store_pattern(&db, pattern).await {
+        if let Err(e) = store_pattern(&db, pattern, auth.user_id).await {
             tracing::warn!("failed to store temporal pattern: {}", e);
         }
     }
@@ -301,18 +306,16 @@ async fn detect_temporal_handler(
 /// GET /intelligence/temporal/patterns -- list previously detected temporal patterns, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_temporal_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = params.limit.unwrap_or(20).min(500) as i64;
-    let patterns = list_patterns(&db, limit).await?;
+    let limit = params.limit.unwrap_or(20).clamp(1, 500) as i64;
+    let patterns = list_patterns(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
-// ---------------------------------------------------------------------------
-// Digests
-// ---------------------------------------------------------------------------
+// --- Digests ---
 
 #[tracing::instrument(skip_all)]
 async fn generate_digest_handler(
@@ -328,18 +331,16 @@ async fn generate_digest_handler(
 /// GET /intelligence/digests -- list generated periodic digests, newest first.
 #[tracing::instrument(skip_all)]
 async fn list_digests_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(20).min(500);
-    let items = list_digests(&db, limit).await?;
+    let items = list_digests(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "digests": items })))
 }
 
-// ---------------------------------------------------------------------------
-// Reflections
-// ---------------------------------------------------------------------------
+// --- Reflections ---
 
 #[tracing::instrument(skip_all)]
 async fn create_reflection_handler(
@@ -387,9 +388,7 @@ async fn generate_reflections_handler(
     Ok(Json(json!({ "reflections": items, "count": items.len() })))
 }
 
-// ---------------------------------------------------------------------------
-// Causal
-// ---------------------------------------------------------------------------
+// --- Causal ---
 
 #[tracing::instrument(skip_all)]
 async fn create_chain_handler(
@@ -467,9 +466,7 @@ async fn causal_backward_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Sentiment
-// ---------------------------------------------------------------------------
+// --- Sentiment ---
 
 #[tracing::instrument(skip_all)]
 async fn sentiment_analyze_handler(
@@ -519,24 +516,20 @@ async fn sentiment_history_handler(
     let since_owned = since.to_string();
     let history = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, created_at FROM memories \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, created_at FROM memories \
                      WHERE is_forgotten = 0 AND created_at >= ?1 \
                      ORDER BY created_at DESC LIMIT ?2",
-                )
-                .map_err(kleos_lib::EngError::Database)?;
-            let rows = stmt
-                .query_map(params![since_owned, limit], |row| {
-                    let id: i64 = row.get(0)?;
-                    let content: String = row.get(1)?;
-                    let created_at: String = row.get(2)?;
-                    Ok((id, content, created_at))
-                })
-                .map_err(kleos_lib::EngError::Database)?;
+            )?;
+            let rows = stmt.query_map(params![since_owned, limit], |row| {
+                let id: i64 = row.get(0)?;
+                let content: String = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                Ok((id, content, created_at))
+            })?;
             let mut history = Vec::new();
             for row in rows {
-                let (id, content, created_at) = row.map_err(kleos_lib::EngError::Database)?;
+                let (id, content, created_at) = row?;
                 let score = sentiment::score_text(&content);
                 history.push(serde_json::json!({
                     "memory_id": id,
@@ -551,9 +544,7 @@ async fn sentiment_history_handler(
     Ok(Json(json!({ "history": history })))
 }
 
-// ---------------------------------------------------------------------------
-// Valence
-// ---------------------------------------------------------------------------
+// --- Valence ---
 
 #[tracing::instrument(skip_all)]
 async fn valence_score_handler(
@@ -601,9 +592,7 @@ async fn valence_profile_handler(
     Ok(Json(json!(profile)))
 }
 
-// ---------------------------------------------------------------------------
-// Predictive
-// ---------------------------------------------------------------------------
+// --- Predictive ---
 
 #[tracing::instrument(skip_all)]
 async fn predictive_recall_handler(
@@ -617,13 +606,13 @@ async fn predictive_recall_handler(
 /// GET /intelligence/predictive/patterns -- return persisted temporal patterns used to drive predictions.
 #[tracing::instrument(skip_all)]
 async fn predictive_patterns_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<LimitQuery>,
 ) -> Result<Json<Value>, AppError> {
-    // Return temporal patterns that drive predictions
-    let limit = params.limit.unwrap_or(20).min(500) as i64;
-    let patterns = list_patterns(&db, limit).await?;
+    // Return temporal patterns that drive predictions, scoped to the caller.
+    let limit = params.limit.unwrap_or(20).clamp(1, 500) as i64;
+    let patterns = list_patterns(&db, auth.user_id, limit).await?;
     Ok(Json(json!({ "patterns": patterns })))
 }
 
@@ -641,9 +630,7 @@ async fn predictive_sequences_handler(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Reconsolidation
-// ---------------------------------------------------------------------------
+// --- Reconsolidation ---
 
 #[tracing::instrument(skip_all)]
 async fn reconsolidate_handler(
@@ -667,9 +654,7 @@ async fn reconsolidation_candidates_handler(
     Ok(Json(json!({ "results": results, "count": results.len() })))
 }
 
-// ---------------------------------------------------------------------------
-// Extraction
-// ---------------------------------------------------------------------------
+// --- Extraction ---
 
 #[tracing::instrument(skip_all)]
 async fn extract_handler(
@@ -686,19 +671,12 @@ async fn extract_handler(
             &db,
             kleos_lib::memory::types::StoreRequest {
                 content: c.clone(),
-                category: "general".to_string(),
                 source: "extraction".to_string(),
-                importance: 5,
-                tags: None,
-                embedding: None,
-                session_id: None,
-                is_static: None,
                 user_id: Some(auth.user_id),
-                space_id: None,
-                space: None,
-                parent_memory_id: None,
-                chunk_embeddings: None,
+                ..Default::default()
             },
+            None,
+            false,
         )
         .await?;
         (c.clone(), result.id)
@@ -717,9 +695,7 @@ async fn extract_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Time Travel
-// ---------------------------------------------------------------------------
+// --- Time Travel ---
 
 #[tracing::instrument(skip_all)]
 async fn time_travel_handler(
@@ -727,7 +703,7 @@ async fn time_travel_handler(
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<TimeTravelBody>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = body.limit.unwrap_or(20).min(100);
+    let limit = kleos_lib::validation::clamp_signed_limit(body.limit.unwrap_or(20), 20, 100) as i64;
     let results = time_travel(
         &db,
         auth.user_id,
@@ -743,24 +719,26 @@ async fn time_travel_handler(
     })))
 }
 
-// ---------------------------------------------------------------------------
-// Sweep
-// ---------------------------------------------------------------------------
+// --- Sweep ---
 
 #[tracing::instrument(skip_all)]
 async fn sweep_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<SweepBody>,
 ) -> Result<Json<Value>, AppError> {
+    if !state.config.consolidation_enabled {
+        return Err(AppError(kleos_lib::EngError::Forbidden(
+            "consolidation is disabled; set KLEOS_CONSOLIDATION_ENABLED=1 to re-enable".into(),
+        )));
+    }
     let threshold = body.threshold.unwrap_or(0.85);
     let result = sweep(&db, auth.user_id, threshold).await?;
     Ok(Json(json!(result)))
 }
 
-// ---------------------------------------------------------------------------
-// Correct
-// ---------------------------------------------------------------------------
+// --- Correct ---
 
 #[tracing::instrument(skip_all)]
 async fn correct_handler(
@@ -779,9 +757,7 @@ async fn correct_handler(
     Ok((StatusCode::CREATED, Json(json!(corrected))))
 }
 
-// ---------------------------------------------------------------------------
-// Memory Health
-// ---------------------------------------------------------------------------
+// --- Memory Health ---
 
 #[tracing::instrument(skip_all)]
 async fn memory_health_handler(
@@ -792,9 +768,7 @@ async fn memory_health_handler(
     Ok(Json(json!(report)))
 }
 
-// ---------------------------------------------------------------------------
-// Feedback
-// ---------------------------------------------------------------------------
+// --- Feedback ---
 
 #[tracing::instrument(skip_all)]
 async fn feedback_handler(
@@ -809,16 +783,14 @@ async fn feedback_handler(
 /// GET /intelligence/feedback/stats -- aggregate stats over recorded user feedback events.
 #[tracing::instrument(skip_all)]
 async fn feedback_stats_handler(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = feedback::feedback_stats(&db).await?;
+    let stats = feedback::feedback_stats(&db, auth.user_id).await?;
     Ok(Json(json!(stats)))
 }
 
-// ---------------------------------------------------------------------------
-// Duplicates
-// ---------------------------------------------------------------------------
+// --- Duplicates ---
 
 #[tracing::instrument(skip_all)]
 async fn duplicates_handler(
@@ -845,16 +817,17 @@ async fn deduplicate_handler(
     Ok(Json(json!(result)))
 }
 
-// ---------------------------------------------------------------------------
-// Dream (Eidolon integration -- graceful degradation)
-// ---------------------------------------------------------------------------
+// --- Dream (Eidolon integration -- graceful degradation) ---
 
 #[tracing::instrument(skip_all)]
 async fn run_pipeline_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = default_pipeline().run(&db, auth.user_id).await?;
+    let report = default_pipeline(state.config.consolidation_enabled)
+        .run(&db, auth.user_id)
+        .await?;
     Ok(Json(json!(report)))
 }
 

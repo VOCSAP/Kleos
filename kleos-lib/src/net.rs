@@ -4,8 +4,17 @@
 
 use crate::webhooks::{is_ipv4_denied, is_ipv6_denied};
 use crate::EngError;
+use std::sync::OnceLock;
 use std::time::Duration;
 use url::Url;
+
+/// Cached startup-time read of `KLEOS_NET_ALLOW_PRIVATE`.
+/// Prevents an attacker from toggling the env var at runtime to
+/// bypass SSRF protections after process start.
+fn allow_private_networks() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| std::env::var("KLEOS_NET_ALLOW_PRIVATE").as_deref() == Ok("1"))
+}
 
 /// R7-002: default response size cap for outbound HTTP responses.
 /// Call sites with different needs should pass their own value to
@@ -67,10 +76,7 @@ pub fn validate_outbound_url(raw: &str) -> Result<Url, EngError> {
     let host = parsed
         .host()
         .ok_or_else(|| EngError::InvalidInput(format!("url '{}' has no host", raw)))?;
-    // Tests and internal sidecar->server traffic bind on 127.0.0.1; production
-    // SSRF protection is the default but operators can opt out for these
-    // controlled paths.
-    let allow_private = std::env::var("KLEOS_NET_ALLOW_PRIVATE").as_deref() == Ok("1");
+    let allow_private = allow_private_networks();
     match host {
         url::Host::Domain(name) => {
             let lower = name.to_ascii_lowercase();

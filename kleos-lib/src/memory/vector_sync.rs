@@ -6,7 +6,6 @@
 //! sites (`kleos_lib::memory::replay_vector_sync_pending`, etc.) continue
 //! to resolve unchanged.
 
-use super::rusqlite_to_eng_error;
 use super::types::VectorSyncReplayReport;
 use crate::db::Database;
 use crate::Result;
@@ -39,7 +38,7 @@ async fn fetch_embeddings_batch(
         }
         sql.push(')');
 
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::with_capacity(owned.len());
         for mid in &owned {
             params.push(Box::new(*mid));
@@ -47,13 +46,11 @@ async fn fetch_embeddings_batch(
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
 
-        let mut rows = stmt
-            .query(param_refs.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+        let mut rows = stmt.query(param_refs.as_slice())?;
         let mut map: HashMap<i64, Vec<u8>> = HashMap::with_capacity(owned.len());
-        while let Some(row) = rows.next().map_err(rusqlite_to_eng_error)? {
-            let id: i64 = row.get(0).map_err(rusqlite_to_eng_error)?;
-            let blob: Vec<u8> = row.get(1).map_err(rusqlite_to_eng_error)?;
+        while let Some(row) = rows.next()? {
+            let id: i64 = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
             map.insert(id, blob);
         }
         Ok(map)
@@ -69,13 +66,12 @@ async fn delete_pending_batch(db: &Database, ledger_ids: Vec<i64>) -> Result<()>
     db.write(move |conn| {
         let placeholders = ledger_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!("DELETE FROM vector_sync_pending WHERE id IN ({placeholders})");
-        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut stmt = conn.prepare(&sql)?;
         let params: Vec<Box<dyn rusqlite::types::ToSql>> =
             ledger_ids.iter().map(|id| Box::new(*id) as _).collect();
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
-        stmt.execute(param_refs.as_slice())
-            .map_err(rusqlite_to_eng_error)?;
+        stmt.execute(param_refs.as_slice())?;
         Ok(())
     })
     .await
@@ -99,20 +95,17 @@ pub async fn build_lance_index_from_existing(db: &Database, _owner_user_id: i64)
 
     let rows: Vec<(i64, Vec<u8>)> = db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, embedding_vec_1024
+            let mut stmt = conn.prepare(
+                "SELECT id, embedding_vec_1024
                      FROM memories
                      WHERE embedding_vec_1024 IS NOT NULL
                        AND is_forgotten = 0
                        AND is_latest = 1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
-                })
-                .map_err(rusqlite_to_eng_error)?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -153,12 +146,10 @@ pub async fn replay_vector_sync_pending(
     // Tuple: (ledger_id, memory_id, op)
     let pending: Vec<(i64, i64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, memory_id, op FROM vector_sync_pending \
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map(params![limit as i64], |row| {
                     Ok((
@@ -166,8 +157,7 @@ pub async fn replay_vector_sync_pending(
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
                     ))
-                })
-                .map_err(rusqlite_to_eng_error)?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -238,8 +228,7 @@ async fn process_pending_batch(
                              last_attempt_at = datetime('now') \
                          WHERE id = ?2",
                         params![e_clone, ledger_id],
-                    )
-                    .map_err(rusqlite_to_eng_error)?;
+                    )?;
                     Ok(())
                 })
                 .await?;
@@ -263,10 +252,11 @@ async fn process_pending_batch(
 pub async fn vector_sync_pending_users(db: &Database) -> Result<Vec<i64>> {
     let count: i64 = db
         .read(|conn| {
-            conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
-                row.get(0)
-            })
-            .map_err(rusqlite_to_eng_error)
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM vector_sync_pending", [], |row| {
+                    row.get(0)
+                })?,
+            )
         })
         .await?;
     // Return a single synthetic entry so the background round-robin fires.
@@ -295,12 +285,10 @@ pub async fn replay_vector_sync_pending_for_user(
     // Tuple: (ledger_id, memory_id, op)
     let pending: Vec<(i64, i64, String)> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, memory_id, op FROM vector_sync_pending \
+            let mut stmt = conn.prepare(
+                "SELECT id, memory_id, op FROM vector_sync_pending \
                      ORDER BY id ASC LIMIT ?1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map(params![limit as i64], |row| {
                     Ok((
@@ -308,8 +296,7 @@ pub async fn replay_vector_sync_pending_for_user(
                         row.get::<_, i64>(1)?,
                         row.get::<_, String>(2)?,
                     ))
-                })
-                .map_err(rusqlite_to_eng_error)?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -345,12 +332,26 @@ pub async fn backfill_missing_embeddings(
     db: &Database,
     embedder: &dyn crate::embeddings::EmbeddingProvider,
 ) -> Result<BackfillReport> {
+    backfill_missing_embeddings_limited(db, embedder, None).await
+}
+
+/// Same as `backfill_missing_embeddings` but caps the number of candidates
+/// processed per call. Used by the in-server background sweeper so a single
+/// tick can't block other tenants when a huge corpus is in deficit.
+#[tracing::instrument(skip(db, embedder))]
+pub async fn backfill_missing_embeddings_limited(
+    db: &Database,
+    embedder: &dyn crate::embeddings::EmbeddingProvider,
+    limit: Option<usize>,
+) -> Result<BackfillReport> {
     let chunk_max_chars = db.embedding_chunk_max_chars;
     let chunk_overlap = db.embedding_chunk_overlap;
     let chunk_max_chunks = db.embedding_chunk_max_chunks;
 
+    let sql_limit: i64 = limit.map(|n| n as i64).unwrap_or(i64::MAX);
+
     let candidates: Vec<(i64, String, bool, bool)> = db
-        .read(|conn| {
+        .read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT m.id, m.content, \
@@ -359,11 +360,13 @@ pub async fn backfill_missing_embeddings(
                      FROM memories m \
                      WHERE m.is_forgotten = 0 AND m.is_latest = 1 AND TRIM(m.content) != '' \
                        AND (m.embedding_vec_1024 IS NULL \
-                            OR NOT EXISTS (SELECT 1 FROM memory_chunks mc WHERE mc.memory_id = m.id))",
+                            OR NOT EXISTS (SELECT 1 FROM memory_chunks mc WHERE mc.memory_id = m.id)) \
+                     ORDER BY m.id DESC \
+                     LIMIT ?1",
                 )
-                .map_err(rusqlite_to_eng_error)?;
+                ?;
             let rows: Vec<_> = stmt
-                .query_map([], |row| {
+                .query_map(params![sql_limit], |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
                         row.get::<_, String>(1)?,
@@ -371,7 +374,7 @@ pub async fn backfill_missing_embeddings(
                         row.get::<_, i64>(3)? != 0,
                     ))
                 })
-                .map_err(rusqlite_to_eng_error)?
+                ?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
@@ -383,14 +386,34 @@ pub async fn backfill_missing_embeddings(
         ..Default::default()
     };
 
+    // Lance pays an O(table_size) cost on every per-row insert because of
+    // the manifest rewrite + scan-based delete. Accumulate primary rows and
+    // flush via `insert_many` so one expensive round-trip amortises across
+    // BATCH_SIZE memories. The DB UPDATE for `embedding_vec_1024` still
+    // happens per row because SQLite handles those in microseconds.
+    const BATCH_SIZE: usize = 32;
+    let mut pending_primary: Vec<(i64, Vec<f32>)> = Vec::with_capacity(BATCH_SIZE);
+
+    async fn flush_primary_batch(db: &Database, batch: &[(i64, Vec<f32>)]) {
+        if batch.is_empty() {
+            return;
+        }
+        if let Some(index) = db.vector_index.as_ref() {
+            if let Err(e) = index.insert_many(batch).await {
+                warn!("primary lance batch insert failed: {}", e);
+            }
+        }
+    }
+
     for (memory_id, content, need_primary, need_chunks) in candidates {
         if need_primary {
             match embedder.embed(&content).await {
                 Ok(emb) => {
-                    if let Err(e) = persist_primary_embedding(db, memory_id, &emb).await {
+                    if let Err(e) = persist_primary_db_only(db, memory_id, &emb).await {
                         warn!("primary embedding persist failed for {}: {}", memory_id, e);
                         report.failures += 1;
                     } else {
+                        pending_primary.push((memory_id, emb));
                         report.primary_embeddings_filled += 1;
                     }
                 }
@@ -398,6 +421,11 @@ pub async fn backfill_missing_embeddings(
                     warn!("embed failed for {}: {}", memory_id, e);
                     report.failures += 1;
                 }
+            }
+
+            if pending_primary.len() >= BATCH_SIZE {
+                flush_primary_batch(db, &pending_primary).await;
+                pending_primary.clear();
             }
         }
 
@@ -423,31 +451,25 @@ pub async fn backfill_missing_embeddings(
                 }
             }
         }
-
-        // Light rate-limit: ONNX session is a single-threaded mutex, so
-        // queuing aggressively just adds contention. 50ms keeps a backfill
-        // of ~10k memories under 10 minutes.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+
+    flush_primary_batch(db, &pending_primary).await;
 
     Ok(report)
 }
 
-async fn persist_primary_embedding(db: &Database, memory_id: i64, emb: &[f32]) -> Result<()> {
+/// Persist the primary embedding to the SQLite column only; the caller is
+/// responsible for batching the lance write via `VectorIndex::insert_many`.
+async fn persist_primary_db_only(db: &Database, memory_id: i64, emb: &[f32]) -> Result<()> {
     let blob: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
     db.write(move |conn| {
         conn.execute(
             "UPDATE memories SET embedding_vec_1024 = ?1 WHERE id = ?2",
             params![blob, memory_id],
-        )
-        .map_err(rusqlite_to_eng_error)?;
+        )?;
         Ok(())
     })
     .await?;
-
-    if let Some(index) = db.vector_index.as_ref() {
-        index.insert(memory_id, emb).await?;
-    }
     Ok(())
 }
 
@@ -459,16 +481,14 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
 
     let rows: Vec<(i64, usize, Vec<u8>)> = db
         .read(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT mc.memory_id, mc.chunk_idx, mc.embedding_vec_1024
+            let mut stmt = conn.prepare(
+                "SELECT mc.memory_id, mc.chunk_idx, mc.embedding_vec_1024
                      FROM memory_chunks mc
                      JOIN memories m ON m.id = mc.memory_id
                      WHERE mc.embedding_vec_1024 IS NOT NULL
                        AND m.is_forgotten = 0
                        AND m.is_latest = 1",
-                )
-                .map_err(rusqlite_to_eng_error)?;
+            )?;
             let rows: Vec<_> = stmt
                 .query_map([], |row| {
                     Ok((
@@ -476,24 +496,33 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
                         row.get::<_, usize>(1)?,
                         row.get::<_, Vec<u8>>(2)?,
                     ))
-                })
-                .map_err(rusqlite_to_eng_error)?
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
             Ok(rows)
         })
         .await?;
 
+    const BATCH_SIZE: usize = 64;
+    let mut batch: Vec<(i64, Vec<f32>)> = Vec::with_capacity(BATCH_SIZE);
     let mut count = 0usize;
+
     for (memory_id, chunk_idx, emb_blob) in rows {
         let embedding = blob_to_embedding(&emb_blob);
         let key = super::chunk_lance_key(memory_id, chunk_idx);
-        index.insert(key, &embedding).await?;
-        count += 1;
-        #[allow(clippy::manual_is_multiple_of)]
-        if count % 1000 == 0 {
+        batch.push((key, embedding));
+
+        if batch.len() >= BATCH_SIZE {
+            count += batch.len();
+            index.insert_many(&batch).await?;
+            batch.clear();
             tracing::info!(count, "rebuilt LanceDB chunk vector index rows");
         }
+    }
+
+    if !batch.is_empty() {
+        count += batch.len();
+        index.insert_many(&batch).await?;
     }
 
     Ok(count)

@@ -1,11 +1,129 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-05-18 (rebase v1.1.5)
+**Dernière mise à jour :** 2026-06-01 (merge upstream aa6a0bec)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
 re-appliquer si perdus.
+
+---
+
+## Statut apres merge upstream aa6a0bec (2026-06-01)
+
+**Branche :** `local/merge-upstream-aa6a0bec` (base `local/patches @404e2975`, tag de
+sauvegarde `pre-merge-aa6a0bec-local-patches@404e2975`).
+**Type :** merge (non rebase) de `Ghost-Frame/Kleos` upstream `aa6a0bec` (main FF, 142
+commits). **Motivation :** reduction de la dette de divergence, pas les ajouts
+fonctionnels (decision operateur, cf. Kleos #6825). 50 fichiers en conflit, resolus par
+lots (Lot 0 migrations a Lot 8). Etat a la redaction : working tree resolu et **build
+Windows des 4 binaires CLI/MCP/sh/tui vert**, merge **non committe**, deploy serveur
+Linux (WSL) + reconciliation LXC 121 a venir.
+
+### Patches locaux impactes par le merge
+
+| Patch | Statut aa6a0bec | Detail |
+|---|---|---|
+| 2, 10 -- cfg(windows) sqlcipher (sidecar, approval-tui) | **CONSERVE + bump 1.1.2 -> 1.2.1** | Delta VOCSAP (absent de main). Les blocs cfg(windows) de kleos-cli/kleos-cred/agent-forge sont **desormais upstream** (presents dans main, deja a 1.2.1) et ne sont plus a notre charge. Cf. note bump plus bas. |
+| 5 / 8B / 8C -- embedding Ollama base_url | **ABANDONNE** | Upstream a refactore `OpenAiProvider::from_env` (struct `url`/`Option`, lit `KLEOS_EMBEDDING_URL` / `_API_KEY` / `_MODEL`). Notre `KLEOS_EMBEDDING_OPENAI_BASE_URL/_API_KEY/_MODEL` + `new()` manuel abandonne. Touche `main.rs` + `embeddings/openai.rs`. **FOLLOW-UP deploy** : `/etc/kleos/kleos.env` doit utiliser `KLEOS_EMBEDDING_URL` (sinon embedding casse, vector search degrade). |
+| 14 / 14b / 14c -- LLM thinking-mode toggle | CONSERVE | Hors conflit. |
+| 15 / 16 -- dynamic prompt overlay | CONSERVE | Hors conflit (submodule + cascade). |
+| 17b / 17c / 17d -- context/growth/consolidation | CONSERVE | Hors conflit. |
+| **18 -- KLEOS_MCP_TOOL_ALLOWLIST** | **RETIRE** | Collision avec la liste curatee upstream `DAILY_TOOL_NAMES` (mcp/tools.rs). Choix operateur : `DAILY_TOOL_NAMES` seul. Supprimes : `parse_allowlist`/`allowed`/`matches_pattern` + 7 tests + `ALLOWLIST_ENV`. Docs nettoyees : `CLAUDE.md` projet (env var + note Patch 18 RETIRE), `KLEOS.md` global (aucune occurrence finalement). `kleos-mcp/tests/integration.rs` ne reference plus l'allowlist (confirme par build/test verts). |
+| **19 -- kleos-mcp stdio newline framing** | **ABANDONNE** | Upstream a livre son propre framing **dual** (NDJSON + Content-Length/LSP auto-detecte au 1er octet), superieur au NDJSON-only de Patch 19. `stdio.rs` resolu **byte-identique a main** (181 lignes, 0 delta, 0 test). NB : une 1re resolution avait reintroduit par erreur 2 lignes de l'ancien `read_message` dans `read_content_length_msg` (regression de merge cross-region), corrigee par `git checkout main -- stdio.rs`. |
+| 19b / 19c -- cascade gate + approval_timeout | CONSERVE | `gate/mod.rs` 3 hunks vers ours (`approval_timeout_secs` 19c + `status IN ('pending','pending_approval')` 21). Le fix securite upstream `skip_approval` (`serde skip_deserializing`, anti-bypass client) etait hors conflit et absorbe par auto-merge. |
+| 20 / 20b / 20c -- supervisor/approvals long-poll + migrations | CONSERVE, **migrations renumerotees** | Voir bloc migrations ci-dessous. |
+| 21 / 21.1 -- bridge gate_id <-> approvals | CONSERVE, **migration renum v64 -> v84 (main)** | `status IN ('pending','pending_approval')` conserve. |
+| 23 -- cooldown adaptatif TUI | CONSERVE | `kleos-approval-tui` uniquement. |
+| 25 -- matcher gate regex + whitelist + subcommand splitter | CONSERVE | Hors conflit. |
+| 26 -- WARN tracing rate-limit 429 | CONSERVE | Hors conflit. |
+| **27 -- kleos-sh Write/Edit pseudo-commande** | **PARTIELLEMENT OBSOLETE** | `kleos-sh/main.rs` resolu vers la conception upstream `ParsedHook` (choix operateur) : forward `tool_name` + `tool_input` au gate, `command` vide pour non-Bash. Le helper `extract_command_for_tool` (pseudo-commande `write:/path`) et ses tests sont retires comme morts. Consequence : les patterns `gate-rules` cibles sur `write:/path` ne matchent plus. **FOLLOW-UP securite** : verifier que le validator gate server-side (Patch 25) inspecte `tool_input`/`context` pour proteger les ecritures sensibles (.env, .ssh, /etc), sinon ajuster `gate-rules` ou le matcher. |
+| **28 -- KLEOS_PREAUTH_IP_LIMIT** | CONSERVE, **DEFAULT 20 -> 60** | `rate_limit.rs` : env var + trusted file conserves, mais `DEFAULT_PREAUTH_IP_LIMIT` bumpe 20 -> 60 pour suivre le nouveau `const PREAUTH_IP_LIMIT = 60` upstream (justifie bursts MCP). Override `KLEOS_PREAUTH_IP_LIMIT` inchange. |
+| 32 -- agent-forge help/schema | CONSERVE | Hors conflit. |
+| 33 -- spaces / 37 -- space_id / 38 -- i18n lexicon | CONSERVE, **re-greffe** | `space_id` re-greffe dans `temporal.rs`/`contradiction.rs` apres prise de theirs. Patch 38 i18n garde comme **base** d'`extraction.rs` et `personality.rs` (apport upstream porte par-dessus). |
+
+### Migrations -- collision de numeros (Lot 0, point dur)
+
+Collision frontale VOCSAP vs upstream sur les numeros de migration (aucune feature VOCSAP
+absorbee upstream : gate_id / supervisor / space_id / structured_facts tous absents
+upstream).
+
+- **Renumerotation TENANT** : VOCSAP v55-v59 (supervisor_injections_repair P20,
+  approvals_gate_id P21, conversations_space_id P33, structured_facts_unique +
+  structured_facts_extraction_source P38) collisionnaient avec upstream v55-v59
+  (`*_user_id_readd`). Renumerotes **v55-v59 -> v72-v76** (upstream tenant max = 71).
+- **Renumerotation MAIN** : VOCSAP v64 approvals_gate_id collisionnait avec upstream v64
+  `readd_user_id_memory_core`. Renumerote **v64 -> v84**. NB : l'**upstream main max reel
+  = 83** (`cred_audit_attribution_columns`, declaree en macro multi-ligne donc ratee par
+  un grep single-line qui donnait 82 ; les memoires #6817/#7451 anterieures disaient v83,
+  valeur corrigee a v84 par le Lot 0 -- valeur confirmee dans le code
+  `migrations.rs:1268-1271`).
+- **Corps idempotents** : les 6 corps VOCSAP utilisent `table_has_column` /
+  `CREATE INDEX IF NOT EXISTS`, donc re-run en v72-v76 / v84 = **no-op sur LXC 121** (qui
+  a deja applique les versions au sens VOCSAP ; le runner `MAX(version)` skippera les
+  upstream v55-v59 / v64).
+- **Format upstream** : macro `tenant_migration!(ver, desc, fn)` / `migration!(ver, desc,
+  fn)` vs struct-literal VOCSAP -- divergence STRUCTURELLE. Dispatch : `tenant_migrations.rs`
+  auto-dispatch (`for m in TENANT_MIGRATIONS.iter()`), `migrations.rs` (main) dispatch
+  MANUEL (bloc `if current_version < MIGRATION_X` a ne pas oublier, cf. test
+  `every_static_migration_is_dispatched`).
+- **Reconciliation LXC 121** : prevue via migrations idempotentes additionnelles qui
+  re-appliquent les `user_id_readd` upstream SKIPPED. Detail complet :
+  `docs/dev-notes/merge-upstream-aa6a0bec-plan-todo.md` (gitignored) + Kleos #6817 / #7451.
+
+### Decisions de resolution par fichier (intelligence + autres)
+
+- **`extraction.rs`** : cas inverse des autres fichiers intelligence -- ours Patch 38 i18n
+  (988 lignes, regex multilingues + lexicon) garde comme **base** (delta upstream minimal).
+  Seul apport upstream porte chirurgicalement : scoping `user_id` dans les 3 INSERT de
+  `fast_extract_facts` + schema v76/v77 `ON CONFLICT user_id`. Helper mort
+  `rusqlite_to_eng_error` retire.
+- **`temporal.rs`** : upstream a supprime tout le sous-systeme `temporal_facts` (6 fns, 0
+  caller survivant verifie par grep) -- suppression dead-code acceptee. `detect_patterns`
+  resolue vers theirs (signature `user_id`) avec Patch 37 `space_id` re-greffe.
+- **`contradiction.rs`** : conflit cosmetique seul -- theirs `conn.prepare(` single-line +
+  commentaire VOCSAP conserve, filtres `space_id` (37.1) / `is_forgotten` (38.3) preserves,
+  error-style upstream adopte (`?` natif, `rusqlite_to_eng_error` supprime).
+- **`personality.rs`** : resolution = **UNION**. Scan emotions i18n lexicon ours conserve
+  ET extension env-var upstream `EXTRA_EMOTION_KEYWORDS` restauree + recablee (verifiee si
+  lexicon non matche). Regle operateur fichiers i18n : garder upstream + ajouter notre i18n
+  par-dessus, pas remplacer.
+- **`kleos-sh/main.rs`** : voir Patch 27 ci-dessus (conception upstream `ParsedHook`).
+- **Struct-literal pattern dominant** : conflits ou ours liste explicitement les champs
+  VOCSAP (`space_id`/`include_unscoped`/`parent_memory_id`/`chunk_embeddings`) a `None` et
+  theirs utilise `..Default::default()`. Resolution = theirs, **avec garde-fou** : verifier
+  que le cote ours ne contient que des valeurs == Default. Exceptions reelles : `routes/memory/mod.rs`
+  (valeurs reelles `resolved_space_id` / `body.include_unscoped` -> garder ours + ajouter
+  `..Default` car SearchRequest a gagne 6 champs upstream), `sync.rs` (theirs ajoute
+  `sync_id`), pagerank test (`include_unscoped: Some(false)` intentionnel).
+
+### Faux positifs et pieges de build
+
+- **Dead-code `cred/bootstrap.rs` (11 warnings build Windows)** : **FAUX POSITIFS** specifiques
+  Windows. Le bloc appelant (`bootstrap.rs:161-168`, ECDH/PIV bootstrap) est garde par
+  `#[cfg(not(target_os = "windows"))]` -- Unix-only par design. Sur Linux (LXC 121, cible
+  reelle) le code est appele, 0 warning. Fichier identique a main. **NE PAS patcher**
+  (regle : pas d'attribut cosmetique sur code upstream).
+- **Build Windows des binaires** : la feature `bundled-sqlite` n'existe PAS sur
+  kleos-cli/kleos-sh/kleos-mcp/kleos-approval-tui (elle est sur kleos-lib) ET est inutile :
+  sur Windows le bundling SQLCipher est deja cable via les blocs `[target.'cfg(windows)'.dependencies]`.
+  Commande correcte : `cargo build --release -p kleos-cli -p kleos-sh -p kleos-mcp -p kleos-approval-tui -j 4`
+  (SANS `--features`).
+
+### Follow-ups ouverts post-merge
+
+1. **Deploy embedding** : `/etc/kleos/kleos.env` -> `KLEOS_EMBEDDING_URL` (cf. Patch 5/8B/8C).
+2. **Securite gate** : valider la protection des ecritures sensibles cote serveur apres le
+   retrait de la pseudo-commande `write:/path` (cf. Patch 27).
+3. **Reconciliation migrations LXC 121** au premier boot du nouveau binaire.
+4. **Build serveur Linux (WSL) + deploy LXC 121** (procedure CLAUDE.md projet).
+
+### Lecons methodologiques (promues dans les rules)
+
+Les pieges de merge rencontres (incoherences cross-region detectables seulement au build,
+union perl qui casse le nesting d'accolades, take-theirs dans une fn de signature ours,
+`Default` impl incomplet, helper prive par-module disparu, default const a re-aligner sur
+upstream) sont documentes dans `~/.claude/rules/rust-upstream-fork.md`.
 
 ---
 
@@ -144,6 +262,14 @@ Reference complete : `docs/dev-notes/v1.1.0-rebase-audit.md`.
 - Bump cargo workspace version 1.1.0 -> 1.1.2 sur les 17 crates. Nos patches 2
   et 10 (Cargo.toml cfg(windows) sqlcipher) ont du etre mis a jour pour referencer
   `kleos-lib = { ..., version = "1.1.2", ... }` au lieu de "1.1.0".
+  - **Merge aa6a0bec (2026-06-01)** : re-bump `1.1.2 -> 1.2.1` sur ces memes 2 blocs
+    (`kleos-approval-tui/Cargo.toml:28`, `kleos-sidecar/Cargo.toml:37`). Les bumps
+    intermediaires les avaient rates car les versions sont hardcodees par crate (pas
+    `version.workspace = true`), donc invisibles au build (path dep -> `^1.1.2` accepte
+    1.2.1). Piege recurrent : a chaque bump workspace, re-grep
+    `version = "<ancienne>"` dans les blocs `[target.'cfg(windows)'.dependencies]`
+    delta VOCSAP. Les blocs kleos-cli/kleos-cred/agent-forge sont desormais upstream
+    (presents dans main, deja a jour) et ne sont plus a notre charge.
 
 ---
 

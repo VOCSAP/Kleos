@@ -3,8 +3,10 @@ use axum::extract::State;
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
+use dashmap::DashMap;
 use kleos_lib::auth::{validate_key, ApiKey, AuthContext, IdentityCtx, Scope};
 use kleos_lib::auth_piv::{self, AuthTier, CanonicalEnvelope, SignatureAlgo};
+use kleos_lib::mcp_token;
 use rusqlite::{params, OptionalExtension};
 use std::sync::OnceLock;
 use tracing::Instrument;
@@ -101,39 +103,22 @@ fn synthetic_key_for_identity(user_id: i64) -> ApiKey {
     synthetic_key_for_identity_with_scopes(user_id, None)
 }
 
-/// Build the in-memory ApiKey for a signed-envelope request. When `scopes_json`
-/// is provided (from the v53 `identity_keys.scopes` column), parse it and use
-/// those scopes; otherwise default to full admin (legacy behavior). Unparseable
-/// JSON falls back to admin with a warning -- no PIV holder should be locked
-/// out of their own data because of a corrupt scopes value (M4).
-fn synthetic_key_for_identity_with_scopes(user_id: i64, scopes_json: Option<&str>) -> ApiKey {
-    let scopes = scopes_json
-        .and_then(|s| {
-            serde_json::from_str::<Vec<String>>(s)
-                .map_err(|e| {
-                    tracing::warn!(error = %e, raw = %s, user_id,
-                        "identity_keys.scopes JSON unparseable; falling back to admin");
-                    e
-                })
-                .ok()
-        })
-        .map(|names| {
-            names
-                .iter()
-                .filter_map(|n| match n.as_str() {
-                    "read" => Some(Scope::Read),
-                    "write" => Some(Scope::Write),
-                    "admin" => Some(Scope::Admin),
-                    other => {
-                        tracing::warn!(scope = %other, user_id,
-                            "unknown scope in identity_keys.scopes; ignoring");
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .filter(|v: &Vec<Scope>| !v.is_empty())
-        .unwrap_or_else(|| vec![Scope::Read, Scope::Write, Scope::Admin]);
+/// Build the in-memory ApiKey for a signed-envelope request. `scopes_csv` is the
+/// `identity_keys.scopes` column -- a comma-separated list using the same scope
+/// grammar as `api_keys.scopes` (e.g. "read,write"). When present it is
+/// authoritative and parsed with the canonical parser: a value that yields no
+/// known scopes is a deny (empty scope set), NEVER an escalation. Only a MISSING
+/// value (None) retains the historical admin grant -- that covers pre-v53 rows
+/// and the user-1 bootstrap caller, not freshly enrolled keys.
+fn synthetic_key_for_identity_with_scopes(user_id: i64, scopes_csv: Option<&str>) -> ApiKey {
+    let scopes = match scopes_csv {
+        // No stored scopes column value: legacy/bootstrap rows keep admin. New
+        // enrollments always populate scopes, so they never reach this arm.
+        None => vec![Scope::Read, Scope::Write, Scope::Admin],
+        // Stored scopes are authoritative. Empty or all-unknown parses to an
+        // empty scope set (deny) -- correct least privilege, not an escalation.
+        Some(raw) => kleos_lib::auth::parse_scopes(raw),
+    };
 
     ApiKey {
         id: 0,
@@ -178,6 +163,186 @@ fn signature_required_for_user(user_id: i64) -> bool {
             .unwrap_or_default()
     });
     users.contains(&user_id)
+}
+
+/// Debounce map for mcp_tokens.last_used_at updates.
+/// Key: jti, Value: last write instant. Writes only if > 60s since last.
+static MCP_TOKEN_LAST_USED: std::sync::LazyLock<DashMap<String, std::time::Instant>> =
+    std::sync::LazyLock::new(DashMap::new);
+
+/// Validate an MCP direct-auth token (kleos. prefix bearer).
+///
+/// Verification flow: decode -> expiry check -> identity key lookup ->
+/// Ed25519 sig verify -> scope cap -> revocation check (DB) -> build AuthContext.
+/// Invalid tokens never touch the revocation table (sig verify gates DB access).
+async fn validate_mcp_token(
+    state: &AppState,
+    raw_token: &str,
+    method: &Method,
+    path: &str,
+) -> Result<AuthContext, String> {
+    // Step 1: Decode token (format + version check).
+    let decoded = mcp_token::decode(raw_token).map_err(|e| e.to_string())?;
+    let payload = &decoded.payload;
+
+    // Step 2: Reject wildcard scopes.
+    let token_scopes =
+        mcp_token::parse_scopes_strict(&payload.scopes).map_err(|e| e.to_string())?;
+
+    // Step 3: Expiry check (no DB hit).
+    mcp_token::check_expiry(payload).map_err(|e| e.to_string())?;
+
+    // Step 4: Look up identity key by kid (fingerprint).
+    let kid = payload.kid.clone();
+    let key_row = state
+        .db
+        .read(move |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, user_id, pubkey_pem, scopes
+                     FROM identity_keys
+                     WHERE pubkey_fingerprint = ?1 AND is_active = 1",
+            )?;
+            let row = stmt
+                .query_row(rusqlite::params![kid], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .optional()?;
+            Ok(row)
+        })
+        .await
+        .map_err(|e| format!("database error: {}", e))?;
+
+    let (_ik_id, ik_user_id, pubkey_pem, ik_scopes_csv) =
+        key_row.ok_or_else(|| "identity key not found or revoked".to_string())?;
+
+    // Step 5: Ed25519 signature verification over raw payload bytes.
+    let vk = kleos_lib::auth_piv::pem_to_ed25519_verifying_key(&pubkey_pem)
+        .map_err(|e| format!("invalid pubkey: {}", e))?;
+    mcp_token::verify_signature(&vk, &decoded).map_err(|_| "invalid signature".to_string())?;
+
+    // --- Signature valid past this point ---
+
+    // Step 6: uid must match identity key owner.
+    if payload.uid != ik_user_id {
+        return Err(format!(
+            "token uid {} does not match key owner {}",
+            payload.uid, ik_user_id
+        ));
+    }
+
+    // Step 7: Scope cap -- token scopes must be subset of identity key scopes.
+    let ik_scopes = match ik_scopes_csv.as_deref() {
+        Some(csv) => kleos_lib::auth::parse_scopes(csv),
+        None => vec![Scope::Read, Scope::Write, Scope::Admin],
+    };
+    mcp_token::scopes_within_cap(&token_scopes, &ik_scopes).map_err(|e| e.to_string())?;
+
+    // Step 8: Revocation check (DB). Fail closed on error.
+    let jti = payload.jti.clone();
+    let uid = payload.uid;
+    let revocation_row = state
+        .db
+        .read(move |conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT id, is_active, name FROM mcp_tokens
+                 WHERE jti = ?1 AND user_id = ?2",
+                    rusqlite::params![jti, uid],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?)
+        })
+        .await
+        .map_err(|e| format!("revocation check failed (fail closed): {}", e))?;
+
+    let (_token_id, is_active, token_name) =
+        revocation_row.ok_or_else(|| "token not registered".to_string())?;
+
+    if !is_active {
+        return Err("token revoked".to_string());
+    }
+
+    // Step 9: Scope enforcement for this request.
+    if requires_write_scope(method)
+        && !is_read_only_post(path)
+        && !token_scopes.contains(&Scope::Write)
+        && !token_scopes.contains(&Scope::Admin)
+    {
+        return Err("write scope required for this method".to_string());
+    }
+    if !requires_write_scope(method)
+        && !token_scopes.contains(&Scope::Read)
+        && !token_scopes.contains(&Scope::Admin)
+    {
+        return Err("read scope required for this method".to_string());
+    }
+
+    // Step 10: Debounced last_used_at update.
+    let jti_for_update = payload.jti.clone();
+    let should_write = {
+        let now = std::time::Instant::now();
+        let entry = MCP_TOKEN_LAST_USED.entry(jti_for_update.clone());
+        match entry {
+            dashmap::mapref::entry::Entry::Occupied(mut e) => {
+                if now.duration_since(*e.get()).as_secs() >= 60 {
+                    e.insert(now);
+                    true
+                } else {
+                    false
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(e) => {
+                e.insert(now);
+                true
+            }
+        }
+    };
+    if should_write {
+        let jti_w = jti_for_update;
+        let _ = state
+            .db
+            .write(move |conn| {
+                conn.execute(
+                    "UPDATE mcp_tokens SET last_used_at = datetime('now') WHERE jti = ?1",
+                    rusqlite::params![jti_w],
+                )?;
+                Ok(())
+            })
+            .await;
+    }
+
+    // Step 11: Build AuthContext (identity = None, same as API keys).
+    let key = ApiKey {
+        id: 0,
+        user_id: payload.uid,
+        key_prefix: "mcp".into(),
+        name: token_name,
+        scopes: token_scopes,
+        rate_limit: 1000,
+        is_active: true,
+        agent_id: None,
+        last_used_at: None,
+        expires_at: None,
+        created_at: String::new(),
+        hash_version: 0,
+    };
+
+    Ok(AuthContext {
+        key,
+        user_id: payload.uid,
+        identity: None,
+    })
 }
 
 fn header_str<'a>(req: &'a Request<Body>, name: &str) -> Option<&'a str> {
@@ -276,18 +441,46 @@ pub async fn auth_middleware(
                             "session auth rejected: signature required for this user");
                         return unauthorized("signature required for this user");
                     }
-                    if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+                    if requires_write_scope(&method)
+                        && !is_read_only_post(&path)
+                        && !auth_ctx.has_scope(&Scope::Write)
+                    {
                         return forbid("write scope required for this method");
                     }
                     if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
                         return forbid("read scope required for this method");
                     }
+
+                    // Sliding window: roll the session forward so an active
+                    // client never hits the TTL boundary. If refresh fails
+                    // (hard cap reached) the request still completes -- the
+                    // client will be forced through fresh PIV signing on the
+                    // next call when verify() finally returns expired.
+                    let refreshed_token = match state.session_manager.refresh(&session_token) {
+                        Ok(t) => Some(t),
+                        Err(e) => {
+                            tracing::debug!(
+                                client_ip = %req_client_ip, path = %path,
+                                "session refresh declined: {e}"
+                            );
+                            None
+                        }
+                    };
+
                     let user_id = auth_ctx.user_id;
                     let mut request = request;
                     request.extensions_mut().insert(auth_ctx);
                     let span = tracing::info_span!("request",
                             user_id = user_id, method = %method, path = %path, tier = "session");
-                    return next.run(request).instrument(span).await;
+                    let mut response = next.run(request).instrument(span).await;
+
+                    if let Some(token) = refreshed_token {
+                        if let Ok(val) = axum::http::HeaderValue::from_str(&token) {
+                            response.headers_mut().insert("x-kleos-session-issued", val);
+                        }
+                    }
+
+                    return response;
                 }
                 Err(msg) => {
                     tracing::warn!(
@@ -407,21 +600,21 @@ pub async fn auth_middleware(
         let identity_result = state
             .db
             .read(move |conn| {
-                conn.query_row(
-                    "SELECT id, host_label, agent_label, model_label
+                Ok(conn
+                    .query_row(
+                        "SELECT id, host_label, agent_label, model_label
                      FROM identities WHERE identity_hash = ?1",
-                    params![identity_hash_for_lookup],
-                    |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                        params![identity_hash_for_lookup],
+                        |row| {
+                            Ok((
+                                row.get::<_, i64>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
+                            ))
+                        },
+                    )
+                    .optional()?)
             })
             .await;
 
@@ -440,8 +633,7 @@ pub async fn auth_middleware(
                             "UPDATE identities SET last_seen_at = datetime('now'), \
                              request_count = request_count + 1 WHERE identity_hash = ?1",
                             params![hash],
-                        )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                        )?;
                         Ok(())
                     })
                     .await;
@@ -498,16 +690,13 @@ pub async fn auth_middleware(
                              VALUES (?1, ?2, ?3, ?4, ?5)",
                             params![ik_id, hash_for_insert, host_ins, agent_ins, model_ins],
                         )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                        ?;
                         let id = conn
                             .query_row(
                                 "SELECT id FROM identities WHERE identity_hash = ?1",
                                 params![hash_for_select],
                                 |row| row.get::<_, i64>(0),
-                            )
-                            .map_err(|e| {
-                                kleos_lib::EngError::DatabaseMessage(e.to_string())
-                            })?;
+                            )?;
                         Ok(id)
                     })
                     .await;
@@ -555,8 +744,7 @@ pub async fn auth_middleware(
                 conn.execute(
                     "UPDATE identity_keys SET last_seen_at = datetime('now') WHERE id = ?1",
                     params![ik_id],
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                )?;
                 Ok(())
             })
             .await;
@@ -572,7 +760,10 @@ pub async fn auth_middleware(
             identity: Some(identity_ctx),
         };
 
-        if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+        if requires_write_scope(&method)
+            && !is_read_only_post(&path)
+            && !auth_ctx.has_scope(&Scope::Write)
+        {
             return forbid("write scope required for this method");
         }
         if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
@@ -597,7 +788,7 @@ pub async fn auth_middleware(
     }
 
     // ---------------------------------------------------------------
-    // Path 3: Bearer token (existing flow)
+    // Path 3: Bearer token
     // ---------------------------------------------------------------
     let token = header_str(&request, "authorization")
         .and_then(|v| v.strip_prefix("Bearer "))
@@ -605,6 +796,26 @@ pub async fn auth_middleware(
 
     let mut request = request;
     if let Some(raw_key) = token {
+        // --- Path 3a: MCP direct-auth token (kleos. prefix) ---
+        if raw_key.starts_with(mcp_token::TOKEN_PREFIX) {
+            match validate_mcp_token(&state, &raw_key, &method, &path).await {
+                Ok(auth_ctx) => {
+                    let user_id = auth_ctx.user_id;
+                    request.extensions_mut().insert(auth_ctx);
+                    let span = tracing::info_span!("request",
+                        user_id = user_id, method = %method, path = %path,
+                        tier = "mcp-token");
+                    return next.run(request).instrument(span).await;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, client_ip = %req_client_ip,
+                        path = %path, method = %method, "mcp token auth failed");
+                    return unauthorized(&e);
+                }
+            }
+        }
+
+        // --- Path 3b: API key bearer (existing) ---
         match validate_key(&state.db, &raw_key).await {
             Ok(auth_ctx) => {
                 if signature_required_for_user(auth_ctx.user_id) {
@@ -614,7 +825,10 @@ pub async fn auth_middleware(
                     return unauthorized("signature required for this user");
                 }
 
-                if requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Write) {
+                if requires_write_scope(&method)
+                    && !is_read_only_post(&path)
+                    && !auth_ctx.has_scope(&Scope::Write)
+                {
                     return forbid("write scope required for this method");
                 }
                 if !requires_write_scope(&method) && !auth_ctx.has_scope(&Scope::Read) {
@@ -685,11 +899,15 @@ pub async fn auth_middleware(
             return unauthorized("enrollment proof-of-possession verification failed");
         }
 
+        // L2 (benign TOCTOU): this count and the enrollment insert below are
+        // not one transaction, so two concurrent first-time bootstraps could
+        // both observe count==0. That is harmless: both are assigned the same
+        // owner user_id=1, so the worst case is two owner keys enrolled in the
+        // narrow first-touch window rather than any privilege escalation.
         let key_count: i64 = match state
             .db
             .read(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))
-                    .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                Ok(conn.query_row("SELECT COUNT(*) FROM identity_keys", [], |row| row.get(0))?)
             })
             .await
         {
@@ -712,15 +930,22 @@ pub async fn auth_middleware(
         // (dev-friendly default). When set, the comparison is constant-time
         // to prevent timing-based secret enumeration.
         if let Ok(expected_secret) = std::env::var("KLEOS_BOOTSTRAP_SECRET") {
+            use sha2::{Digest, Sha256};
             use subtle::ConstantTimeEq;
             let provided = parts
                 .headers
                 .get("x-bootstrap-secret")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("");
-            if expected_secret
-                .as_bytes()
-                .ct_eq(provided.as_bytes())
+            // Hash both sides to a fixed 32 bytes before the constant-time
+            // compare. ct_eq short-circuits on length mismatch, which would
+            // otherwise leak the expected secret's length via timing; hashing
+            // first makes both operands always 32 bytes long.
+            let expected_digest = Sha256::digest(expected_secret.as_bytes());
+            let provided_digest = Sha256::digest(provided.as_bytes());
+            if expected_digest
+                .as_slice()
+                .ct_eq(provided_digest.as_slice())
                 .unwrap_u8()
                 != 1
             {
@@ -782,9 +1007,9 @@ async fn resolve_identity_by_id(
     let row = state
         .db
         .read(move |conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT i.identity_key_id, i.identity_hash, i.host_label, i.agent_label,
-                        i.model_label, ik.user_id, ik.tier
+                        i.model_label, ik.user_id, ik.tier, ik.scopes
                  FROM identities i
                  JOIN identity_keys ik ON ik.id = i.identity_key_id
                  WHERE i.id = ?1 AND i.is_active = 1 AND ik.is_active = 1",
@@ -798,22 +1023,22 @@ async fn resolve_identity_by_id(
                         row.get::<_, String>(4)?,
                         row.get::<_, i64>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 },
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .map_err(|e| e.to_string())?;
 
-    let (ik_id, hash, host, agent, model, user_id, tier_str) = row;
+    let (ik_id, hash, host, agent, model, user_id, tier_str, scopes_json) = row;
     let tier = match tier_str.as_str() {
         "piv" => AuthTier::Piv,
         _ => AuthTier::Soft,
     };
 
     Ok(AuthContext {
-        key: synthetic_key_for_identity(user_id),
+        key: synthetic_key_for_identity_with_scopes(user_id, scopes_json.as_deref()),
         user_id,
         identity: Some(IdentityCtx {
             identity_id: Some(identity_id),
@@ -825,4 +1050,53 @@ async fn resolve_identity_by_id(
             model,
         }),
     })
+}
+
+#[cfg(test)]
+mod identity_scope_tests {
+    use super::*;
+
+    #[test]
+    fn stored_csv_scopes_are_used_verbatim() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some("read,write"));
+        assert!(key.scopes.contains(&Scope::Read));
+        assert!(key.scopes.contains(&Scope::Write));
+        assert!(
+            !key.scopes.contains(&Scope::Admin),
+            "default enrolled scopes must NOT be admin"
+        );
+    }
+
+    #[test]
+    fn empty_scopes_deny_not_admin() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some(""));
+        assert!(
+            !key.scopes.contains(&Scope::Admin),
+            "explicitly empty scopes must not escalate to admin"
+        );
+        assert!(key.scopes.is_empty(), "empty scopes string means deny");
+    }
+
+    #[test]
+    fn unknown_scopes_deny_not_admin() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some("bogus,nonsense"));
+        assert!(
+            !key.scopes.contains(&Scope::Admin),
+            "all-unknown scopes must not escalate to admin"
+        );
+        assert!(key.scopes.is_empty());
+    }
+
+    #[test]
+    fn admin_is_granted_only_when_explicitly_stored() {
+        let key = synthetic_key_for_identity_with_scopes(7, Some("read,write,admin"));
+        assert!(key.scopes.contains(&Scope::Admin));
+    }
+
+    #[test]
+    fn missing_column_keeps_legacy_admin() {
+        // None == no stored scopes (pre-v53 rows / user-1 bootstrap path).
+        let key = synthetic_key_for_identity_with_scopes(1, None);
+        assert!(key.scopes.contains(&Scope::Admin));
+    }
 }

@@ -33,7 +33,7 @@ fn extract_title(html: &str) -> String {
 
 /// Strip HTML tags and extract text content.
 /// Removes content within SKIP_TAGS entirely.
-fn strip_tags(html: &str) -> String {
+pub fn strip_tags(html: &str) -> String {
     let mut output = String::with_capacity(html.len() / 2);
     let lower = html.to_lowercase();
     let bytes = html.as_bytes();
@@ -113,9 +113,11 @@ fn strip_tags(html: &str) -> String {
             i = tag_end + 1;
         } else {
             if skip_depth.is_none() {
-                output.push(bytes[i] as char);
+                // Decode full UTF-8 char (bytes[i] as char is mojibake for multi-byte)
+                let ch = html[i..].chars().next().unwrap();
+                output.push(ch);
             }
-            i += 1;
+            i += html[i..].chars().next().map_or(1, |c| c.len_utf8());
         }
     }
 

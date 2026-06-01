@@ -200,9 +200,7 @@ async fn get_executions(
     Ok(Json(json!({ "agent_id": id, "executions": executions })))
 }
 
-// ---------------------------------------------------------------------------
-// Verify DTOs
-// ---------------------------------------------------------------------------
+// --- Verify DTOs ---
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -236,9 +234,7 @@ struct VerifyToolManifestInput {
     signature_hex: String,
 }
 
-// ---------------------------------------------------------------------------
-// Verify handler
-// ---------------------------------------------------------------------------
+// --- Verify handler ---
 
 // Supported kinds:
 //   - passport: HMAC-based server-signed credential check
@@ -321,9 +317,7 @@ async fn verify(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Verify helpers
-// ---------------------------------------------------------------------------
+// --- Verify helpers ---
 
 fn verify_execution(input: &VerifyExecutionInput) -> Result<bool, AppError> {
     // Canonicalize: serialize each action entry with sorted keys, then
@@ -397,7 +391,7 @@ async fn verify_tool_manifest(
             ) {
                 Ok(id) => Some(id),
                 Err(rusqlite::Error::QueryReturnedNoRows) => None,
-                Err(e) => return Err(kleos_lib::EngError::DatabaseMessage(e.to_string())),
+                Err(e) => return Err(kleos_lib::EngError::Database(e)),
             };
 
             let Some(identity_id) = identity_id else {
@@ -406,14 +400,12 @@ async fn verify_tool_manifest(
             };
 
             // INSERT OR IGNORE; check affected rows to determine first_seen.
-            let rows = conn
-                .execute(
-                    "INSERT OR IGNORE INTO tool_manifests \
+            let rows = conn.execute(
+                "INSERT OR IGNORE INTO tool_manifests \
                      (agent_identity_id, manifest_hash, declared_tools_json) \
                      VALUES (?1, ?2, ?3)",
-                    rusqlite::params![identity_id, hash, tools_json],
-                )
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))?;
+                rusqlite::params![identity_id, hash, tools_json],
+            )?;
 
             Ok(rows > 0)
         })
@@ -464,9 +456,12 @@ fn load_or_create_signing_secret() -> String {
     // SECURITY (SEC-MED-5): use OsRng for 256-bit signing secret instead of
     // UUID v4 which has only ~122 bits and fixed version/variant bits.
     let generated = {
-        use rand::Rng;
+        use rand::rngs::OsRng;
+        use rand::TryRngCore;
         let mut raw = [0u8; 32];
-        rand::rng().fill(&mut raw);
+        OsRng
+            .try_fill_bytes(&mut raw)
+            .expect("OS CSPRNG must be available");
         hex::encode(raw)
     };
 

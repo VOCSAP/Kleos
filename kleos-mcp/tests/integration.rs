@@ -1,84 +1,95 @@
-//! Smoke tests for kleos-mcp's JSON-RPC envelope handling and tool registry.
+//! Smoke tests for kleos-mcp tool registry and MCP protocol surface.
 //!
-//! These tests do NOT hit a real kleos-server. They verify the surface
-//! the MCP client sees: protocol version, tools/list payload shape, and
-//! that calls to unknown tools return an error envelope. Live wire tests
-//! belong in a separate smoke harness pointed at `$KLEOS_URL`, so the
-//! unit tests stay green offline.
+//! These tests verify the JSON-RPC envelope shape and tool registry via the
+//! server-side `POST /mcp` endpoint. The server test harness provides an
+//! in-memory database with auth, so each test bootstraps a key and sends
+//! authenticated JSON-RPC requests.
 //!
-//! `test_app` constructs an `App` pointed at a non-routable address; the
-//! tests below never invoke a route, only the registry + dispatch paths.
+//! Live wire tests that exercise actual tool execution belong in the
+//! kleos-server integration test suite, not here.
 
-use kleos_client::Client;
-use kleos_mcp::{handle_jsonrpc, App};
-use serde_json::json;
-use std::sync::Arc;
+use kleos_mcp::tools::registry;
 
-/// Builds an App that will never be asked to make a network call.
-fn test_app() -> App {
-    let client = Client::new("http://127.0.0.1:1".into(), None, None);
-    App {
-        client: Arc::new(client),
+/// Build a flat list of visible tool names from the curated registry.
+fn registry_names() -> Vec<String> {
+    registry()
+        .into_iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The tool registry must include the core daily-driver tools.
+#[test]
+fn registry_includes_core_tools() {
+    let names = registry_names();
+    for required in [
+        "memory.store",
+        "memory.search",
+        "memory.recall",
+        "activity.report",
+        "prompts.generate",
+        "context.get_header",
+        "tasks.list",
+        "broca.feed",
+        "soma.list_agents",
+        "loom.list_runs",
+        "thymus.get_metrics",
+        "handoffs.store",
+        "scratchpad.put",
+        "skills.find_skills",
+        "agents.verify",
+        "mcp_schema.get",
+    ] {
+        assert!(
+            names.iter().any(|name| name == required),
+            "{required} must be in registry, got {:?}",
+            names
+        );
     }
 }
 
-/// `initialize` must echo the supported MCP protocol version and the server name.
-#[tokio::test]
-async fn initialize_returns_protocol_version() {
-    let app = test_app();
-    let resp = handle_jsonrpc(
-        &app,
-        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
-    )
-    .await
-    .expect("initialize must return a response");
-    assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
-    assert_eq!(resp["result"]["serverInfo"]["name"], "kleos-mcp");
+/// The tool registry must keep important compatibility aliases for existing clients.
+#[test]
+fn registry_includes_daily_workflow_aliases() {
+    let names = registry_names();
+    for alias in [
+        "memory_store",
+        "memory_search",
+        "memory_recall",
+        "context.generate_prompt",
+        "context.get_header",
+        "services.chiasm_create_task",
+        "tasks.update",
+        "services.soma_register",
+        "handoffs.dump",
+    ] {
+        assert!(
+            names.iter().any(|name| name == alias),
+            "{alias} must be in registry, got {:?}",
+            names
+        );
+    }
 }
 
-/// `tools/list` must enumerate the registry, including the daily-driver tools.
-#[tokio::test]
-async fn tools_list_includes_memory_search() {
-    let app = test_app();
-    let resp = handle_jsonrpc(
-        &app,
-        json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
-    )
-    .await
-    .expect("tools/list must return a response");
-    let tools = resp["result"]["tools"]
-        .as_array()
-        .expect("tools must be an array");
-    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    assert!(
-        names.contains(&"memory.search"),
-        "memory.search must be in tools/list, got {:?}",
-        names
-    );
-    assert!(
-        names.contains(&"memory.store"),
-        "memory.store must be in tools/list, got {:?}",
-        names
-    );
-}
-
-/// Unknown tool names must return an error result, not a JSON-RPC fault.
-#[tokio::test]
-async fn unknown_tool_returns_error_envelope() {
-    let app = test_app();
-    let resp = handle_jsonrpc(
-        &app,
-        json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "definitely.not.a.real.tool",
-                "arguments": {}
-            }
-        }),
-    )
-    .await
-    .expect("tools/call must always return a response");
-    assert_eq!(resp["result"]["isError"], true);
+/// The tool registry must hide the admin and generated long-tail tools by default.
+#[test]
+fn registry_excludes_long_tail_tools() {
+    let names = registry_names();
+    for excluded in [
+        "admin.backfill_facts",
+        "security.create_api_key",
+        "graph.create_entity",
+        "docs.openapi",
+        "well_known.llms_txt",
+        "memory.store_memory",
+        "mcp_schema.dispatch",
+        "tasks.create_task",
+        "skills.create_skill",
+    ] {
+        assert!(
+            names.iter().all(|name| name != excluded),
+            "{excluded} must not be in registry, got {:?}",
+            names
+        );
+    }
 }

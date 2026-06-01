@@ -137,8 +137,7 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
                 rusqlite::params![observation_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .optional()
-            .map_err(rusqlite_to_eng_error)?;
+            .optional()?;
 
         let (content, source, source_space_id) = result.ok_or_else(|| {
             EngError::NotFound(format!("growth observation {} not found", observation_id))
@@ -419,8 +418,9 @@ pub async fn reflect(
                 .query_row(
                     "SELECT COUNT(*) FROM memories WHERE category = 'growth' \
                      AND substr(content, 1, 200) = ?1 \
+                     AND user_id = ?2 \
                      AND created_at > datetime('now', '-24 hours')",
-                    rusqlite::params![prefix_clone],
+                    rusqlite::params![prefix_clone, user_id],
                     |row| row.get(0),
                 )
                 .unwrap_or(0);
@@ -449,11 +449,11 @@ pub async fn reflect(
             let trimmed_refl = trimmed_for_closure.clone();
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, is_archived, confidence, status, space_id, \
+                 source_count, is_static, is_forgotten, is_archived, confidence, status, space_id, user_id, \
                  created_at, updated_at) \
-                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, ?4, \
                  datetime('now'), datetime('now'))",
-                rusqlite::params![trimmed_for_closure, source_c, space_id_for_closure],
+                rusqlite::params![trimmed_for_closure, source_c, space_id_for_closure, user_id],
             )
             .map_err(rusqlite_to_eng_error)?;
 
@@ -461,11 +461,10 @@ pub async fn reflect(
 
             conn.execute(
                 "INSERT INTO reflections (content, reflection_type, source_memory_ids, \
-                 confidence, created_at) \
-                 VALUES (?1, 'growth', ?2, 1.0, datetime('now'))",
-                rusqlite::params![trimmed_refl, format!("[{}]", memory_id)],
-            )
-            .map_err(rusqlite_to_eng_error)?;
+                 confidence, user_id, created_at) \
+                 VALUES (?1, 'growth', ?2, 1.0, ?3, datetime('now'))",
+                rusqlite::params![trimmed_refl, format!("[{}]", memory_id), user_id],
+            )?;
 
             let reflection_id = conn.last_insert_rowid();
 
@@ -486,122 +485,6 @@ pub async fn reflect(
         stored_memory_id: Some(memory_id),
         reflection_id: Some(reflection_id),
     })
-}
-
-/// Self-reflection for Engram -- called periodically (e.g., every hour).
-/// Gathers memory stats, builds context, and generates a growth observation.
-#[tracing::instrument(skip(db))]
-pub async fn self_reflect(db: &Database, user_id: i64) -> Result<GrowthReflectResult> {
-    // Min activity threshold: 50 new memories in last hour
-    let recent_count: i64 = db
-        .read(move |conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM memories \
-                 WHERE created_at > datetime('now', '-1 hour')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(rusqlite_to_eng_error)
-        })
-        .await?;
-
-    if recent_count < 50 {
-        return Ok(GrowthReflectResult {
-            observation: None,
-            stored_memory_id: None,
-            reflection_id: None,
-        });
-    }
-
-    // 15% probability gate
-    if rand::random::<f64>() > 0.15 {
-        return Ok(GrowthReflectResult {
-            observation: None,
-            stored_memory_id: None,
-            reflection_id: None,
-        });
-    }
-
-    // Build context from memory stats
-    let (total, never_accessed, growth_count, avg_importance): (i64, i64, i64, f64) = db
-        .read(move |conn| {
-            conn.query_row(
-                "SELECT COUNT(*) as total, \
-                        SUM(CASE WHEN access_count = 0 THEN 1 ELSE 0 END) as never_accessed, \
-                        SUM(CASE WHEN category = 'growth' THEN 1 ELSE 0 END) as growth_count, \
-                        AVG(importance) as avg_importance \
-                 FROM memories WHERE is_forgotten = 0",
-                rusqlite::params![],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0).unwrap_or(0),
-                        row.get::<_, i64>(1).unwrap_or(0),
-                        row.get::<_, i64>(2).unwrap_or(0),
-                        row.get::<_, f64>(3).unwrap_or(0.0),
-                    ))
-                },
-            )
-            .map_err(rusqlite_to_eng_error)
-        })
-        .await?;
-
-    let context = vec![
-        format!(
-            "Memory stats: {} total, {} never accessed, {} growth entries, avg importance {:.1}",
-            total, never_accessed, growth_count, avg_importance
-        ),
-        format!("New memories in last hour: {}", recent_count),
-    ];
-
-    // Get existing growth for anti-repeat
-    let existing_lines: Vec<String> = db
-        .read(move |conn| {
-            // Anti-repeat lookup: match every `<service>-growth` source, since
-            // the source is built dynamically from `req.service` at write time
-            // (see line ~288: `format!("{}-growth", req.service)`). This covers
-            // the legacy `engram-growth` rows, the post-rebrand `kleos-growth`
-            // rows, and any future per-service growth stream (e.g. `claude-code-growth`)
-            // without needing the SELECT to be updated each time a new caller
-            // is added. The `category = 'growth'` filter already constrains the
-            // result set to growth memories.
-            let mut stmt = conn
-                .prepare(
-                    "SELECT content FROM memories \
-                     WHERE category = 'growth' \
-                       AND source LIKE '%-growth' \
-                       AND is_forgotten = 0 \
-                     ORDER BY created_at DESC LIMIT 10",
-                )
-                .map_err(rusqlite_to_eng_error)?;
-
-            let lines = stmt
-                .query_map([], |row| {
-                    let content: String = row.get(0)?;
-                    Ok(format!("- {}", content))
-                })
-                .map_err(rusqlite_to_eng_error)?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(rusqlite_to_eng_error)?;
-
-            Ok(lines)
-        })
-        .await?;
-
-    let req = GrowthReflectRequest {
-        service: "kleos".to_string(),
-        context,
-        existing_growth: if existing_lines.is_empty() {
-            None
-        } else {
-            Some(existing_lines.join("\n"))
-        },
-        prompt_override: None,
-        // Patch 33 -- self_reflect is currently invoked without space
-        // context; future callers can pre-fill if they want to scope.
-        space_id: None,
-    };
-
-    reflect(db, &req, user_id).await
 }
 
 #[cfg(test)]

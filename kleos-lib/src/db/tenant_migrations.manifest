@@ -11,19 +11,23 @@
 #      end of TENANT_MIGRATIONS in tenant_migrations.rs. Both files must move
 #      together in the same commit.
 #   3. To change behavior for an already-published version, add a NEW
-#      migration with the next higher version number; do NOT edit the old
-#      entry. The runner records the version in schema_migrations; changing
-#      a body for an already-applied version silently NO-OPs on every
-#      existing deployment.
+#      migration with the next higher version number; do NOT edit the old entry.
 #
-# History (2026-05-22, Patch 20): position v48 was reaffected at the
-# VOCSAP merge of upstream commits d71342e (2026-05-05) and a0880ee
-# (2026-05-13), moving "memories_community_id" to v51 and inserting
-# "supervisor_injections_fix_schema" at v48. Tenants migrated before the
-# merge were stuck on the old v48 body (memories_community_id) with
-# schema_migrations.version >= 48, so the new v48 body never ran.
-# v55 (supervisor_injections_repair) re-applies the missing ALTERs
-# idempotently. This manifest is the safety net against recurrence.
+# History (2026-05-22, Patch 20): position v48 was reaffected at the VOCSAP
+# merge of upstream commits d71342e + a0880ee; v55 re-applies the missing
+# ALTERs idempotently. See git log.
+#
+# History (2026-05-31, merge upstream aa6a0bec): DOCUMENTED DISCONTINUITY. The
+# upstream merge took tenant versions v55-v59 for its *_user_id_readd chain,
+# colliding with the VOCSAP v55-v59 (supervisor_injections_repair,
+# approvals_gate_id, conversations_space_id, structured_facts_unique_index,
+# structured_facts_extraction_source). The VOCSAP migrations were renumbered to
+# v72-v76 (appended after upstream max v71). Their bodies are idempotent
+# (table_has_column / CREATE [UNIQUE] INDEX IF NOT EXISTS) so re-running them
+# under the new numbers is a NO-OP on the single existing deployment (LXC 121,
+# already at v55-v59). This manifest was REGENERATED from the merged array;
+# lines v55-v59 now carry the upstream descriptions. This is the only
+# intentional break of the byte-identical rule, tied to this merge.
 
 1: initial_tenant_schema
 2: scratchpad_user_id_shim
@@ -79,8 +83,25 @@
 52: syntheos_parity_chiasm_extended
 53: chiasm_agent_keys
 54: handoff_atoms
-55: supervisor_injections_repair
-56: approvals_gate_id
-57: conversations_space_id
-58: structured_facts_unique_index
-59: structured_facts_extraction_source
+55: memories_user_id_readd
+56: webhooks_user_id_readd
+57: approvals_user_id_readd
+58: soma_agents_user_id_readd
+59: axon_events_user_id_readd
+60: chiasm_tasks_user_id_readd
+61: conversations_user_id_readd
+62: intelligence_user_id_readd
+63: graph_entities_user_id_readd
+64: episodes_user_id_readd
+65: intelligence_remainder_user_id_readd
+66: thymus_user_id_readd
+67: graph_remainder_user_id_readd
+68: user_preferences_user_id_readd
+69: skills_user_id_readd
+70: tenant_state_counters
+71: artifacts_fts
+72: supervisor_injections_repair
+73: approvals_gate_id
+74: conversations_space_id
+75: structured_facts_unique_index
+76: structured_facts_extraction_source

@@ -1,6 +1,5 @@
 use super::types::VectorHit;
 use crate::db::Database;
-use crate::EngError;
 use crate::Result;
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -43,42 +42,32 @@ pub async fn vector_search(
     // vector_top_k returns rowids ordered by distance (ascending = most similar first).
     // We JOIN on memories.rowid = id to get the full row filters applied.
     // Note: vector_top_k requires sqlite-vec extension.
-    // user_id is accepted for API compatibility but not used as a SQL filter:
-    // tenant isolation is enforced at the database level (one DB per tenant).
-    #[allow(unused_variables)]
-    let _user_id_for_compat = user_id;
+    // The owner predicate (?3) keeps single-DB (shared) mode from returning
+    // another user's nearest-neighbour hits; a no-op in a single-owner shard.
     let sql = "
         SELECT memories.id
         FROM vector_top_k('memories_vec_1024_idx', vector(?1), ?2)
         JOIN memories ON memories.rowid = id
-        WHERE memories.is_forgotten = 0
+        WHERE memories.user_id = ?3
+          AND memories.is_forgotten = 0
           AND memories.is_latest = 1
-          AND memories.is_consolidated = 0
     ";
 
     match db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(sql)
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
-            let mut rows = stmt
-                .query(rusqlite::params![embedding_json, limit as i64])
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let mut stmt = conn.prepare(sql)?;
+            let mut rows = stmt.query(rusqlite::params![embedding_json, limit as i64, user_id])?;
 
             // 6.9 capacity hint: LIMIT bounds the row count.
             let mut hits = Vec::with_capacity(limit);
             let mut rank: usize = 0;
-            while let Some(row) = rows
-                .next()
-                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
-            {
-                let memory_id: i64 = row
-                    .get(0)
-                    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            while let Some(row) = rows.next()? {
+                let memory_id: i64 = row.get(0)?;
                 hits.push(VectorHit {
                     memory_id,
                     distance: None,
                     rank,
+                    matching_chunk_text: None,
                 });
                 rank += 1;
             }
@@ -118,22 +107,64 @@ pub async fn chunk_vector_search(
 
     let mut seen: HashSet<i64> = HashSet::with_capacity(limit);
     let mut out: Vec<VectorHit> = Vec::with_capacity(limit);
+    let mut winners: Vec<(i64, usize)> = Vec::with_capacity(limit);
     let mut rank: usize = 0;
     for hit in raw_hits {
         let memory_id = super::lance_key_to_memory_id(hit.memory_id);
+        let chunk_idx = (hit.memory_id % 1000) as usize;
         if seen.insert(memory_id) {
             out.push(VectorHit {
                 memory_id,
                 distance: hit.distance,
                 rank,
+                matching_chunk_text: None,
             });
+            winners.push((memory_id, chunk_idx));
             rank += 1;
             if out.len() >= limit {
                 break;
             }
         }
     }
+
+    if let Ok(texts) = fetch_chunk_texts_batch(db, &winners).await {
+        for hit in &mut out {
+            if let Some(text) = texts.get(&hit.memory_id) {
+                hit.matching_chunk_text = Some(text.clone());
+            }
+        }
+    }
+
     Ok(out)
+}
+
+async fn fetch_chunk_texts_batch(
+    db: &Database,
+    winners: &[(i64, usize)],
+) -> Result<std::collections::HashMap<i64, String>> {
+    if winners.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let winners_owned: Vec<(i64, usize)> = winners.to_vec();
+    db.read(move |conn| {
+        let mut map = std::collections::HashMap::with_capacity(winners_owned.len());
+        let mut stmt = conn.prepare(
+            "SELECT content FROM memory_chunks \
+                 WHERE memory_id = ?1 AND chunk_idx = ?2",
+        )?;
+        for (memory_id, chunk_idx) in &winners_owned {
+            if let Ok(text) = stmt
+                .query_row(rusqlite::params![memory_id, *chunk_idx as i64], |row| {
+                    row.get::<_, String>(0)
+                })
+            {
+                map.insert(*memory_id, text);
+            }
+        }
+        Ok(map)
+    })
+    .await
 }
 
 #[cfg(test)]

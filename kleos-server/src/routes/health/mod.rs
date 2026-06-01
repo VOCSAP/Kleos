@@ -14,9 +14,6 @@ use crate::{extractors::Auth, state::AppState};
 use kleos_lib::auth::Scope;
 use kleos_lib::jobs;
 
-#[allow(dead_code)]
-mod types;
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/health", get(get_health))
@@ -51,7 +48,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
                 let db = handle.database();
                 let counts = db
                     .read(|conn| {
-                        conn.query_row(
+                        Ok(conn.query_row(
                             "SELECT
                                 SUM(CASE WHEN is_forgotten = 0 AND is_archived = 0 THEN 1 ELSE 0 END),
                                 (SELECT COUNT(*) FROM entities),
@@ -71,8 +68,7 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
                                     row.get::<_, i64>(5)?,
                                 ))
                             },
-                        )
-                        .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+                        )?)
                     })
                     .await
                     .unwrap_or((0, 0, 0, 0, 0, 0));
@@ -88,13 +84,23 @@ async fn get_health(State(state): State<AppState>) -> Json<Value> {
     }
 
     let llm_configured = state.brain.is_some();
-    let embedding_model = state
-        .config
-        .embedding_model_dir
-        .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    // When KLEOS_EMBEDDING_URL is set, report the model name (or "openai-compat"
+    // as a fallback) so /health reflects the active HTTP provider.
+    let embedding_model = std::env::var("KLEOS_EMBEDDING_URL")
+        .ok()
+        .map(|_| {
+            std::env::var("KLEOS_EMBEDDING_MODEL").unwrap_or_else(|_| "openai-compat".to_string())
+        })
+        .or_else(|| {
+            state
+                .config
+                .embedding_model_dir
+                .as_deref()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
 
     Json(json!({
         "status": "ok",
@@ -130,10 +136,7 @@ async fn get_ready(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     // DB ping: required. Run a trivial query to verify the connection pool.
     let db_ok = state
         .db
-        .read(|conn| {
-            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
-                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
-        })
+        .read(|conn| Ok(conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?))
         .await
         .is_ok();
 
@@ -186,12 +189,11 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     let mem_count: i64 = state
         .db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE is_forgotten = 0",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .unwrap_or(0);
@@ -199,12 +201,11 @@ async fn get_metrics(State(state): State<AppState>, Auth(auth): Auth) -> Respons
     let emb_count: i64 = state
         .db
         .read(|conn| {
-            conn.query_row(
+            Ok(conn.query_row(
                 "SELECT COUNT(*) FROM memories WHERE embedding IS NOT NULL AND is_forgotten = 0",
                 [],
                 |row| row.get(0),
-            )
-            .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            )?)
         })
         .await
         .unwrap_or(0);

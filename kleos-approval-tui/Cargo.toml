@@ -1,6 +1,6 @@
 [package]
 name = "kleos-approval-tui"
-version = "1.1.2"
+version = "1.2.1"
 edition = "2021"
 rust-version.workspace = true
 description = "Terminal UI for human approval workflow"
@@ -11,7 +11,7 @@ name = "engram-approval-tui"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2" }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
 tokio = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
@@ -25,4 +25,4 @@ crossterm = "0.28"
 
 # Windows needs bundled SQLCipher since there's no system sqlite3.lib
 [target.'cfg(windows)'.dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.1.2", features = ["sqlcipher"] }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }

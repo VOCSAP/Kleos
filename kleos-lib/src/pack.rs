@@ -3,12 +3,8 @@
 //! Ports: pack/index.ts
 
 use crate::db::Database;
-use crate::{EngError, Result};
+use crate::Result;
 use serde::{Deserialize, Serialize};
-
-fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
-    EngError::DatabaseMessage(err.to_string())
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,29 +46,25 @@ pub async fn pack_memories(
     // Layer 1: Static facts
     let static_candidates: Vec<PackCandidate> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE is_static = 1 AND is_forgotten = 0 AND is_archived = 0 \
-                       AND is_consolidated = 0",
-                )
-                .map_err(rusqlite_to_eng_error)?;
-            let rows = stmt
-                .query_map(rusqlite::params![], |row| {
-                    Ok(PackCandidate {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                        score: 100.0,
-                        source: "static".to_string(),
-                    })
+                       AND is_consolidated = 0 AND is_latest = 1",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![], |row| {
+                Ok(PackCandidate {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    score: 100.0,
+                    source: "static".to_string(),
                 })
-                .map_err(rusqlite_to_eng_error)?;
+            })?;
             let mut results = Vec::new();
             for row in rows {
-                results.push(row.map_err(rusqlite_to_eng_error)?);
+                results.push(row?);
             }
             Ok(results)
         })
@@ -81,32 +73,28 @@ pub async fn pack_memories(
     // Layer 2: High-importance memories
     let important_candidates: Vec<PackCandidate> = db
         .read(move |conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, content, category, importance, \
+            let mut stmt = conn.prepare(
+                "SELECT id, content, category, importance, \
                             COALESCE(decay_score, importance) as ds \
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                        AND is_consolidated = 0 \
                      ORDER BY ds DESC LIMIT 30",
-                )
-                .map_err(rusqlite_to_eng_error)?;
-            let rows = stmt
-                .query_map(rusqlite::params![], |row| {
-                    let ds: f64 = row.get::<_, f64>(4).unwrap_or(5.0);
-                    Ok(PackCandidate {
-                        id: row.get(0)?,
-                        content: row.get(1)?,
-                        category: row.get(2)?,
-                        importance: row.get(3)?,
-                        score: ds * 2.0,
-                        source: "important".to_string(),
-                    })
+            )?;
+            let rows = stmt.query_map(rusqlite::params![], |row| {
+                let ds: f64 = row.get::<_, f64>(4).unwrap_or(5.0);
+                Ok(PackCandidate {
+                    id: row.get(0)?,
+                    content: row.get(1)?,
+                    category: row.get(2)?,
+                    importance: row.get(3)?,
+                    score: ds * 2.0,
+                    source: "important".to_string(),
                 })
-                .map_err(rusqlite_to_eng_error)?;
+            })?;
             let mut results = Vec::new();
             for row in rows {
-                results.push(row.map_err(rusqlite_to_eng_error)?);
+                results.push(row?);
             }
             Ok(results)
         })

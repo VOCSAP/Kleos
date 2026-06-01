@@ -285,7 +285,9 @@ async fn create_and_list_agent_keys() {
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0]["name"], "test-agent");
 
-    // Agent key can access secrets in allowed categories
+    // A non-raw agent (allow_raw:false) is denied the raw /secret get, which
+    // returns plaintext. Raw retrieval requires allow_raw; non-raw agents use
+    // proxy resolve instead. (Previously asserted 200, codifying a plaintext hole.)
     app.post(
         "/secret/openai/key",
         json!({
@@ -295,8 +297,11 @@ async fn create_and_list_agent_keys() {
     .await;
 
     let (status, body) = app.get_auth("/secret/openai/key", agent_key).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["value"]["key"], "sk-agent-test");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        !body.to_string().contains("sk-agent-test"),
+        "denied secret get must not leak the value"
+    );
 }
 
 #[tokio::test]
@@ -364,6 +369,80 @@ async fn revoke_agent_key() {
     // Revoked key cannot access
     let (status, _) = app.get_auth("/secret/test/key", &agent_key).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Plaintext-tier gating: non-raw agents must never receive secret plaintext
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn non_raw_agent_denied_resolve_text() {
+    let app = TestApp::new().await;
+
+    // allow_raw:false agent WITH access to the category.
+    let (status, body) = app
+        .post(
+            "/agents",
+            json!({
+                "name": "text-agent",
+                "categories": ["openai"],
+                "allow_raw": false
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    app.post(
+        "/secret/openai/key",
+        json!({ "data": { "type": "api_key", "key": "sk-leak-me" } }),
+    )
+    .await;
+
+    // Text substitution would embed the plaintext in the response body, so a
+    // non-raw agent must be denied and the value must not leak.
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/text",
+            Some(json!({ "text": "API_KEY={{secret:openai/key}}" })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        !body.to_string().contains("sk-leak-me"),
+        "denied text resolve must not leak the secret value"
+    );
+}
+
+#[tokio::test]
+async fn raw_agent_allowed_secret_get() {
+    let app = TestApp::new().await;
+
+    // allow_raw:true agent retains direct plaintext retrieval.
+    let (status, body) = app
+        .post(
+            "/agents",
+            json!({
+                "name": "raw-agent",
+                "categories": ["openai"],
+                "allow_raw": true
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    app.post(
+        "/secret/openai/key",
+        json!({ "data": { "type": "api_key", "key": "sk-raw-ok" } }),
+    )
+    .await;
+
+    let (status, body) = app.get_auth("/secret/openai/key", &agent_key).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["value"]["key"], "sk-raw-ok");
 }
 
 // ---------------------------------------------------------------------------

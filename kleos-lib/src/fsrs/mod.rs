@@ -43,6 +43,9 @@ fn round_3(x: f32) -> f32 {
 // ---- Core functions ----
 
 pub fn forgetting_factor(w20: f32) -> f32 {
+    if w20.abs() < f32::EPSILON {
+        return 0.0;
+    }
     f32::powf(0.9_f32, -1.0 / w20) - 1.0
 }
 
