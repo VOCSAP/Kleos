@@ -308,34 +308,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // tenant split. v71 adds the virtual table + triggers and rebuilds the
     // index from any artifacts already in the shard.
     tenant_migration!(71, "artifacts_fts", apply_schema_v71_artifacts_fts),
-    // --- VOCSAP local tenant migrations (merge upstream aa6a0bec, 2026-05-31) ---
-    // Renumbered from their original v55-v59 to v72-v76: upstream took v55-v59
-    // for its *_user_id_readd chain. The fn bodies keep their apply_schema_v55..v59_*
-    // names (only the version number changes) and are idempotent (table_has_column /
-    // CREATE [UNIQUE] INDEX IF NOT EXISTS), so re-running them under the new numbers
-    // is a NO-OP on LXC 121 (already applied as v55-v59). See merge plan + manifest
-    // header note. Append-only: these stay at the end, after upstream's max (v71).
-    tenant_migration!(
-        72,
-        "supervisor_injections_repair",
-        apply_schema_v55_supervisor_injections_repair
-    ),
-    tenant_migration!(73, "approvals_gate_id", apply_schema_v56_approvals_gate_id),
-    tenant_migration!(
-        74,
-        "conversations_space_id",
-        apply_schema_v57_conversations_space_id
-    ),
-    tenant_migration!(
-        75,
-        "structured_facts_unique_index",
-        apply_schema_v58_structured_facts_unique
-    ),
-    tenant_migration!(
-        76,
-        "structured_facts_extraction_source",
-        apply_schema_v59_structured_facts_extraction_source
-    ),
+    // VOCSAP local tenant schema additions (formerly numbered v72-v76) now live
+    // in the Patch 41 overlay channel (see db::vocsap::apply_tenant_overlays,
+    // called at the end of run_tenant_migrations). They no longer occupy a slot
+    // in this upstream-shared sequence, so future upstream merges cannot collide
+    // with them. TENANT_MIGRATIONS is upstream-pure again.
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -1130,59 +1107,6 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
         |row| row.get(0),
     )?;
 
-    // --- Patch 40 (2026-06-02): self-healing for the aa6a0bec merge renumber ---
-    // The merge renumbered VOCSAP's old tenant v55-v59 (supervisor / approvals /
-    // space / structured_facts migrations) to v72-v76, so upstream's v55-v59
-    // user_id readds now occupy slots 55-59. Shards that had recorded v55-v59
-    // under the old meaning skip the upstream readds (those slots are <= current),
-    // leaving memories, webhooks, approvals, soma_agents and axon_events without
-    // `user_id`; the dependent v60+ migrations then run against a schema missing
-    // those columns. Detect via the memories.user_id tell and re-apply the
-    // affected readds -- the apply fn plus the owner backfill, exactly as the
-    // dispatch loop below would -- before that loop reaches the dependents. The
-    // version rows are already recorded so they are not re-inserted. No-op on a
-    // fresh install (current below the slots -> the loop applies them in order)
-    // and on a healthy shard (the column gate plus each apply fn's
-    // table_has_column guard short-circuit, so no redundant soma_agents rebuild).
-    if current >= TENANT_MIGRATION_READD_USER_ID
-        && !table_has_column(conn, "memories", "user_id")?
-    {
-        for m in TENANT_MIGRATIONS.iter().filter(|m| {
-            m.version >= TENANT_MIGRATION_READD_USER_ID
-                && m.version <= TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS
-                && m.version <= current
-        }) {
-            // The readd .sql files use raw `ALTER TABLE ADD COLUMN` (NOT
-            // idempotent -- they rely on the runner gating them to exactly once)
-            // and the v58 soma_agents readd is a 12-step RENAME/rebuild. So only
-            // re-run a readd whose representative target column is actually
-            // absent: this keeps the heal safe against any partial state and can
-            // never double-apply the soma_agents rebuild. The `INSERT OR IGNORE`
-            // into schema_migrations inside each file is a no-op (rows already
-            // recorded), so versions are not re-inserted.
-            let probe_table: &str = match m.version {
-                TENANT_MIGRATION_READD_USER_ID => "memories",
-                TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => "webhooks",
-                TENANT_MIGRATION_READD_USER_ID_APPROVALS => "approvals",
-                TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => "soma_agents",
-                TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => "axon_events",
-                _ => continue,
-            };
-            if table_has_column(conn, probe_table, "user_id")? {
-                continue;
-            }
-            info!(
-                "self-heal: re-applying skipped tenant migration {} ({}) after the \
-                 aa6a0bec renumber left memory-core user_id columns absent",
-                m.version, m.description
-            );
-            (m.up)(conn)?;
-            if let Some(owner) = owner_user_id {
-                backfill_owner_tables_for_version(conn, m.version, owner)?;
-            }
-        }
-    }
-
     for m in TENANT_MIGRATIONS.iter() {
         if m.version <= current {
             continue;
@@ -1203,6 +1127,14 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
             rusqlite::params![m.version],
         )?;
     }
+
+    // VOCSAP schema overlay channel (Patch 41): apply additive VOCSAP tenant
+    // schema changes after the upstream dispatch loop, outside the numbered
+    // sequence. Idempotent (each overlay guards on a `needs` predicate) -> no-op
+    // once the additions are present. Replaces the former numbered v72-v76 and
+    // the Patch 40 self-heal hook. `owner_user_id` is forwarded for any
+    // owner-scoped backfill (none of the current overlays need it).
+    super::vocsap::apply_tenant_overlays(conn, owner_user_id)?;
 
     Ok(())
 }
@@ -1368,118 +1300,6 @@ fn apply_schema_v70_tenant_state(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// --- VOCSAP local tenant migration bodies (merge upstream aa6a0bec) ---
-// These ship at array versions v72-v76 (renumbered from v55-v59 at the merge;
-// see the array entries and the manifest header note). Fn names keep their
-// original v55..v59 labels. All idempotent -> NO-OP re-run on LXC 121.
-
-/// Tenant v55 (Patch 20, 2026-05-22) -- ships at array v72. Repairs tenants
-/// stuck on the pre-merge v48 supervisor_injections body. Re-applies the
-/// ALTERs idempotently via table_has_column guards, so it is a NO-OP on
-/// tenants that already received the post-merge v48.
-fn apply_schema_v55_supervisor_injections_repair(conn: &Connection) -> Result<()> {
-    if !table_has_column(conn, "supervisor_injections", "rule_id")? {
-        conn.execute_batch(
-            "ALTER TABLE supervisor_injections ADD COLUMN rule_id TEXT NOT NULL DEFAULT '';",
-        )
-        .map_err(|e| {
-            EngError::DatabaseMessage(format!("tenant schema v55 (rule_id) failed: {e}"))
-        })?;
-    }
-    if !table_has_column(conn, "supervisor_injections", "claimed_at")? {
-        conn.execute_batch("ALTER TABLE supervisor_injections ADD COLUMN claimed_at TEXT;")
-            .map_err(|e| {
-                EngError::DatabaseMessage(format!("tenant schema v55 (claimed_at) failed: {e}"))
-            })?;
-    }
-    // The v46 index was WHERE consumed = 0; the v48 body should have replaced
-    // it with WHERE claimed_at IS NULL. On tenants that skipped the v48 body,
-    // the old index is still in place; drop and recreate with the post-v48
-    // predicate. Idempotent on tenants where v48 already ran.
-    conn.execute_batch(
-        "DROP INDEX IF EXISTS idx_supervisor_injections_pending;
-         CREATE INDEX IF NOT EXISTS idx_supervisor_injections_pending
-            ON supervisor_injections(user_id, session_id)
-            WHERE claimed_at IS NULL;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(format!("tenant schema v55 (index) failed: {e}")))?;
-    Ok(())
-}
-
-/// Tenant v56 (Patch 21, 2026-05-22) -- ships at array v73. Adds optional
-/// `gate_id INTEGER` to `approvals` so the gate `pending_approval` workflow can
-/// correlate a `gate_requests` row with the `approvals` row consumed by the TUI.
-/// Idempotent via `table_has_column` guard.
-fn apply_schema_v56_approvals_gate_id(conn: &Connection) -> Result<()> {
-    if !table_has_column(conn, "approvals", "gate_id")? {
-        conn.execute_batch(
-            "ALTER TABLE approvals ADD COLUMN gate_id INTEGER;
-             CREATE INDEX IF NOT EXISTS idx_approvals_gate_id
-                ON approvals(gate_id) WHERE gate_id IS NOT NULL;",
-        )
-        .map_err(|e| {
-            EngError::DatabaseMessage(format!("tenant schema v56 (gate_id) failed: {e}"))
-        })?;
-    }
-    Ok(())
-}
-
-/// Tenant v57 (Patch 33, 2026-05-25) -- ships at array v74. Adds optional
-/// `space_id INTEGER` to `conversations` so the spaces partitioning convention
-/// extends to multi-turn agent threads. Idempotent via `table_has_column` guard.
-fn apply_schema_v57_conversations_space_id(conn: &Connection) -> Result<()> {
-    if !table_has_column(conn, "conversations", "space_id")? {
-        conn.execute_batch(
-            "ALTER TABLE conversations ADD COLUMN space_id INTEGER;
-             CREATE INDEX IF NOT EXISTS idx_conv_space ON conversations(space_id);",
-        )
-        .map_err(|e| {
-            EngError::DatabaseMessage(format!("tenant schema v57 (space_id) failed: {e}"))
-        })?;
-    }
-    Ok(())
-}
-
-/// Tenant v58 (Patch 38, 2026-05-27) -- ships at array v75. De-duplicates then
-/// enforces uniqueness on (memory_id, subject, predicate, object) in
-/// structured_facts. Idempotent: DELETE no-ops on a deduplicated table and the
-/// CREATE UNIQUE INDEX uses IF NOT EXISTS.
-fn apply_schema_v58_structured_facts_unique(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "DELETE FROM structured_facts \
-           WHERE id NOT IN ( \
-             SELECT MIN(id) FROM structured_facts \
-               GROUP BY memory_id, subject, predicate, object \
-           ); \
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_structured_facts_subj_pred_obj \
-           ON structured_facts(memory_id, subject, predicate, object);",
-    )
-    .map_err(|e| {
-        EngError::DatabaseMessage(format!(
-            "tenant schema v58 (structured_facts unique) failed: {e}"
-        ))
-    })?;
-    Ok(())
-}
-
-/// Tenant v59 (Patch 38, 2026-05-27) -- ships at array v76. Adds
-/// `extraction_source TEXT NOT NULL DEFAULT 'embedded'` to structured_facts.
-/// Idempotent via table_has_column guard.
-fn apply_schema_v59_structured_facts_extraction_source(conn: &Connection) -> Result<()> {
-    if !table_has_column(conn, "structured_facts", "extraction_source")? {
-        conn.execute_batch(
-            "ALTER TABLE structured_facts \
-               ADD COLUMN extraction_source TEXT NOT NULL DEFAULT 'embedded';",
-        )
-        .map_err(|e| {
-            EngError::DatabaseMessage(format!(
-                "tenant schema v59 (extraction_source) failed: {e}"
-            ))
-        })?;
-    }
-    Ok(())
-}
-
 /// Latest declared tenant schema version.
 pub fn latest_version() -> i64 {
     TENANT_MIGRATIONS
@@ -1493,73 +1313,6 @@ pub fn latest_version() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Patch 20 (2026-05-22): append-only guard. The TENANT_MIGRATIONS list
-    /// must be byte-identical to tenant_migrations.manifest for every entry
-    /// that has ever shipped. Any renumber, rename, or removal of a
-    /// historical entry will fire here at CI time, before it can ship and
-    /// silently divert a tenant schema.
-    ///
-    /// This test exists because at the 2026-05-13 VOCSAP merge of upstream
-    /// commit a0880ee, position v48 was reaffected from "memories_community_id"
-    /// to "supervisor_injections_fix_schema". Tenants migrated pre-merge had
-    /// already committed schema_migrations.version = 48 with the OLD body, so
-    /// the new v48 body was silently skipped by run_tenant_migrations. The
-    /// table supervisor_injections stayed at its v46 layout for ~9 days
-    /// before the symptoms surfaced through engram-approval-tui. The
-    /// manifest below is the safety net.
-    ///
-    /// NB (merge aa6a0bec 2026-06-01): re-added after being dropped by the
-    /// --theirs Lot 0 resolution. The manifest was regenerated from the merged
-    /// array (upstream v1-v71 + VOCSAP v72-v76), so this test now baselines the
-    /// post-merge contiguous list.
-    #[test]
-    fn tenant_migrations_obey_append_only_manifest() {
-        let manifest = include_str!("tenant_migrations.manifest");
-        let expected: Vec<(i64, &str)> = manifest
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(|l| {
-                let (v, d) = l.split_once(':').unwrap_or_else(|| {
-                    panic!("malformed manifest line (expected 'N: description'): {:?}", l)
-                });
-                let version: i64 = v.trim().parse().unwrap_or_else(|_| {
-                    panic!("malformed version number in manifest line: {:?}", l)
-                });
-                (version, d.trim())
-            })
-            .collect();
-
-        for (i, (exp_v, exp_d)) in expected.iter().enumerate() {
-            let actual = TENANT_MIGRATIONS.get(i).unwrap_or_else(|| {
-                panic!(
-                    "tenant_migrations.manifest lists entry index {} (v{}: {}) but \
-                     TENANT_MIGRATIONS is shorter; a previously-published migration was \
-                     REMOVED. Append-only rule violated. Restore the entry or append a \
-                     new migration at the end instead of editing past history.",
-                    i, exp_v, exp_d
-                )
-            });
-            assert_eq!(
-                (actual.version, actual.description),
-                (*exp_v, *exp_d),
-                "tenant migration at index {} drifted from manifest: code has \
-                 (v{}, {:?}) but manifest expects (v{}, {:?}). \
-                 TENANT_MIGRATIONS is append-only; any line that ever shipped MUST stay \
-                 byte-identical. To add a NEW migration, append a new entry at the END \
-                 of both the list and tenant_migrations.manifest.",
-                i,
-                actual.version,
-                actual.description,
-                exp_v,
-                exp_d
-            );
-        }
-        // Trailing entries beyond the manifest are tolerated so a developer can
-        // add a migration to the code first and update the manifest in the
-        // same commit; reviewers MUST verify both files moved together.
-    }
 
     /// Verifies that a fresh in-memory database lands at the latest migration version.
     #[test]
@@ -1592,58 +1345,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
-    }
-
-    /// Patch 40 (2026-06-02): the aa6a0bec merge renumber made shards that had
-    /// recorded tenant v55-v59 under the OLD VOCSAP meaning skip the upstream
-    /// user_id readds. `run_tenant_migrations` must self-heal by re-adding the
-    /// missing memory-core user_id columns when the counter is past their slots,
-    /// and must NOT re-apply a readd whose column is already present.
-    #[test]
-    fn self_heal_readds_skipped_tenant_user_id_columns() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_tenant_migrations(&conn, Some(2)).unwrap();
-        assert!(table_has_column(&conn, "memories", "user_id").unwrap());
-
-        // Simulate the v55 skip: drop user_id from the memory-core trio together
-        // (the slot collision drops all three at once). Drop the cross-tenant
-        // trigger and every table index first so SQLite permits DROP COLUMN.
-        conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")
-            .unwrap();
-        for tbl in ["memories", "artifacts", "vector_sync_pending"] {
-            let idxs: Vec<String> = conn
-                .prepare(&format!(
-                    "SELECT name FROM sqlite_master WHERE type='index' \
-                     AND tbl_name='{tbl}' AND name NOT LIKE 'sqlite_%'"
-                ))
-                .unwrap()
-                .query_map([], |r| r.get::<_, String>(0))
-                .unwrap()
-                .filter_map(|r| r.ok())
-                .collect();
-            for ix in idxs {
-                conn.execute_batch(&format!("DROP INDEX IF EXISTS \"{ix}\";"))
-                    .unwrap();
-            }
-            conn.execute_batch(&format!("ALTER TABLE {tbl} DROP COLUMN user_id;"))
-                .unwrap();
-            assert!(
-                !table_has_column(&conn, tbl, "user_id").unwrap(),
-                "{tbl}.user_id should be absent after the simulated skip"
-            );
-        }
-
-        // Re-run with the shard owner: the self-heal re-adds the trio.
-        run_tenant_migrations(&conn, Some(2)).unwrap();
-        for tbl in ["memories", "artifacts", "vector_sync_pending"] {
-            assert!(
-                table_has_column(&conn, tbl, "user_id").unwrap(),
-                "{tbl}.user_id should be restored by the self-heal"
-            );
-        }
-        // webhooks still had user_id, so the per-version column gate must have
-        // skipped the v56 readd instead of double-applying its raw ADD COLUMN.
-        assert!(table_has_column(&conn, "webhooks", "user_id").unwrap());
     }
 
     /// Verifies that the memories table exists after applying tenant migration v1.

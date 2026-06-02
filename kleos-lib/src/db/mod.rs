@@ -6,6 +6,9 @@ pub mod schema;
 pub mod schema_sql;
 pub mod tenant_migrations;
 pub mod types;
+/// VOCSAP schema overlay channel (Patch 41): additive schema changes applied
+/// after the upstream dispatch loop, outside the numbered version sequence.
+mod vocsap;
 
 use crate::config::Config;
 use crate::vector::{LanceIndex, VectorIndex};
