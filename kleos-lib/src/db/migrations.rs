@@ -603,6 +603,34 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         |row| row.get(0),
     )?;
 
+    // --- Patch 40 (2026-06-02): self-healing for the aa6a0bec merge renumber ---
+    // The merge moved VOCSAP's old v64 (approvals_gate_id) to v83, so upstream's
+    // v64 readd_user_id_memory_core now occupies slot 64. Deployments that had
+    // recorded v64 under the old meaning skip the upstream body (the
+    // `current_version < 64` dispatch guard below is already false), leaving
+    // memories, artifacts, vector_sync_pending and structured_facts without
+    // `user_id`. The later v76 graph_remainder then panics creating idx_sf_user
+    // on structured_facts(user_id). Re-apply the skipped readd idempotently when
+    // the counter is already past its slot but the column is still missing. This
+    // runs BEFORE the gated dispatch so v76 finds its prerequisite. No-op on a
+    // fresh install (current_version below the slot -> the normal dispatch
+    // applies v64 in order) and on a healthy DB (the column-presence gate and
+    // run_migration_readd_user_id_memory_core's own per-table guards short-circuit).
+    if current_version >= MIGRATION_READD_USER_ID_MEMORY_CORE {
+        let sf_has_user_id: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if sf_has_user_id == 0 {
+            info!(
+                "self-heal: re-applying skipped migration 64 (readd_user_id_memory_core) \
+                 after the aa6a0bec renumber left memory-core user_id columns absent"
+            );
+            run_migration_readd_user_id_memory_core(conn)?;
+        }
+    }
+
     if current_version < MIGRATION_CREATE_SCHEMA {
         info!("Running migration 1: create_tables");
         super::schema::create_tables(conn)?;
@@ -5426,6 +5454,71 @@ mod tests {
     /// Opens an in-memory SQLite connection for testing.
     fn open_test_db() -> rusqlite::Connection {
         rusqlite::Connection::open_in_memory().expect("open in-memory test db")
+    }
+
+    fn structured_facts_has_user_id(conn: &rusqlite::Connection) -> bool {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        n > 0
+    }
+
+    /// Patch 40 (2026-06-02): the aa6a0bec merge renumber moved VOCSAP's old v64
+    /// to v83, so a monolith that recorded v64 under the old meaning skips the
+    /// upstream readd_user_id_memory_core and is left without
+    /// structured_facts.user_id while its counter is already past v64. The
+    /// pre-dispatch self-heal in `run_migrations` must restore the column so the
+    /// later v76 graph_remainder can build idx_sf_user.
+    #[test]
+    fn self_heal_readds_skipped_memory_core_user_id() {
+        let conn = open_test_db();
+        run_migrations(&conn).unwrap();
+        assert!(structured_facts_has_user_id(&conn));
+
+        // Simulate the v64 skip: drop user_id from structured_facts, dropping its
+        // indexes first so SQLite permits DROP COLUMN. The recorded version stays
+        // at latest (>= MIGRATION_READD_USER_ID_MEMORY_CORE).
+        let idxs: Vec<String> = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='index' \
+                 AND tbl_name='structured_facts' AND name NOT LIKE 'sqlite_%'",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        for ix in idxs {
+            conn.execute_batch(&format!("DROP INDEX IF EXISTS \"{ix}\";"))
+                .unwrap();
+        }
+        conn.execute_batch("ALTER TABLE structured_facts DROP COLUMN user_id;")
+            .unwrap();
+        assert!(
+            !structured_facts_has_user_id(&conn),
+            "user_id must be gone after the simulated skip"
+        );
+
+        // Re-run: the self-heal restores the column before any gated dispatch.
+        run_migrations(&conn).unwrap();
+        assert!(
+            structured_facts_has_user_id(&conn),
+            "self-heal must restore structured_facts.user_id"
+        );
+    }
+
+    /// The self-heal is a no-op on a healthy DB: re-running migrations when the
+    /// memory-core user_id columns are present must not error or change them.
+    #[test]
+    fn self_heal_noop_when_user_id_present() {
+        let conn = open_test_db();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        assert!(structured_facts_has_user_id(&conn));
     }
 
     /// Patch 20 (2026-05-22): append-only guard. The MIGRATIONS list must be
