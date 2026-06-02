@@ -69,12 +69,12 @@ pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<Temporal
             let mut stmt = conn.prepare(
                 "SELECT id, category, created_at, space_id \
                      FROM memories \
-                     WHERE is_forgotten = 0 \
+                     WHERE is_forgotten = 0 AND user_id = ?2 \
                      ORDER BY space_id, category, created_at \
                      LIMIT ?1",
             )?;
 
-            let iter = stmt.query_map(params![DETECT_SCAN_LIMIT], |row| {
+            let iter = stmt.query_map(params![DETECT_SCAN_LIMIT, user_id], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
@@ -352,7 +352,7 @@ pub async fn list_patterns(
 #[tracing::instrument(skip(db, query, timestamp))]
 pub async fn time_travel(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     query: Option<&str>,
     timestamp: &str,
     limit: i64,
@@ -366,11 +366,11 @@ pub async fn time_travel(
                 "SELECT id, content, category, importance, created_at \
                      FROM memories \
                      WHERE created_at <= ?1 AND is_forgotten = 0 \
-                       AND content LIKE ?2 \
+                       AND content LIKE ?2 AND user_id = ?4 \
                      ORDER BY created_at DESC LIMIT ?3",
             )?;
 
-            let rows = stmt.query_map(params![timestamp, pattern, limit], |row| {
+            let rows = stmt.query_map(params![timestamp, pattern, limit, user_id], |row| {
                 Ok(TimeTravelResult {
                     id: row.get(0)?,
                     content: row.get(1)?,
@@ -388,11 +388,11 @@ pub async fn time_travel(
             let mut stmt = conn.prepare(
                 "SELECT id, content, category, importance, created_at \
                      FROM memories \
-                     WHERE created_at <= ?1 AND is_forgotten = 0 \
+                     WHERE created_at <= ?1 AND is_forgotten = 0 AND user_id = ?3 \
                      ORDER BY created_at DESC LIMIT ?2",
             )?;
 
-            let rows = stmt.query_map(params![timestamp, limit], |row| {
+            let rows = stmt.query_map(params![timestamp, limit, user_id], |row| {
                 Ok(TimeTravelResult {
                     id: row.get(0)?,
                     content: row.get(1)?,

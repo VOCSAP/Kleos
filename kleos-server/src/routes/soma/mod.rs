@@ -95,7 +95,7 @@ async fn create_agent_handler(
         .ok_or_else(|| kleos_lib::EngError::InvalidInput("type is required".into()))?;
 
     let req = RegisterAgentRequest {
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         name: body.name,
         type_,
         description: body.description,
@@ -119,7 +119,7 @@ async fn list_agents_handler(
     let limit = params.limit.unwrap_or(100).min(1000);
     let agents = list_agents(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         params.agent_type.as_deref(),
         params.status.as_deref(),
         limit,
@@ -152,7 +152,7 @@ async fn get_agent_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let agent = get_agent(&db, id, auth.user_id).await?;
+    let agent = get_agent(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -168,7 +168,7 @@ async fn update_agent_handler(
     Path(id): Path<i64>,
     Json(body): Json<UpdateAgentBody>,
 ) -> Result<Json<Value>, AppError> {
-    let existing = get_agent(&db, id, auth.user_id).await?;
+    let existing = get_agent(&db, id, auth.effective_user_id()).await?;
 
     if body.r#type.is_some()
         || body.description.is_some()
@@ -182,7 +182,7 @@ async fn update_agent_handler(
         register_agent(
             &db,
             RegisterAgentRequest {
-                user_id: Some(auth.user_id),
+                user_id: Some(auth.effective_user_id()),
                 name: existing.name.clone(),
                 type_,
                 description,
@@ -194,10 +194,10 @@ async fn update_agent_handler(
     }
 
     if let Some(status) = body.status.as_deref() {
-        set_status(&db, id, auth.user_id, status).await?;
+        set_status(&db, id, auth.effective_user_id(), status).await?;
     }
 
-    let agent = get_agent(&db, id, auth.user_id).await?;
+    let agent = get_agent(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -210,7 +210,7 @@ async fn delete_agent_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_agent(&db, id, auth.user_id).await?;
+    delete_agent(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -228,8 +228,8 @@ async fn heartbeat_handler(
     body: Option<Json<HeartbeatBody>>,
 ) -> Result<Json<Value>, AppError> {
     let status = body.and_then(|Json(b)| b.status);
-    heartbeat(&db, id, auth.user_id, status.as_deref()).await?;
-    let agent = get_agent(&db, id, auth.user_id).await?;
+    heartbeat(&db, id, auth.effective_user_id(), status.as_deref()).await?;
+    let agent = get_agent(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(agent)))
 }
 
@@ -244,8 +244,14 @@ async fn update_quality_handler(
     Path(id): Path<i64>,
     Json(body): Json<UpdateQualityBody>,
 ) -> Result<Json<Value>, AppError> {
-    let agent =
-        update_agent_quality(&db, id, auth.user_id, body.quality_score, body.drift_flags).await?;
+    let agent = update_agent_quality(
+        &db,
+        id,
+        auth.effective_user_id(),
+        body.quality_score,
+        body.drift_flags,
+    )
+    .await?;
     Ok(Json(json!(agent)))
 }
 
@@ -259,7 +265,7 @@ async fn delete_group_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let removed = delete_group(&db, id, auth.user_id).await?;
+    let removed = delete_group(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "removed": removed })))
 }
 
@@ -272,7 +278,7 @@ async fn get_group_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let group = get_group(&db, id, auth.user_id).await?;
+    let group = get_group(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(group)))
 }
 
@@ -285,7 +291,7 @@ async fn list_group_members_handler(
     Auth(auth): Auth,
     Path(group_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let members = get_group_members(&db, group_id, auth.user_id).await?;
+    let members = get_group_members(&db, group_id, auth.effective_user_id()).await?;
     let count = members.len();
     Ok(Json(json!({ "members": members, "count": count })))
 }
@@ -295,7 +301,7 @@ async fn list_group_members_handler(
 /// Returns aggregate counts: total agents, online agents, and distinct type
 /// count. Scoped to the caller's tenant shard.
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_soma_stats(&db, auth.user_id).await?;
+    let stats = get_soma_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -310,7 +316,7 @@ async fn create_group_handler(
     Auth(auth): Auth,
     Json(body): Json<CreateGroupBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let group = create_group(&db, body.name, body.description, auth.user_id).await?;
+    let group = create_group(&db, body.name, body.description, auth.effective_user_id()).await?;
     Ok((StatusCode::CREATED, Json(json!(group))))
 }
 
@@ -322,7 +328,7 @@ async fn list_groups_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let groups = list_groups(&db, auth.user_id).await?;
+    let groups = list_groups(&db, auth.effective_user_id()).await?;
     Ok(Json(json!({ "groups": groups, "count": groups.len() })))
 }
 
@@ -336,7 +342,7 @@ async fn add_member_handler(
     Path(group_id): Path<i64>,
     Json(body): Json<AddMemberBody>,
 ) -> Result<Json<Value>, AppError> {
-    add_agent_to_group(&db, body.agent_id, group_id, auth.user_id).await?;
+    add_agent_to_group(&db, body.agent_id, group_id, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "ok": true, "group_id": group_id, "agent_id": body.agent_id }),
     ))
@@ -351,7 +357,8 @@ async fn remove_member_handler(
     Auth(auth): Auth,
     Path((group_id, agent_id)): Path<(i64, i64)>,
 ) -> Result<Json<Value>, AppError> {
-    let removed = remove_agent_from_group(&db, agent_id, group_id, auth.user_id).await?;
+    let removed =
+        remove_agent_from_group(&db, agent_id, group_id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "removed": removed })))
 }
 
@@ -371,7 +378,7 @@ async fn log_event_handler(
     let id = log_event(
         &db,
         agent_id,
-        auth.user_id,
+        auth.effective_user_id(),
         &body.level,
         &body.message,
         body.data,
@@ -392,7 +399,14 @@ async fn list_logs_handler(
     Query(params): Query<ListLogsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
-    let logs = list_agent_logs(&db, agent_id, auth.user_id, limit, params.level.as_deref()).await?;
+    let logs = list_agent_logs(
+        &db,
+        agent_id,
+        auth.effective_user_id(),
+        limit,
+        params.level.as_deref(),
+    )
+    .await?;
     Ok(Json(json!({ "logs": logs, "count": logs.len() })))
 }
 
@@ -409,7 +423,7 @@ async fn get_stale_agents_handler(
     Query(params): Query<StaleAgentsParams>,
 ) -> Result<Json<Value>, AppError> {
     let minutes = params.minutes.unwrap_or(5);
-    let agents = get_stale_agents(&db, auth.user_id, minutes).await?;
+    let agents = get_stale_agents(&db, auth.effective_user_id(), minutes).await?;
     Ok(Json(json!(agents)))
 }
 
@@ -423,6 +437,6 @@ async fn find_by_capability_handler(
     Auth(auth): Auth,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let agents = find_by_capability(&db, auth.user_id, &name).await?;
+    let agents = find_by_capability(&db, auth.effective_user_id(), &name).await?;
     Ok(Json(json!(agents)))
 }

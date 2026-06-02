@@ -32,3 +32,23 @@ pub(super) struct CreateSpaceBody {
     pub name: String,
     pub description: Option<String>,
 }
+
+/// Body for creating or updating an instance-level access grant. The grant
+/// lets `grantee_user_id` reach `owner_user_id`'s entire shard at `access`.
+#[derive(Debug, Deserialize)]
+pub(super) struct CreateGrantBody {
+    /// The shard owner whose data the grant exposes.
+    pub owner_user_id: i64,
+    /// The user who receives delegated access.
+    pub grantee_user_id: i64,
+    /// Access level: `read` or `write`.
+    pub access: String,
+}
+
+/// Query parameters for listing instance grants. When `owner` is omitted the
+/// caller's own shard is used.
+#[derive(Debug, Deserialize)]
+pub(super) struct ListGrantsQuery {
+    /// The shard owner whose issued grants to enumerate.
+    pub owner: Option<i64>,
+}

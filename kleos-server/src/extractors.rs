@@ -92,15 +92,24 @@ impl FromRequestParts<AppState> for ResolvedDb {
                 )
             })?;
 
+            // The effective tenant identity resolves the shard: the act-as
+            // target when an authorized delegation is active (set upstream by
+            // the act-as middleware, the single authorization chokepoint),
+            // otherwise the caller. With no delegation this is just the caller,
+            // the common zero-overhead path.
+            let effective = auth.effective_user_id();
+
             // Sharding disabled: serve the shared monolith. Row-level user_id
-            // scoping (restored across the data layer) isolates users in this
-            // mode, so this is a correct first-class path, not a fallback hole.
+            // scoping (via `effective_user_id`) isolates users in this mode, so
+            // an authorized act-as still surfaces the owner's rows correctly
+            // from the shared DB. This is a correct first-class path, not a
+            // fallback hole.
             let Some(registry) = registry else {
                 return Ok(ResolvedDb(monolith_db));
             };
 
             let handle = registry
-                .get_or_create(&auth.user_id.to_string())
+                .get_or_create(&effective.to_string())
                 .await
                 .map_err(|e| {
                     (

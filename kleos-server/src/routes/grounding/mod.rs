@@ -109,7 +109,10 @@ async fn create_session(
         metadata: body.metadata,
     };
 
-    let session = with_tenant_client(auth.user_id, |client| client.create_session(&config)).await;
+    let session = with_tenant_client(auth.effective_user_id(), |client| {
+        client.create_session(&config)
+    })
+    .await;
     Ok((
         StatusCode::CREATED,
         Json(serde_json::to_value(session).unwrap_or(json!({}))),
@@ -117,7 +120,7 @@ async fn create_session(
 }
 
 async fn list_sessions(Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let (session_values, count) = with_tenant_client_read(auth.user_id, |client| {
+    let (session_values, count) = with_tenant_client_read(auth.effective_user_id(), |client| {
         let sessions = client.list_sessions();
         let values: Vec<Value> = sessions
             .iter()
@@ -131,7 +134,7 @@ async fn list_sessions(Auth(auth): Auth) -> Result<Json<Value>, AppError> {
 }
 
 async fn get_session(Auth(auth): Auth, Path(id): Path<String>) -> Result<Json<Value>, AppError> {
-    let session_json = with_tenant_client_read(auth.user_id, |client| {
+    let session_json = with_tenant_client_read(auth.effective_user_id(), |client| {
         client
             .list_sessions()
             .iter()
@@ -148,7 +151,7 @@ async fn destroy_session(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     // Only destroy if the session exists under this tenant, otherwise 404.
-    let existed = with_tenant_client(auth.user_id, |client| {
+    let existed = with_tenant_client(auth.effective_user_id(), |client| {
         let present = client.list_sessions().iter().any(|s| s.id == id);
         if present {
             client.destroy_session(&id);
@@ -168,7 +171,7 @@ async fn list_tools(
     Auth(auth): Auth,
     Query(_params): Query<ToolsQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let (tools_json, count) = with_tenant_client_read(auth.user_id, |client| {
+    let (tools_json, count) = with_tenant_client_read(auth.effective_user_id(), |client| {
         let tools = client.get_all_tools();
         let values: Vec<Value> = tools
             .iter()
@@ -207,15 +210,15 @@ async fn execute_tool(
         // Ensure a client exists for this tenant.
         {
             let guard = tenants().read().await;
-            if guard.get(&auth.user_id).is_none() {
+            if guard.get(&auth.effective_user_id()).is_none() {
                 drop(guard);
                 let mut w = tenants().write().await;
-                w.entry(auth.user_id)
+                w.entry(auth.effective_user_id())
                     .or_insert_with(|| RwLock::new(GroundingClient::new()));
             }
         }
         let guard = tenants().read().await;
-        let lock = guard.get(&auth.user_id).ok_or_else(|| {
+        let lock = guard.get(&auth.effective_user_id()).ok_or_else(|| {
             AppError(kleos_lib::EngError::Internal(
                 "tenant grounding client not initialized".into(),
             ))

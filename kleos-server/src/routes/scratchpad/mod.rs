@@ -87,7 +87,7 @@ async fn promote(
     let category = body.category.as_deref().unwrap_or("discovery");
     let ids = kleos_lib::scratchpad::promote_entries(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         &session,
         body.keys.as_deref(),
         combine,

@@ -127,7 +127,7 @@ async fn list_tasks_handler(
 
     let tasks = list_tasks(
         &db,
-        auth.user_id,
+        auth.effective_user_id(),
         params.status.as_deref(),
         params.agent.as_deref(),
         params.project.as_deref(),
@@ -151,7 +151,7 @@ async fn create_task_handler(
         title: body.title,
         status: body.status,
         summary: body.summary,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         expected_output: body.expected_output,
         output_format: body.output_format,
         condition: body.condition,
@@ -165,7 +165,7 @@ async fn create_task_handler(
 
 /// Returns task statistics.
 async fn get_stats(ResolvedDb(db): ResolvedDb, Auth(auth): Auth) -> Result<Json<Value>, AppError> {
-    let stats = get_task_stats(&db, auth.user_id).await?;
+    let stats = get_task_stats(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -175,7 +175,7 @@ async fn get_task_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let task = get_task(&db, id, auth.user_id).await?;
+    let task = get_task(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(task)))
 }
 
@@ -193,7 +193,7 @@ async fn update_task_handler(
         agent: body.agent,
     };
 
-    let task = update_task(&db, id, req, auth.user_id).await?;
+    let task = update_task(&db, id, req, auth.effective_user_id()).await?;
     Ok(Json(json!(task)))
 }
 
@@ -204,9 +204,9 @@ async fn get_task_history_handler(
     Path(id): Path<i64>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<Value>, AppError> {
-    let _ = get_task(&db, id, auth.user_id).await?;
+    let _ = get_task(&db, id, auth.effective_user_id()).await?;
     let limit = params.limit.unwrap_or(100).min(1000);
-    let history = list_task_history(&db, id, auth.user_id, limit).await?;
+    let history = list_task_history(&db, id, auth.effective_user_id(), limit).await?;
     Ok(Json(json!({ "history": history, "count": history.len() })))
 }
 
@@ -216,7 +216,7 @@ async fn delete_task_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    delete_task(&db, id, auth.user_id).await?;
+    delete_task(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -228,8 +228,8 @@ async fn get_feed(
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(100).min(1000);
     let offset = params.offset.unwrap_or(0);
-    let items = get_task_feed(&db, auth.user_id, limit, offset).await?;
-    let total = get_task_stats(&db, auth.user_id).await?.total;
+    let items = get_task_feed(&db, auth.effective_user_id(), limit, offset).await?;
+    let total = get_task_stats(&db, auth.effective_user_id()).await?.total;
     Ok(Json(json!({ "items": items, "total": total })))
 }
 
@@ -240,7 +240,7 @@ async fn submit_output_handler(
     Path(id): Path<i64>,
     Json(body): Json<SubmitOutputBody>,
 ) -> Result<Json<Value>, AppError> {
-    let task = submit_output(&db, id, &body.output, auth.user_id).await?;
+    let task = submit_output(&db, id, &body.output, auth.effective_user_id()).await?;
     Ok(Json(json!(task)))
 }
 
@@ -251,7 +251,7 @@ async fn submit_feedback_handler(
     Path(id): Path<i64>,
     Json(body): Json<SubmitFeedbackBody>,
 ) -> Result<Json<Value>, AppError> {
-    let task = submit_feedback(&db, id, &body.feedback, auth.user_id).await?;
+    let task = submit_feedback(&db, id, &body.feedback, auth.effective_user_id()).await?;
     Ok(Json(json!(task)))
 }
 
@@ -263,7 +263,7 @@ async fn generate_plan_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let task = generate_plan(&db, id, auth.user_id).await?;
+    let task = generate_plan(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!(task)))
 }
 
@@ -384,7 +384,8 @@ async fn heartbeat_handler(
     Auth(auth): Auth,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::services::chiasm::heartbeat::record_heartbeat(&db, id, auth.user_id).await?;
+    kleos_lib::services::chiasm::heartbeat::record_heartbeat(&db, id, auth.effective_user_id())
+        .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -399,7 +400,7 @@ async fn enqueue_handler(
         &body.project,
         &body.title,
         body.summary.as_deref(),
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok((StatusCode::CREATED, Json(json!(task))))
@@ -415,7 +416,7 @@ async fn claim_handler(
         &db,
         &body.agent,
         body.project.as_deref(),
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok(Json(json!({ "task": task })))

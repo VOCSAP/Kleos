@@ -61,7 +61,7 @@ async fn store_signal_handler(
         &body.signal_type,
         body.value,
         body.evidence.as_deref(),
-        auth.user_id,
+        auth.effective_user_id(),
         body.agent.as_deref(),
     )
     .await?;
@@ -76,7 +76,7 @@ async fn list_signals_handler(
     Query(params): Query<ListSignalsParams>,
 ) -> Result<Json<Value>, AppError> {
     let limit = params.limit.unwrap_or(50).min(1000);
-    let signals = list_signals(&db, auth.user_id, limit).await?;
+    let signals = list_signals(&db, auth.effective_user_id(), limit).await?;
     Ok(Json(json!({ "signals": signals, "count": signals.len() })))
 }
 
@@ -86,7 +86,7 @@ async fn get_profile_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let profile = get_profile(&db, auth.user_id).await?;
+    let profile = get_profile(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(profile)))
 }
 
@@ -96,6 +96,6 @@ async fn update_profile_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    let profile = update_profile(&db, auth.user_id).await?;
+    let profile = update_profile(&db, auth.effective_user_id()).await?;
     Ok(Json(json!(profile)))
 }

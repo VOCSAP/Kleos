@@ -1,0 +1,104 @@
+/* Spaces and Sharing admin page. Reuses the dashboard design tokens so the
+   page reads as part of the same surface as the coordination views. */
+
+.admin-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  margin-top: var(--sp-4);
+}
+
+.admin-stats {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin-top: var(--sp-4);
+}
+
+.admin-stat {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-4);
+}
+
+.admin-stat__value {
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: var(--step-3, 1.8rem);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.admin-stat__label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.admin-field {
+  align-items: flex-start;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  gap: var(--sp-2);
+}
+
+.admin-field select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  min-height: 40px;
+  min-width: 220px;
+  padding: 6px 10px;
+}
+
+.admin-grant-form {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.admin-grant-button {
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--bg);
+  cursor: pointer;
+  font-weight: 600;
+  min-height: 40px;
+  padding: 8px 20px;
+}
+
+.admin-grant-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.admin-revoke,
+.admin-delete {
+  background: transparent;
+  border: 1px solid var(--err);
+  border-radius: var(--radius);
+  color: var(--err);
+  cursor: pointer;
+  font-size: 11px;
+  min-height: 28px;
+  padding: 4px 12px;
+}
+
+.admin-revoke:hover,
+.admin-delete:hover {
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+
+.admin-error {
+  color: var(--err);
+  font-size: 12px;
+  margin-top: var(--sp-3);
+}

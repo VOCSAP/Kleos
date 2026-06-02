@@ -1,0 +1,174 @@
+:root {
+  /* Surfaces -- rust-brand ramp (canonical Kleos brand, kleos-landing). */
+  --bg: #07080d;
+  --surface: #0d0f17;
+  --surface-2: #111422;
+  --surface-hover: #141826;
+  --border: #1e2133;
+  --border-glow: #2a2e44;
+  --text: #e4e8f0;
+  --text-dim: #9ca3af;
+  --text-faint: #6b7280;
+  --text-bright: #f1f5f9;
+
+  /* System accent -- rust orange is the Kleos brand identity. */
+  --accent: #f97316;
+  --accent-r: 249;
+  --accent-g: 115;
+  --accent-b: 22;
+  --accent-dim: color-mix(in srgb, var(--accent) 35%, transparent);
+  --accent-faint: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-glow: rgb(249 115 22 / 15%);
+
+  /* Status -- semantic, brand-aligned. */
+  --ok: #22c55e;
+  --warn: #fbbf24;
+  --err: #ef4444;
+  --info: #38bdf8;
+
+  /* Type -- brand fonts (loaded in index.html). */
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  --font-display: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --step-0: 13px;
+  --step-1: 15px;
+  --step-2: 19px;
+  --step-3: 26px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --radius: 8px;
+
+  /* Motion. */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 100ms;
+  --dur-normal: 200ms;
+  --dur-slow: 300ms;
+}
+
+[data-accent="chiasm"] {
+  --accent: #d4a030;
+}
+
+[data-accent="broca"] {
+  --accent: #00e5a0;
+}
+
+[data-accent="soma"] {
+  --accent: #38bdf8;
+}
+
+[data-accent="loom"] {
+  --accent: #a78bfa;
+}
+
+[data-accent="axon"] {
+  --accent: #f5a623;
+}
+
+[data-accent="thymus"] {
+  --accent: #fb7185;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--step-0);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.glass {
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Liveness vocabulary: a one-shot glow when something updates in real time. */
+@keyframes pulse-glow {
+  0% {
+    box-shadow: 0 0 0 0 var(--accent-dim);
+  }
+
+  100% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
+/* New-row flash: tint a freshly streamed row, then settle. */
+@keyframes row-flash {
+  0% {
+    background: var(--accent-faint);
+  }
+
+  100% {
+    background: transparent;
+  }
+}
+
+/* Steady heartbeat for live presence dots. */
+@keyframes heartbeat {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.is-live {
+  animation: heartbeat 2s var(--ease-default) infinite;
+}
+
+.row-flash {
+  animation: row-flash 1.2s var(--ease-out-expo);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .is-live,
+  .row-flash {
+    animation: none;
+  }
+}

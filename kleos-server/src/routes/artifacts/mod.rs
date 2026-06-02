@@ -202,7 +202,7 @@ async fn upload_artifact(
     // trade-off per T12 in the design doc.
     let enc = &state.artifact_encryption;
     let (store_data, is_encrypted) = if enc.is_enabled() {
-        let tenant_id = auth.user_id.to_string();
+        let tenant_id = auth.effective_user_id().to_string();
         let encrypted = enc.encrypt_for_tenant(&tenant_id, &data)?;
         (encrypted, true)
     } else {
@@ -380,7 +380,7 @@ async fn download_artifact(
                     "failed to read disk blob: {e}"
                 )))
             })?;
-            let tenant_id = auth.user_id.to_string();
+            let tenant_id = auth.effective_user_id().to_string();
             let data = state
                 .artifact_encryption
                 .decrypt_for_tenant(&tenant_id, &raw_data)?;
@@ -429,7 +429,7 @@ async fn download_artifact(
             })?;
 
         let data = if artifact.is_encrypted {
-            let tenant_id = auth.user_id.to_string();
+            let tenant_id = auth.effective_user_id().to_string();
             state
                 .artifact_encryption
                 .decrypt_for_tenant(&tenant_id, &raw_data)?

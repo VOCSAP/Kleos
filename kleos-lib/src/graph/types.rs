@@ -1,6 +1,9 @@
+//! Shared graph DTOs used by graph storage, analysis, routes, and GUI payloads.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Classifies the semantic relationship represented by a memory graph edge.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkType {
@@ -16,6 +19,7 @@ pub enum LinkType {
     Resolves,
 }
 
+/// Parses database link-type strings into the public graph edge enum.
 impl LinkType {
     /// Parse a link type string from the database into a typed variant.
     pub fn parse(s: &str) -> Self {
@@ -35,6 +39,7 @@ impl LinkType {
     }
 }
 
+/// Describes a typed link between two memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryLink {
     pub id: String,
@@ -45,6 +50,7 @@ pub struct MemoryLink {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Describes a memory node emitted to graph visualizations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
     pub id: String,
@@ -71,6 +77,7 @@ pub struct GraphNode {
     pub decay_score: Option<f64>,
 }
 
+/// Describes a graph edge between two memory nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub source: String,
@@ -82,6 +89,7 @@ pub struct GraphEdge {
 
 // -- Entity types (used by entities.rs) --
 
+/// Describes a named entity extracted from one or more memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entity {
     pub id: i64,
@@ -98,6 +106,7 @@ pub struct Entity {
     pub created_at: String,
 }
 
+/// Describes a relationship between two extracted entities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityRelationship {
     pub id: i64,
@@ -109,6 +118,7 @@ pub struct EntityRelationship {
     pub created_at: String,
 }
 
+/// Describes a memory returned from an entity-scoped search.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityMemorySearchResult {
     pub id: i64,
@@ -119,6 +129,7 @@ pub struct EntityMemorySearchResult {
     pub created_at: String,
 }
 
+/// Accepts entity creation fields from graph/entity routes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntityRequest {
     pub name: String,
@@ -129,6 +140,7 @@ pub struct CreateEntityRequest {
     pub space_id: Option<i64>,
 }
 
+/// Accepts relationship creation fields from graph/entity routes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRelationshipRequest {
     pub source_entity_id: i64,
@@ -137,25 +149,48 @@ pub struct CreateRelationshipRequest {
     pub strength: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Configures graph assembly for a caller and optional frontend limits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphBuildOptions {
     #[serde(default)]
     pub user_id: i64,
     pub limit: Option<usize>,
+    #[serde(default = "default_min_component")]
+    pub min_component: usize,
 }
 
+/// Provides the default graph component threshold used when callers omit it.
+fn default_min_component() -> usize {
+    1
+}
+
+/// Keeps graph build defaults compatible with query and JSON callers.
+impl Default for GraphBuildOptions {
+    /// Returns graph build options that keep all connected components.
+    fn default() -> Self {
+        Self {
+            user_id: 0,
+            limit: None,
+            min_component: default_min_component(),
+        }
+    }
+}
+
+/// Contains the complete graph payload assembled for a caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphBuildResult {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
 
+/// Summarizes a community detection run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommunitiesResult {
     pub communities: usize,
     pub memories: usize,
 }
 
+/// Describes one memory that belongs to a detected community.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommunityMember {
     pub id: i64,
@@ -165,6 +200,7 @@ pub struct CommunityMember {
     pub created_at: String,
 }
 
+/// Aggregates statistics for a single community.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommunityStats {
     pub community_id: i64,
@@ -173,12 +209,14 @@ pub struct CommunityStats {
     pub categories: String,
 }
 
+/// Holds PageRank scores calculated for graph memories.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageRankResult {
     pub scores: HashMap<i64, f64>,
     pub iterations: u32,
 }
 
+/// Summarizes a PageRank update operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageRankUpdateResult {
     pub memories: usize,
@@ -187,6 +225,7 @@ pub struct PageRankUpdateResult {
 
 // -- Structural analysis engine types --
 
+/// Describes an extracted action in entity-network notation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ENAction {
     pub subject: String,
@@ -196,6 +235,7 @@ pub struct ENAction {
     pub subsystem: Option<String>,
 }
 
+/// Describes a node in the structural analysis graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StructuralNode {
     pub id: String,
@@ -206,6 +246,7 @@ pub struct StructuralNode {
     pub subsystem: Option<String>,
 }
 
+/// Classifies the high-level shape of a structural graph.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TopologyType {
     Pipeline,
@@ -222,7 +263,9 @@ pub enum TopologyType {
     Empty,
 }
 
+/// Formats topology classes for route responses and diagnostics.
 impl std::fmt::Display for TopologyType {
+    /// Writes the stable display name for a topology class.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TopologyType::Pipeline => write!(f, "Pipeline"),
@@ -238,6 +281,7 @@ impl std::fmt::Display for TopologyType {
     }
 }
 
+/// Classifies the role a node plays in a directed structural graph.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum NodeRole {
     SOURCE,
@@ -250,7 +294,9 @@ pub enum NodeRole {
     ISOLATED,
 }
 
+/// Formats node roles using their stable uppercase labels.
 impl std::fmt::Display for NodeRole {
+    /// Writes the stable display name for a node role.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NodeRole::SOURCE => write!(f, "SOURCE"),
@@ -265,6 +311,7 @@ impl std::fmt::Display for NodeRole {
     }
 }
 
+/// Describes one node together with its computed structural role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeRoleInfo {
     pub id: String,
@@ -277,6 +324,7 @@ pub struct NodeRoleInfo {
     pub subsystem: Option<String>,
 }
 
+/// Describes a bridge edge between two structural nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bridge {
     pub source: String,
@@ -287,6 +335,7 @@ pub struct Bridge {
     pub target_label: String,
 }
 
+/// Summarizes structural analysis results for a graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisResult {
     pub topology: TopologyType,
@@ -300,18 +349,21 @@ pub struct AnalysisResult {
     pub components: usize,
 }
 
+/// Groups nodes by traversal depth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepthLevel {
     pub depth: usize,
     pub nodes: Vec<String>,
 }
 
+/// Describes how removing a bridge affects graph connectivity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeImplication {
     pub bridge: Bridge,
     pub disconnected_components: usize,
 }
 
+/// Provides detailed structural graph analysis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetailResult {
     pub topology: TopologyType,
@@ -323,6 +375,7 @@ pub struct DetailResult {
     pub bridge_implications: Vec<BridgeImplication>,
 }
 
+/// Describes one node's centrality score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CentralityEntry {
     pub id: String,
@@ -330,6 +383,7 @@ pub struct CentralityEntry {
     pub centrality: f64,
 }
 
+/// Provides betweenness-centrality results for a graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BetweennessResult {
     pub node: String,
@@ -338,6 +392,7 @@ pub struct BetweennessResult {
     pub all_centralities: Vec<CentralityEntry>,
 }
 
+/// Describes one node on a path result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PathNode {
     pub id: String,
@@ -345,6 +400,7 @@ pub struct PathNode {
     pub subsystem: Option<String>,
 }
 
+/// Describes the shortest path between two nodes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistanceResult {
     pub from: String,
@@ -354,6 +410,7 @@ pub struct DistanceResult {
     pub subsystem_crossings: usize,
 }
 
+/// Describes one node in a traced directed or fallback path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TracePathNode {
     pub id: String,
@@ -362,12 +419,14 @@ pub struct TracePathNode {
     pub subsystem: Option<String>,
 }
 
+/// Describes an edge whose direction is reversed relative to a trace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReverseEdge {
     pub from: String,
     pub to: String,
 }
 
+/// Describes a path trace and any reverse-edge fallback details.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceResult {
     pub from: String,
@@ -377,6 +436,7 @@ pub struct TraceResult {
     pub reverse_edges: Vec<ReverseEdge>,
 }
 
+/// Describes how removing a node changes graph connectivity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImpactResult {
     pub removed_node: String,
@@ -388,6 +448,7 @@ pub struct ImpactResult {
     pub topology_after: TopologyType,
 }
 
+/// Describes a node whose structural role differs between two graphs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleChange {
     pub node: String,
@@ -395,6 +456,7 @@ pub struct RoleChange {
     pub role_b: NodeRole,
 }
 
+/// Describes structural differences between two graph snapshots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffResult {
     pub topology_a: TopologyType,
@@ -410,6 +472,7 @@ pub struct DiffResult {
     pub bridge_count_b: usize,
 }
 
+/// Describes bridge changes after graph evolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvolveResult {
     pub diff: DiffResult,
@@ -417,18 +480,21 @@ pub struct EvolveResult {
     pub eliminated_bridges: Vec<Bridge>,
 }
 
+/// Describes a named subsystem extracted from a graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubsystemInfo {
     pub name: String,
     pub members: Vec<String>,
 }
 
+/// Describes subsystem categorization results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CategorizeResult {
     pub subsystems: Vec<SubsystemInfo>,
     pub modularity: f64,
 }
 
+/// Describes entities extracted for a subsystem boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractResult {
     pub subsystem: String,
@@ -438,6 +504,7 @@ pub struct ExtractResult {
     pub internal_entities: Vec<String>,
 }
 
+/// Describes the result of composing multiple graph sources.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComposeResult {
     pub merged_source: String,
@@ -446,6 +513,7 @@ pub struct ComposeResult {
     pub linked_entities: Vec<String>,
 }
 
+/// Carries a memory row used by graph import/export utilities.
 pub struct MemoryRecord {
     pub id: i64,
     pub content: String,
@@ -453,6 +521,7 @@ pub struct MemoryRecord {
     pub source: Option<String>,
 }
 
+/// Carries a link row used by graph import/export utilities.
 pub struct LinkRecord {
     pub source_id: i64,
     pub target_id: i64,

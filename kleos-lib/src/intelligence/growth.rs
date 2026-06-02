@@ -124,6 +124,7 @@ pub async fn list_observations(
 }
 
 #[tracing::instrument(skip(db))]
+/// Converts one growth observation into an insight memory.
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     db.write(move |conn| {
         // Patch 33 -- also read the source observation's space_id so the
@@ -275,6 +276,7 @@ fn validate_observation(text: &str) -> bool {
     true
 }
 
+/// Resolves an observation through secret redaction when needed.
 async fn resolve_growth_observation(
     db: &Database,
     service: &str,
@@ -487,10 +489,12 @@ pub async fn reflect(
     })
 }
 
+/// Tests the growth reflection helpers and validation rules.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies that valid observations pass validation.
     #[test]
     fn test_validate_observation_valid() {
         assert!(validate_observation(
@@ -498,28 +502,33 @@ mod tests {
         ));
     }
 
+    /// Verifies that short observations are rejected.
     #[test]
     fn test_validate_observation_too_short() {
         assert!(!validate_observation("short"));
     }
 
+    /// Verifies that the literal NOTHING is rejected.
     #[test]
     fn test_validate_observation_nothing() {
         assert!(!validate_observation("NOTHING"));
     }
 
+    /// Verifies that meta-commentary is rejected.
     #[test]
     fn test_validate_observation_meta() {
         assert!(!validate_observation("I don't see anything interesting"));
         assert!(!validate_observation("There is nothing notable"));
     }
 
+    /// Verifies that a prompt override is returned unchanged.
     #[test]
     fn test_get_prompt_override() {
         let p = get_prompt_for_service("engram", Some("Custom prompt"));
         assert_eq!(p, "Custom prompt");
     }
 
+    /// Verifies that the default service prompt includes the expected guidance.
     #[test]
     fn test_get_prompt_default() {
         let p = get_prompt_for_service("unknown_service", None);

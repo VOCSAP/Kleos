@@ -61,7 +61,7 @@ async fn batch_handler(
         ))));
     }
 
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
     // Clamp the capacity hint to MAX_BATCH_OPS so the allocation can never
     // exceed the enforced bound, even though the check above rejects larger
     // inputs (defence-in-depth + explicit for static analysers).

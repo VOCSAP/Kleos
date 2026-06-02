@@ -64,7 +64,7 @@ async fn create_workflow_handler(
     Json(body): Json<CreateWorkflowRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = CreateWorkflowRequest {
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         ..body
     };
     let workflow = create_workflow(&db, req).await?;
@@ -119,7 +119,7 @@ async fn create_run_handler(
     Json(body): Json<CreateRunRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let req = CreateRunRequest {
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         ..body
     };
     let run = create_run(&db, req).await?;
@@ -159,7 +159,7 @@ async fn cancel_run_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let cancelled = cancel_run(&db, id, auth.user_id).await?;
+    let cancelled = cancel_run(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "ok": cancelled })))
 }
 
@@ -171,7 +171,7 @@ async fn get_steps_handler(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let steps = get_steps(&db, id, auth.user_id).await?;
+    let steps = get_steps(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "steps": steps })))
 }
 
@@ -191,7 +191,7 @@ async fn get_logs_handler(
         params.step_id,
         params.level.as_deref(),
         limit,
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok(Json(json!({ "logs": logs })))
@@ -208,7 +208,7 @@ async fn complete_step_handler(
     Path(id): Path<i64>,
     Json(body): Json<CompleteStepBody>,
 ) -> Result<Json<Value>, AppError> {
-    let step = complete_step(&db, id, body.output, auth.user_id).await?;
+    let step = complete_step(&db, id, body.output, auth.effective_user_id()).await?;
     Ok(Json(json!(step)))
 }
 
@@ -221,7 +221,7 @@ async fn fail_step_handler(
     Path(id): Path<i64>,
     Json(body): Json<FailStepBody>,
 ) -> Result<Json<Value>, AppError> {
-    let step = fail_step(&db, id, &body.error, auth.user_id).await?;
+    let step = fail_step(&db, id, &body.error, auth.effective_user_id()).await?;
     Ok(Json(json!(step)))
 }
 
@@ -234,6 +234,6 @@ async fn get_stats_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&db, Some(auth.user_id)).await?;
+    let stats = get_stats(&db, Some(auth.effective_user_id())).await?;
     Ok(Json(json!(stats)))
 }

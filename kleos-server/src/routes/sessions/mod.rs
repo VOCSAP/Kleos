@@ -37,7 +37,7 @@ async fn create_session_handler(
     Auth(auth): Auth,
     Json(body): Json<SessionCreateRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let session = create_session(&db, &body, auth.user_id).await?;
+    let session = create_session(&db, &body, auth.effective_user_id()).await?;
 
     // SECURITY (SEC-H4): enforce per-tenant session count limit to prevent
     // unbounded HashMap growth from a single API key creating sessions in a loop.
@@ -46,7 +46,7 @@ async fn create_session_handler(
         let mut sessions = state.sessions.write().await;
         let count = sessions
             .keys()
-            .filter(|(uid, _)| *uid == auth.user_id)
+            .filter(|(uid, _)| *uid == auth.effective_user_id())
             .count();
         if count >= MAX_SESSIONS_PER_USER {
             return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
@@ -55,7 +55,7 @@ async fn create_session_handler(
             ))));
         }
         sessions.insert(
-            (auth.user_id, session.id.clone()),
+            (auth.effective_user_id(), session.id.clone()),
             Arc::new(tokio::sync::Mutex::new(SessionBroadcast::new())),
         );
     }
@@ -69,7 +69,7 @@ async fn list_sessions_handler(
     Query(params): Query<ListSessionsParams>,
 ) -> Result<Json<Value>, AppError> {
     let sessions: Vec<kleos_lib::sessions::SessionInfo> =
-        list_sessions(&db, auth.user_id, params.limit, params.offset).await?;
+        list_sessions(&db, auth.effective_user_id(), params.limit, params.offset).await?;
     Ok(Json(
         json!({ "sessions": sessions, "count": sessions.len() }),
     ))
@@ -80,7 +80,7 @@ async fn get_session_handler(
     Auth(auth): Auth,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let session = get_session(&db, &id, auth.user_id).await?;
+    let session = get_session(&db, &id, auth.effective_user_id()).await?;
     let output = get_session_output(&db, &id).await?;
     Ok(Json(json!({ "session": session, "output": output })))
 }
@@ -107,7 +107,7 @@ async fn append_handler(
     // Broadcast to any WebSocket subscribers (scoped to this tenant only).
     {
         let sessions = state.sessions.read().await;
-        if let Some(broadcast) = sessions.get(&(auth.user_id, id.clone())) {
+        if let Some(broadcast) = sessions.get(&(auth.effective_user_id(), id.clone())) {
             let mut b = broadcast.lock().await;
             const MAX_BUFFER: usize = 10_000;
             if b.buffer.len() >= MAX_BUFFER {
@@ -133,7 +133,7 @@ async fn stream_handler(
     Path(id): Path<String>,
     ws: WebSocketUpgrade,
 ) -> axum::response::Response {
-    ws.on_upgrade(move |socket| handle_ws(socket, state, db, id, auth.user_id))
+    ws.on_upgrade(move |socket| handle_ws(socket, state, db, id, auth.effective_user_id()))
 }
 
 async fn handle_ws(

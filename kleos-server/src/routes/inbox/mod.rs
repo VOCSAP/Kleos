@@ -30,7 +30,7 @@ async fn list_inbox(
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
     let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
-    let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
+    let total = kleos_lib::inbox::count_pending(&db, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
     ))
@@ -41,7 +41,7 @@ async fn approve(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::inbox::approve_memory(&db, id, auth.user_id).await?;
+    kleos_lib::inbox::approve_memory(&db, id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "approved": true, "id": id })))
 }
 
@@ -56,7 +56,7 @@ async fn reject(
         if let Err(e) = kleos_lib::inbox::set_forget_reason(&db, id, reason).await {
             tracing::warn!(
                 memory_id = id,
-                user_id = auth.user_id,
+                user_id = auth.effective_user_id(),
                 error = %e,
                 "failed to record forget reason after inbox reject",
             );
@@ -93,7 +93,7 @@ async fn bulk_action(
     for id in &body.ids {
         match body.action.as_str() {
             "approve" => {
-                kleos_lib::inbox::approve_memory(&db, *id, auth.user_id).await?;
+                kleos_lib::inbox::approve_memory(&db, *id, auth.effective_user_id()).await?;
                 count += 1;
             }
             "reject" => {
@@ -120,7 +120,7 @@ async fn list_pending_legacy(
     let limit = q.limit.unwrap_or(50).min(200);
     let offset = q.offset.unwrap_or(0);
     let pending = kleos_lib::inbox::list_pending(&db, limit, offset).await?;
-    let total = kleos_lib::inbox::count_pending(&db, auth.user_id).await?;
+    let total = kleos_lib::inbox::count_pending(&db, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "pending": pending, "count": pending.len(), "total": total, "offset": offset, "limit": limit }),
     ))

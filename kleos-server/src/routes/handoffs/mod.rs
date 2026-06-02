@@ -66,7 +66,7 @@ async fn store_handoff(
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let db = get_db(&state).await?;
     let result = db
-        .store_with_atoms(body.params, auth.user_id, body.atoms, None)
+        .store_with_atoms(body.params, auth.effective_user_id(), body.atoms, None)
         .await?;
     Ok((
         StatusCode::CREATED,
@@ -81,7 +81,7 @@ async fn list_handoffs(
     Query(filters): Query<HandoffFilters>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
-    let handoffs = db.list(filters, auth.user_id).await?;
+    let handoffs = db.list(filters, auth.effective_user_id()).await?;
     let count = handoffs.len();
     Ok(Json(json!({ "handoffs": handoffs, "count": count })))
 }
@@ -93,7 +93,7 @@ async fn get_latest(
     Query(filters): Query<HandoffFilters>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
-    match db.get_latest(filters, auth.user_id).await? {
+    match db.get_latest(filters, auth.effective_user_id()).await? {
         Some(handoff) => Ok(Json(json!(handoff))),
         None => Err(AppError(EngError::NotFound("no handoff found".to_string()))),
     }
@@ -123,7 +123,7 @@ async fn search_handoffs(
             &params.q,
             params.project.as_deref(),
             params.limit as i64,
-            auth.user_id,
+            auth.effective_user_id(),
         )
         .await?;
     let count = results.len();
@@ -136,7 +136,7 @@ async fn get_stats(
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
-    let stats = db.stats(auth.user_id).await?;
+    let stats = db.stats(auth.effective_user_id()).await?;
     Ok(Json(json!(stats)))
 }
 
@@ -158,7 +158,7 @@ async fn run_gc(
         Some(Json(p)) => (p.tiered, p.keep),
         None => (true, None),
     };
-    let result = db.gc(tiered, keep, auth.user_id).await?;
+    let result = db.gc(tiered, keep, auth.effective_user_id()).await?;
     Ok(Json(
         json!({ "deleted": result.deleted, "remaining": result.remaining }),
     ))
@@ -171,7 +171,7 @@ async fn delete_handoff(
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
-    let deleted = db.delete(id, auth.user_id).await?;
+    let deleted = db.delete(id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "ok": true, "deleted": deleted })))
 }
 
@@ -208,7 +208,7 @@ async fn list_atoms(
             params.atom_type.as_deref(),
             Some(&params.status),
             params.limit,
-            auth.user_id,
+            auth.effective_user_id(),
         )
         .await?;
     let count = atoms.len();
@@ -239,7 +239,7 @@ async fn get_packed_context(
         .get_packed_context(
             &params.project,
             kleos_lib::validation::clamp_signed_limit(params.max_tokens, 4000, 128_000),
-            auth.user_id,
+            auth.effective_user_id(),
         )
         .await?;
     Ok(Json(
@@ -262,8 +262,12 @@ async fn supersede_atom(
     Json(body): Json<SupersedeAtomRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
-    db.supersede_atom(&body.old_atom_id, &body.new_atom_id, auth.user_id)
-        .await?;
+    db.supersede_atom(
+        &body.old_atom_id,
+        &body.new_atom_id,
+        auth.effective_user_id(),
+    )
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -288,7 +292,11 @@ async fn apply_decay(
 ) -> Result<Json<Value>, AppError> {
     let db = get_db(&state).await?;
     let affected = db
-        .apply_session_decay(&body.project, body.sessions_elapsed, auth.user_id)
+        .apply_session_decay(
+            &body.project,
+            body.sessions_elapsed,
+            auth.effective_user_id(),
+        )
         .await?;
     Ok(Json(
         json!({ "affected": affected, "sessions_elapsed": body.sessions_elapsed }),
