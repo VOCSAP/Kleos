@@ -52,7 +52,7 @@ async fn onboard(
             content: "Kleos onboarding test memory -- safe to delete".into(),
             category: "system".into(),
             source: "onboarding".into(),
-            user_id: Some(auth.user_id),
+            user_id: Some(auth.effective_user_id()),
             ..Default::default()
         },
         None,
@@ -90,7 +90,7 @@ async fn onboard(
                 query: "onboarding test".into(),
                 embedding,
                 limit: Some(1),
-                user_id: Some(auth.user_id),
+                user_id: Some(auth.effective_user_id()),
                 ..Default::default()
             },
         )
@@ -111,7 +111,7 @@ async fn onboard(
 
     // Cleanup test memory
     if let Some(id) = test_id {
-        match memory::delete(&db, id, auth.user_id).await {
+        match memory::delete(&db, id, auth.effective_user_id()).await {
             Ok(()) => checks.push(("cleanup", true, "Test memory deleted".into())),
             Err(e) => checks.push(("cleanup", false, e.to_string())),
         }
@@ -131,7 +131,7 @@ async fn onboard(
     ));
 
     // Check spaces
-    let uid = auth.user_id;
+    let uid = auth.effective_user_id();
     let space_count: i64 = db
         .read(move |conn| {
             let count = conn.query_row(
@@ -284,7 +284,7 @@ async fn fetch_url(
             category: "reference".into(),
             source: "fetch".into(),
             importance: 3,
-            user_id: Some(auth.user_id),
+            user_id: Some(auth.effective_user_id()),
             tags: Some(vec![format!(
                 "url:{}",
                 kleos_lib::validation::truncate_on_char_boundary(&body.url, 200)

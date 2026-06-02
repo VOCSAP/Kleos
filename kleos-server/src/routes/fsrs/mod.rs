@@ -320,7 +320,7 @@ async fn recall_due(
         embedding,
         limit: Some(fetch_limit),
         source: params.session.clone(),
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         include_forgotten: Some(false),
         ..Default::default()
     };

@@ -49,7 +49,7 @@ async fn create_handler(
     Auth(auth): Auth,
     Json(body): Json<CreateApprovalRequest>,
 ) -> Result<(StatusCode, Json<ApprovalResponse>), AppError> {
-    let approval = create_approval(&db, &body, auth.user_id).await?;
+    let approval = create_approval(&db, &body, auth.effective_user_id()).await?;
 
     // Notify any waiting watchers that a new approval is pending
     if let Some(ref tx) = state.approval_notify {
@@ -64,7 +64,7 @@ async fn get_handler(
     Auth(auth): Auth,
     Path(id): Path<String>,
 ) -> Result<Json<ApprovalResponse>, AppError> {
-    let approval = get_approval(&db, &id, auth.user_id)
+    let approval = get_approval(&db, &id, auth.effective_user_id())
         .await?
         .ok_or_else(|| kleos_lib::EngError::NotFound(format!("approval {} not found", id)))?;
 
@@ -106,7 +106,9 @@ async fn list_pending_handler(
         // Expire stale approvals on every iteration; the work is cheap
         // and keeps the table from accumulating zombies across long-polls.
         let expired_count = expire_stale(&db).await?;
-        let approvals = list_pending(&db, auth.user_id).await?;
+        // Use effective_user_id() so an act-as caller (instance sharing #73)
+        // sees the owner's pending approvals, aligning with upstream.
+        let approvals = list_pending(&db, auth.effective_user_id()).await?;
         let responses: Vec<ApprovalResponse> = approvals.into_iter().map(Into::into).collect();
         let count = responses.len();
 
@@ -164,7 +166,7 @@ async fn decide_handler(
     // is safe on pre-migration deployments (returns Ok(None)).
     let gate_id_opt = read_gate_id_for_approval(&db, &id).await?;
 
-    let approval = decide(&db, &id, &req, auth.user_id).await?;
+    let approval = decide(&db, &id, &req, auth.effective_user_id()).await?;
 
     // Patch 21: if this approval was bridged from the gate pipeline,
     // relay the decision back to the caller blocking inside check_handler.

@@ -120,7 +120,7 @@ async fn upload_init(
 
     let upload_id_db = upload_id.clone();
     let expires_at_db = expires_at.clone();
-    let user_id = auth.user_id;
+    let user_id = auth.effective_user_id();
     let filename = body.filename.clone();
     let content_type = body.content_type.clone();
     let source_db = source.clone();
@@ -237,7 +237,7 @@ async fn upload_chunk(
     }
 
     let session = load_session(&db, &body.upload_id).await?;
-    ensure_session_owner(&session, auth.user_id)?;
+    ensure_session_owner(&session, auth.effective_user_id())?;
 
     let raw = base64::engine::general_purpose::STANDARD
         .decode(body.data.as_bytes())
@@ -331,7 +331,7 @@ async fn upload_complete(
     Json(body): Json<UploadCompleteBody>,
 ) -> Result<Json<Value>, AppError> {
     let session = load_session(&db, &body.upload_id).await?;
-    ensure_session_owner(&session, auth.user_id)?;
+    ensure_session_owner(&session, auth.effective_user_id())?;
 
     let upload_id = body.upload_id.clone();
     let chunks: Vec<(i64, String, Vec<u8>)> = db
@@ -430,7 +430,7 @@ async fn upload_complete(
         format,
         source: session.source.clone(),
         category: body.category.unwrap_or_else(|| "general".to_string()),
-        user_id: auth.user_id,
+        user_id: auth.effective_user_id(),
         space_id: None,
         project_id: body.project_id,
         episode_id: body.episode_id,
@@ -519,7 +519,7 @@ async fn upload_abort(
     Json(body): Json<UploadAbortBody>,
 ) -> Result<Json<Value>, AppError> {
     let session = load_session(&db, &body.upload_id).await?;
-    if session.user_id != auth.user_id {
+    if session.user_id != auth.effective_user_id() {
         return Err(AppError(kleos_lib::EngError::Auth(
             "upload belongs to another user".into(),
         )));
@@ -551,7 +551,7 @@ async fn upload_status(
     AxumPath(upload_id): AxumPath<String>,
 ) -> Result<Json<Value>, AppError> {
     let session = load_session(&db, &upload_id).await?;
-    if session.user_id != auth.user_id {
+    if session.user_id != auth.effective_user_id() {
         return Err(AppError(kleos_lib::EngError::Auth(
             "upload belongs to another user".into(),
         )));
@@ -639,7 +639,7 @@ async fn import_bulk(
         format,
         source: body.source.unwrap_or_else(|| "import".to_string()),
         category: body.category.unwrap_or_else(|| "general".to_string()),
-        user_id: auth.user_id,
+        user_id: auth.effective_user_id(),
         space_id: None,
         project_id: body.project_id,
         episode_id: body.episode_id,
@@ -721,7 +721,7 @@ async fn import_json(
         } else {
             0i32
         };
-        let _user_id = auth.user_id;
+        let _user_id = auth.effective_user_id();
         match db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, session_id, importance, tags, confidence, is_static, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -797,7 +797,7 @@ async fn import_mem0(
         let sync_id = Uuid::new_v4().to_string();
         let category_s = category.to_string();
         let source_s = source.to_string();
-        let _user_id = auth.user_id;
+        let _user_id = auth.effective_user_id();
         if db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
@@ -919,7 +919,7 @@ async fn import_supermemory(
         let sync_id = Uuid::new_v4().to_string();
         let category_s = category.to_string();
         let source_s = source.to_string();
-        let _user_id = auth.user_id;
+        let _user_id = auth.effective_user_id();
         match db.write(move |conn| {
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, tags, confidence, sync_id, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, 1.0, ?6, datetime('now'), datetime('now'))",
@@ -981,7 +981,7 @@ async fn ingest_text(
         format: None,
         source: ingest_source.clone(),
         category: "general".to_string(),
-        user_id: auth.user_id,
+        user_id: auth.effective_user_id(),
         space_id: None,
         project_id: None,
         episode_id: body.episode_id,
@@ -1045,7 +1045,7 @@ async fn ingest_text_stream(
         format: None,
         source: ingest_source,
         category: "general".to_string(),
-        user_id: auth.user_id,
+        user_id: auth.effective_user_id(),
         space_id: None,
         project_id: None,
         episode_id: body.episode_id,

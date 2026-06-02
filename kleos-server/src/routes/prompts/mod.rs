@@ -39,10 +39,16 @@ async fn get_prompt(
     let budget = q.tokens.unwrap_or(4000).clamp(100, 128000);
     let context = q.context.as_deref().unwrap_or("");
     let mut result =
-        kleos_lib::prompts::generate_prompt(&db, format, budget, context, auth.user_id).await?;
+        kleos_lib::prompts::generate_prompt(&db, format, budget, context, auth.effective_user_id())
+            .await?;
     result.prompt = state
         .credd
-        .resolve_text(&db, auth.user_id, &auth.key.name, &result.prompt)
+        .resolve_text(
+            &db,
+            auth.effective_user_id(),
+            &auth.key.name,
+            &result.prompt,
+        )
         .await?;
     result.tokens_estimated = estimate_tokens(&result.prompt);
     Ok(Json(json!({
@@ -98,7 +104,7 @@ async fn post_prompt_generate(
         let personality_req = SearchRequest {
             query: format!("{agent} personality"),
             limit: Some(3),
-            user_id: Some(auth.user_id),
+            user_id: Some(auth.effective_user_id()),
             category: Some("personality".into()),
             ..Default::default()
         };
@@ -124,7 +130,7 @@ async fn post_prompt_generate(
         let memory_req = SearchRequest {
             query: task.to_string(),
             limit: Some(memory_limit),
-            user_id: Some(auth.user_id),
+            user_id: Some(auth.effective_user_id()),
             ..Default::default()
         };
         let results = hybrid_search(&db, memory_req).await?;
@@ -159,7 +165,12 @@ async fn post_prompt_generate(
                         spread_hops: None,
                     };
                     let task_result = brain
-                        .query(embedder.as_ref(), task, auth.user_id, &task_opts)
+                        .query(
+                            embedder.as_ref(),
+                            task,
+                            auth.effective_user_id(),
+                            &task_opts,
+                        )
                         .await
                         .unwrap_or_default();
 
@@ -174,7 +185,7 @@ async fn post_prompt_generate(
                         .query(
                             embedder.as_ref(),
                             "server infrastructure deployment SSH configuration",
-                            auth.user_id,
+                            auth.effective_user_id(),
                             &infra_opts,
                         )
                         .await
@@ -192,7 +203,7 @@ async fn post_prompt_generate(
                         .query(
                             embedder.as_ref(),
                             &failure_query,
-                            auth.user_id,
+                            auth.effective_user_id(),
                             &failure_opts,
                         )
                         .await
@@ -332,14 +343,12 @@ async fn post_prompt_generate(
 
     let mut prompt = state
         .credd
-        .resolve_text(&db, auth.user_id, agent, &sections.join("\n\n"))
+        .resolve_text(&db, auth.effective_user_id(), agent, &sections.join("\n\n"))
         .await?;
     let mut tokens = estimate_tokens(&prompt);
     if tokens > max_tokens {
         let target_chars = max_tokens.saturating_mul(4);
-        if prompt.len() > target_chars {
-            prompt.truncate(target_chars);
-            prompt.push_str("\n...[truncated]");
+        if truncate_prompt_to_chars(&mut prompt, target_chars) {
             tokens = estimate_tokens(&prompt);
         }
     }
@@ -368,7 +377,7 @@ async fn post_header(
         actor_role,
         context,
         limit,
-        auth.user_id,
+        auth.effective_user_id(),
     )
     .await?;
     Ok(Json(json!({
@@ -379,9 +388,40 @@ async fn post_header(
     })))
 }
 
+/// Truncate `prompt` to at most `target_chars` bytes on a UTF-8 char boundary,
+/// appending a truncation marker. Returns `true` when truncation occurred.
+///
+/// Uses `truncate_on_char_boundary` so a multibyte character straddling the
+/// byte budget cannot panic the way `String::truncate` would.
+fn truncate_prompt_to_chars(prompt: &mut String, target_chars: usize) -> bool {
+    if prompt.len() <= target_chars {
+        return false;
+    }
+    let safe_len = kleos_lib::validation::truncate_on_char_boundary(prompt, target_chars).len();
+    prompt.truncate(safe_len);
+    prompt.push_str("\n...[truncated]");
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: truncating a prompt whose byte budget lands inside a
+    /// multibyte character must not panic. Old code called
+    /// `String::truncate(target_chars)` on a raw byte count.
+    #[test]
+    fn truncate_prompt_to_chars_respects_char_boundary() {
+        // 10 ASCII bytes then a 4-byte emoji; budget 12 lands inside it.
+        let mut p = format!("{}\u{1F600}", "a".repeat(10));
+        assert!(truncate_prompt_to_chars(&mut p, 12));
+        assert!(p.starts_with(&"a".repeat(10)));
+        assert!(p.ends_with("...[truncated]"));
+        // No truncation when already within budget.
+        let mut q = "short".to_string();
+        assert!(!truncate_prompt_to_chars(&mut q, 100));
+        assert_eq!(q, "short");
+    }
 
     #[test]
     fn generate_request_deserializes_living_flags() {

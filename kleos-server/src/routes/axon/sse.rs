@@ -47,7 +47,7 @@ pub async fn stream_handler(
     let channels = raw_channels;
     let filter_type = params.filter_type.clone();
     let mut last_id = params.last_event_id.unwrap_or(0);
-    let subscriber_user_id = auth.user_id;
+    let subscriber_user_id = auth.effective_user_id();
 
     // Subscribe BEFORE catch-up query so the broadcast buffers any events
     // published during the DB round-trip. The ev_id <= last_id guard in the
@@ -68,7 +68,7 @@ pub async fn stream_handler(
             None,
             1000,
             0,
-            auth.user_id,
+            auth.effective_user_id(),
         )
         .await
         .unwrap_or_default()

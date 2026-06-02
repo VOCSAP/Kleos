@@ -1,6 +1,9 @@
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
+/// Default URL for the local credential authority during the Phylax transition.
+pub const DEFAULT_CREDENTIAL_AUTHORITY_URL: &str = "http://127.0.0.1:4400";
+
 /// Shim: for every `KLEOS_X` env var found, set `ENGRAM_X` if not already set.
 ///
 /// Call this once at binary startup (before any config loading) so that the
@@ -52,6 +55,19 @@ pub fn resolve_db_path(configured: &std::path::Path) -> std::path::PathBuf {
     configured.to_path_buf()
 }
 
+/// Resolve the credential authority URL from preferred and legacy env vars.
+pub fn resolve_credential_authority_url() -> String {
+    credential_authority_url_from_env()
+        .unwrap_or_else(|| DEFAULT_CREDENTIAL_AUTHORITY_URL.to_string())
+}
+
+/// Resolve a credential authority URL override from the environment.
+fn credential_authority_url_from_env() -> Option<String> {
+    std::env::var("PHYLAXD_URL")
+        .or_else(|_| std::env::var("CREDD_URL"))
+        .ok()
+}
+
 /// How the at-rest encryption key is sourced.
 ///
 /// Default is `None` (no encryption). When set, every SQLite connection
@@ -71,6 +87,7 @@ pub enum EncryptionMode {
     Yubikey,
 }
 
+/// Encryption settings for the main SQLite database.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct EncryptionConfig {
     #[serde(default)]
@@ -105,74 +122,102 @@ pub struct ServerEntry {
     pub notes: String,
 }
 
+/// Default SSH port used when a server entry omits one.
 fn default_ssh_port() -> u16 {
     22
 }
 
+/// Default number of daily backups to retain.
 fn default_backup_retention_daily() -> usize {
     30
 }
 
+/// Default switch for the background dreamer task.
 fn default_dreamer_enabled() -> bool {
     true
 }
 
+/// Default interval between dreamer ticks.
 fn default_dream_interval_secs() -> u64 {
     300
 }
 
+/// Default idle window before dreamer work starts.
 fn default_dream_idle_threshold_secs() -> u64 {
     60
 }
 
+/// Default switch for autonomous skill evolution.
 fn default_skill_evolution_enabled() -> bool {
     true
 }
 
+/// Default minimum interval between skill-evolution runs.
 fn default_skill_evolution_interval_secs() -> u64 {
     1800
 }
 
+/// Default per-tick limit for skill fixes.
 fn default_skill_evolution_max_fixes_per_tick() -> u32 {
     3
 }
 
+/// Default per-tick limit for skill captures.
 fn default_skill_evolution_max_captures_per_tick() -> u32 {
     2
 }
 
+/// Default per-tick limit for skill derivations.
 fn default_skill_evolution_max_derives_per_tick() -> u32 {
     1
 }
 
+/// Default failure-rate threshold for skill repair.
 fn default_skill_evolution_failure_threshold() -> f32 {
     0.3
 }
 
+/// Default minimum executions before skill repair is considered.
 fn default_skill_evolution_min_executions() -> u32 {
     5
 }
 
+/// Default cooldown before a repaired skill can be repaired again.
 fn default_skill_evolution_refix_cooldown_secs() -> u64 {
     86_400
 }
 
+/// Default memory tag that marks a skill-capture candidate.
 fn default_skill_evolution_capture_tag() -> String {
     "skill_candidate".to_string()
 }
 
+/// Default minimum tag similarity for skill derivation.
 fn default_skill_evolution_derive_similarity() -> f32 {
     0.7
 }
 
+/// Default switch for session-end Thymus auto-evaluation.
+fn default_thymus_autoeval_enabled() -> bool {
+    true
+}
+
+/// Default minimum turn count below which Thymus auto-evaluation is skipped.
+fn default_thymus_autoeval_min_turns() -> i32 {
+    3
+}
+
+/// Default local SearXNG endpoint for web search.
 fn default_web_search_url() -> String {
     "http://127.0.0.1:8888".to_string()
 }
 
+/// Default upstream timeout for web search requests.
 fn default_web_search_timeout_ms() -> u64 {
     8000
 }
 
+/// Default result limit for web search requests.
 fn default_web_search_limit() -> u32 {
     10
 }
@@ -193,6 +238,7 @@ fn gate_data_file(name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Gate policy configuration for command validation and approvals.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GateConfig {
@@ -258,7 +304,9 @@ pub struct GateConfig {
     pub require_approval_whitelist_patterns_file: Option<std::path::PathBuf>,
 }
 
+/// Default gate policy values used when config files omit the gate section.
 impl Default for GateConfig {
+    /// Builds a conservative default gate configuration.
     fn default() -> Self {
         Self {
             blocked_patterns: vec![
@@ -293,6 +341,7 @@ impl Default for GateConfig {
     }
 }
 
+/// Growth-loop configuration for observation and reflection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GrowthConfig {
@@ -300,7 +349,9 @@ pub struct GrowthConfig {
     pub observation_limit: usize,
 }
 
+/// Default growth-loop limits and intervals.
 impl Default for GrowthConfig {
+    /// Builds default growth-loop settings.
     fn default() -> Self {
         Self {
             reflection_interval_secs: 3600,
@@ -309,6 +360,7 @@ impl Default for GrowthConfig {
     }
 }
 
+/// Session streaming and secret-scrubbing configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SessionsConfig {
@@ -318,7 +370,9 @@ pub struct SessionsConfig {
     pub scrub_secrets: bool,
 }
 
+/// Default session streaming configuration.
 impl Default for SessionsConfig {
+    /// Builds default session streaming limits.
     fn default() -> Self {
         Self {
             max_concurrent: 64,
@@ -329,6 +383,7 @@ impl Default for SessionsConfig {
     }
 }
 
+/// Prompt-generation limits and inclusion toggles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PromptConfig {
@@ -339,7 +394,9 @@ pub struct PromptConfig {
     pub max_tokens_cap: usize,
 }
 
+/// Default prompt-generation configuration.
 impl Default for PromptConfig {
+    /// Builds default prompt-generation limits.
     fn default() -> Self {
         Self {
             default_max_tokens: 4000,
@@ -351,6 +408,7 @@ impl Default for PromptConfig {
     }
 }
 
+/// Credential authority client configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CreddConfig {
@@ -360,10 +418,12 @@ pub struct CreddConfig {
     pub cache_ttl_secs: u64,
 }
 
+/// Default credential authority client settings.
 impl Default for CreddConfig {
+    /// Builds default credential authority settings.
     fn default() -> Self {
         Self {
-            url: "http://127.0.0.1:4400".to_string(),
+            url: DEFAULT_CREDENTIAL_AUTHORITY_URL.to_string(),
             agent_key_env: "CREDD_AGENT_KEY".to_string(),
             allow_raw: false,
             cache_ttl_secs: 60,
@@ -371,6 +431,7 @@ impl Default for CreddConfig {
     }
 }
 
+/// Eidolon integration configuration nested under the main server config.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EidolonConfig {
@@ -390,7 +451,9 @@ pub struct EidolonConfig {
     pub prompt: PromptConfig,
 }
 
+/// Constructors and environment layering for Eidolon configuration.
 impl EidolonConfig {
+    /// Builds Eidolon configuration from defaults plus environment overrides.
     pub fn from_env() -> Self {
         Self::default().apply_env()
     }
@@ -398,41 +461,42 @@ impl EidolonConfig {
     /// Apply environment-variable overrides on top of `self`. Used to layer
     /// env on top of a TOML-loaded base so env always wins.
     pub fn apply_env(mut self) -> Self {
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_ENABLED") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_ENABLED") {
             self.enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_URL") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_URL") {
             self.url = Some(v);
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_API_KEY") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_API_KEY") {
             self.api_key = Some(SecretString::new(v));
         }
         let c = &mut self;
-        if let Ok(v) = std::env::var("CREDD_URL") {
+        if let Some(v) = credential_authority_url_from_env() {
             c.credd.url = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_CREDD_AGENT_KEY_ENV") {
+        if let Ok(v) = crate::kleos_env("CREDD_AGENT_KEY_ENV") {
             c.credd.agent_key_env = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_CREDD_ALLOW_RAW") {
+        if let Ok(v) = crate::kleos_env("CREDD_ALLOW_RAW") {
             c.credd.allow_raw = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        if let Ok(v) = std::env::var("ENGRAM_CREDD_CACHE_TTL_SECS") {
+        if let Ok(v) = crate::kleos_env("CREDD_CACHE_TTL_SECS") {
             if let Ok(n) = v.parse() {
                 c.credd.cache_ttl_secs = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_APPROVAL_TIMEOUT") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_APPROVAL_TIMEOUT") {
             if let Ok(n) = v.parse() {
                 c.gate.approval_timeout_secs = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_BLOCKED_PATTERNS") {
             c.gate.blocked_patterns = v.split(',').map(|s| s.trim().to_string()).collect();
         }
         // Patch 19b: file path override for blocked_patterns cascade.
         // Explicit env var wins; otherwise auto-resolve under KLEOS_DATA_DIR.
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS_FILE") {
+        // Routed through kleos_env (#75) so KLEOS_ wins over legacy ENGRAM_.
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_BLOCKED_PATTERNS_FILE") {
             if !v.is_empty() {
                 c.gate.blocked_patterns_file = Some(std::path::PathBuf::from(v));
             }
@@ -440,11 +504,11 @@ impl EidolonConfig {
             c.gate.blocked_patterns_file = Some(p);
         }
         // Patch 19b: new require_approval_patterns env var + file path.
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS") {
             c.gate.require_approval_patterns =
                 v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS_FILE") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS_FILE") {
             if !v.is_empty() {
                 c.gate.require_approval_patterns_file = Some(std::path::PathBuf::from(v));
             }
@@ -452,11 +516,11 @@ impl EidolonConfig {
             c.gate.require_approval_patterns_file = Some(p);
         }
         // Patch 19c: extra_dangerous_patterns env loaders (additive, Windows-friendly).
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS") {
             c.gate.extra_dangerous_patterns =
                 v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS_FILE") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS_FILE") {
             if !v.is_empty() {
                 c.gate.extra_dangerous_patterns_file = Some(std::path::PathBuf::from(v));
             }
@@ -464,26 +528,22 @@ impl EidolonConfig {
             c.gate.extra_dangerous_patterns_file = Some(p);
         }
         // Patch 25: whitelist env loaders (blocked + require_approval only).
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS") {
             c.gate.blocked_whitelist_patterns =
                 v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS_FILE") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS_FILE") {
             if !v.is_empty() {
                 c.gate.blocked_whitelist_patterns_file = Some(std::path::PathBuf::from(v));
             }
         } else if let Some(p) = gate_data_file("blocked_whitelist.txt") {
             c.gate.blocked_whitelist_patterns_file = Some(p);
         }
-        if let Ok(v) =
-            std::env::var("ENGRAM_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS")
-        {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS") {
             c.gate.require_approval_whitelist_patterns =
                 v.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
         }
-        if let Ok(v) =
-            std::env::var("ENGRAM_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS_FILE")
-        {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS_FILE") {
             if !v.is_empty() {
                 c.gate.require_approval_whitelist_patterns_file =
                     Some(std::path::PathBuf::from(v));
@@ -491,56 +551,56 @@ impl EidolonConfig {
         } else if let Some(p) = gate_data_file("require_approval_whitelist.txt") {
             c.gate.require_approval_whitelist_patterns_file = Some(p);
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GATE_RESERVED_TARGETS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GATE_RESERVED_TARGETS") {
             c.gate.reserved_targets = v.split(',').map(|s| s.trim().to_string()).collect();
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GROWTH_INTERVAL") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GROWTH_INTERVAL") {
             if let Ok(n) = v.parse() {
                 c.growth.reflection_interval_secs = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_GROWTH_OBSERVATION_LIMIT") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_GROWTH_OBSERVATION_LIMIT") {
             if let Ok(n) = v.parse() {
                 c.growth.observation_limit = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_SESSIONS_MAX") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_MAX") {
             if let Ok(n) = v.parse() {
                 c.sessions.max_concurrent = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_SESSIONS_BUFFER") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_BUFFER") {
             if let Ok(n) = v.parse() {
                 c.sessions.buffer_size = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_SESSIONS_STREAM_TIMEOUT") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_STREAM_TIMEOUT") {
             if let Ok(n) = v.parse() {
                 c.sessions.stream_timeout_secs = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_SESSIONS_SCRUB_SECRETS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_SESSIONS_SCRUB_SECRETS") {
             c.sessions.scrub_secrets = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_MAX_TOKENS") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_MAX_TOKENS") {
             if let Ok(n) = v.parse() {
                 c.prompt.default_max_tokens = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_MAX_TOKENS_CAP") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_MAX_TOKENS_CAP") {
             if let Ok(n) = v.parse() {
                 c.prompt.max_tokens_cap = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_PERSONALITY_WEIGHT") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_PERSONALITY_WEIGHT") {
             if let Ok(n) = v.parse() {
                 c.prompt.personality_weight = n;
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_INCLUDE_MEMORIES") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_INCLUDE_MEMORIES") {
             c.prompt.default_include_memories = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        if let Ok(v) = std::env::var("ENGRAM_EIDOLON_PROMPT_INCLUDE_PERSONALITY") {
+        if let Ok(v) = crate::kleos_env("EIDOLON_PROMPT_INCLUDE_PERSONALITY") {
             c.prompt.default_include_personality =
                 matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
@@ -555,6 +615,7 @@ pub struct SafetyConfig {
     pub rules: Vec<String>,
 }
 
+/// Top-level server configuration loaded from defaults, TOML, and environment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -585,8 +646,9 @@ pub struct Config {
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
     pub use_chunk_vector_search: bool,
-    /// Whether the GUI is enabled. Set via ENGRAM_GUI_PASSWORD (any non-empty
-    /// value enables the GUI). A separate gui_password field can be added later
+    /// Whether the GUI is enabled. Set via KLEOS_GUI_PASSWORD or the legacy
+    /// ENGRAM_GUI_PASSWORD (any non-empty value enables the GUI).
+    /// A separate gui_password field can be added later
     /// when an actual password gate is needed; for now the field is a bool.
     #[serde(skip, default)]
     pub gui_enabled: bool,
@@ -648,6 +710,12 @@ pub struct Config {
     /// candidates for derivation.
     #[serde(default = "default_skill_evolution_derive_similarity")]
     pub skill_evolution_derive_similarity: f32,
+    /// Master switch for session-end Thymus auto-evaluation.
+    #[serde(default = "default_thymus_autoeval_enabled")]
+    pub thymus_autoeval_enabled: bool,
+    /// Minimum session turn count below which auto-evaluation is skipped.
+    #[serde(default = "default_thymus_autoeval_min_turns")]
+    pub thymus_autoeval_min_turns: i32,
     /// Base URL of the SearXNG instance proxied by the /search/web route.
     /// Must include scheme and port. Default: http://127.0.0.1:8888 (local
     /// SearXNG). Point at your own SearXNG deployment in production.
@@ -699,7 +767,9 @@ pub struct Config {
     pub safety: SafetyConfig,
 }
 
+/// Default values for a standalone local Kleos server.
 impl Default for Config {
+    /// Builds a complete default configuration.
     fn default() -> Self {
         Self {
             db_path: "kleos.db".to_string(),
@@ -748,6 +818,8 @@ impl Default for Config {
             skill_evolution_refix_cooldown_secs: default_skill_evolution_refix_cooldown_secs(),
             skill_evolution_capture_tag: default_skill_evolution_capture_tag(),
             skill_evolution_derive_similarity: default_skill_evolution_derive_similarity(),
+            thymus_autoeval_enabled: default_thymus_autoeval_enabled(),
+            thymus_autoeval_min_turns: default_thymus_autoeval_min_turns(),
             web_search_url: default_web_search_url(),
             web_search_timeout_ms: default_web_search_timeout_ms(),
             web_search_default_limit: default_web_search_limit(),
@@ -766,13 +838,15 @@ impl Default for Config {
     }
 }
 
+/// Constructors, loaders, and derived-path helpers for [`Config`].
 impl Config {
     /// Load a `Config` from a TOML file. Missing fields fall back to
     /// their `Default` values via `#[serde(default)]` on most fields.
     ///
     /// Secret fields (`api_key`, `eidolon.api_key`) are
     /// `#[serde(skip)]` and must be supplied via environment variables.
-    /// `gui_enabled` is also `#[serde(skip)]` and controlled by ENGRAM_GUI_PASSWORD.
+    /// `gui_enabled` is also `#[serde(skip)]` and controlled by KLEOS_GUI_PASSWORD
+    /// with ENGRAM_GUI_PASSWORD as a legacy fallback.
     pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, String> {
         let path = path.as_ref();
         let text =
@@ -787,7 +861,7 @@ impl Config {
     ///
     /// Returns `None` if no config file is found.
     fn resolve_config_path() -> Option<std::path::PathBuf> {
-        if let Ok(p) = std::env::var("ENGRAM_CONFIG_FILE") {
+        if let Ok(p) = crate::kleos_env("CONFIG_FILE") {
             let path = std::path::PathBuf::from(p);
             if path.exists() {
                 return Some(path);
@@ -832,18 +906,20 @@ impl Config {
         Self::apply_env(base)
     }
 
+    /// Builds the main configuration from defaults plus environment overrides.
     pub fn from_env() -> Self {
         Self::apply_env(Self::default())
     }
 
+    /// Applies process environment overrides to an existing config value.
     fn apply_env(mut config: Self) -> Self {
-        if let Ok(v) = std::env::var("ENGRAM_DB_PATH") {
+        if let Ok(v) = crate::kleos_env("DB_PATH") {
             config.db_path = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_HOST") {
+        if let Ok(v) = crate::kleos_env("HOST") {
             config.host = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_PORT") {
+        if let Ok(v) = crate::kleos_env("PORT") {
             match v.parse() {
                 Ok(p) => config.port = p,
                 Err(_) => tracing::warn!(
@@ -857,11 +933,11 @@ impl Config {
         // leave these unset and call cred::bootstrap::resolve_api_key() instead.
         if let Ok(v) = std::env::var("KLEOS_API_KEY") {
             config.api_key = Some(SecretString::new(v));
-        } else if let Ok(v) = std::env::var("ENGRAM_API_KEY") {
+        } else if let Ok(v) = crate::kleos_env("API_KEY") {
             config.api_key = Some(SecretString::new(v));
         }
         // If neither is set, api_key stays None -- callers invoke the resolver.
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_DIM") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_DIM") {
             match v.parse() {
                 Ok(d) => config.embedding_dim = d,
                 Err(_) => tracing::warn!(
@@ -871,7 +947,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_DEFAULT_RETENTION") {
+        if let Ok(v) = crate::kleos_env("DEFAULT_RETENTION") {
             match v.parse() {
                 Ok(r) => config.default_retention = r,
                 Err(_) => tracing::warn!(
@@ -881,10 +957,10 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MODEL") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_MODEL") {
             config.embedding_model = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MAX_SEQ") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_MAX_SEQ") {
             match v.parse() {
                 Ok(n) => config.embedding_max_seq = n,
                 Err(_) => tracing::warn!(
@@ -894,16 +970,16 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_MODEL_DIR") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_MODEL_DIR") {
             config.embedding_model_dir = Some(v);
         }
-        if let Ok(v) = std::env::var("ENGRAM_ONNX_MODEL_FILE") {
+        if let Ok(v) = crate::kleos_env("ONNX_MODEL_FILE") {
             config.embedding_onnx_file = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_OFFLINE_ONLY") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_OFFLINE_ONLY") {
             config.embedding_offline_only = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHARS") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_CHUNK_MAX_CHARS") {
             match v.parse() {
                 Ok(n) => config.embedding_chunk_max_chars = n,
                 Err(_) => tracing::warn!(
@@ -913,7 +989,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_OVERLAP") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_CHUNK_OVERLAP") {
             match v.parse() {
                 Ok(n) => config.embedding_chunk_overlap = n,
                 Err(_) => tracing::warn!(
@@ -923,7 +999,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_EMBEDDING_CHUNK_MAX_CHUNKS") {
+        if let Ok(v) = crate::kleos_env("EMBEDDING_CHUNK_MAX_CHUNKS") {
             match v.parse() {
                 Ok(n) => config.embedding_chunk_max_chunks = n,
                 Err(_) => tracing::warn!(
@@ -933,15 +1009,15 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_RERANKER_ENABLED") {
+        if let Ok(v) = crate::kleos_env("RERANKER_ENABLED") {
             config.reranker_enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
-        } else if let Ok(v) = std::env::var("ENGRAM_CROSS_ENCODER") {
+        } else if let Ok(v) = crate::kleos_env("CROSS_ENCODER") {
             config.reranker_enabled = v != "0";
         }
-        if let Ok(v) = std::env::var("ENGRAM_RERANKER_MODEL_DIR") {
+        if let Ok(v) = crate::kleos_env("RERANKER_MODEL_DIR") {
             config.reranker_model_dir = Some(v);
         }
-        if let Ok(v) = std::env::var("ENGRAM_RERANKER_TOP_K") {
+        if let Ok(v) = crate::kleos_env("RERANKER_TOP_K") {
             match v.parse() {
                 Ok(n) => config.reranker_top_k = n,
                 Err(_) => tracing::warn!(
@@ -951,13 +1027,13 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_DATA_DIR") {
+        if let Ok(v) = crate::kleos_env("DATA_DIR") {
             config.data_dir = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_LANCE_INDEX_PATH") {
+        if let Ok(v) = crate::kleos_env("LANCE_INDEX_PATH") {
             config.lance_index_path = Some(v);
         }
-        if let Ok(v) = std::env::var("ENGRAM_VECTOR_DIMENSIONS") {
+        if let Ok(v) = crate::kleos_env("VECTOR_DIMENSIONS") {
             match v.parse() {
                 Ok(n) => config.vector_dimensions = n,
                 Err(_) => tracing::warn!(
@@ -967,19 +1043,19 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_USE_LANCE_INDEX") {
+        if let Ok(v) = crate::kleos_env("USE_LANCE_INDEX") {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         if let Ok(v) = std::env::var("KLEOS_USE_CHUNK_VECTOR_SEARCH") {
             config.use_chunk_vector_search = v == "1" || v.eq_ignore_ascii_case("true");
         }
-        if let Ok(v) = std::env::var("ENGRAM_GUI_PASSWORD") {
+        if let Ok(v) = crate::kleos_env("GUI_PASSWORD") {
             config.gui_enabled = !v.is_empty();
         }
-        if let Ok(v) = std::env::var("ENGRAM_GUI_BUILD_DIR") {
+        if let Ok(v) = crate::kleos_env("GUI_BUILD_DIR") {
             config.gui_build_dir = Some(v);
         }
-        if let Ok(v) = std::env::var("ENGRAM_PAGERANK_REFRESH_INTERVAL") {
+        if let Ok(v) = crate::kleos_env("PAGERANK_REFRESH_INTERVAL") {
             match v.parse() {
                 Ok(n) => config.pagerank_refresh_interval_secs = n,
                 Err(_) => tracing::warn!(
@@ -989,7 +1065,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_PAGERANK_DIRTY_THRESHOLD") {
+        if let Ok(v) = crate::kleos_env("PAGERANK_DIRTY_THRESHOLD") {
             match v.parse() {
                 Ok(n) => config.pagerank_dirty_threshold = n,
                 Err(_) => tracing::warn!(
@@ -999,7 +1075,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_PAGERANK_MAX_CONCURRENT") {
+        if let Ok(v) = crate::kleos_env("PAGERANK_MAX_CONCURRENT") {
             match v.parse() {
                 Ok(n) => config.pagerank_max_concurrent = n,
                 Err(_) => tracing::warn!(
@@ -1009,16 +1085,16 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_PAGERANK_ENABLED") {
+        if let Ok(v) = crate::kleos_env("PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
         }
         if let Ok(v) = std::env::var("KLEOS_CONSOLIDATION_ENABLED") {
             config.consolidation_enabled = v == "1" || v.eq_ignore_ascii_case("true");
         }
-        if let Ok(v) = std::env::var("ENGRAM_DREAMER_ENABLED") {
+        if let Ok(v) = crate::kleos_env("DREAMER_ENABLED") {
             config.dreamer_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
         }
-        if let Ok(v) = std::env::var("ENGRAM_DREAM_INTERVAL_SECS") {
+        if let Ok(v) = crate::kleos_env("DREAM_INTERVAL_SECS") {
             match v.parse() {
                 Ok(n) => config.dream_interval_secs = n,
                 Err(_) => tracing::warn!(
@@ -1028,7 +1104,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_DREAM_IDLE_THRESHOLD_SECS") {
+        if let Ok(v) = crate::kleos_env("DREAM_IDLE_THRESHOLD_SECS") {
             match v.parse() {
                 Ok(n) => config.dream_idle_threshold_secs = n,
                 Err(_) => tracing::warn!(
@@ -1038,14 +1114,10 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_ENABLED")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_ENABLED"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_ENABLED") {
             config.skill_evolution_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_INTERVAL_SECS")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_INTERVAL_SECS"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_INTERVAL_SECS") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_interval_secs = n,
                 Err(_) => tracing::warn!(
@@ -1055,9 +1127,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MAX_FIXES_PER_TICK")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_MAX_FIXES_PER_TICK"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_MAX_FIXES_PER_TICK") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_max_fixes_per_tick = n,
                 Err(_) => tracing::warn!(
@@ -1067,9 +1137,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MAX_CAPTURES_PER_TICK")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_MAX_CAPTURES_PER_TICK"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_MAX_CAPTURES_PER_TICK") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_max_captures_per_tick = n,
                 Err(_) => tracing::warn!(
@@ -1079,9 +1147,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MAX_DERIVES_PER_TICK")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_MAX_DERIVES_PER_TICK"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_MAX_DERIVES_PER_TICK") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_max_derives_per_tick = n,
                 Err(_) => tracing::warn!(
@@ -1091,9 +1157,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_FAILURE_THRESHOLD")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_FAILURE_THRESHOLD"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_FAILURE_THRESHOLD") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_failure_threshold = n,
                 Err(_) => tracing::warn!(
@@ -1103,9 +1167,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_MIN_EXECUTIONS")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_MIN_EXECUTIONS"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_MIN_EXECUTIONS") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_min_executions = n,
                 Err(_) => tracing::warn!(
@@ -1115,9 +1177,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_REFIX_COOLDOWN_SECS")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_REFIX_COOLDOWN_SECS"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_REFIX_COOLDOWN_SECS") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_refix_cooldown_secs = n,
                 Err(_) => tracing::warn!(
@@ -1127,17 +1187,13 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_CAPTURE_TAG")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_CAPTURE_TAG"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_CAPTURE_TAG") {
             let trimmed = v.trim();
             if !trimmed.is_empty() {
                 config.skill_evolution_capture_tag = trimmed.to_string();
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_SKILL_EVOLUTION_DERIVE_SIMILARITY")
-            .or_else(|_| std::env::var("ENGRAM_SKILL_EVOLUTION_DERIVE_SIMILARITY"))
-        {
+        if let Ok(v) = crate::kleos_env("SKILL_EVOLUTION_DERIVE_SIMILARITY") {
             match v.parse() {
                 Ok(n) => config.skill_evolution_derive_similarity = n,
                 Err(_) => tracing::warn!(
@@ -1147,16 +1203,20 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_WEB_SEARCH_URL")
-            .or_else(|_| std::env::var("ENGRAM_WEB_SEARCH_URL"))
-        {
+        if let Ok(v) = crate::kleos_env("THYMUS_AUTOEVAL_ENABLED") {
+            config.thymus_autoeval_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("THYMUS_AUTOEVAL_MIN_TURNS") {
+            if let Ok(n) = v.parse() {
+                config.thymus_autoeval_min_turns = n;
+            }
+        }
+        if let Ok(v) = crate::kleos_env("WEB_SEARCH_URL") {
             if !v.trim().is_empty() {
                 config.web_search_url = v;
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_WEB_SEARCH_TIMEOUT_MS")
-            .or_else(|_| std::env::var("ENGRAM_WEB_SEARCH_TIMEOUT_MS"))
-        {
+        if let Ok(v) = crate::kleos_env("WEB_SEARCH_TIMEOUT_MS") {
             match v.parse() {
                 Ok(n) => config.web_search_timeout_ms = n,
                 Err(_) => tracing::warn!(
@@ -1166,9 +1226,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("KLEOS_WEB_SEARCH_DEFAULT_LIMIT")
-            .or_else(|_| std::env::var("ENGRAM_WEB_SEARCH_DEFAULT_LIMIT"))
-        {
+        if let Ok(v) = crate::kleos_env("WEB_SEARCH_DEFAULT_LIMIT") {
             match v.parse() {
                 Ok(n) => config.web_search_default_limit = n,
                 Err(_) => tracing::warn!(
@@ -1178,10 +1236,10 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_BACKUP_ENABLED") {
+        if let Ok(v) = crate::kleos_env("BACKUP_ENABLED") {
             config.backup_enabled = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes");
         }
-        if let Ok(v) = std::env::var("ENGRAM_BACKUP_INTERVAL_SECS") {
+        if let Ok(v) = crate::kleos_env("BACKUP_INTERVAL_SECS") {
             match v.parse() {
                 Ok(n) => config.backup_interval_secs = n,
                 Err(_) => tracing::warn!(
@@ -1191,10 +1249,10 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_BACKUP_DIR") {
+        if let Ok(v) = crate::kleos_env("BACKUP_DIR") {
             config.backup_dir = v;
         }
-        if let Ok(v) = std::env::var("ENGRAM_BACKUP_RETENTION") {
+        if let Ok(v) = crate::kleos_env("BACKUP_RETENTION") {
             match v.parse() {
                 Ok(n) => config.backup_retention = n,
                 Err(_) => tracing::warn!(
@@ -1204,7 +1262,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_BACKUP_RETENTION_DAILY") {
+        if let Ok(v) = crate::kleos_env("BACKUP_RETENTION_DAILY") {
             match v.parse() {
                 Ok(n) => config.backup_retention_daily = n,
                 Err(_) => tracing::warn!(
@@ -1214,7 +1272,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_AUTH_KEY_ROTATION_GRACE_HOURS") {
+        if let Ok(v) = crate::kleos_env("AUTH_KEY_ROTATION_GRACE_HOURS") {
             match v.parse() {
                 Ok(n) if n > 0 => config.auth_key_rotation_grace_hours = n,
                 Ok(_) => tracing::warn!(
@@ -1228,7 +1286,7 @@ impl Config {
                 ),
             }
         }
-        if let Ok(v) = std::env::var("ENGRAM_ENCRYPTION_MODE") {
+        if let Ok(v) = crate::kleos_env("ENCRYPTION_MODE") {
             config.encryption.mode = match v.to_ascii_lowercase().as_str() {
                 "none" => EncryptionMode::None,
                 "keyfile" => EncryptionMode::Keyfile,
@@ -1243,7 +1301,7 @@ impl Config {
         // SECURITY: comma-separated list of trusted reverse proxy IPs.
         // Only when the TCP peer matches one of these will X-Forwarded-For
         // be honoured for rate-limit keying.
-        if let Ok(v) = std::env::var("ENGRAM_TRUSTED_PROXIES") {
+        if let Ok(v) = crate::kleos_env("TRUSTED_PROXIES") {
             config.trusted_proxies = v
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -1293,14 +1351,35 @@ impl Config {
 }
 
 #[cfg(test)]
+/// Tests for configuration defaults, file loading, and env precedence.
 mod tests {
     use super::*;
 
+    /// Runs a test body with credential-authority env vars isolated.
+    fn with_credential_authority_env(test: impl FnOnce()) {
+        let old_phylaxd = std::env::var("PHYLAXD_URL").ok();
+        let old_credd = std::env::var("CREDD_URL").ok();
+        std::env::remove_var("PHYLAXD_URL");
+        std::env::remove_var("CREDD_URL");
+
+        test();
+
+        match old_phylaxd {
+            Some(value) => std::env::set_var("PHYLAXD_URL", value),
+            None => std::env::remove_var("PHYLAXD_URL"),
+        }
+        match old_credd {
+            Some(value) => std::env::set_var("CREDD_URL", value),
+            None => std::env::remove_var("CREDD_URL"),
+        }
+    }
+
     #[test]
+    /// Verifies nested Eidolon defaults are populated.
     fn eidolon_config_defaults_are_populated() {
         let c = EidolonConfig::default();
         assert!(!c.enabled);
-        assert_eq!(c.credd.url, "http://127.0.0.1:4400");
+        assert_eq!(c.credd.url, DEFAULT_CREDENTIAL_AUTHORITY_URL);
         assert_eq!(c.credd.agent_key_env, "CREDD_AGENT_KEY");
         assert!(!c.credd.allow_raw);
         assert!(c
@@ -1319,13 +1398,62 @@ mod tests {
         assert!(c.prompt.default_include_memories);
     }
 
+    /// Verifies Config exposes the nested Eidolon prompt defaults.
     #[test]
+    /// Verifies the top-level config exposes Eidolon prompt settings.
     fn config_exposes_eidolon_field() {
         let c = Config::default();
         assert_eq!(c.eidolon.prompt.default_max_tokens, 4000);
     }
 
+    /// Verifies partial TOML files merge with defaults.
     #[test]
+    #[serial_test::serial(credential_authority_env)]
+    /// Verifies PHYLAXD_URL wins over legacy CREDD_URL.
+    fn credential_authority_prefers_phylaxd_url() {
+        with_credential_authority_env(|| {
+            std::env::set_var("PHYLAXD_URL", "http://127.0.0.1:3100");
+            std::env::set_var("CREDD_URL", "http://127.0.0.1:4400");
+
+            let c = EidolonConfig::from_env();
+
+            assert_eq!(c.credd.url, "http://127.0.0.1:3100");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(credential_authority_env)]
+    /// Verifies CREDD_URL remains a transition fallback.
+    fn credential_authority_uses_credd_url_fallback() {
+        with_credential_authority_env(|| {
+            std::env::set_var("CREDD_URL", "http://127.0.0.1:4401");
+
+            let c = EidolonConfig::from_env();
+
+            assert_eq!(c.credd.url, "http://127.0.0.1:4401");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(credential_authority_env)]
+    /// Verifies env layering preserves a file-provided authority URL.
+    fn credential_authority_preserves_existing_url_without_env() {
+        with_credential_authority_env(|| {
+            let c = EidolonConfig {
+                credd: CreddConfig {
+                    url: "http://configured.example:4400".to_string(),
+                    ..CreddConfig::default()
+                },
+                ..EidolonConfig::default()
+            }
+            .apply_env();
+
+            assert_eq!(c.credd.url, "http://configured.example:4400");
+        });
+    }
+
+    #[test]
+    /// Verifies partial TOML files inherit defaults.
     fn from_file_parses_partial_toml_and_uses_defaults() {
         let dir = std::env::temp_dir().join(format!("engram-cfg-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1362,7 +1490,9 @@ default_max_tokens = 8000
         std::fs::remove_dir(&dir).ok();
     }
 
+    /// Verifies malformed TOML produces a parse error.
     #[test]
+    /// Verifies malformed TOML returns a parse error.
     fn from_file_rejects_malformed_toml() {
         let dir = std::env::temp_dir().join(format!("engram-cfg-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
