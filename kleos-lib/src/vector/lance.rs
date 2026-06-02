@@ -8,7 +8,9 @@ use futures::TryStreamExt;
 use lancedb::index::vector::IvfHnswPqIndexBuilder;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::OptimizeAction;
 use lancedb::DistanceType;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::warn;
@@ -26,6 +28,15 @@ pub const LANCE_SCHEMA_VERSION: u32 = 2;
 /// threshold LanceDB's IVF clustering does not converge cleanly and a linear
 /// scan over the fixed-size-list is faster anyway, so we skip index creation.
 pub const MIN_ROWS_FOR_INDEX: usize = 256;
+
+/// Patch VOCSAP -- run an amortised `optimize(All)` (compact + prune) every
+/// this many writes. lancedb appends a new version on every delete/add and
+/// never compacts or prunes on its own, so `_versions/` grows without bound
+/// (observed 7.3G on LXC 121). Compaction merges the many small fragments
+/// (shrinking each version manifest, which lists every fragment) and prune
+/// drops versions older than lancedb's default retention. Amortised so the
+/// scan cost stays off the per-write critical path.
+pub const OPTIMIZE_EVERY_N_WRITES: u64 = 256;
 
 fn lance_err(context: &str, err: impl std::fmt::Display) -> EngError {
     EngError::Internal(format!("{}: {}", context, err))
@@ -81,6 +92,8 @@ pub struct LanceIndex {
     table: RwLock<Option<lancedb::Table>>,
     table_name: String,
     dimensions: usize,
+    /// Patch VOCSAP -- write counter driving the amortised `maybe_optimize`.
+    writes_since_optimize: AtomicU64,
 }
 
 impl LanceIndex {
@@ -103,6 +116,7 @@ impl LanceIndex {
             table: RwLock::new(None),
             table_name: table_name.to_string(),
             dimensions,
+            writes_since_optimize: AtomicU64::new(0),
         };
         let _ = index.ensure_table().await?;
         Ok(index)
@@ -240,6 +254,24 @@ impl LanceIndex {
         }
         Ok(())
     }
+
+    /// Patch VOCSAP -- amortised storage maintenance. Counts writes and, once
+    /// `OPTIMIZE_EVERY_N_WRITES` is reached, runs `optimize(All)`: compact
+    /// merges the accumulated small fragments and prune drops versions older
+    /// than lancedb's default retention. `delete_unverified` stays at its
+    /// default (false), so a concurrent in-progress transaction is never put
+    /// into a corrupted state. Best-effort: a failure is logged and never
+    /// propagated to the caller's write path.
+    async fn maybe_optimize(&self, table: &lancedb::Table) {
+        let n = self.writes_since_optimize.fetch_add(1, Ordering::Relaxed) + 1;
+        if n < OPTIMIZE_EVERY_N_WRITES {
+            return;
+        }
+        self.writes_since_optimize.store(0, Ordering::Relaxed);
+        if let Err(e) = table.optimize(OptimizeAction::All).await {
+            warn!("LanceDB optimize(All) skipped: {}", e);
+        }
+    }
 }
 
 #[async_trait]
@@ -260,6 +292,7 @@ impl VectorIndex for LanceIndex {
             .map_err(|e| lance_err("insert LanceDB vector row", e))?;
 
         self.ensure_vector_index(&table).await;
+        self.maybe_optimize(&table).await;
         Ok(())
     }
 
@@ -312,6 +345,7 @@ impl VectorIndex for LanceIndex {
             .map_err(|e| lance_err("insert LanceDB vector rows (batch)", e))?;
 
         self.ensure_vector_index(&table).await;
+        self.maybe_optimize(&table).await;
         Ok(())
     }
 
@@ -395,6 +429,16 @@ impl VectorIndex for LanceIndex {
 
     async fn rebuild_index(&self, replace: bool) -> Result<bool> {
         let table = self.ensure_table().await?;
+
+        // Patch VOCSAP -- compact + prune on every rebuild call so the admin
+        // endpoint (`/admin/vector/rebuild-index`) doubles as an on-demand
+        // storage reclaim, even when the index itself does not need a rebuild.
+        // Runs before the row-count / index-existence early returns. Default
+        // retention (delete_unverified=false) keeps it safe under concurrency.
+        if let Err(e) = table.optimize(OptimizeAction::All).await {
+            warn!("LanceDB optimize(All) during rebuild_index skipped: {}", e);
+        }
+
         let row_count = table
             .count_rows(None)
             .await
@@ -480,6 +524,40 @@ mod tests {
         assert_eq!(index.count().await.expect("count"), 0);
         let rebuilt = index.rebuild_index(false).await.expect("rebuild");
         assert!(!rebuilt);
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[tokio::test]
+    async fn optimize_via_rebuild_preserves_rows_and_search() {
+        // Patch VOCSAP -- rebuild_index now runs optimize(All) (compact +
+        // prune) up front. Several separate inserts create several fragments
+        // and versions; verify the optimize neither loses rows nor breaks
+        // search (below MIN_ROWS_FOR_INDEX rebuild returns false but the
+        // optimize still executes on the accumulated fragments).
+        let path = temp_path();
+        let index = LanceIndex::open(&path, 4).await.expect("open lance");
+        for i in 0..12i64 {
+            index
+                .insert(i, &[i as f32, 0.0, 0.0, 0.0])
+                .await
+                .expect("insert");
+        }
+        assert_eq!(index.count().await.expect("count"), 12);
+
+        let rebuilt = index.rebuild_index(true).await.expect("rebuild");
+        assert!(!rebuilt, "small table skips IVF_HNSW_PQ but still optimizes");
+
+        assert_eq!(
+            index.count().await.expect("count"),
+            12,
+            "compact + prune must preserve every row"
+        );
+        let hits = index
+            .search(&[5.0, 0.0, 0.0, 0.0], 1)
+            .await
+            .expect("search");
+        assert_eq!(hits[0].memory_id, 5, "search must work after optimize");
 
         let _ = std::fs::remove_dir_all(&path);
     }
