@@ -48,6 +48,7 @@ fn store_req(content: &str, user_id: i64) -> StoreRequest {
         is_static: None,
         user_id: Some(user_id),
         space_id: None,
+        space: None,
         parent_memory_id: None,
         sync_id: None,
         artifacts: None,
@@ -378,6 +379,8 @@ async fn conversations_isolated_between_users_single_db() {
             session_id: Some("s-alice".to_string()),
             title: Some("alice convo".to_string()),
             metadata: None,
+            space_id: None,
+            space: None,
         },
         10,
     )
@@ -394,14 +397,14 @@ async fn conversations_isolated_between_users_single_db() {
 
     // User 20's list must be empty; user 10's must contain it.
     assert!(
-        conversations::list_conversations(&db, 20, 100)
+        conversations::list_conversations(&db, 20, 100, None, None)
             .await
             .expect("list user 20")
             .is_empty(),
         "user 20 must not see user 10's conversation"
     );
     assert_eq!(
-        conversations::list_conversations(&db, 10, 100)
+        conversations::list_conversations(&db, 10, 100, None, None)
             .await
             .expect("list user 10")
             .len(),

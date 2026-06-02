@@ -72,7 +72,7 @@ pub async fn list_observations(
 ) -> Result<Vec<GrowthObservation>> {
     // Patch 33 -- build (extra_clause, params) where positional indices
     // match the order in `params_vec`. LIMIT is always the last param.
-    let (extra_clause, params_vec): (String, Vec<rusqlite::types::Value>) = match space_id {
+    let (extra_clause, mut params_vec): (String, Vec<rusqlite::types::Value>) = match space_id {
         Some(sid) if matches!(include_unscoped, Some(true)) => (
             " AND (space_id = ?1 \
                 OR space_id = (SELECT id FROM spaces \
@@ -90,11 +90,17 @@ pub async fn list_observations(
         ),
         None => (String::new(), Vec::new()),
     };
+    // Upstream #70 -- isolate growth observations by owner. user_id is bound
+    // after the space params so the ?1/?2 indices inside extra_clause stay
+    // valid; Patch 33 space partitioning and the upstream user_id filter are
+    // unioned here (same discipline as the intelligence pair sweeps).
+    let uid_idx = params_vec.len() + 1;
+    params_vec.push(rusqlite::types::Value::Integer(user_id));
     let limit_idx = params_vec.len() + 1;
     let sql = format!(
         "SELECT id, content, source, importance, created_at \
          FROM memories \
-         WHERE category = 'growth' AND is_forgotten = 0{extra_clause} \
+         WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?{uid_idx}{extra_clause} \
          ORDER BY created_at DESC LIMIT ?{limit_idx}"
     );
     db.read(move |conn| {
@@ -131,11 +137,14 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
         // promoted insight stays in the same project bucket (no
         // cross-project leak when materialize is called from a
         // tenant-shared dreamer).
+        // Upstream #70 -- scope by owner: alice must not materialize bob's
+        // observation. The user_id filter (upstream) is unioned with the
+        // Patch 33 space_id propagation (VOCSAP).
         let result: Option<(String, String, Option<i64>)> = conn
             .query_row(
                 "SELECT content, source, space_id FROM memories \
-                 WHERE id = ?1 AND category = 'growth'",
-                rusqlite::params![observation_id],
+                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2",
+                rusqlite::params![observation_id, user_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
@@ -145,10 +154,7 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
         })?;
 
         // Patch 33 -- propagate space_id of the source observation. NULL
-        // is preserved when the source is a pre-v57 legacy observation;
-        // the user_id arg is reserved for a future enhancement that may
-        // also stamp user_id on the insight.
-        let _ = user_id;
+        // is preserved when the source is a pre-v57 legacy observation.
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, version, is_latest, \
              source_count, is_static, is_forgotten, confidence, status, space_id, \

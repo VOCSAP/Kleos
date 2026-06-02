@@ -32,6 +32,7 @@ fn store_req(content: &str, user_id: i64, is_static: bool) -> StoreRequest {
         is_static: Some(is_static),
         user_id: Some(user_id),
         space_id: None,
+        space: None,
         parent_memory_id: None,
         sync_id: None,
         artifacts: None,

@@ -25,7 +25,8 @@ pub async fn find_duplicates(
                    AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                    AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
                    AND ms.user_id = ?3 AND mt.user_id = ?3 \
-                   AND ms.space_id = mt.space_id \
+                   AND (ms.space_id = mt.space_id \
+                        OR (ms.space_id IS NULL AND mt.space_id IS NULL)) \
                  ORDER BY ml.similarity DESC \
                  LIMIT ?2",
         )?;

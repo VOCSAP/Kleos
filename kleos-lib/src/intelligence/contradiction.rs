@@ -74,7 +74,8 @@ pub async fn detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec
                          WHERE sf.subject = ?1 AND sf.predicate = ?2 \
                            AND sf.memory_id != ?3 \
                            AND sf.id != ?4 \
-                           AND m_cand.space_id = m_new.space_id \
+                           AND (m_cand.space_id = m_new.space_id \
+                                OR (m_cand.space_id IS NULL AND m_new.space_id IS NULL)) \
                            AND m_cand.is_forgotten = 0 \
                            AND m_new.is_forgotten = 0 \
                            AND sf.user_id = ?5 \
@@ -178,7 +179,8 @@ pub async fn scan_all_contradictions(db: &Database, user_id: i64) -> Result<Vec<
                        AND sf1.memory_id != sf2.memory_id \
                      JOIN memories m1 ON m1.id = sf1.memory_id \
                      JOIN memories m2 ON m2.id = sf2.memory_id \
-                       AND m1.space_id = m2.space_id \
+                       AND (m1.space_id = m2.space_id \
+                            OR (m1.space_id IS NULL AND m2.space_id IS NULL)) \
                        AND m1.is_forgotten = 0 \
                        AND m2.is_forgotten = 0 \
                      WHERE sf1.user_id = ?1 AND sf2.user_id = ?1 \
