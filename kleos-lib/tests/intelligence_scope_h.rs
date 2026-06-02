@@ -34,6 +34,7 @@ fn store_req(content: &str, category: &str, user_id: i64) -> StoreRequest {
         is_static: None,
         user_id: Some(user_id),
         space_id: None,
+        space: None,
         parent_memory_id: None,
         sync_id: None,
         artifacts: None,
@@ -153,7 +154,7 @@ async fn growth_observations_and_materialize_are_scoped() {
     let _alice_obs = store(&db, "alice growth note", "growth", 10).await;
     let bob_obs = store(&db, "bob growth note", "growth", 20).await;
 
-    let alice_list = list_observations(&db, 10, 100).await.expect("list");
+    let alice_list = list_observations(&db, 100, None, None, 10).await.expect("list");
     assert!(alice_list.iter().any(|o| o.content.contains("alice")));
     assert!(
         !alice_list.iter().any(|o| o.content.contains("bob")),
