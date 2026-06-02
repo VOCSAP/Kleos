@@ -385,15 +385,6 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_cred_audit_attribution_columns,
         tx
     ),
-    // VOCSAP local (merge upstream aa6a0bec, 2026-05-31): renumbered from v64
-    // (upstream took v64 for readd_user_id_memory_core). Idempotent via
-    // add_column_if_not_exists -> NO-OP re-run on LXC 121 (already applied as v64).
-    migration!(
-        84,
-        "approvals_gate_id",
-        run_migration_approvals_gate_id,
-        tx
-    ),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -580,8 +571,6 @@ const MIGRATION_MCP_TOKENS: i64 = 81;
 const MIGRATION_PHYLAX_TABLES: i64 = 82;
 /// Version number for cred_audit attribution columns.
 const MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS: i64 = 83;
-// VOCSAP local (merge upstream aa6a0bec): renumbered from v64 -> v84.
-const MIGRATION_APPROVALS_GATE_ID: i64 = 84;
 
 // --- Up path (unchanged behavior) ---
 
@@ -602,34 +591,6 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-
-    // --- Patch 40 (2026-06-02): self-healing for the aa6a0bec merge renumber ---
-    // The merge moved VOCSAP's old v64 (approvals_gate_id) to v83, so upstream's
-    // v64 readd_user_id_memory_core now occupies slot 64. Deployments that had
-    // recorded v64 under the old meaning skip the upstream body (the
-    // `current_version < 64` dispatch guard below is already false), leaving
-    // memories, artifacts, vector_sync_pending and structured_facts without
-    // `user_id`. The later v76 graph_remainder then panics creating idx_sf_user
-    // on structured_facts(user_id). Re-apply the skipped readd idempotently when
-    // the counter is already past its slot but the column is still missing. This
-    // runs BEFORE the gated dispatch so v76 finds its prerequisite. No-op on a
-    // fresh install (current_version below the slot -> the normal dispatch
-    // applies v64 in order) and on a healthy DB (the column-presence gate and
-    // run_migration_readd_user_id_memory_core's own per-table guards short-circuit).
-    if current_version >= MIGRATION_READD_USER_ID_MEMORY_CORE {
-        let sf_has_user_id: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
-            [],
-            |row| row.get(0),
-        )?;
-        if sf_has_user_id == 0 {
-            info!(
-                "self-heal: re-applying skipped migration 64 (readd_user_id_memory_core) \
-                 after the aa6a0bec renumber left memory-core user_id columns absent"
-            );
-            run_migration_readd_user_id_memory_core(conn)?;
-        }
-    }
 
     if current_version < MIGRATION_CREATE_SCHEMA {
         info!("Running migration 1: create_tables");
@@ -1293,12 +1254,12 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         )?;
     }
 
-    // VOCSAP local (merge upstream aa6a0bec): approvals_gate_id, renumbered v64 -> v84.
-    if current_version < MIGRATION_APPROVALS_GATE_ID {
-        info!("Running migration 84: approvals_gate_id");
-        run_migration_approvals_gate_id(conn)?;
-        record_migration(conn, MIGRATION_APPROVALS_GATE_ID, "approvals_gate_id")?;
-    }
+    // VOCSAP schema overlay channel (Patch 41): apply additive VOCSAP schema
+    // changes after the upstream dispatch loop, outside the numbered sequence.
+    // Idempotent (each overlay guards on a `needs` predicate) -> no-op once the
+    // additions are present. Replaces the former numbered v84 approvals_gate_id
+    // and the Patch 40 self-heal hook.
+    super::vocsap::apply_monolith_overlays(conn)?;
 
     Ok(())
 }
@@ -1835,21 +1796,6 @@ fn run_migration_cred_tables(conn: &rusqlite::Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_cred_audit_user ON cred_audit(user_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_cred_agent_keys_user ON cred_agent_keys(user_id);",
     )?;
-    Ok(())
-}
-
-/// Migration 84 (Patch 21, VOCSAP local, renumbered from v64 at merge aa6a0bec):
-/// adds `gate_id INTEGER` to `approvals` so the gate `pending_approval` workflow
-/// can correlate a `gate_requests` row with the `approvals` row consumed by the
-/// TUI. Idempotent via `add_column_if_not_exists`. Nullable column preserves
-/// retro-compatibility with manual approvals created via `POST /approvals`.
-fn run_migration_approvals_gate_id(conn: &rusqlite::Connection) -> Result<()> {
-    add_column_if_not_exists(conn, "approvals", "gate_id", "INTEGER")?;
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_approvals_gate_id
-            ON approvals(gate_id) WHERE gate_id IS NOT NULL;",
-    )
-    .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
     Ok(())
 }
 
@@ -5454,136 +5400,6 @@ mod tests {
     /// Opens an in-memory SQLite connection for testing.
     fn open_test_db() -> rusqlite::Connection {
         rusqlite::Connection::open_in_memory().expect("open in-memory test db")
-    }
-
-    fn structured_facts_has_user_id(conn: &rusqlite::Connection) -> bool {
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('structured_facts') WHERE name = 'user_id'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        n > 0
-    }
-
-    /// Patch 40 (2026-06-02): the aa6a0bec merge renumber moved VOCSAP's old v64
-    /// to v83, so a monolith that recorded v64 under the old meaning skips the
-    /// upstream readd_user_id_memory_core and is left without
-    /// structured_facts.user_id while its counter is already past v64. The
-    /// pre-dispatch self-heal in `run_migrations` must restore the column so the
-    /// later v76 graph_remainder can build idx_sf_user.
-    #[test]
-    fn self_heal_readds_skipped_memory_core_user_id() {
-        let conn = open_test_db();
-        run_migrations(&conn).unwrap();
-        assert!(structured_facts_has_user_id(&conn));
-
-        // Simulate the v64 skip: drop user_id from structured_facts, dropping its
-        // indexes first so SQLite permits DROP COLUMN. The recorded version stays
-        // at latest (>= MIGRATION_READD_USER_ID_MEMORY_CORE).
-        let idxs: Vec<String> = conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='index' \
-                 AND tbl_name='structured_facts' AND name NOT LIKE 'sqlite_%'",
-            )
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        for ix in idxs {
-            conn.execute_batch(&format!("DROP INDEX IF EXISTS \"{ix}\";"))
-                .unwrap();
-        }
-        conn.execute_batch("ALTER TABLE structured_facts DROP COLUMN user_id;")
-            .unwrap();
-        assert!(
-            !structured_facts_has_user_id(&conn),
-            "user_id must be gone after the simulated skip"
-        );
-
-        // Re-run: the self-heal restores the column before any gated dispatch.
-        run_migrations(&conn).unwrap();
-        assert!(
-            structured_facts_has_user_id(&conn),
-            "self-heal must restore structured_facts.user_id"
-        );
-    }
-
-    /// The self-heal is a no-op on a healthy DB: re-running migrations when the
-    /// memory-core user_id columns are present must not error or change them.
-    #[test]
-    fn self_heal_noop_when_user_id_present() {
-        let conn = open_test_db();
-        run_migrations(&conn).unwrap();
-        run_migrations(&conn).unwrap();
-        assert!(structured_facts_has_user_id(&conn));
-    }
-
-    /// Patch 20 (2026-05-22): append-only guard. The MIGRATIONS list must be
-    /// byte-identical to migrations.manifest for every entry that has ever
-    /// shipped. Any renumber, rename, or removal of a historical entry will
-    /// fire here at CI time, before it can ship and silently divert a
-    /// system / main DB schema.
-    ///
-    /// Introduced after a recurrence-class incident in the sister chain
-    /// TENANT_MIGRATIONS (v48 reaffected at upstream merge a0880ee on
-    /// 2026-05-13). Both chains run a `MAX(version)` based runner that
-    /// trusts the recorded version more than the body of the migration, so
-    /// any post-publish edit to a historical entry diverges silently. The
-    /// manifest is the safety net.
-    ///
-    /// NB (merge aa6a0bec 2026-06-01): re-added after being dropped by the
-    /// --theirs Lot 0 resolution. The manifest was regenerated from the merged
-    /// array (upstream v1-v83 + VOCSAP v84), so this test now baselines the
-    /// post-merge contiguous list.
-    #[test]
-    fn migrations_obey_append_only_manifest() {
-        let manifest = include_str!("migrations.manifest");
-        let expected: Vec<(u32, &str)> = manifest
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(|l| {
-                let (v, d) = l.split_once(':').unwrap_or_else(|| {
-                    panic!("malformed manifest line (expected 'N: description'): {:?}", l)
-                });
-                let version: u32 = v.trim().parse().unwrap_or_else(|_| {
-                    panic!("malformed version number in manifest line: {:?}", l)
-                });
-                (version, d.trim())
-            })
-            .collect();
-
-        for (i, (exp_v, exp_d)) in expected.iter().enumerate() {
-            let actual = MIGRATIONS.get(i).unwrap_or_else(|| {
-                panic!(
-                    "migrations.manifest lists entry index {} (v{}: {}) but \
-                     MIGRATIONS is shorter; a previously-published migration was \
-                     REMOVED. Append-only rule violated. Restore the entry or append a \
-                     new migration at the end instead of editing past history.",
-                    i, exp_v, exp_d
-                )
-            });
-            assert_eq!(
-                (actual.version, actual.description),
-                (*exp_v, *exp_d),
-                "main migration at index {} drifted from manifest: code has \
-                 (v{}, {:?}) but manifest expects (v{}, {:?}). \
-                 MIGRATIONS is append-only; any line that ever shipped MUST stay \
-                 byte-identical. To add a NEW migration, append a new entry at the END \
-                 of both the list and migrations.manifest.",
-                i,
-                actual.version,
-                actual.description,
-                exp_v,
-                exp_d
-            );
-        }
-        // Trailing entries beyond the manifest are tolerated so a developer can
-        // add a migration to the code first and update the manifest in the
-        // same commit; reviewers MUST verify both files moved together.
     }
 
     /// Regression: every entry in MIGRATIONS must have a matching dispatch

@@ -2715,10 +2715,21 @@ steady state au lieu de ~120. agent-forge hyp_4b2e8103.
 
 ### Lecons
 
+> **OBSOLETE depuis Patch 41 (2026-06-02)** : la methode "ajouter nos migrations
+> en queue de l'array numerote + manifest append-only" decrite ici a ete
+> **abandonnee**. Les ajouts de schema VOCSAP ne passent plus par
+> `MIGRATIONS`/`TENANT_MIGRATIONS` ni par un manifest. Ils vivent dans le canal
+> overlay `kleos-lib/src/db/vocsap/mod.rs` (cf. section Patch 41). Les manifests
+> et leurs tests append-only ont ete supprimes. La lecon "verifier au merge"
+> ci-dessous reste valable pour les entrees **upstream** ; la partie "ajouter nos
+> migrations en queue" est remplacee par "ajouter un overlay VOCSAP".
+
 - **Verifier `TENANT_MIGRATIONS` au merge upstream**. Tout commit upstream
   qui insere ou renomme une entree dans `TENANT_MIGRATIONS` ou `MIGRATIONS`
-  doit etre verifie avant absorption. Si position deja appliquee en prod,
-  ajouter en queue (nouvelle version >= max+1) avec un nom different.
+  doit etre verifie avant absorption. (Avant Patch 41 : si position deja
+  appliquee en prod, ajouter en queue version >= max+1. Depuis Patch 41 : VOCSAP
+  n'ajoute plus jamais dans ces arrays, donc seules les entrees upstream y
+  figurent et il n'y a plus de collision de slot a craindre cote VOCSAP.)
 - **Le statut `schema_migrations` n'est pas une preuve d'application**.
   La ligne `(version, applied_at)` est INSERT separe (auto-commit SQLite).
   Si la migration body est devenue idempotent / no-op apres coup, la
@@ -4447,6 +4458,99 @@ agent-forge spec : `spec_ada22012`.
 - Validation E2E deterministe (les memoires forgotten disparaissent du scan) : a faire post-build WSL + deploy LXC 121.
 
 **Conditions de retrait :** Strictement additif, aligne sur la discipline existante. Candidat PR upstream : aucun cas non-forgotten n'est affecte, le filtre ne fait qu'exclure les memoires deja soft-deleted que l'utilisateur a explicitement oubliees.
+
+---
+
+## Patch 41 -- canal schema overlay VOCSAP Post-only (2026-06-02)
+
+agent-forge spec `spec_3fb428b3`.
+
+### Symptome
+
+Les migrations VOCSAP vivaient dans les arrays numerotes partages avec upstream
+(`MIGRATIONS` monolith, `TENANT_MIGRATIONS` tenant). A chaque merge ou upstream
+reclamait un slot qu'on occupait, on renumerotait nos migrations (incident
+aa6a0bec : tenant v55-59 -> v72-76, monolith v64 -> v84). Sur les deploiements
+vivants, `schema_version`/`schema_migrations` avait deja enregistre l'ancien
+numero sous le sens VOCSAP -> le runner `MAX(version)` skippait silencieusement
+le body upstream occupant desormais ce slot -> colonnes `user_id` jamais ajoutees
+-> crash boot `no such column: user_id` (repare en one-shot par Patch 40
+self-heal). Bug structurel recurrent a chaque merge tant que nos migrations
+partagent la sequence numerotee.
+
+### Approche
+
+Niveau **refactor local** (sortie de la sequence numerotee). Canal overlay
+separe, analogue schema des canaux `prompts-overrides` / `lexicon-overrides` /
+`gate-rules` : les ajouts VOCSAP quittent l'array numerote pour un registre
+lateral execute **apres** la chaine upstream, **sans numero de version**, et
+**idempotent** (guard `needs` cote Rust avant DDL, SQLite n'ayant pas
+d'`ADD COLUMN IF NOT EXISTS`). VOCSAP n'occupe plus jamais un slot que Ghost-Frame
+voudra : la classe de bug renumber->skip disparait.
+
+**Post-only** (decision operateur) : le seul usage pre-dispatch etait le
+self-heal Patch 40, supprime ici (one-shot, LXC 121 deja healed, seul
+deploiement vivant). Une phase `Pre` pourra etre rajoutee additivement si un
+prerequis legitime apparait.
+
+**Garde-fou repense** : le manifest byte-identique + les tests
+`migrations_obey_append_only_manifest` / `tenant_migrations_obey_append_only_manifest`
+(Patch 20) protegeaient contre le renumber VOCSAP -- mode de defaillance qui ne
+peut plus venir de nous une fois VOCSAP hors sequence. Supprimes (avec les 2
+fichiers `.manifest`). `every_static_migration_is_dispatched` (invariant pur
+upstream) conserve.
+
+### Fichiers touches
+
+- `kleos-lib/src/db/vocsap/mod.rs` (NOUVEAU) : `VocsapOverlay` (monolith),
+  `VocsapTenantOverlay` (tenant, `apply` recoit `owner` pour backfill futur),
+  helpers `table_has_column` / `index_exists` / `table_exists`, statics
+  `VOCSAP_MONOLITH_OVERLAYS` (1 entree) + `VOCSAP_TENANT_OVERLAYS` (5 entrees),
+  `apply_monolith_overlays` / `apply_tenant_overlays`, 5 tests.
+- `kleos-lib/src/db/mod.rs` : `mod vocsap;`.
+- `kleos-lib/src/db/migrations.rs` : retrait entree array v84 + const
+  `MIGRATION_APPROVALS_GATE_ID` + dispatch + body `run_migration_approvals_gate_id`
+  + hook self-heal Patch 40 + test append-only + 2 tests self-heal + helper
+  `structured_facts_has_user_id` ; ajout `apply_monolith_overlays(conn)?` en fin
+  de `run_migrations`.
+- `kleos-lib/src/db/tenant_migrations.rs` : retrait 5 entrees array v72-76 + 5
+  bodies `apply_schema_v55..v59_*` + hook self-heal Patch 40 + test append-only +
+  test self-heal ; ajout `apply_tenant_overlays(conn, owner_user_id)?` en fin de
+  `run_tenant_migrations`.
+- `kleos-lib/src/db/{migrations,tenant_migrations}.manifest` : SUPPRIMES.
+- `docs/dev-notes/vocsap-schema-overlay-channel.md` : design + carto (gitignored).
+
+Les 6 overlays portent les bodies idempotents existants : monolith
+`approvals_gate_id` ; tenant `supervisor_injections_repair`, `approvals_gate_id`,
+`conversations_space_id`, `structured_facts_unique_index` (dedup + unique index),
+`structured_facts_extraction_source`. Aucun n'utilise le backfill owner (colonnes
+nullable ou DEFAULT).
+
+### Etape ops au deploy (hors code)
+
+Sur LXC 121, avant de demarrer le binaire Patch 41 : backup des 3 fichiers
+sqlcipher (`.db` + `-wal` + `-shm`) du monolith ET de chaque shard tenant, puis
+`DELETE` chirurgical des lignes de version desormais orphelines pour que le
+compteur retombe au max upstream et que les overlays detectent les colonnes deja
+presentes (no-op) :
+- monolith : `DELETE FROM schema_version WHERE version = 84;`
+- chaque shard tenant : `DELETE FROM schema_migrations WHERE version IN (72,73,74,75,76);`
+Ne PAS toucher aux lignes 55-59 / 64 (slots upstream). Les colonnes/index ne sont
+PAS supprimes : seules les lignes de version le sont.
+
+### Tests
+
+`cargo build -p kleos-lib --features bundled-sqlite` OK. 5 tests `db::vocsap`
+verts (apply puis no-op monolith + tenant, no-op sur schema complet, dedup avant
+unique index, skip backfill si owner None). 137 tests `db::` verts. verify
+agent-forge 2/2.
+
+### Conditions de retrait
+
+Candidat PR upstream incertain : le mecanisme est generique mais la liste
+d'overlays est specifique VOCSAP. Upstream pourrait adopter le pattern de canal
+lateral pour ses propres forks downstream. A retirer seulement si Kleos cesse
+d'etre un fork actif.
 
 ---
 
