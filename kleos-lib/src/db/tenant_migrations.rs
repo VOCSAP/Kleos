@@ -1130,6 +1130,59 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
         |row| row.get(0),
     )?;
 
+    // --- Patch 40 (2026-06-02): self-healing for the aa6a0bec merge renumber ---
+    // The merge renumbered VOCSAP's old tenant v55-v59 (supervisor / approvals /
+    // space / structured_facts migrations) to v72-v76, so upstream's v55-v59
+    // user_id readds now occupy slots 55-59. Shards that had recorded v55-v59
+    // under the old meaning skip the upstream readds (those slots are <= current),
+    // leaving memories, webhooks, approvals, soma_agents and axon_events without
+    // `user_id`; the dependent v60+ migrations then run against a schema missing
+    // those columns. Detect via the memories.user_id tell and re-apply the
+    // affected readds -- the apply fn plus the owner backfill, exactly as the
+    // dispatch loop below would -- before that loop reaches the dependents. The
+    // version rows are already recorded so they are not re-inserted. No-op on a
+    // fresh install (current below the slots -> the loop applies them in order)
+    // and on a healthy shard (the column gate plus each apply fn's
+    // table_has_column guard short-circuit, so no redundant soma_agents rebuild).
+    if current >= TENANT_MIGRATION_READD_USER_ID
+        && !table_has_column(conn, "memories", "user_id")?
+    {
+        for m in TENANT_MIGRATIONS.iter().filter(|m| {
+            m.version >= TENANT_MIGRATION_READD_USER_ID
+                && m.version <= TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS
+                && m.version <= current
+        }) {
+            // The readd .sql files use raw `ALTER TABLE ADD COLUMN` (NOT
+            // idempotent -- they rely on the runner gating them to exactly once)
+            // and the v58 soma_agents readd is a 12-step RENAME/rebuild. So only
+            // re-run a readd whose representative target column is actually
+            // absent: this keeps the heal safe against any partial state and can
+            // never double-apply the soma_agents rebuild. The `INSERT OR IGNORE`
+            // into schema_migrations inside each file is a no-op (rows already
+            // recorded), so versions are not re-inserted.
+            let probe_table: &str = match m.version {
+                TENANT_MIGRATION_READD_USER_ID => "memories",
+                TENANT_MIGRATION_READD_USER_ID_WEBHOOKS => "webhooks",
+                TENANT_MIGRATION_READD_USER_ID_APPROVALS => "approvals",
+                TENANT_MIGRATION_READD_USER_ID_SOMA_AGENTS => "soma_agents",
+                TENANT_MIGRATION_READD_USER_ID_AXON_EVENTS => "axon_events",
+                _ => continue,
+            };
+            if table_has_column(conn, probe_table, "user_id")? {
+                continue;
+            }
+            info!(
+                "self-heal: re-applying skipped tenant migration {} ({}) after the \
+                 aa6a0bec renumber left memory-core user_id columns absent",
+                m.version, m.description
+            );
+            (m.up)(conn)?;
+            if let Some(owner) = owner_user_id {
+                backfill_owner_tables_for_version(conn, m.version, owner)?;
+            }
+        }
+    }
+
     for m in TENANT_MIGRATIONS.iter() {
         if m.version <= current {
             continue;
@@ -1539,6 +1592,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// Patch 40 (2026-06-02): the aa6a0bec merge renumber made shards that had
+    /// recorded tenant v55-v59 under the OLD VOCSAP meaning skip the upstream
+    /// user_id readds. `run_tenant_migrations` must self-heal by re-adding the
+    /// missing memory-core user_id columns when the counter is past their slots,
+    /// and must NOT re-apply a readd whose column is already present.
+    #[test]
+    fn self_heal_readds_skipped_tenant_user_id_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_tenant_migrations(&conn, Some(2)).unwrap();
+        assert!(table_has_column(&conn, "memories", "user_id").unwrap());
+
+        // Simulate the v55 skip: drop user_id from the memory-core trio together
+        // (the slot collision drops all three at once). Drop the cross-tenant
+        // trigger and every table index first so SQLite permits DROP COLUMN.
+        conn.execute_batch("DROP TRIGGER IF EXISTS prevent_cross_tenant_links;")
+            .unwrap();
+        for tbl in ["memories", "artifacts", "vector_sync_pending"] {
+            let idxs: Vec<String> = conn
+                .prepare(&format!(
+                    "SELECT name FROM sqlite_master WHERE type='index' \
+                     AND tbl_name='{tbl}' AND name NOT LIKE 'sqlite_%'"
+                ))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            for ix in idxs {
+                conn.execute_batch(&format!("DROP INDEX IF EXISTS \"{ix}\";"))
+                    .unwrap();
+            }
+            conn.execute_batch(&format!("ALTER TABLE {tbl} DROP COLUMN user_id;"))
+                .unwrap();
+            assert!(
+                !table_has_column(&conn, tbl, "user_id").unwrap(),
+                "{tbl}.user_id should be absent after the simulated skip"
+            );
+        }
+
+        // Re-run with the shard owner: the self-heal re-adds the trio.
+        run_tenant_migrations(&conn, Some(2)).unwrap();
+        for tbl in ["memories", "artifacts", "vector_sync_pending"] {
+            assert!(
+                table_has_column(&conn, tbl, "user_id").unwrap(),
+                "{tbl}.user_id should be restored by the self-heal"
+            );
+        }
+        // webhooks still had user_id, so the per-version column gate must have
+        // skipped the v56 readd instead of double-applying its raw ADD COLUMN.
+        assert!(table_has_column(&conn, "webhooks", "user_id").unwrap());
     }
 
     /// Verifies that the memories table exists after applying tenant migration v1.
