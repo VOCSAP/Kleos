@@ -4820,6 +4820,58 @@ upstream ajoute un mode immediat a `/supervisor/pending` et corrige la cible de
 
 ---
 
+## Patch 46 -- eidolon-supervisor scope des regles par tool_name (Levier A) (2026-06-03)
+
+agent-forge spec `spec_3f71e127`. Reduction des faux-positifs du matcher.
+
+### Symptome
+
+`rule_match::check` applique le regex de chaque regle `RuleMatch` sur
+`extract_check_text(entry)` pour **toute** entree `tool_use`, quel que soit le
+tool. Donc un `mcp__kleos__memory_store` (ou `Write`) dont le `content` *parle*
+de "reboot" / "git push --force" declenche `no-reboot` / `no-force-push`
+(faux-positif dominant : on bloque parce qu'on *mentionne* la commande, pas
+parce qu'on l'execute). Le filtre `is_tool` de `watch.rs` limite deja au
+`tool_use` mais pas au bon **type** de tool.
+
+### Approche
+
+Niveau **additif**, upstream-pur. `Rule` gagne `#[serde(default)] pub tools:
+Vec<String>` (vide = tous les tools = backward-compat avec les `supervisor.json`
+existants). `rule_match::check` extrait `tool_name` de l'entree et skippe une
+regle si `!rule.tools.is_empty() && !rule.tools.contains(tool_name)`.
+`default_rules()` scope `no-force-push` et `no-reboot` a `["Bash"]`,
+`em-dash-usage` a `["Write","Edit","MultiEdit"]` ; `retry-loop` (`RetryLoop`,
+chemin `retry_tracker`) reste a `[]`.
+
+### Fichiers touches
+
+- `eidolon-supervisor/src/checks/mod.rs` : champ `tools` + scope des
+  `default_rules()`.
+- `eidolon-supervisor/src/checks/rule_match.rs` : extraction `tool_name` +
+  filtre + 3 tests.
+- `docs/dev-notes/local-patches.md` + `CLAUDE.md`.
+
+### Tests
+
+`cargo test -p eidolon-supervisor` : 4 verts (3 nouveaux -- faux-positif non-Bash
+filtre, vrai Bash fire, `tools` vide = tous). verify agent-forge 1/1.
+
+### Limites (Levier B, hors scope)
+
+Un **vrai** Bash qui *mentionne* sans invoquer (`grep reboot`, `echo "git push
+--force"`) fire encore. Couvert par un Levier B futur : whitelist/exception
+cascade (replique lean du loader gate `approval_patterns.rs`, sans importer
+kleos-lib qui gonflerait le daemon), ou regex ancre (`^\s*reboot`, apres
+connecteur).
+
+### Conditions de retrait
+
+Candidat PR upstream (reduit les faux-positifs sans changer le comportement par
+defaut quand `tools` est absent).
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
