@@ -1,0 +1,6 @@
+# gitleaks allowlist -- false positives confirmed as test fixtures, not real secrets.
+# Format: one gitleaks fingerprint per line. See https://github.com/gitleaks/gitleaks#gitleaksignore
+#
+# upstream test fixture: parse_key_hex() unit test in artifacts_crypto.rs uses a
+# static hex key literal "0123...ef" to assert key parsing. Not a credential.
+kleos-lib/src/artifacts_crypto.rs:generic-api-key:190
