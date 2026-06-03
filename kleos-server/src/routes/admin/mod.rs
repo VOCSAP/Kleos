@@ -1262,9 +1262,33 @@ async fn admin_vector_rebuild_index(
 
     let row_count = vector_index.count().await.unwrap_or(0);
     let rebuilt = vector_index.rebuild_index(replace).await?;
+
+    // Patch 43 VOCSAP -- also optimize/rebuild the chunk vector index so
+    // /admin/vector/rebuild-index covers BOTH lance tables (memories +
+    // chunks). rebuild_index() runs optimize(All) (compact + prune versions
+    // >7j); without this the chunk index (often the larger _versions backlog)
+    // never gets on-demand cleanup. Best-effort: a chunk failure is warn-logged
+    // and never masks the primary (memory) rebuild result.
+    let (chunk_rebuilt, chunk_row_count) =
+        if let Some(chunk_index) = state.db.chunk_vector_index.clone() {
+            let count = chunk_index.count().await.unwrap_or(0);
+            let rebuilt = match chunk_index.rebuild_index(replace).await {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("admin vector-rebuild-index: chunk index rebuild failed: {e}");
+                    false
+                }
+            };
+            (rebuilt, count)
+        } else {
+            (false, 0usize)
+        };
+
     Ok(Json(json!({
         "rebuilt": rebuilt,
         "row_count": row_count,
+        "chunk_rebuilt": chunk_rebuilt,
+        "chunk_row_count": chunk_row_count,
         "min_rows_for_index": kleos_lib::vector::lance::MIN_ROWS_FOR_INDEX,
     })))
 }

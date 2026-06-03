@@ -4616,15 +4616,68 @@ Valide en prod : logs `event="compacting"` + `optimizing indices` au
   `older_than=0, delete_unverified=true` **kleos-server arrete** (non implemente).
 - **Couverture admin partielle** : `admin_vector_rebuild_index` ne rebuild que
   `db.vector_index`, pas `db.chunk_vector_index` (4.6G). Le volet 1 (amorti)
-  couvre bien les deux tables ; seul le reclaim on-demand via l'admin est
-  partiel. Fix additif possible : appeler aussi `chunk_vector_index.rebuild_index`
-  dans la boucle tenant du handler.
+  couvre bien les deux tables ; seul le reclaim on-demand via l'admin etait
+  partiel. **Resolu par Patch 43** (le handler rebuild desormais aussi
+  `chunk_vector_index`).
 
 ### Conditions de retrait
 
 Candidat PR upstream : les tables lancedb croissent sans borne sans appel
 explicite a `optimize`. A retirer si upstream ajoute une maintenance Lance
 periodique native.
+
+---
+
+## Patch 43 -- admin vector-rebuild-index couvre chunk_vector_index (2026-06-03)
+
+agent-forge spec `spec_82266967`. Suite directe du Patch 42 (lacune
+documentee dans ses "Limites connues").
+
+### Symptome
+
+`admin_vector_rebuild_index` (`kleos-server/src/routes/admin/mod.rs`, route
+`POST /admin/vector/rebuild-index`) n'operait que sur `state.db.vector_index`
+(table `memories`). Il ne touchait jamais `state.db.chunk_vector_index` (table
+`CHUNK_TABLE_NAME`, meme `lance_path`, ~4.6G de `_versions/` sur LXC 121).
+Comme `rebuild_index()` declenche `optimize(OptimizeAction::All)` (compact +
+prune des versions >7j, cf. Patch 42), l'index chunk ne beneficiait d'aucun
+reclaim de stockage a la demande -- seul le volet 1 amorti (256 writes) le
+compactait.
+
+### Approche
+
+Niveau **chirurgical / additif** (~18 lignes, zero changement de signature,
+zero touche au trait `VectorIndex`, au struct `Database`, ou au chemin
+memory-index existant). Apres le `vector_index.rebuild_index(replace)` existant
+(qui conserve son `?` upstream), on ajoute un bloc best-effort sur
+`state.db.chunk_vector_index.clone()` : `count()` puis `rebuild_index(replace)`,
+une erreur de l'index chunk etant `warn`-loggee et traitee comme `false` pour
+ne jamais masquer le rebuild memory primaire. La reponse JSON gagne deux cles
+`chunk_rebuilt` (bool) et `chunk_row_count` (usize).
+
+`chunk_vector_index` est peuple uniquement sur la DB monolithe (`Database::open`)
+-- les DB tenant (`open_tenant`) le laissent a `None`, auquel cas le handler se
+comporte comme avant plus `chunk_rebuilt=false`/`chunk_row_count=0` (skip
+gracieux, pas de panic).
+
+### Fichiers touches
+
+- `kleos-server/src/routes/admin/mod.rs` : bloc additif dans
+  `admin_vector_rebuild_index` + 2 cles dans la reponse JSON.
+- `docs/dev-notes/local-patches.md` : cette section + maj de la limite Patch 42.
+
+### Tests
+
+`cargo check -p kleos-server --features kleos-lib/bundled-sqlite` vert (Windows
+natif). verify agent-forge 1/1. Pas de nouveau test unitaire : le code appelle
+la meme methode `rebuild_index` deja couverte par les tests `vector::` du
+Patch 42 (l'index chunk est un `LanceIndex` identique, table differente). Build
+release Linux + deploy LXC 121 a faire (operateur WSL).
+
+### Conditions de retrait
+
+Candidat PR upstream avec Patch 42 (meme zone). A retirer si upstream rend la
+maintenance Lance native et couvre les deux tables.
 
 ---
 
