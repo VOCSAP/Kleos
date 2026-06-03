@@ -4732,6 +4732,80 @@ Windows.
 
 ---
 
+## Patch 45 -- fiabilite boucle eidolon-supervisor (`?wait=0` + `/inbox`->`/store`) (2026-06-03)
+
+agent-forge spec `spec_1d0f608f` + hyp `hyp_33aaec75`. Deux bugs confirmes E2E
+sur la boucle supervisor->drain-hook (binaires Windows fraichement rebuilds).
+
+### Symptome
+
+**Bug A (latence + bruit)** : le drain hook PreToolUse
+`~/.claude/hooks/eidolon-supervisor-drain-pending.sh` appelle
+`GET /supervisor/pending` avec `curl --max-time 3`, mais l'endpoint **long-poll**
+~30s quand la queue est vide (Patch 20). Resultat : `curl rc=28` (timeout)
+systematique sur queue vide -> **+3s de latence sur chaque tool call** + spam
+`no response from /supervisor/pending` dans `supervisor-drain.log`. Le message du
+hook ("server unreachable or auth failed") est trompeur (c'est un timeout
+long-poll ; URL + auth OK). Regression : drain hook cree 2026-05-21, Patch 20 a
+rendu `/supervisor/pending` long-poll le 2026-05-22 sans adapter le hook.
+
+**Bug B (`/inbox` 405)** : `eidolon-supervisor/src/alert.rs::send_inbox` fait
+`POST {kleos_url}/inbox`, mais `/inbox` est **GET-only** (c'est l'inbox
+d'approbations : `GET /inbox`, `POST /inbox/{id}/{approve,reject,edit}`,
+`/inbox/bulk`). Le POST renvoyait `405 Method Not Allowed`. Le daemon veut creer
+une **memoire** `category=alert` (payload `{content,category,importance,tags,source}`)
+-> cible canonique `POST /store` (`post(store_memory)`).
+
+### Approche
+
+Niveau **chirurgical / additif**, code upstream-pur des deux cotes.
+
+- **A.** `PendingQuery` (`supervisor/types.rs`) gagne `#[serde(default)] pub wait:
+  Option<u64>`. Dans `pending_handler` (`supervisor/mod.rs`), la `deadline` est
+  calculee selon `q.wait` : `Some(0)` -> `Duration::ZERO` (1 claim immediat puis
+  retour, pas de long-poll), `Some(n)` -> `n` secs, `None` -> `supervisor_longpoll_timeout()`
+  (comportement upstream strictement preserve quand `wait` absent). La boucle
+  existante gere `ZERO` nativement (apres le claim, `now >= deadline` -> retour
+  vide immediat). Le drain hook passe `&wait=0`. Forward-compatible : un serveur
+  non-patche ignore le param inconnu (serde), donc le hook peut etre deploye
+  avant le serveur sans regression.
+- **B.** `send_inbox` change l'URL `/inbox` -> `/store` (1 ligne, payload
+  inchange, deja conforme a `store_memory`). `axon` (`/axon/publish`) et `inject`
+  (`/supervisor/inject`) etaient deja OK.
+
+### Fichiers touches
+
+- `kleos-server/src/routes/supervisor/types.rs` : champ `wait`.
+- `kleos-server/src/routes/supervisor/mod.rs` : calcul `deadline` selon `wait`.
+- `eidolon-supervisor/src/alert.rs` : `send_inbox` URL `/inbox` -> `/store`.
+- `~/.claude/hooks/eidolon-supervisor-drain-pending.sh` (hors repo) : `&wait=0`.
+- `docs/dev-notes/local-patches.md` + `CLAUDE.md`.
+
+### Tests
+
+`cargo check -p kleos-server -p eidolon-supervisor --features kleos-lib/bundled-sqlite`
+vert (Windows). verify agent-forge 1/1. E2E pre-fix (2026-06-03) avait confirme :
+producteur detecte + `/supervisor/inject` OK + `/supervisor/pending` retour
+immediat sur inject present (single-use claim) ; seuls restaient le timeout
+queue-vide (A) et le 405 inbox (B). Validation post-deploy a faire : `?wait=0`
+retour immediat + plus de "no response" dans le drain log + alerte memoire
+`category=alert` creee.
+
+### Deploiement
+
+- kleos-server (A) : rebuild release WSL + redeploy LXC 121 (procedure standard).
+- eidolon-supervisor (B) : rebuild natif Windows + copie vers `~/.cargo/bin`.
+- drain hook (A) : deja edite localement (aucun build).
+
+### Conditions de retrait
+
+Candidat PR upstream (les deux sont des bugs upstream : long-poll incompatible
+avec un consommateur fast-path, et POST sur une route GET-only). A retirer si
+upstream ajoute un mode immediat a `/supervisor/pending` et corrige la cible de
+`send_inbox`.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |

@@ -11,6 +11,12 @@ pub(super) struct InjectBody {
 #[derive(Debug, Deserialize)]
 pub(super) struct PendingQuery {
     pub session_id: String,
+    /// Patch 45 (VOCSAP): optional long-poll override. `wait=0` -> immediate
+    /// return with no long-poll (used by the fast PreToolUse drain hook, which
+    /// cannot block 30s); `wait=n` -> cap the long-poll at n seconds; absent ->
+    /// default long-poll (upstream behavior preserved).
+    #[serde(default)]
+    pub wait: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]

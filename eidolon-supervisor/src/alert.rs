@@ -58,7 +58,10 @@ async fn send_inject(state: &SupervisorState, violation: &Violation) {
 }
 
 async fn send_inbox(state: &SupervisorState, violation: &Violation) {
-    let url = format!("{}/inbox", state.kleos_url);
+    // Patch 45 (VOCSAP): /inbox is GET-only (it is the approvals inbox); a
+    // violation alert is a memory (category=alert) and must be POSTed to /store
+    // (post(store_memory)). Posting to /inbox returned 405 Method Not Allowed.
+    let url = format!("{}/store", state.kleos_url);
 
     let body = json!({
         "content": format!("[supervisor:{}] {}", violation.rule_id, violation.message),
