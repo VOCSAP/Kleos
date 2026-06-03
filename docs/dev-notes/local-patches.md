@@ -4681,6 +4681,57 @@ maintenance Lance native et couvre les deux tables.
 
 ---
 
+## Patch 44 -- kleos-fs (ke/kr/kw) compilable sur Windows (2026-06-03)
+
+agent-forge spec `spec_0ce9b6b6`. Decouvert en rebuildant le set de binaires
+Windows (kleos-fs ne compilait plus depuis le durcissement secure-write
+upstream).
+
+### Symptome
+
+`kleos-fs` (bins `ke`/`kr`/`kw`, qui partagent `src/main.rs` via
+`app::run(...)`) ne compile plus sur Windows MSVC. 4 erreurs (E0433/E0425/
+E0599/E0282), toutes issues d'un unique bloc Unix-only dans le secure-write
+(`kw`) : `std::os::unix::fs::OpenOptionsExt::custom_flags(libc::O_NOFOLLOW)`,
+ajoute upstream pour empecher un TOCTOU symlink-swap entre
+`canonicalize_within_roots` et le write. `O_NOFOLLOW`, le trait `OpenOptionsExt`
+Unix et `std::os::unix` n'existent pas sur Windows. Des versions anterieures de
+ke/kr/kw (pre-durcissement) etaient deja deployees sur le poste Windows.
+
+### Approche
+
+Niveau **chirurgical / additif** (cfg-gate, code 100% upstream-pur jusque-la).
+Le bloc `let open_result = { ... }` devient deux bindings cfg-gated du meme type
+`std::io::Result<File>` :
+
+- `#[cfg(unix)]` : **strictement inchange** (O_NOFOLLOW preserve, zero delta
+  semantique Linux).
+- `#[cfg(not(unix))]` : refuse d'ecrire a travers un symlink existant
+  (`symlink_metadata` -> si `is_symlink`, `eprintln!` + `return ExitCode::from(2)`)
+  puis open normal (`write`+`create`+`truncate`). Parite TOCTOU best-effort
+  (Windows n'a pas d'`O_NOFOLLOW`, race residuelle mineure entre le check et le
+  open, documentee).
+
+`libc` reste dependance (usage confine au bras `cfg(unix)`).
+
+### Fichiers touches
+
+- `kleos-fs/src/main.rs` : le bloc `open_result` du write (kw) cfg-gate.
+- `docs/dev-notes/local-patches.md` : cette section + maj table binaires.
+
+### Tests
+
+`cargo build --release -p kleos-fs` sur Windows MSVC (produit `ke`/`kr`/`kw`).
+Chemin `cfg(unix)` inchange -> zero regression Linux. verify agent-forge.
+
+### Conditions de retrait
+
+Candidat PR upstream (rend kleos-fs portable Windows sans toucher le
+comportement Unix). A retirer si upstream porte lui-meme le secure-write sur
+Windows.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
