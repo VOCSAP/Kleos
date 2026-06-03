@@ -156,7 +156,16 @@ async fn pending_handler(
     // for a future send(), not the initial state.
     rx.mark_unchanged();
 
-    let deadline = tokio::time::Instant::now() + supervisor_longpoll_timeout();
+    // Patch 45 (VOCSAP): honor an optional `?wait=` override. wait=0 collapses
+    // the long-poll to a single immediate claim + return (for the fast
+    // PreToolUse drain hook that cannot block); wait=n caps the long-poll at n
+    // seconds; absent keeps the default long-poll (upstream behavior).
+    let longpoll = match q.wait {
+        Some(0) => Duration::ZERO,
+        Some(secs) => Duration::from_secs(secs),
+        None => supervisor_longpoll_timeout(),
+    };
+    let deadline = tokio::time::Instant::now() + longpoll;
 
     loop {
         let session_id_for_claim = session_id.clone();
