@@ -4778,8 +4778,22 @@ Niveau **chirurgical / additif**, code upstream-pur des deux cotes.
 - `kleos-server/src/routes/supervisor/types.rs` : champ `wait`.
 - `kleos-server/src/routes/supervisor/mod.rs` : calcul `deadline` selon `wait`.
 - `eidolon-supervisor/src/alert.rs` : `send_inbox` URL `/inbox` -> `/store`.
+- `hooks/full/lib-eidolon.sh` (+ copie `~/.claude/hooks/lib-eidolon.sh`) : **Bug C**
+  `curl -o /dev/stdout` -> `-o -` (cf. ci-dessous).
 - `~/.claude/hooks/eidolon-supervisor-drain-pending.sh` (hors repo) : `&wait=0`.
 - `docs/dev-notes/local-patches.md` + `CLAUDE.md`.
+
+### Bug C (decouvert au deploy 2026-06-03)
+
+Au deploy de A, le drain hook continuait a logger "no response" alors que le
+serveur honorait `?wait=0` (retour 0s confirme manuellement). Cause : `eidolon_call`
+dans `lib-eidolon.sh` utilisait `curl -o /dev/stdout`, qui **echoue avec
+mingw64/bin/curl 8.17 (Schannel) sur Windows** -> `rc=23 CURLE_WRITE_ERROR`, body
+jamais capture. `-o -` fonctionne (`rc=0`). Le bug touchait **tout hook** utilisant
+`eidolon_call` sur Windows ; il etait masque jusque-la par le timeout long-poll
+(`rc=28`). Fix : `-o /dev/stdout` -> `-o -` ligne 116. Verifie : apres fix,
+`eidolon_call GET /supervisor/pending?...&wait=0` retourne `rc=0` en 0s avec body
+`{claimed:0,injections:[]}`.
 
 ### Tests
 
