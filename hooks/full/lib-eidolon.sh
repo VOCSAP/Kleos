@@ -113,7 +113,7 @@ eidolon_call() {
     -s --max-time "$timeout"
     -D "$headers_file"
     -w "%{http_code}"
-    -o /dev/stdout
+    -o -
     -X "$method"
     -H "Authorization: Bearer $key"
     -H "Content-Type: application/json"
