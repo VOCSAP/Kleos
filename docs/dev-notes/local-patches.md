@@ -4554,6 +4554,80 @@ d'etre un fork actif.
 
 ---
 
+## Patch 42 -- borne la croissance de l'index vectoriel lancedb (2026-06-03)
+
+agent-forge spec `spec_b9023c21`. Commit `ae4c614e`. Decouvert pendant le
+deploy du merge 3ee0b0bf (1.5.0).
+
+### Symptome
+
+lancedb est append-only : chaque ecriture cree une nouvelle version (manifest)
+et un nouveau fragment, jamais compactes ni purges automatiquement. Dans
+`kleos-lib/src/vector/lance.rs`, chaque `insert` fait `table.delete(...)` puis
+`table.add(...)` -> deux versions par embedding ecrit. Aucun appel a
+`table.optimize(...)` n'existait. Resultat : le dossier `_versions/` de chaque
+table croit sans borne. Observe sur LXC 121 (tenant-2) :
+`hnsw/memories.lance` = 7.5G dont `_versions/` = 7.3G de manifests (data reelle
+~116M). Croissance quasi-quadratique car chaque manifest liste tous les
+fragments (cout ~ versions x fragments). Le disque `/` (15G) a sature a 93%.
+
+### Approche
+
+Niveau **additif** (nouveau champ + methode + appels, signatures du trait
+`VectorIndex` inchangees). Deux volets :
+
+- **Permanent** : compteur `writes_since_optimize: AtomicU64` sur `LanceIndex`.
+  `insert` et `insert_many` appellent `maybe_optimize` apres l'add ; tous les
+  `OPTIMIZE_EVERY_N_WRITES` (256) writes, `table.optimize(OptimizeAction::All)`
+  (compact merge les fragments -> manifests rétrécis ; prune drop les versions
+  au-dela de la retention par defaut lancedb, 7j). Best-effort : une erreur est
+  loggee (`warn`) et jamais propagee au chemin d'ecriture.
+- **Cleanup declenchable** : `rebuild_index` lance `optimize(All)` en tete
+  (avant les early returns row-count / index-existence), de sorte que l'admin
+  `/admin/vector/rebuild-index` sert de reclaim de stockage a la demande.
+
+`delete_unverified` reste a son defaut (`false`) : sur en concurrence, un
+transaction en cours n'est jamais corrompue.
+
+### Fichiers touches
+
+- `kleos-lib/src/vector/lance.rs` : import `lancedb::table::OptimizeAction` +
+  `std::sync::atomic::{AtomicU64, Ordering}` ; const `OPTIMIZE_EVERY_N_WRITES` ;
+  champ `writes_since_optimize` + init dans `open_with_table` ; methode
+  `maybe_optimize` ; appels dans `insert` / `insert_many` ; `optimize(All)` en
+  tete de `rebuild_index` ; test `optimize_via_rebuild_preserves_rows_and_search`.
+
+### Tests
+
+9 tests `vector::` verts (dont le nouveau qui valide que compact + prune
+preservent toutes les lignes et la recherche). verify agent-forge 1/1.
+Valide en prod : logs `event="compacting"` + `optimizing indices` au
+`admin vector-rebuild-index`.
+
+### Limites connues
+
+- **Backlog non recupere en live** : `delete_unverified=false` protege tout
+  fichier de moins de 7j, et le backlog 7.5G est majoritairement constitue de
+  versions recentes (writes intensifs dreamer/re-embed). Le `vector-rebuild-index`
+  post-deploy n'a purge que ~20 versions. Le patch **borne la croissance future**
+  mais ne vide pas le backlog d'un coup. Decision operateur (2026-06-03) : laisser
+  le volet 1 purger progressivement (les versions vieillissent au-dela de 7j),
+  disque non urgent (etendu a 25G). Pour un reclaim immediat il faudrait un prune
+  `older_than=0, delete_unverified=true` **kleos-server arrete** (non implemente).
+- **Couverture admin partielle** : `admin_vector_rebuild_index` ne rebuild que
+  `db.vector_index`, pas `db.chunk_vector_index` (4.6G). Le volet 1 (amorti)
+  couvre bien les deux tables ; seul le reclaim on-demand via l'admin est
+  partiel. Fix additif possible : appeler aussi `chunk_vector_index.rebuild_index`
+  dans la boucle tenant du handler.
+
+### Conditions de retrait
+
+Candidat PR upstream : les tables lancedb croissent sans borne sans appel
+explicite a `optimize`. A retirer si upstream ajoute une maintenance Lance
+periodique native.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
