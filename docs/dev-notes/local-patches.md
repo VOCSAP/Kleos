@@ -4872,6 +4872,112 @@ defaut quand `tools` est absent).
 
 ---
 
+## Patch 47 -- kleos-mcp scope les tools/call headless via `KLEOS_SPACE` (2026-06-05)
+
+Decouvert pendant l'integration OpenClaw (LXC 126) -> Kleos (LXC 121). Contexte
+complet : projet Local-Firewall, `config/openclaw/07-kleos-integration-unified.md`
+section 14. Memoires Kleos #8058 (cause racine), #8060 (patch).
+
+### Symptome
+
+Un agent headless (OpenClaw) ecrit dans Kleos via `kleos-mcp --transport stdio`.
+On veut scoper ses ecritures dans un space dedie (`openclaw`). Le canal **CLI**
+(`kleos-cli`) lit deja `$KLEOS_SPACE` (Patch 33) et scope correctement. Mais
+**tous les `memory_store` via MCP tombaient dans le space `default`**, quelle que
+soit la config.
+
+Cause racine (confirmee par lecture du code, pas supposee) : dans cette branche,
+`kleos-mcp` est un **proxy mince**. Le transport stdio (`transport/stdio.rs`)
+appelle `handle_jsonrpc` (`lib.rs`) qui fait simplement
+`app.client.post_mcp(&req)` -- il forwarde le JSON-RPC **entier** vers
+`POST /mcp` du serveur, **sans rien injecter**. Cote serveur
+(`kleos-server/src/routes/mcp/mod.rs`), le space applique a un `memory_store` =
+le champ `space`/`space_id` present dans les **arguments du tool**, sinon
+`default`. Comme le proxy ne reinjecte aucun space, les ecritures MCP ne portent
+jamais de scope.
+
+> **PIEGE de diagnostic (a retenir)** : la fonction `maybe_inject_space` dans
+> `kleos-mcp/src/tools.rs` (et toute la fonction `dispatch()` qui l'appelle) est
+> du **CODE MORT** dans cette branche -- `dispatch` n'a **aucun call site**
+> (`grep -rn "dispatch("` ne trouve que sa definition). Le transport reel passe
+> par `handle_jsonrpc`, pas par `dispatch`. Toute tentative de scoper le MCP via
+> le mecanisme `CLAUDE_SESSION_ID` + `$HOME/.kleos/sessions/<sid>/space_name` de
+> `read_session_space_name` (lu par `maybe_inject_space`) est **sans effet**.
+> Verifier les **call sites** d'une fonction avant de supposer qu'un code present
+> est actif (cf. heuristique grep cross-call-site du CLAUDE.md global).
+
+### Intention
+
+Aligner `kleos-mcp` sur `kleos-cli` : un agent headless doit pouvoir scoper ses
+ecritures via la **meme** variable `$KLEOS_SPACE`, sans dependre d'un fichier de
+session Claude Code (que l'agent n'a pas). Le scope reste **opt-in** (no-op si
+`KLEOS_SPACE` absent) et **override-able** (un appelant qui specifie deja un
+`space` gagne).
+
+### Approche
+
+Niveau **additif**, ~25 lignes, zero changement de signature, zero touche au
+serveur, au client, ni au transport. Dans `kleos-mcp/src/lib.rs` :
+
+- `handle_jsonrpc` gagne une ligne : `let req = inject_space_for_tool_calls(req);`
+  avant `app.client.post_mcp(&req)`.
+- `inject_space_for_tool_calls(req)` : lit `std::env::var("KLEOS_SPACE")`,
+  delegue au coeur pur `inject_space(req, &space)`. No-op si `KLEOS_SPACE`
+  absent/vide.
+- `inject_space(req, space)` (pur, env-free, testable) : no-op si
+  `method != "tools/call"` ou si `params.arguments` n'est pas un objet ou si
+  `space`/`space_id` est deja present ; sinon insere
+  `arguments.space = <KLEOS_SPACE>`. Le serveur resout ce nom via
+  `normalize_space_input`.
+
+Cote consommateur (OpenClaw, hors fork) : `KLEOS_SPACE=openclaw` est pose dans
+l'env du serveur MCP (compose + bloc `env` de `mcp.servers.kleos`). Le faux
+workaround `CLAUDE_SESSION_ID`/`space_name` a ete retire du repo Local-Firewall.
+
+### Fichiers touches
+
+- `kleos-mcp/src/lib.rs` : `handle_jsonrpc` (+1 ligne) ; fonctions
+  `inject_space_for_tool_calls` + `inject_space` ; module `#[cfg(test)] mod tests`
+  (5 tests).
+- `docs/dev-notes/local-patches.md` : cette section.
+
+### Tests
+
+`cargo test -p kleos-mcp` : 5 tests `inject_space` (injection sur `tools/call`
+sans space ; preservation d'un `space` explicite ; preservation d'un `space_id`
+explicite ; ignore `tools/list` ; ignore `arguments` non-objet). Build release
+Windows + Linux (WSL) vert. Validation E2E (2026-06-05, LXC 126) : un
+`tools/call memory_store` **sans** champ `space`, env `KLEOS_SPACE=openclaw`,
+atterrit en space `openclaw` (id 30) ; sans le patch, en `default` (id 3).
+
+> Marqueur de presence du patch dans un binaire compile :
+> `strings <kleos-mcp> | grep -c KLEOS_SPACE` -> `0` avant patch, `>0` apres.
+
+### Reproduction en cas de merge upstream (Ghost-Frame/Kleos)
+
+Le patch vit dans `lib.rs`, **separe** du code mort `tools.rs::dispatch` /
+`maybe_inject_space`. Au merge upstream :
+
+1. Si upstream **recable** `dispatch` (et donc `maybe_inject_space`) dans le
+   transport stdio : ce Patch 47 devient potentiellement **redondant**. Verifier
+   alors si `maybe_inject_space` couvre le cas headless `$KLEOS_SPACE` (il lit
+   `CLAUDE_SESSION_ID`+fichier, PAS `KLEOS_SPACE`) ; si non, conserver Patch 47
+   ou porter la lecture `KLEOS_SPACE` dans la voie upstream.
+2. Si upstream garde `handle_jsonrpc` en proxy mince : re-appliquer tel quel
+   (la fonction `inject_space_for_tool_calls` + l'appel dans `handle_jsonrpc`).
+3. Si upstream introduit un **header** de scope sur `POST /mcp`
+   (`X-Kleos-Space` ou equivalent) : preferer ce mecanisme (le faire emettre par
+   `kleos-client::post_mcp` depuis `KLEOS_SPACE`) et retirer Patch 47.
+
+### Conditions de retrait
+
+Candidat PR upstream (un agent headless devrait scoper son MCP comme le CLI le
+fait deja via `$KLEOS_SPACE`). A retirer si upstream cable un mecanisme de scope
+MCP equivalent (recablage `dispatch`, header serveur, ou lecture `KLEOS_SPACE`
+dans la voie nominale).
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
