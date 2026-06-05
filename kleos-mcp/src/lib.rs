@@ -79,8 +79,99 @@ fn request_id(req: &Value) -> Option<Value> {
 #[tracing::instrument(skip(app, req), fields(method = req.get("method").and_then(|v| v.as_str()).unwrap_or("")))]
 pub async fn handle_jsonrpc(app: &App, req: Value) -> Option<Value> {
     let id = request_id(&req);
+    let req = inject_space_for_tool_calls(req);
     match app.client.post_mcp(&req).await {
         Ok(resp) => resp,
         Err(e) => id.map(|id| error_response(id, -32603, &e)),
+    }
+}
+
+/// Scopes headless `tools/call` writes to the project space named by the
+/// `KLEOS_SPACE` env var.
+///
+/// The server resolves the space from the `space` / `space_id` field carried
+/// in a tool's `arguments`; otherwise it falls back to `default`. A headless
+/// agent (e.g. OpenClaw) has no Claude Code session file to source a space
+/// from, so we mirror what `kleos-cli` already does (read `KLEOS_SPACE`) and
+/// inject `space` into the call arguments before forwarding.
+///
+/// No-op when: `KLEOS_SPACE` is unset/blank, the request is not a `tools/call`,
+/// `params.arguments` is not an object, or the caller already specified a
+/// `space` / `space_id` (explicit args win).
+fn inject_space_for_tool_calls(req: Value) -> Value {
+    match std::env::var("KLEOS_SPACE") {
+        Ok(space) if !space.trim().is_empty() => inject_space(req, &space),
+        _ => req,
+    }
+}
+
+/// Pure core of [`inject_space_for_tool_calls`]: injects `space` into a
+/// `tools/call`'s arguments. Env-free for testability.
+fn inject_space(mut req: Value, space: &str) -> Value {
+    if req.get("method").and_then(Value::as_str) != Some("tools/call") {
+        return req;
+    }
+    if let Some(args) = req
+        .pointer_mut("/params/arguments")
+        .and_then(Value::as_object_mut)
+    {
+        if !args.contains_key("space") && !args.contains_key("space_id") {
+            args.insert("space".to_string(), Value::String(space.to_string()));
+        }
+    }
+    req
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inject_space;
+    use serde_json::json;
+
+    #[test]
+    fn injects_space_into_tools_call_without_space() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "memory_store", "arguments": { "content": "x" } }
+        });
+        let out = inject_space(req, "openclaw");
+        assert_eq!(out["params"]["arguments"]["space"], json!("openclaw"));
+    }
+
+    #[test]
+    fn preserves_explicit_space() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "memory_store", "arguments": { "content": "x", "space": "other" } }
+        });
+        let out = inject_space(req, "openclaw");
+        assert_eq!(out["params"]["arguments"]["space"], json!("other"));
+    }
+
+    #[test]
+    fn preserves_explicit_space_id() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "memory_store", "arguments": { "content": "x", "space_id": 7 } }
+        });
+        let out = inject_space(req, "openclaw");
+        assert!(out["params"]["arguments"].get("space").is_none());
+        assert_eq!(out["params"]["arguments"]["space_id"], json!(7));
+    }
+
+    #[test]
+    fn ignores_non_tools_call() {
+        let req = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}});
+        let out = inject_space(req.clone(), "openclaw");
+        assert_eq!(out, req);
+    }
+
+    #[test]
+    fn ignores_non_object_arguments() {
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "x", "arguments": "not-an-object" }
+        });
+        let out = inject_space(req.clone(), "openclaw");
+        assert_eq!(out, req);
     }
 }
