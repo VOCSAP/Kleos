@@ -1,0 +1,24 @@
+{
+	"/": [
+		"src/routes/+layout.ts",
+		"src/routes/+layout.ts"
+	],
+	"/entities": [
+		"src/routes/+layout.ts"
+	],
+	"/graph": [
+		"src/routes/+layout.ts"
+	],
+	"/inbox": [
+		"src/routes/+layout.ts"
+	],
+	"/projects": [
+		"src/routes/+layout.ts"
+	],
+	"/search": [
+		"src/routes/+layout.ts"
+	],
+	"/timeline": [
+		"src/routes/+layout.ts"
+	]
+}

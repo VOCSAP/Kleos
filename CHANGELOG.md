@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-06-08
+
+### Fixed
+
+- kleos-sidecar: stop over-ingesting raw session content. `retain_tool_calls` now defaults to false, so raw tool results are no longer promoted to durable storage, and the file-watcher gate stores only its distilled summary instead of appending the full raw assistant turn.
+- eidolon living prompt: removed the duplicate `EIDOLON LIVING CONTEXT` banner (the brain block now renders as a `## Brain Context` sub-section), and credential-scrubbed the injected `Relevant Memories` section.
+- kleos-cleanup: open raw-keyed SQLCipher databases correctly (raw-hex `PRAGMA key`), and add a high-precision pollution purge step plus a `--purge-only` flag.
+
 ## [1.1.1] - 2026-05-14
 
 ### Fixed
