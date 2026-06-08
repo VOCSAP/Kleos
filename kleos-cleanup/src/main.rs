@@ -257,7 +257,7 @@ fn main() -> Result<()> {
         // emit `PRAGMA key = x'<hex>';` verbatim via execute_batch. pragma_update
         // single-quotes the value, turning the raw key into a passphrase, which
         // fails to open a database that was created with a raw hex key.
-        conn.execute_batch(&format!("PRAGMA key = x'{}';", key))?;
+        conn.execute_batch(&format!("PRAGMA key = \"x'{}'\";", key))?;
         conn.pragma_query_value(None, "schema_version", |_| Ok(()))
             .map_err(|_| {
                 rusqlite::Error::SqliteFailure(
