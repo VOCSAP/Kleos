@@ -18,6 +18,49 @@ struct Args {
     /// Actually perform mutations (default is dry-run)
     #[arg(long, default_value_t = false)]
     execute: bool,
+
+    /// Run only the high-precision pollution purge (Step P) plus the FTS
+    /// rebuild, skipping the activity-move (A) and growth-dedup (B) steps.
+    #[arg(long, default_value_t = false)]
+    purge_only: bool,
+}
+
+/// High-precision pollution signatures. Each matches only unambiguous junk that
+/// was never meant to be a durable memory: pre-Rust-port Node Engram consolidation
+/// summaries with a literal "undefined" title, and leaked tool-call / task
+/// notification fragments captured verbatim by an over-eager ingestion path.
+const POLLUTION_PATTERNS: &[(&str, &str)] = &[
+    (
+        "consolidation-undefined",
+        "source = 'consolidation' AND content LIKE '[Consolidated: undefined]%'",
+    ),
+    ("task-notification", "content LIKE '%<task-notification>%'"),
+    ("tool-use-id-leak", "content LIKE '%<tool-use-id>%'"),
+];
+
+/// Delete rows matching each high-precision pollution signature. Dry-run prints
+/// per-pattern counts; execute performs the DELETEs. The caller rebuilds the FTS
+/// index afterward (Step C) so full-text search stays consistent; the LanceDB
+/// vector index is reconciled out-of-band via `kleos-cli admin vector-chunk-sync`.
+fn step_purge_pollution(conn: &Connection, execute: bool) -> Result<usize> {
+    println!("Step P: Purging high-precision pollution...");
+    let mut total = 0usize;
+    for (label, where_clause) in POLLUTION_PATTERNS {
+        let count: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM memories WHERE {}", where_clause),
+            [],
+            |r| r.get(0),
+        )?;
+        if execute {
+            let deleted = conn.execute(&format!("DELETE FROM memories WHERE {}", where_clause), [])?;
+            println!("  [{}] deleted {} rows", label, deleted);
+            total += deleted;
+        } else {
+            println!("  [DRY RUN] [{}] would delete {} rows", label, count);
+            total += count as usize;
+        }
+    }
+    Ok(total)
 }
 
 fn parse_activity_content(content: &str) -> (String, Option<String>, String, String) {
@@ -210,8 +253,11 @@ fn main() -> Result<()> {
     let conn = Connection::open(&args.db)?;
 
     if let Some(ref key) = args.key {
-        let pragma_val = format!("x'{}'", key);
-        conn.pragma_update(None, "key", &pragma_val)?;
+        // SQLCipher raw-hex key mode, matching the server (kleos-lib pool.rs):
+        // emit `PRAGMA key = x'<hex>';` verbatim via execute_batch. pragma_update
+        // single-quotes the value, turning the raw key into a passphrase, which
+        // fails to open a database that was created with a raw hex key.
+        conn.execute_batch(&format!("PRAGMA key = x'{}';", key))?;
         conn.pragma_query_value(None, "schema_version", |_| Ok(()))
             .map_err(|_| {
                 rusqlite::Error::SqliteFailure(
@@ -221,10 +267,19 @@ fn main() -> Result<()> {
             })?;
     }
 
-    let activity_count = step_a_move_activity(&conn, args.execute)?;
-    println!();
+    let (activity_count, growth_count) = if args.purge_only {
+        println!("Step A: skipped (--purge-only)\n");
+        println!("Step B: skipped (--purge-only)\n");
+        (0, 0)
+    } else {
+        let a = step_a_move_activity(&conn, args.execute)?;
+        println!();
+        let b = step_b_dedup_growth(&conn, args.execute)?;
+        println!();
+        (a, b)
+    };
 
-    let growth_count = step_b_dedup_growth(&conn, args.execute)?;
+    let purge_count = step_purge_pollution(&conn, args.execute)?;
     println!();
 
     step_c_rebuild_fts(&conn, args.execute)?;
@@ -232,13 +287,13 @@ fn main() -> Result<()> {
 
     if args.execute {
         println!(
-            "Done. Moved {} activity rows, archived {} duplicate growth rows.",
-            activity_count, growth_count
+            "Done. Moved {} activity rows, archived {} duplicate growth rows, purged {} pollution rows.",
+            activity_count, growth_count, purge_count
         );
     } else {
         println!(
-            "Dry run complete. Would move {} activity rows, archive {} duplicate growth rows.",
-            activity_count, growth_count
+            "Dry run complete. Would move {} activity rows, archive {} duplicate growth rows, purge {} pollution rows.",
+            activity_count, growth_count, purge_count
         );
         println!("Re-run with --execute to apply changes.");
     }
