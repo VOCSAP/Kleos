@@ -174,8 +174,13 @@ async fn post_prompt_generate(
         if !results.is_empty() {
             let mut buf = String::from("## Relevant Memories\n");
             for r in results.iter() {
+                // Scrub credentials before injection, matching the brain path
+                // (which scrubs each MemorySummary). Without this, raw stored
+                // content (including any leaked secret or tool-call fragment)
+                // would pass straight into the agent's context.
+                let scrubbed = scrub_credentials(r.memory.content.trim());
                 buf.push_str("- ");
-                buf.push_str(r.memory.content.trim());
+                buf.push_str(scrubbed.trim());
                 buf.push('\n');
                 sources.push(json!({
                     "id": r.memory.id,

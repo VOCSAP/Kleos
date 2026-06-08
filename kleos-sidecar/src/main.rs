@@ -155,7 +155,11 @@ struct Cli {
     #[arg(long, env = "KLEOS_RETAIN_ROLES")]
     retain_roles: Option<String>,
 
-    /// Whether tool-role observations should be retained.
+    /// Whether raw tool-role observations are retained. Defaults to false: raw
+    /// tool output is uninterpreted noise that floods the memory store and
+    /// degrades recall (every tool result shipped verbatim as a "discovery"
+    /// memory). When false, tool-role observations are filtered out at /observe.
+    /// Set true to retain and persist them verbatim.
     #[arg(long, env = "KLEOS_RETAIN_TOOL_CALLS")]
     retain_tool_calls: Option<bool>,
 
@@ -269,7 +273,7 @@ fn resolve_config(cli: Cli, cfg: ConfigFile) -> ResolvedConfig {
             cfg.retain_roles,
             String::from("user,assistant,tool")
         ),
-        retain_tool_calls: pick!(cli.retain_tool_calls, cfg.retain_tool_calls, true),
+        retain_tool_calls: pick!(cli.retain_tool_calls, cfg.retain_tool_calls, false),
         compress_enabled: pick!(cli.compress_enabled, cfg.compress_enabled, true),
         compress_model: cli.compress_model.or(cfg.compress_model),
         gate_model: cli.gate_model.or(cfg.gate_model),
