@@ -23,6 +23,36 @@ struct Args {
     /// rebuild, skipping the activity-move (A) and growth-dedup (B) steps.
     #[arg(long, default_value_t = false)]
     purge_only: bool,
+
+    /// Operator-supplied SQL WHERE condition to delete from `memories`, run as
+    /// an extra step (Step W) after the built-in patterns. For deployment- or
+    /// operator-specific junk that is not a universal signature, e.g.
+    /// `--delete-where "source = 'kleos-ingest' AND category != 'session-summary'"`.
+    /// Dry-run reports the count; execute performs the DELETE.
+    #[arg(long)]
+    delete_where: Option<String>,
+}
+
+/// Delete rows matching an operator-supplied WHERE condition. This is the
+/// escape hatch for non-universal, deployment-specific pollution; the condition
+/// is the operator's responsibility (they already hold the DB key). Dry-run
+/// reports the count; execute performs the DELETE. FTS stays consistent via the
+/// Step C rebuild that follows.
+fn step_custom_delete(conn: &Connection, where_clause: &str, execute: bool) -> Result<usize> {
+    println!("Step W: Operator delete WHERE {}", where_clause);
+    let count: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM memories WHERE {}", where_clause),
+        [],
+        |r| r.get(0),
+    )?;
+    if execute {
+        let deleted = conn.execute(&format!("DELETE FROM memories WHERE {}", where_clause), [])?;
+        println!("  deleted {} rows", deleted);
+        Ok(deleted)
+    } else {
+        println!("  [DRY RUN] would delete {} rows", count);
+        Ok(count as usize)
+    }
 }
 
 /// High-precision pollution signatures. Each matches only unambiguous junk that
@@ -282,18 +312,26 @@ fn main() -> Result<()> {
     let purge_count = step_purge_pollution(&conn, args.execute)?;
     println!();
 
+    let custom_count = if let Some(ref where_clause) = args.delete_where {
+        let c = step_custom_delete(&conn, where_clause, args.execute)?;
+        println!();
+        c
+    } else {
+        0
+    };
+
     step_c_rebuild_fts(&conn, args.execute)?;
     println!();
 
     if args.execute {
         println!(
-            "Done. Moved {} activity rows, archived {} duplicate growth rows, purged {} pollution rows.",
-            activity_count, growth_count, purge_count
+            "Done. Moved {} activity rows, archived {} duplicate growth rows, purged {} pollution rows, deleted {} operator-WHERE rows.",
+            activity_count, growth_count, purge_count, custom_count
         );
     } else {
         println!(
-            "Dry run complete. Would move {} activity rows, archive {} duplicate growth rows, purge {} pollution rows.",
-            activity_count, growth_count, purge_count
+            "Dry run complete. Would move {} activity rows, archive {} duplicate growth rows, purge {} pollution rows, delete {} operator-WHERE rows.",
+            activity_count, growth_count, purge_count, custom_count
         );
         println!("Re-run with --execute to apply changes.");
     }
