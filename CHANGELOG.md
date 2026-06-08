@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- recall: `is_static` memories now decay by age in ranking instead of being pinned at full retrievability. The flag is caller-set and hardcoded on consolidations, and had grown to ~43% of the store, so stale "permanent" memories dominated recall regardless of age or relevance. `is_static` still protects durability (no auto-prune) and gate guard lookups.
+
 ## [1.6.1] - 2026-06-08
 
 ### Fixed

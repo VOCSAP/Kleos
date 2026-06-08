@@ -886,12 +886,16 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
     for c in results.values_mut() {
         let rrf = rrf_scores.get(&c.id).copied().unwrap_or(0.0);
 
-        // Live FSRS retrievability. Read per-memory `fsrs_stability` when
-        // available; fall back to `initial_stability(Rating::Good)` when the
-        // column is NULL (memories that have never been reviewed).
-        let retrievability = if c.is_static {
-            1.0
-        } else {
+        // Live FSRS retrievability, decayed by age for EVERY memory including
+        // is_static ones. is_static previously forced retrievability = 1.0, but
+        // the flag is caller-set (and hardcoded on every consolidation) and had
+        // grown to ~43% of the store, pinning nearly half of all memories at full
+        // strength so stale "permanent" memories dominated recall forever. The
+        // flag still protects durability (no auto-prune) and gate guard lookups
+        // (both use is_static via direct SQL); it just no longer freezes ranking.
+        // Read per-memory `fsrs_stability` when available; fall back to
+        // `initial_stability(Rating::Good)` when the column is NULL.
+        let retrievability = {
             let stability = c.fsrs_stability.unwrap_or_else(|| {
                 crate::fsrs::initial_stability(crate::fsrs::Rating::Good) as f64
             });
@@ -916,9 +920,7 @@ pub async fn hybrid_search(db: &Database, req: SearchRequest) -> Result<Arc<Vec<
 
         c.decay_score = Some((c.importance as f64 * retrievability * 1000.0).round() / 1000.0);
 
-        let decay_factor = if c.is_static {
-            1.0
-        } else {
+        let decay_factor = {
             let floor = scoring::decay_floor();
             floor + (1.0 - floor) * retrievability
         };
