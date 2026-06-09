@@ -17,9 +17,25 @@ use kleos_credd::auth::{auth_middleware, preauth_rate_limit};
 use kleos_credd::state::AppState;
 use kleos_credd::{CREDD_BODY_LIMIT, CREDD_REQUEST_TIMEOUT_SECS};
 
+/// Request window for the SSH CA sign/mint routes. These can block on an
+/// out-of-band human approval (push to phone, a human taps), which takes longer
+/// than the global default; bound it generously while still capping the wait.
+const SSH_CA_REQUEST_TIMEOUT_SECS: u64 = 120;
+
 /// Build the Phylax extension routes. These are merged into the credd
 /// router by the phylaxd binary.
 pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
+    // The SSH CA routes get a longer request window than everything else, since
+    // the M3 branch polls for a human approval. Scoped to just these two routes
+    // so all other endpoints keep the snappy global timeout.
+    let ssh_ca_routes = Router::new()
+        .route("/phylax/ssh-ca/sign", post(ssh_ca::sign))
+        .route("/phylax/ssh-ca/mint", post(ssh_ca::mint))
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(SSH_CA_REQUEST_TIMEOUT_SECS),
+        ));
+
     Router::new()
         // Approval workflows
         .route("/phylax/approvals", post(approvals::request_approval))
@@ -29,6 +45,12 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
         .route(
             "/phylax/approvals/{id}/wait",
             get(approvals::wait_for_decision),
+        )
+        // Capability-token approval decision. Auth-exempt in auth_middleware:
+        // the single-use token presented in the body is the capability.
+        .route(
+            "/phylax/approvals/{id}/decide-token",
+            post(approvals::decide_with_token),
         )
         // Leases
         .route("/phylax/leases", get(leases::list_leases))
@@ -56,20 +78,20 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
             "/phylax/ssh/{category}/{name}",
             get(ssh::get_settings).put(ssh::update_settings),
         )
-        // SSH certificate authority
-        .route("/phylax/ssh-ca/sign", post(ssh_ca::sign))
-        .route("/phylax/ssh-ca/mint", post(ssh_ca::mint))
-        // Apply the same auth and preauth protections as credd routes.
+        // Global request window for every route above.
+        .layer(TimeoutLayer::with_status_code(
+            axum::http::StatusCode::REQUEST_TIMEOUT,
+            Duration::from_secs(CREDD_REQUEST_TIMEOUT_SECS),
+        ))
+        // SSH certificate authority routes carry their own longer timeout.
+        .merge(ssh_ca_routes)
+        // Apply the same auth and preauth protections to all routes.
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
         .layer(middleware::from_fn_with_state(state, preauth_rate_limit))
         .layer(DefaultBodyLimit::max(CREDD_BODY_LIMIT))
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(CREDD_REQUEST_TIMEOUT_SECS),
-        ))
         .layer(TraceLayer::new_for_http())
 }
 

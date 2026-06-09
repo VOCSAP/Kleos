@@ -1223,3 +1223,73 @@ async fn test_ssh_sign_auto_sign_false_requires_approval_gate() {
     // create a pending approval and block until approved or timed-out (25 s max).
     // This long-running path is not exercised in automated CI; see Task 12.
 }
+
+// ---- Capability-token approval decision (decide-token) ----
+
+/// The auth-exempt `POST /phylax/approvals/{id}/decide-token` route accepts only
+/// the single-use capability token: a wrong token is rejected, the correct token
+/// approves once, and a replay cannot flip an already-decided approval.
+#[tokio::test]
+async fn test_decide_token_single_use() {
+    use kleos_phylax::models::approval;
+
+    let app = TestApp::new().await;
+    let expires_at = (chrono::Utc::now() + chrono::Duration::seconds(300))
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let (ap, raw_token) = approval::create_approval_with_token(
+        &app.db,
+        1,
+        "test-agent",
+        "ssh-ca",
+        "codex-test",
+        "ssh_ca_sign",
+        None,
+        &expires_at,
+    )
+    .await
+    .expect("create approval with token");
+
+    let path = format!("/phylax/approvals/{}/decide-token", ap.id);
+
+    // (a) Wrong token -> rejected. The route is auth-exempt, so the bearer is
+    // irrelevant; the body token is the only authorization.
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            &path,
+            Some(json!({ "token": "deadbeef", "decision": "approved" })),
+            "ignored-bearer",
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "wrong token must be rejected");
+
+    // (b) Correct token + approved -> 200 with status=1 (Approved).
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            &path,
+            Some(json!({ "token": raw_token, "decision": "approved" })),
+            "ignored-bearer",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "correct token must be accepted");
+    assert_eq!(body["status"], 1, "decision must be Approved");
+
+    // (c) Replay the (now-cleared) token with a different decision -> must not
+    // flip an already-decided approval; still reports Approved.
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            &path,
+            Some(json!({ "token": raw_token, "decision": "denied" })),
+            "ignored-bearer",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["status"], 1,
+        "a replayed token must not re-decide an approval"
+    );
+}
