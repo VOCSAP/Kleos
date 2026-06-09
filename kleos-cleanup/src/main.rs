@@ -82,7 +82,8 @@ fn step_purge_pollution(conn: &Connection, execute: bool) -> Result<usize> {
             |r| r.get(0),
         )?;
         if execute {
-            let deleted = conn.execute(&format!("DELETE FROM memories WHERE {}", where_clause), [])?;
+            let deleted =
+                conn.execute(&format!("DELETE FROM memories WHERE {}", where_clause), [])?;
             println!("  [{}] deleted {} rows", label, deleted);
             total += deleted;
         } else {

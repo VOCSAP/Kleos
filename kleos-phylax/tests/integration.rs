@@ -1263,7 +1263,11 @@ async fn test_decide_token_single_use() {
             "ignored-bearer",
         )
         .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "wrong token must be rejected");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "wrong token must be rejected"
+    );
 
     // (b) Correct token + approved -> 200 with status=1 (Approved).
     let (status, body) = app

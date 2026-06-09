@@ -88,7 +88,9 @@ pub fn ensure_tables(conn: &rusqlite::Connection) -> Result<(), CredError> {
     // Additive: single-use capability-token hash for out-of-band approval
     // decisions (SQLite has no ADD COLUMN IF NOT EXISTS, so guard it).
     let has_decide_token: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('phylax_approvals') WHERE name='decide_token_hash'")
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('phylax_approvals') WHERE name='decide_token_hash'",
+        )
         .and_then(|mut s| s.query_row([], |_| Ok(())))
         .is_ok();
     if !has_decide_token {
