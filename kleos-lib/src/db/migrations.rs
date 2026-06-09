@@ -386,6 +386,12 @@ pub static MIGRATIONS: &[Migration] = &[
         tx
     ),
     migration!(84, "instance_grants", run_migration_instance_grants, tx),
+    migration!(
+        85,
+        "phylax_approval_decide_token_hash",
+        run_migration_phylax_decide_token_hash,
+        tx
+    ),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -574,6 +580,9 @@ const MIGRATION_PHYLAX_TABLES: i64 = 82;
 const MIGRATION_CRED_AUDIT_ATTRIBUTION_COLUMNS: i64 = 83;
 /// Version number for the Space Sharing `instance_grants` control-DB table.
 const MIGRATION_INSTANCE_GRANTS: i64 = 84;
+/// Version number for the phylax_approvals.decide_token_hash column (single-use
+/// capability-token approval decisions).
+const MIGRATION_PHYLAX_DECIDE_TOKEN_HASH: i64 = 85;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1263,6 +1272,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         record_migration(conn, MIGRATION_INSTANCE_GRANTS, "instance_grants")?;
     }
 
+    if current_version < MIGRATION_PHYLAX_DECIDE_TOKEN_HASH {
+        info!("Running migration 85: phylax_approval_decide_token_hash");
+        run_migration_phylax_decide_token_hash(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_PHYLAX_DECIDE_TOKEN_HASH,
+            "phylax_approval_decide_token_hash",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -1810,6 +1829,13 @@ fn run_migration_cred_audit_attribution_columns(conn: &rusqlite::Connection) -> 
     add_column_if_not_exists(conn, "cred_audit", "source_ip", "TEXT")?;
     add_column_if_not_exists(conn, "cred_audit", "policy_id", "INTEGER")?;
     add_column_if_not_exists(conn, "cred_audit", "session_id", "TEXT")?;
+    Ok(())
+}
+
+/// Migration 85: add `decide_token_hash` to `phylax_approvals`, the SHA-256 hash
+/// of a single-use capability token used for out-of-band approval decisions.
+fn run_migration_phylax_decide_token_hash(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "phylax_approvals", "decide_token_hash", "TEXT")?;
     Ok(())
 }
 
