@@ -492,3 +492,86 @@ pub async fn exec_command(
         "stderr_b64": B64.encode(&stderr),
     })))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Secrets under test: 4..64 arbitrary bytes, excluding anything that is
+    /// a substring of the redaction marker itself (a 1-byte secret equal to
+    /// a marker character would trivially "survive" its own replacement).
+    fn secret_strategy() -> impl Strategy<Value = Vec<u8>> {
+        proptest::collection::vec(any::<u8>(), 4..64).prop_filter(
+            "secret must not be part of the marker",
+            |s| {
+                !b"[redacted]"
+                    .windows(s.len().min(10))
+                    .any(|w| w == &s[..s.len().min(10)])
+            },
+        )
+    }
+
+    /// True when `needle` occurs nowhere in `haystack`.
+    fn absent(haystack: &[u8], needle: &[u8]) -> bool {
+        needle.is_empty()
+            || haystack.len() < needle.len()
+            || !haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    proptest! {
+        /// replace_all_bytes leaves no occurrence of the needle behind, for
+        /// any haystack including ones built by embedding the needle at
+        /// arbitrary points.
+        #[test]
+        fn prop_replace_all_bytes_total(
+            prefix in proptest::collection::vec(any::<u8>(), 0..128),
+            middle in proptest::collection::vec(any::<u8>(), 0..128),
+            suffix in proptest::collection::vec(any::<u8>(), 0..128),
+            needle in secret_strategy(),
+        ) {
+            let mut haystack = prefix;
+            haystack.extend_from_slice(&needle);
+            haystack.extend_from_slice(&middle);
+            haystack.extend_from_slice(&needle);
+            haystack.extend_from_slice(&suffix);
+
+            let out = replace_all_bytes(&haystack, &needle, b"[redacted]");
+            prop_assert!(absent(&out, &needle));
+        }
+
+        /// Scrub totality: after scrub_secret, neither the raw secret nor
+        /// its base64 / hex (lower or upper) encodings appear anywhere in
+        /// the output, no matter where or how often the child embedded them.
+        #[test]
+        fn prop_scrub_secret_total(
+            prefix in proptest::collection::vec(any::<u8>(), 0..96),
+            middle in proptest::collection::vec(any::<u8>(), 0..96),
+            secret in secret_strategy(),
+            embed_choice in 0usize..4,
+        ) {
+            let encodings: [Vec<u8>; 4] = [
+                secret.clone(),
+                B64.encode(&secret).into_bytes(),
+                hex::encode(&secret).into_bytes(),
+                hex::encode_upper(&secret).into_bytes(),
+            ];
+
+            // Embed one chosen encoding twice plus the raw secret once,
+            // separated by arbitrary noise.
+            let mut output = prefix;
+            output.extend_from_slice(&encodings[embed_choice]);
+            output.extend_from_slice(&middle);
+            output.extend_from_slice(&secret);
+            output.extend_from_slice(&encodings[embed_choice]);
+
+            let scrubbed = scrub_secret(&output, &secret);
+            for enc in &encodings {
+                prop_assert!(
+                    absent(&scrubbed, enc),
+                    "an encoding of the secret survived scrubbing"
+                );
+            }
+        }
+    }
+}

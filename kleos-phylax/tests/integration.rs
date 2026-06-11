@@ -2109,3 +2109,118 @@ async fn test_policy_rejects_relative_exec_allowlist() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// Adversarial plaintext-bypass: an agent granted EVERY mode still cannot
+/// obtain the secret through any resolve path. text/raw deny outright; the
+/// non-plaintext modes' responses never contain the secret in any form.
+#[tokio::test]
+async fn test_adversarial_agent_cannot_obtain_plaintext_via_any_mode() {
+    let app = TestApp::new().await;
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({"data": {"type": "note", "content": "super-secret"}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Most permissive policy expressible: all modes, no approvals, env
+    // allowlisted for exec.
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": false,
+                "allowed_modes": ["text", "proxy", "raw", "exec", "verify", "sign", "derive"],
+                "exec_allowlist": ["/usr/bin/env"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": "hostile-agent",
+                "categories": ["prod"],
+                "allow_raw": true
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    use base64::Engine as _;
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+
+    // Every resolve request the agent can make against this secret.
+    let attempts: Vec<(&str, Value)> = vec![
+        ("/resolve/text", json!({"text": "{{secret:prod/db-pass}}"})),
+        (
+            "/resolve/raw",
+            json!({"category": "prod", "name": "db-pass"}),
+        ),
+        (
+            "/resolve/sign",
+            json!({"category": "prod", "name": "db-pass",
+                   "payload_b64": b64(b"x"), "algo": "hmac-sha256"}),
+        ),
+        (
+            "/resolve/verify",
+            json!({"category": "prod", "name": "db-pass",
+                   "payload_b64": b64(b"x"), "signature_b64": b64(b"y"),
+                   "algo": "hmac-sha256"}),
+        ),
+        (
+            "/resolve/derive",
+            json!({"category": "prod", "name": "db-pass",
+                   "purpose": "leak-attempt", "length": 64}),
+        ),
+        (
+            "/resolve/exec",
+            json!({"category": "prod", "name": "db-pass",
+                   "argv": ["/usr/bin/env"], "env_var": "S"}),
+        ),
+    ];
+
+    let secret_hex = hex::encode(b"super-secret");
+    let secret_b64 = b64(b"super-secret");
+
+    for (path, body_json) in attempts {
+        let (status, body) = app
+            .request_auth("POST", path, Some(body_json), &agent_key)
+            .await;
+        if path == "/resolve/text" || path == "/resolve/raw" {
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path} must deny agents");
+        }
+        let serialized = serde_json::to_string(&body).unwrap();
+        assert!(
+            !serialized.contains("super-secret")
+                && !serialized.contains(&secret_hex)
+                && !serialized.contains(&secret_b64),
+            "{path} response leaked the secret: {serialized}"
+        );
+        // exec output is base64-wrapped; check the decoded streams too.
+        if path == "/resolve/exec" {
+            for stream in ["stdout_b64", "stderr_b64"] {
+                if let Some(encoded) = body[stream].as_str() {
+                    let decoded = base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .unwrap_or_default();
+                    let text = String::from_utf8_lossy(&decoded);
+                    assert!(
+                        !text.contains("super-secret"),
+                        "exec {stream} leaked the secret: {text}"
+                    );
+                }
+            }
+        }
+    }
+}
