@@ -9,7 +9,8 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::handlers::{
-    approvals, ecdh, kleos_token, leases, namespaces, policies, ssh, ssh_ca, ssh_sign,
+    approvals, ecdh, kleos_token, leases, namespaces, policies, resolve_modes, ssh, ssh_ca,
+    ssh_sign,
 };
 use crate::middleware::policy_check_middleware;
 use crate::state::PhylaxState;
@@ -62,6 +63,12 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
         .route("/phylax/policies/{id}", delete(policies::delete_policy))
         // Namespaces
         .route("/phylax/namespaces", get(namespaces::list_namespaces))
+        // Non-plaintext resolve modes: the secret is used server-side and
+        // only the operation result returns. Mounted under /resolve/ so the
+        // policy middleware intercepts them like the credd resolve routes.
+        .route("/resolve/verify", post(resolve_modes::verify_payload))
+        .route("/resolve/sign", post(resolve_modes::sign_payload))
+        .route("/resolve/derive", post(resolve_modes::derive_key_material))
         // Keyless Kleos token broker (Unix-socket + SO_PEERCRED gated; the
         // handler enforces both, and auth_middleware skips bearer auth for it).
         .route("/phylax/kleos/token", post(kleos_token::mint_kleos_token))

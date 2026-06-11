@@ -104,4 +104,14 @@ pub mod actions {
     /// An agent resolve was denied because the policy layer could not rule
     /// on it (unavailable policy store or undeterminable secret reference).
     pub const POLICY_FAIL_CLOSED: &str = "policy_check_fail_closed";
+    /// A non-plaintext resolve mode was denied by policy (no explicit policy,
+    /// or the mode is not in the policy's allowed_modes).
+    pub const MODE_POLICY_DENIED: &str = "resolve_mode_policy_denied";
+    /// A signature was produced over a stored secret (success flag carries
+    /// the outcome; key material is never logged).
+    pub const SIGN_RESOLVED: &str = "sign_resolved";
+    /// A signature was checked against a stored secret.
+    pub const VERIFY_RESOLVED: &str = "verify_resolved";
+    /// Key material was derived from a stored secret via HKDF.
+    pub const DERIVE_RESOLVED: &str = "derive_resolved";
 }

@@ -5215,12 +5215,14 @@ name = "kleos-phylax"
 version = "1.6.1"
 dependencies = [
  "axum 0.8.9",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "dashmap",
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hmac",
  "http",
  "http-body-util",
  "kleos-cred",

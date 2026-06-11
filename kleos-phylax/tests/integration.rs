@@ -1465,3 +1465,454 @@ async fn test_decide_token_single_use() {
         "a replayed token must not re-decide an approval"
     );
 }
+
+// ---- Non-plaintext resolve mode tests (verify / sign / derive) ----
+
+/// Create the standard fixture for mode tests: a note secret
+/// prod/db-pass = "super-secret", a policy with the given allowed modes,
+/// and an agent key scoped to prod/*. Returns the agent key.
+async fn setup_mode_fixture(
+    app: &TestApp,
+    agent: &str,
+    allowed_modes: Value,
+    require_approval: bool,
+) -> String {
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({
+                "data": {
+                    "type": "note",
+                    "content": "super-secret"
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": require_approval,
+                "allowed_modes": allowed_modes
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": agent,
+                "categories": ["prod"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    body["key"].as_str().unwrap().to_string()
+}
+
+/// derive without any policy is denied: the new modes are deny-by-default.
+#[tokio::test]
+async fn test_derive_requires_explicit_policy() {
+    let app = TestApp::new().await;
+
+    // Secret + agent, but NO policy at all.
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({"data": {"type": "note", "content": "super-secret"}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({"name": "derive-agent", "categories": ["prod"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/derive",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "purpose": "session-key",
+                "length": 32
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A policy that names other modes does not grant derive.
+#[tokio::test]
+async fn test_derive_mode_not_in_policy_denied() {
+    let app = TestApp::new().await;
+    let agent_key = setup_mode_fixture(&app, "narrow-agent", json!(["sign"]), false).await;
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/derive",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "purpose": "session-key",
+                "length": 32
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// derive happy path: deterministic, purpose-separated, never leaks the
+/// root secret.
+#[tokio::test]
+async fn test_derive_happy_path_deterministic_and_purpose_separated() {
+    let app = TestApp::new().await;
+    let agent_key = setup_mode_fixture(&app, "derive-agent", json!(["derive"]), false).await;
+
+    let req = json!({
+        "category": "prod",
+        "name": "db-pass",
+        "purpose": "session-key",
+        "length": 32
+    });
+    let (status, body1) = app
+        .request_auth("POST", "/resolve/derive", Some(req.clone()), &agent_key)
+        .await;
+    assert_eq!(status, StatusCode::OK, "derive failed: {body1}");
+    let derived1 = body1["derived_b64"]
+        .as_str()
+        .expect("derived_b64")
+        .to_string();
+    assert!(
+        !serde_json::to_string(&body1)
+            .unwrap()
+            .contains("super-secret"),
+        "derive response must not leak the root secret"
+    );
+
+    use base64::Engine as _;
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(&derived1)
+        .expect("valid base64");
+    assert_eq!(raw.len(), 32);
+
+    // Same inputs, same output.
+    let (_, body2) = app
+        .request_auth("POST", "/resolve/derive", Some(req), &agent_key)
+        .await;
+    assert_eq!(body2["derived_b64"].as_str().unwrap(), derived1);
+
+    // Different purpose, different output.
+    let (_, body3) = app
+        .request_auth(
+            "POST",
+            "/resolve/derive",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "purpose": "other-purpose",
+                "length": 32
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_ne!(body3["derived_b64"].as_str().unwrap(), derived1);
+}
+
+/// derive input validation: empty purpose and oversize length are 400s.
+#[tokio::test]
+async fn test_derive_rejects_bad_inputs() {
+    let app = TestApp::new().await;
+    let agent_key = setup_mode_fixture(&app, "picky-agent", json!(["derive"]), false).await;
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/derive",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "purpose": "",
+                "length": 32
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "empty purpose must be rejected"
+    );
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/derive",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "purpose": "p",
+                "length": 65
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "length > 64 must be rejected"
+    );
+}
+
+/// hmac-sha256 sign + verify round trip through both endpoints, plus a
+/// tamper check, with no key material in any response.
+#[tokio::test]
+async fn test_sign_verify_hmac_round_trip() {
+    let app = TestApp::new().await;
+    let agent_key = setup_mode_fixture(&app, "hmac-agent", json!(["sign", "verify"]), false).await;
+
+    use base64::Engine as _;
+    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(b"attest this");
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/sign",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "payload_b64": payload_b64,
+                "algo": "hmac-sha256"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "sign failed: {body}");
+    let signature_b64 = body["signature_b64"]
+        .as_str()
+        .expect("signature")
+        .to_string();
+    assert!(
+        !serde_json::to_string(&body)
+            .unwrap()
+            .contains("super-secret"),
+        "sign response must not leak the key"
+    );
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/verify",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "payload_b64": payload_b64,
+                "signature_b64": signature_b64,
+                "algo": "hmac-sha256"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["valid"], true);
+
+    // Tampered payload must not verify.
+    let tampered_b64 = base64::engine::general_purpose::STANDARD.encode(b"attest THAT");
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/verify",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "payload_b64": tampered_b64,
+                "signature_b64": signature_b64,
+                "algo": "hmac-sha256"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["valid"], false);
+}
+
+/// ed25519 sign + verify round trip over a stored SSH key secret.
+#[tokio::test]
+async fn test_sign_verify_ed25519_round_trip() {
+    let app = TestApp::new().await;
+
+    // Generate a throwaway ed25519 key for this test only.
+    let key =
+        ssh_key::PrivateKey::random(&mut ssh_key::rand_core::OsRng, ssh_key::Algorithm::Ed25519)
+            .expect("generate test key");
+    let pem = key.to_openssh(ssh_key::LineEnding::LF).expect("to openssh");
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/signer",
+            Some(json!({
+                "data": {
+                    "type": "ssh_key",
+                    "private_key": *pem
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": false,
+                "allowed_modes": ["sign", "verify"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({"name": "ed-agent", "categories": ["prod"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    use base64::Engine as _;
+    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(b"release manifest");
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/sign",
+            Some(json!({
+                "category": "prod",
+                "name": "signer",
+                "payload_b64": payload_b64,
+                "algo": "ed25519"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "ed25519 sign failed: {body}");
+    let signature_b64 = body["signature_b64"]
+        .as_str()
+        .expect("signature")
+        .to_string();
+    assert!(
+        !serde_json::to_string(&body)
+            .unwrap()
+            .contains("PRIVATE KEY"),
+        "sign response must not leak key material"
+    );
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/verify",
+            Some(json!({
+                "category": "prod",
+                "name": "signer",
+                "payload_b64": payload_b64,
+                "signature_b64": signature_b64,
+                "algo": "ed25519"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["valid"], true);
+}
+
+/// Unknown algorithms are a client error, not a crash or a silent fallback.
+#[tokio::test]
+async fn test_sign_unknown_algo_rejected() {
+    let app = TestApp::new().await;
+    let agent_key = setup_mode_fixture(&app, "algo-agent", json!(["sign"]), false).await;
+
+    use base64::Engine as _;
+    let payload_b64 = base64::engine::general_purpose::STANDARD.encode(b"x");
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/sign",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "payload_b64": payload_b64,
+                "algo": "md5"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// require_approval on a new mode goes through the 202 approval flow rather
+/// than executing immediately.
+#[tokio::test]
+async fn test_derive_with_approval_policy_returns_202() {
+    let app = TestApp::new().await;
+    let agent_key = setup_mode_fixture(&app, "approval-agent", json!(["derive"]), true).await;
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/derive",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "purpose": "session-key",
+                "length": 32
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["approval_required"], true);
+}
+
+/// Policy CRUD rejects unknown mode strings.
+#[tokio::test]
+async fn test_policy_rejects_unknown_mode_string() {
+    let app = TestApp::new().await;
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": false,
+                "allowed_modes": ["dervie"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

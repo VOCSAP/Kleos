@@ -13,6 +13,21 @@ use kleos_credd::handlers::AppError;
 use crate::models::policy;
 use crate::state::PhylaxState;
 
+/// Every resolve mode a policy may name. text/raw remain meaningful for
+/// master-targeted policies even though agents can never use them.
+const VALID_MODES: &[&str] = &["text", "proxy", "raw", "exec", "verify", "sign", "derive"];
+
+/// Reject unknown mode strings: a typo'd mode would otherwise create a
+/// policy that silently never matches.
+fn validate_modes(modes: &[String]) -> Result<(), AppError> {
+    for m in modes {
+        if !VALID_MODES.contains(&m.as_str()) {
+            return Err(CredError::InvalidInput(format!("unknown resolve mode '{m}'")).into());
+        }
+    }
+    Ok(())
+}
+
 /// Request body for creating a policy.
 #[derive(Deserialize)]
 pub struct CreatePolicyRequest {
@@ -64,6 +79,7 @@ pub async fn create_policy(
     let modes = body
         .allowed_modes
         .unwrap_or_else(|| vec!["text".into(), "proxy".into(), "raw".into()]);
+    validate_modes(&modes)?;
 
     let p = policy::create_policy(
         &state.inner.db,
@@ -90,6 +106,7 @@ pub async fn update_policy(
         return Err(CredError::PermissionDenied("master key required".into()).into());
     }
 
+    validate_modes(&body.allowed_modes)?;
     policy::update_policy(
         &state.inner.db,
         id,
