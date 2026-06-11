@@ -76,6 +76,36 @@ pub async fn policy_check_middleware(
         _ => return next.run(request).await,
     };
 
+    // No-plaintext rule: text and raw return secret material to the caller,
+    // so they are master-only. No policy can grant them to an agent and there
+    // is no approval escape hatch -- agents use the non-plaintext modes.
+    if matches!(resolve_mode, "text" | "raw") {
+        let _ = log_phylax_audit(
+            &state.inner.db,
+            auth.user_id(),
+            Some(&agent_name),
+            None,
+            None,
+            None,
+            None,
+            actions::PLAINTEXT_DENIED,
+            "unknown",
+            "unknown",
+            false,
+            None,
+        )
+        .await;
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": format!(
+                    "resolve mode '{resolve_mode}' returns plaintext and is master-only"
+                )
+            })),
+        )
+            .into_response();
+    }
+
     // We need to read the body to extract the secret reference, but the
     // downstream handler also needs it. Buffer the body.
     let (parts, body) = request.into_parts();
@@ -96,9 +126,28 @@ pub async fn policy_check_middleware(
     let (category, secret_name) = match extract_secret_ref(resolve_mode, &body_bytes) {
         Some(pair) => pair,
         None => {
-            // Can't determine the secret -- pass through to credd.
-            let request = Request::from_parts(parts, Body::from(body_bytes));
-            return next.run(request).await;
+            // An undeterminable secret reference must not evade the policy
+            // layer: deny instead of forwarding to credd.
+            let _ = log_phylax_audit(
+                &state.inner.db,
+                auth.user_id(),
+                Some(&agent_name),
+                None,
+                None,
+                None,
+                None,
+                actions::POLICY_FAIL_CLOSED,
+                "unknown",
+                "unknown",
+                false,
+                None,
+            )
+            .await;
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "secret reference could not be determined from the request"})),
+            )
+                .into_response();
         }
     };
 
@@ -119,10 +168,30 @@ pub async fn policy_check_middleware(
             let request = Request::from_parts(parts, Body::from(body_bytes));
             return next.run(request).await;
         }
-        Err(_) => {
-            // DB error -- pass through to credd (fail open for now).
-            let request = Request::from_parts(parts, Body::from(body_bytes));
-            return next.run(request).await;
+        Err(e) => {
+            // Policy store unavailable: fail CLOSED. No secret may move when
+            // the authority cannot be consulted.
+            tracing::error!("policy lookup failed, denying agent resolve: {e}");
+            let _ = log_phylax_audit(
+                &state.inner.db,
+                auth.user_id(),
+                Some(&agent_name),
+                None,
+                None,
+                None,
+                None,
+                actions::POLICY_FAIL_CLOSED,
+                &category,
+                &secret_name,
+                false,
+                None,
+            )
+            .await;
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "policy check unavailable"})),
+            )
+                .into_response();
         }
     };
 

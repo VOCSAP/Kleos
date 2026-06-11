@@ -280,9 +280,12 @@ async fn test_approval_flow() {
     assert!(!body["leases"].as_array().unwrap().is_empty());
 }
 
-/// Test that policy-gated resolve endpoints return approvals for agents.
+/// Raw mode is plaintext-returning, so agents are denied outright under the
+/// five-mode no-plaintext model -- even a permissive policy cannot grant it.
+/// (Until 2026-06 this returned a 202 approval flow; the approval workflow
+/// remains for non-plaintext modes.)
 #[tokio::test]
-async fn test_resolve_raw_requires_approval() {
+async fn test_resolve_raw_denied_for_agents() {
     let app = TestApp::new().await;
 
     let (status, _) = app
@@ -299,6 +302,7 @@ async fn test_resolve_raw_requires_approval() {
         .await;
     assert_eq!(status, StatusCode::OK);
 
+    // Even an explicitly raw-allowing policy must not open the plaintext path.
     let (status, _) = app
         .request_master(
             "POST",
@@ -338,9 +342,173 @@ async fn test_resolve_raw_requires_approval() {
             &agent_key,
         )
         .await;
-    assert_eq!(status, StatusCode::ACCEPTED);
-    assert_eq!(body["approval_required"], true);
-    assert!(body["approval_id"].as_i64().is_some());
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        !serde_json::to_string(&body)
+            .unwrap()
+            .contains("super-secret"),
+        "denial response must not leak the secret"
+    );
+}
+
+/// Text mode substitutes plaintext into the response, so agents are denied
+/// outright -- no policy consultation, no approval escape hatch.
+#[tokio::test]
+async fn test_resolve_text_denied_for_agents() {
+    let app = TestApp::new().await;
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": "text-agent",
+                "categories": ["prod/*"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/text",
+            Some(json!({"text": "{{secret:prod/db-pass}}"})),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Master keeps full access to the plaintext modes: the no-plaintext rule
+/// binds agents only.
+#[tokio::test]
+async fn test_resolve_text_unaffected_for_master() {
+    let app = TestApp::new().await;
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({
+                "data": {
+                    "type": "note",
+                    "content": "super-secret"
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/resolve/text",
+            Some(json!({"text": "{{secret:prod/db-pass}}"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        serde_json::to_string(&body)
+            .unwrap()
+            .contains("super-secret"),
+        "master text resolution must still substitute the secret"
+    );
+}
+
+/// An agent resolve body the middleware cannot parse is denied, not passed
+/// through: an unparseable secret reference must not evade policy checks.
+#[tokio::test]
+async fn test_agent_unparseable_resolve_body_denied() {
+    let app = TestApp::new().await;
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": "sneaky-agent",
+                "categories": ["prod/*"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    // Parseable JSON but no category/name fields: the secret reference is
+    // undeterminable, so the policy layer must deny rather than forward.
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/proxy",
+            Some(json!({"junk": true})),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// A policy-store failure fails CLOSED for agents: no secret may move when
+/// the authority cannot be consulted.
+#[tokio::test]
+async fn test_agent_resolve_fails_closed_on_policy_error() {
+    let app = TestApp::new().await;
+
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({
+                "data": {
+                    "type": "note",
+                    "content": "super-secret"
+                }
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({
+                "name": "outage-agent",
+                "categories": ["prod/*"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let agent_key = body["key"].as_str().unwrap().to_string();
+
+    // Break the policy store out from under the middleware.
+    app.db
+        .write(|conn| {
+            conn.execute("DROP TABLE phylax_access_policies", [])?;
+            Ok(())
+        })
+        .await
+        .expect("drop policy table");
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/proxy",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        !serde_json::to_string(&body)
+            .unwrap()
+            .contains("super-secret"),
+        "fail-closed response must not leak the secret"
+    );
 }
 
 // ---- Approval denial test ----

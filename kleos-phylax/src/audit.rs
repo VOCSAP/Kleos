@@ -98,4 +98,10 @@ pub mod actions {
     pub const SSH_CA_SIGN: &str = "ssh_ca_sign";
     /// An agent keypair + SSH certificate was minted by the SSH CA.
     pub const SSH_CA_MINT: &str = "ssh_ca_mint";
+    /// An agent requested a plaintext-returning resolve mode (text/raw),
+    /// which is master-only under the no-plaintext model.
+    pub const PLAINTEXT_DENIED: &str = "plaintext_mode_denied";
+    /// An agent resolve was denied because the policy layer could not rule
+    /// on it (unavailable policy store or undeterminable secret reference).
+    pub const POLICY_FAIL_CLOSED: &str = "policy_check_fail_closed";
 }
