@@ -392,6 +392,12 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_phylax_decide_token_hash,
         tx
     ),
+    migration!(
+        86,
+        "phylax_policy_exec_allowlist",
+        run_migration_phylax_exec_allowlist,
+        tx
+    ),
 ];
 
 // --- Legacy version constants (kept for compatibility with existing call sites) ---
@@ -583,6 +589,9 @@ const MIGRATION_INSTANCE_GRANTS: i64 = 84;
 /// Version number for the phylax_approvals.decide_token_hash column (single-use
 /// capability-token approval decisions).
 const MIGRATION_PHYLAX_DECIDE_TOKEN_HASH: i64 = 85;
+/// Version number for the phylax_access_policies.exec_allowlist column (JSON
+/// array of absolute argv[0] paths an exec-mode policy permits).
+const MIGRATION_PHYLAX_EXEC_ALLOWLIST: i64 = 86;
 
 // --- Up path (unchanged behavior) ---
 
@@ -1282,6 +1291,16 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
         )?;
     }
 
+    if current_version < MIGRATION_PHYLAX_EXEC_ALLOWLIST {
+        info!("Running migration 86: phylax_policy_exec_allowlist");
+        run_migration_phylax_exec_allowlist(conn)?;
+        record_migration(
+            conn,
+            MIGRATION_PHYLAX_EXEC_ALLOWLIST,
+            "phylax_policy_exec_allowlist",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -1836,6 +1855,14 @@ fn run_migration_cred_audit_attribution_columns(conn: &rusqlite::Connection) -> 
 /// of a single-use capability token used for out-of-band approval decisions.
 fn run_migration_phylax_decide_token_hash(conn: &rusqlite::Connection) -> Result<()> {
     add_column_if_not_exists(conn, "phylax_approvals", "decide_token_hash", "TEXT")?;
+    Ok(())
+}
+
+/// Migration 86: add `exec_allowlist` to `phylax_access_policies` -- a JSON
+/// array of absolute argv[0] paths an exec-mode policy permits. NULL means
+/// exec is never allowed by that policy.
+fn run_migration_phylax_exec_allowlist(conn: &rusqlite::Connection) -> Result<()> {
+    add_column_if_not_exists(conn, "phylax_access_policies", "exec_allowlist", "TEXT")?;
     Ok(())
 }
 

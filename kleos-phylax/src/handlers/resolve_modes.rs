@@ -1,5 +1,4 @@
-//! Non-plaintext resolve modes: verify, sign, derive (exec lives here too
-//! once it lands).
+//! Non-plaintext resolve modes: exec, verify, sign, derive.
 //!
 //! These endpoints let an agent USE a secret without ever holding it: the
 //! secret is loaded server-side, the cryptographic operation happens here,
@@ -302,4 +301,194 @@ pub async fn derive_key_material(
     )
     .await;
     Ok(Json(json!({ "derived_b64": B64.encode(&*okm) })))
+}
+
+/// Hard wall-clock limit for an exec-mode child. Below credd's 30s request
+/// timeout so the structured timeout response beats the tower cutoff.
+const EXEC_TIMEOUT_SECS: u64 = 20;
+/// Cap on returned child output per stream, post-scrub.
+const EXEC_OUTPUT_CAP: usize = 256 * 1024;
+
+/// Body for POST /resolve/exec.
+#[derive(Deserialize)]
+pub struct ExecModeRequest {
+    /// Secret category.
+    pub category: String,
+    /// Secret name.
+    pub name: String,
+    /// Command to run; argv[0] must be an absolute path on the policy's
+    /// exec allowlist. Executed directly -- no shell.
+    pub argv: Vec<String>,
+    /// Environment variable name the secret is injected as.
+    pub env_var: String,
+}
+
+/// POSIX-shaped environment variable names only.
+fn valid_env_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Replace every occurrence of `needle` in `haystack` with `replacement`.
+fn replace_all_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) -> Vec<u8> {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return haystack.to_vec();
+    }
+    let mut out = Vec::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < haystack.len() {
+        if i + needle.len() <= haystack.len() && &haystack[i..i + needle.len()] == needle {
+            out.extend_from_slice(replacement);
+            i += needle.len();
+        } else {
+            out.push(haystack[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Scrub a secret from child output: the raw bytes plus their base64 and
+/// hex (both cases) encodings. The child can always re-encode the secret in
+/// a form this cannot catch, which is why exec is allowlist-gated; the
+/// scrub closes the accidental-leak paths (echoed env, verbose logs).
+fn scrub_secret(output: &[u8], secret: &[u8]) -> Vec<u8> {
+    let encodings = [
+        secret.to_vec(),
+        B64.encode(secret).into_bytes(),
+        hex::encode(secret).into_bytes(),
+        hex::encode_upper(secret).into_bytes(),
+    ];
+    let mut out = output.to_vec();
+    for needle in &encodings {
+        out = replace_all_bytes(&out, needle, b"[redacted]");
+    }
+    out
+}
+
+/// POST /resolve/exec -- run an allowlisted command with the secret injected
+/// into its environment. The agent receives the command's (scrubbed) output
+/// and exit code, never the secret itself.
+pub async fn exec_command(
+    Auth(auth): Auth,
+    State(state): State<PhylaxState>,
+    Json(body): Json<ExecModeRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let Some(argv0) = body.argv.first().cloned() else {
+        return Err(CredError::InvalidInput("argv must be non-empty".into()).into());
+    };
+    if !argv0.starts_with('/') {
+        return Err(CredError::InvalidInput("argv[0] must be an absolute path".into()).into());
+    }
+    if !valid_env_var_name(&body.env_var) {
+        return Err(CredError::InvalidInput("invalid env_var name".into()).into());
+    }
+
+    // The argv[0] allowlist is a property of the matched policy. The policy
+    // middleware already required a policy naming "exec"; re-resolve it here
+    // for the allowlist (and as defense in depth).
+    let policy = crate::models::policy::find_matching_policy(
+        &state.inner.db,
+        auth.user_id(),
+        "default",
+        &body.category,
+        &body.name,
+    )
+    .await?;
+    let allowlisted = policy
+        .as_ref()
+        .and_then(|p| p.exec_allowlist.as_ref())
+        .is_some_and(|list| list.contains(&argv0));
+    if !allowlisted {
+        audit_mode(
+            &state,
+            &auth,
+            actions::EXEC_RESOLVED,
+            &body.category,
+            &body.name,
+            false,
+        )
+        .await;
+        return Err(CredError::PermissionDenied(
+            "argv[0] is not in the policy's exec allowlist".into(),
+        )
+        .into());
+    }
+
+    let data = load_secret(&state, &auth, &body.category, &body.name).await?;
+    let secret = secret_key_bytes(data)?;
+    let secret_os = {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(secret.to_vec())
+    };
+
+    // Direct spawn, no shell, minimal environment: only the injected
+    // variable exists in the child. kill_on_drop reaps the child if the
+    // timeout (or a dropped connection) abandons the wait below.
+    let child = tokio::process::Command::new(&argv0)
+        .args(&body.argv[1..])
+        .env_clear()
+        .env(&body.env_var, &secret_os)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| {
+            tracing::error!(error = %e, argv0 = %argv0, "exec spawn failed");
+            CredError::InvalidInput("command could not be started".into())
+        })?;
+
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(EXEC_TIMEOUT_SECS),
+        child.wait_with_output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "exec wait failed");
+            return Err(CredError::Database("command execution failed".into()).into());
+        }
+        Err(_) => {
+            // Timed out: the dropped future kills the child (kill_on_drop).
+            audit_mode(
+                &state,
+                &auth,
+                actions::EXEC_RESOLVED,
+                &body.category,
+                &body.name,
+                false,
+            )
+            .await;
+            return Ok(Json(json!({
+                "timed_out": true,
+                "exit_code": null,
+                "stdout_b64": "",
+                "stderr_b64": "",
+            })));
+        }
+    };
+
+    let mut stdout = scrub_secret(&output.stdout, &secret);
+    let mut stderr = scrub_secret(&output.stderr, &secret);
+    stdout.truncate(EXEC_OUTPUT_CAP);
+    stderr.truncate(EXEC_OUTPUT_CAP);
+
+    audit_mode(
+        &state,
+        &auth,
+        actions::EXEC_RESOLVED,
+        &body.category,
+        &body.name,
+        output.status.success(),
+    )
+    .await;
+    Ok(Json(json!({
+        "timed_out": false,
+        "exit_code": output.status.code(),
+        "stdout_b64": B64.encode(&stdout),
+        "stderr_b64": B64.encode(&stderr),
+    })))
 }

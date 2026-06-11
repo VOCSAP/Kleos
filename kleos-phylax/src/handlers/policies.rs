@@ -28,6 +28,22 @@ fn validate_modes(modes: &[String]) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Exec allowlist entries must be absolute paths: relative names would
+/// resolve against the daemon's environment, not a policy decision.
+fn validate_exec_allowlist(allowlist: Option<&[String]>) -> Result<(), AppError> {
+    if let Some(paths) = allowlist {
+        for p in paths {
+            if !p.starts_with('/') {
+                return Err(CredError::InvalidInput(format!(
+                    "exec allowlist entry '{p}' must be an absolute path"
+                ))
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Request body for creating a policy.
 #[derive(Deserialize)]
 pub struct CreatePolicyRequest {
@@ -41,6 +57,8 @@ pub struct CreatePolicyRequest {
     pub require_approval: bool,
     /// Allowed resolve modes.
     pub allowed_modes: Option<Vec<String>>,
+    /// Absolute argv[0] paths exec mode may spawn (None = exec denied).
+    pub exec_allowlist: Option<Vec<String>>,
 }
 
 /// Request body for updating a policy.
@@ -50,6 +68,8 @@ pub struct UpdatePolicyRequest {
     pub require_approval: bool,
     /// Allowed resolve modes.
     pub allowed_modes: Vec<String>,
+    /// Absolute argv[0] paths exec mode may spawn (None = exec denied).
+    pub exec_allowlist: Option<Vec<String>>,
 }
 
 /// List all access policies. Master-only.
@@ -80,6 +100,7 @@ pub async fn create_policy(
         .allowed_modes
         .unwrap_or_else(|| vec!["text".into(), "proxy".into(), "raw".into()]);
     validate_modes(&modes)?;
+    validate_exec_allowlist(body.exec_allowlist.as_deref())?;
 
     let p = policy::create_policy(
         &state.inner.db,
@@ -89,6 +110,7 @@ pub async fn create_policy(
         body.secret_name.as_deref(),
         body.require_approval,
         &modes,
+        body.exec_allowlist.as_deref(),
     )
     .await?;
 
@@ -107,11 +129,13 @@ pub async fn update_policy(
     }
 
     validate_modes(&body.allowed_modes)?;
+    validate_exec_allowlist(body.exec_allowlist.as_deref())?;
     policy::update_policy(
         &state.inner.db,
         id,
         body.require_approval,
         &body.allowed_modes,
+        body.exec_allowlist.as_deref(),
     )
     .await?;
 

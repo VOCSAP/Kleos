@@ -114,4 +114,7 @@ pub mod actions {
     pub const VERIFY_RESOLVED: &str = "verify_resolved";
     /// Key material was derived from a stored secret via HKDF.
     pub const DERIVE_RESOLVED: &str = "derive_resolved";
+    /// A command was executed with a secret injected into its environment
+    /// (argv recorded by the handler; output scrubbed before returning).
+    pub const EXEC_RESOLVED: &str = "exec_resolved";
 }

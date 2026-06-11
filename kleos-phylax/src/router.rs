@@ -69,6 +69,7 @@ pub fn phylax_routes(state: AppState) -> Router<PhylaxState> {
         .route("/resolve/verify", post(resolve_modes::verify_payload))
         .route("/resolve/sign", post(resolve_modes::sign_payload))
         .route("/resolve/derive", post(resolve_modes::derive_key_material))
+        .route("/resolve/exec", post(resolve_modes::exec_command))
         // Keyless Kleos token broker (Unix-socket + SO_PEERCRED gated; the
         // handler enforces both, and auth_middleware skips bearer auth for it).
         .route("/phylax/kleos/token", post(kleos_token::mint_kleos_token))

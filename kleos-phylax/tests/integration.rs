@@ -1916,3 +1916,196 @@ async fn test_policy_rejects_unknown_mode_string() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ---- exec mode tests ----
+
+/// Build the exec fixture: secret, exec policy with the given allowlist,
+/// and an agent. Returns the agent key.
+async fn setup_exec_fixture(app: &TestApp, agent: &str, allowlist: Option<Value>) -> String {
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/secret/prod/db-pass",
+            Some(json!({"data": {"type": "note", "content": "super-secret"}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut policy = json!({
+        "namespace": "default",
+        "category": "prod",
+        "require_approval": false,
+        "allowed_modes": ["exec"]
+    });
+    if let Some(list) = allowlist {
+        policy["exec_allowlist"] = list;
+    }
+    let (status, body) = app
+        .request_master("POST", "/phylax/policies", Some(policy))
+        .await;
+    assert_eq!(status, StatusCode::OK, "policy create failed: {body}");
+
+    let (status, body) = app
+        .request_master(
+            "POST",
+            "/agents",
+            Some(json!({"name": agent, "categories": ["prod"]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    body["key"].as_str().unwrap().to_string()
+}
+
+/// exec runs an allowlisted command and scrubs the secret from its output,
+/// even when the command prints its entire environment.
+#[tokio::test]
+async fn test_exec_runs_allowlisted_command_and_scrubs_secret() {
+    let app = TestApp::new().await;
+    let agent_key = setup_exec_fixture(&app, "exec-agent", Some(json!(["/usr/bin/env"]))).await;
+
+    let (status, body) = app
+        .request_auth(
+            "POST",
+            "/resolve/exec",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "argv": ["/usr/bin/env"],
+                "env_var": "INJECTED_SECRET"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "exec failed: {body}");
+    assert_eq!(body["timed_out"], false);
+    assert_eq!(body["exit_code"], 0);
+
+    use base64::Engine as _;
+    let stdout = String::from_utf8(
+        base64::engine::general_purpose::STANDARD
+            .decode(body["stdout_b64"].as_str().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        stdout.contains("INJECTED_SECRET=[redacted]"),
+        "env var must be present but scrubbed, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("super-secret"),
+        "secret must never appear in exec output"
+    );
+}
+
+/// A command not on the allowlist is denied even though exec mode itself
+/// is policy-allowed.
+#[tokio::test]
+async fn test_exec_non_allowlisted_argv_denied() {
+    let app = TestApp::new().await;
+    let agent_key =
+        setup_exec_fixture(&app, "exec-deny-agent", Some(json!(["/usr/bin/env"]))).await;
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/exec",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "argv": ["/bin/cat", "/etc/hostname"],
+                "env_var": "X"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// An exec policy without an allowlist denies every command: the allowlist
+/// is the capability, not the mode string alone.
+#[tokio::test]
+async fn test_exec_policy_without_allowlist_denies() {
+    let app = TestApp::new().await;
+    let agent_key = setup_exec_fixture(&app, "exec-null-agent", None).await;
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/exec",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "argv": ["/usr/bin/env"],
+                "env_var": "X"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Relative argv[0] and malformed env var names are client errors.
+#[tokio::test]
+async fn test_exec_rejects_malformed_inputs() {
+    let app = TestApp::new().await;
+    let agent_key =
+        setup_exec_fixture(&app, "exec-input-agent", Some(json!(["/usr/bin/env"]))).await;
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/exec",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "argv": ["env"],
+                "env_var": "X"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "relative argv[0] must be rejected"
+    );
+
+    let (status, _) = app
+        .request_auth(
+            "POST",
+            "/resolve/exec",
+            Some(json!({
+                "category": "prod",
+                "name": "db-pass",
+                "argv": ["/usr/bin/env"],
+                "env_var": "BAD;NAME"
+            })),
+            &agent_key,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "malformed env_var must be rejected"
+    );
+}
+
+/// Policy CRUD rejects relative paths in the exec allowlist.
+#[tokio::test]
+async fn test_policy_rejects_relative_exec_allowlist() {
+    let app = TestApp::new().await;
+    let (status, _) = app
+        .request_master(
+            "POST",
+            "/phylax/policies",
+            Some(json!({
+                "namespace": "default",
+                "category": "prod",
+                "require_approval": false,
+                "allowed_modes": ["exec"],
+                "exec_allowlist": ["env"]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
