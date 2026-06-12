@@ -131,6 +131,45 @@ fn extract_session_id(input: &Value) -> String {
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
+/// Legacy fixed bootstrap query, kept as the fallback when no cwd is available.
+const LEGACY_BOOTSTRAP_QUERY: &str =
+    "session-bootstrap agent-rules infrastructure active-tasks recent-decisions";
+
+/// Reads the current git branch from `<cwd>/.git/HEAD` without spawning git.
+fn git_branch(cwd: &str) -> Option<String> {
+    let head = std::fs::read_to_string(std::path::Path::new(cwd).join(".git/HEAD")).ok()?;
+    head.trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(|b| b.to_string())
+}
+
+/// Builds the session-bootstrap brain query from the project the session
+/// actually starts in (cwd basename + git branch words) so /prompt/generate
+/// recalls task-relevant memories instead of the fixed keyword salad, which
+/// the brain answers with "No relevant patterns activated".
+fn bootstrap_task_query(input: &Value) -> String {
+    let cwd = input
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()));
+    let Some(cwd) = cwd else {
+        return LEGACY_BOOTSTRAP_QUERY.to_string();
+    };
+    let project = match std::path::Path::new(&cwd).file_name() {
+        Some(n) => n.to_string_lossy().to_string(),
+        None => return LEGACY_BOOTSTRAP_QUERY.to_string(),
+    };
+    let mut query = format!("{project} project");
+    if let Some(branch) = git_branch(&cwd) {
+        // Branch names like fix/ingestion-import-user-id carry strong task signal.
+        query.push(' ');
+        query.push_str(&branch.replace(['/', '-', '_'], " "));
+    }
+    query.push_str(" active-tasks recent-decisions agent-rules");
+    query
+}
+
 /// Resolves the agent identity for hook reporting and living-context generation.
 ///
 /// Prefers the `KLEOS_AGENT_LABEL` env var, which each harness sets to identify
@@ -264,7 +303,7 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 
 // --- Hook handlers ---
 
-async fn handle_session_start(client: &Client) {
+async fn handle_session_start(client: &Client, input: &Value) {
     let agent = resolve_agent();
 
     // Register session with activity (best-effort)
@@ -304,9 +343,11 @@ async fn handle_session_start(client: &Client) {
             "/prompt/generate",
             json!({
                 "agent": agent,
-                "task": "session-bootstrap agent-rules infrastructure active-tasks recent-decisions",
+                "task": bootstrap_task_query(input),
                 "include_brain": true,
-                "include_growth": true,
+                // Growth context is appended separately from /growth/materialize
+                // below; include_growth=true here duplicated it (memory #27946).
+                "include_growth": false,
                 "include_personality": true,
             }),
             DEFAULT_TIMEOUT,
@@ -554,7 +595,8 @@ async fn handle_post_tool(client: &Client, input: &Value) {
 pub async fn run_hook(cmd: &HookCommands, client: &Client) {
     match cmd {
         HookCommands::SessionStart => {
-            handle_session_start(client).await;
+            let input = read_stdin_json();
+            handle_session_start(client, &input).await;
         }
         HookCommands::UserPrompt => {
             let input = read_stdin_json();
@@ -580,6 +622,23 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    /// Verifies the bootstrap query derives from cwd and falls back when absent.
+    fn test_bootstrap_task_query() {
+        // No cwd in input and a current_dir always exists in tests, so build
+        // the derived form from a real temp dir to pin the cwd-driven shape.
+        let dir = std::env::temp_dir().join("kleos-bootstrap-query-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let input = serde_json::json!({ "cwd": dir.to_string_lossy() });
+        let q = bootstrap_task_query(&input);
+        assert!(q.starts_with("kleos-bootstrap-query-test project"));
+        assert!(q.ends_with("active-tasks recent-decisions agent-rules"));
+
+        // A cwd with no basename (filesystem root) falls back to the legacy query.
+        let root = serde_json::json!({ "cwd": "/" });
+        assert_eq!(bootstrap_task_query(&root), LEGACY_BOOTSTRAP_QUERY);
+    }
 
     #[test]
     /// Verifies context hook output uses Claude's hookSpecificOutput shape.
