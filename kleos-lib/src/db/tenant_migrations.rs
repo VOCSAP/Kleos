@@ -1171,6 +1171,24 @@ fn drop_column_if_exists(conn: &Connection, table: &str, column: &str, version: 
 /// owner so the always-applied `WHERE user_id = ?` predicate is a no-op on the
 /// shard; with `None` the rows keep the column default.
 pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> Result<()> {
+    run_tenant_migrations_to(conn, owner_user_id, i64::MAX)
+}
+
+/// Apply pending tenant migrations whose version is `<= target_version`.
+///
+/// `run_tenant_migrations` is `run_tenant_migrations_to(conn, owner, i64::MAX)`.
+/// The bounded form is test/harness support: prod runs sharded, so the
+/// data-transforming tenant migrations (e.g. the v55 `user_id` re-add and its
+/// owner backfill) execute against populated shards in production but always
+/// against empty tables in a fresh harness DB. Building a shard at an old
+/// version, seeding rows, then migrating forward exercises those migrations
+/// against data the way prod does. `TENANT_MIGRATIONS` is ordered ascending, so
+/// we stop at the first migration past the target.
+pub fn run_tenant_migrations_to(
+    conn: &Connection,
+    owner_user_id: Option<i64>,
+    target_version: i64,
+) -> Result<()> {
     // Tenant schema uses the `schema_migrations` table (as defined in v1).
     // Ensure it exists so we can read current_version even before v1 runs.
     conn.execute_batch(
@@ -1189,6 +1207,9 @@ pub fn run_tenant_migrations(conn: &Connection, owner_user_id: Option<i64>) -> R
     for m in TENANT_MIGRATIONS.iter() {
         if m.version <= current {
             continue;
+        }
+        if m.version > target_version {
+            break;
         }
         info!(
             "applying tenant migration {} ({})",

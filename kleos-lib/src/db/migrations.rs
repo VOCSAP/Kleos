@@ -431,6 +431,19 @@ const MIGRATION_CREATE_SCHEMA: i64 = 1;
 
 /// Run ordered, idempotent migrations and record applied versions.
 pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
+    run_migrations_to(conn, u32::MAX)
+}
+
+/// Apply every pending migration whose version is `<= target_version`, in order.
+///
+/// `run_migrations` is `run_migrations_to(conn, u32::MAX)`. The bounded form is
+/// test/harness support: it lets a caller build a database at a historical
+/// schema version, seed it with populated data, then migrate forward -- so
+/// data-transforming migrations are exercised against rows the way production
+/// experiences them, instead of always running against the empty tables a
+/// fresh DB presents. `MIGRATIONS` is ordered ascending by version, so we can
+/// stop at the first migration past the target.
+pub fn run_migrations_to(conn: &rusqlite::Connection, target_version: u32) -> Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS schema_version (
@@ -458,6 +471,9 @@ pub fn run_migrations(conn: &rusqlite::Connection) -> Result<()> {
     for m in MIGRATIONS.iter() {
         if (m.version as i64) <= current_version {
             continue;
+        }
+        if m.version > target_version {
+            break;
         }
         info!("Running migration {}: {}", m.version, m.description);
         apply_migration_up(conn, m)?;
@@ -5088,6 +5104,51 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    /// `run_migrations_to` must stop at the requested version and, when resumed,
+    /// reach exactly the same end state as a single full run. This is the
+    /// harness Gap-A primitive: build a DB at an old version, seed data, then
+    /// migrate forward against populated tables.
+    #[test]
+    fn test_run_migrations_to_stops_and_resumes() -> Result<()> {
+        let latest = MIGRATIONS.iter().map(|m| m.version).max().unwrap();
+        // A real migration version near the midpoint of the chain.
+        let mid = MIGRATIONS
+            .iter()
+            .map(|m| m.version)
+            .find(|&v| v >= latest / 2)
+            .unwrap();
+
+        let conn = open_test_db();
+        run_migrations_to(&conn, mid)?;
+        let after_mid: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(after_mid, mid as i64, "stops exactly at the target version");
+
+        // Resuming the bounded run to the full chain reaches the latest version.
+        run_migrations_to(&conn, u32::MAX)?;
+        let after_full: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(after_full, latest as i64);
+
+        // The staged path lands on the same version as a one-shot full run.
+        let fresh = open_test_db();
+        run_migrations(&fresh)?;
+        let fresh_full: i64 = fresh.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+            [],
+            |r| r.get(0),
+        )?;
+        assert_eq!(after_full, fresh_full);
 
         Ok(())
     }
