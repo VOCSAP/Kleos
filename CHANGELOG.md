@@ -6,9 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-06-13
+
+### Added
+
+- Frameshift cross-machine growth tenant (server-side), gated behind `KLEOS_FRAMESHIFT_GROWTH` (#94).
+- kleos-phylax: secret-resolve modes. `exec` runs an allowlisted command with secrets injected into the child process, and `verify`/`sign`/`derive` let an agent use a secret without ever holding its plaintext.
+- kleos-phylax: no-plaintext agent posture backed by fail-closed policy middleware.
+- kleos-phylax: out-of-band approval notification and a capability-token decide endpoint.
+- kleos-cleanup: `--delete-where` escape hatch for operator-specific junk.
+
+### Security
+
+- Security audit remediation and monolith multi-user isolation hardening (#93).
+- kleos-phylax: scrub-totality property tests and an adversarial plaintext-bypass test.
+
 ### Fixed
 
 - recall: `is_static` memories now decay by age in ranking instead of being pinned at full retrievability. The flag is caller-set and hardcoded on consolidations, and had grown to ~43% of the store, so stale "permanent" memories dominated recall regardless of age or relevance. `is_static` still protects durability (no auto-prune) and gate guard lookups.
+- kleos-sidecar: drop the orphaned `GateResult.original_text` field.
+- gui: untrack stale `.svelte-kit` build artifacts and restore the ignore rule.
+
+### CI
+
+- Pin the Rust toolchain to 1.94.0 across CI, Docker, and local dev so unpinned `stable` upgrades no longer break `clippy -D warnings`, and serialize the Syntheos mirror workflow to stop concurrent force-pushes from failing on the ref-lock CAS.
+
+### Database
+
+- approvals: add `decide_token_hash` column (migration 85).
 
 ## [1.6.1] - 2026-06-08
 
