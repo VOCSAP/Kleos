@@ -2867,6 +2867,62 @@ mod tests {
         assert_eq!(uid, 4);
     }
 
+    /// Gap-A guard: data-transforming migrations must be correct against
+    /// POPULATED tables, not just the empty tables a fresh shard presents.
+    /// Build a shard at v54 (before the v55 user_id re-add), seed memories,
+    /// then migrate forward and confirm the v55 backfill set every pre-existing
+    /// row to the shard owner without losing or corrupting data. This is the
+    /// class of bug the harness historically missed because it always seeded
+    /// AFTER the full chain had already run against empty tables.
+    #[test]
+    fn v55_user_id_backfill_against_populated_memories() {
+        const OWNER: i64 = 7;
+        let conn = Connection::open_in_memory().unwrap();
+
+        // Shard at v54: user_id has been dropped and not yet re-added.
+        run_tenant_migrations_to(&conn, Some(OWNER), 54).unwrap();
+        let has_user_id: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('memories') WHERE name='user_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_user_id, 0, "precondition: memories has no user_id at v54");
+
+        // Seed pre-existing rows the way a populated production shard would have.
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO memories (content, category, source) VALUES (?1, 'general', 'test')",
+                rusqlite::params![format!("pre-existing memory {i}")],
+            )
+            .unwrap();
+        }
+
+        // Migrate forward across v55, which re-adds user_id (DEFAULT 1) and
+        // backfills existing rows to the shard owner.
+        run_tenant_migrations(&conn, Some(OWNER)).unwrap();
+
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3, "v55 rebuild must preserve all pre-existing rows");
+
+        let owned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ?1",
+                rusqlite::params![OWNER],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owned, 3, "every pre-existing row backfilled to the shard owner");
+
+        let integrity: String = conn
+            .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(integrity, "ok");
+    }
+
     /// v28 dropped user_id from projects; v41 (C-R3-004) re-added it.
     /// After the full chain the column, idx_projects_user, and the
     /// memory_projects FK must all be present.
