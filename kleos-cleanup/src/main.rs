@@ -155,16 +155,40 @@ fn step_a_move_activity(conn: &Connection, execute: bool) -> Result<usize> {
     let count = rows.len();
 
     if execute {
-        for row in &rows {
-            let (agent, _parsed_project, action, summary) = parse_activity_content(&row.content);
-            // Use the row's project column if present, otherwise fall back to parsed project
-            let project = row.project.as_deref().unwrap_or("");
-            conn.execute(
-                "INSERT INTO activity_log (agent, action, summary, category, importance, project, user_id, created_at) \
-                 VALUES (?1, ?2, ?3, 'activity', ?4, ?5, ?6, ?7)",
-                params![agent, action, summary, row.importance, project, row.user_id, row.created_at],
-            )?;
-            conn.execute("DELETE FROM memories WHERE id = ?1", params![row.id])?;
+        // CLEAN-2: wrap the per-row INSERT+DELETE in a single transaction. In
+        // autocommit each statement fsyncs independently (slow) and an
+        // interruption mid-run leaves activity rows half-moved between the two
+        // tables. BEGIN IMMEDIATE/COMMIT (with ROLLBACK on error) makes the move
+        // atomic; conn is &Connection so we drive the transaction by SQL rather
+        // than conn.transaction() (which needs &mut).
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let moved = (|| -> Result<()> {
+            for row in &rows {
+                let (agent, parsed_project, action, summary) = parse_activity_content(&row.content);
+                // Use the row's project column if present, otherwise fall back to
+                // the project parsed from the activity content (the fallback was
+                // being dropped, permanently blanking project associations for
+                // rows with no project column).
+                let project = row
+                    .project
+                    .as_deref()
+                    .or(parsed_project.as_deref())
+                    .unwrap_or("");
+                conn.execute(
+                    "INSERT INTO activity_log (agent, action, summary, category, importance, project, user_id, created_at) \
+                     VALUES (?1, ?2, ?3, 'activity', ?4, ?5, ?6, ?7)",
+                    params![agent, action, summary, row.importance, project, row.user_id, row.created_at],
+                )?;
+                conn.execute("DELETE FROM memories WHERE id = ?1", params![row.id])?;
+            }
+            Ok(())
+        })();
+        match moved {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
         }
         println!(
             "  Moved {} activity rows to activity_log and deleted from memories.",
@@ -234,11 +258,25 @@ fn step_b_dedup_growth(conn: &Connection, execute: bool) -> Result<usize> {
     let count = to_archive.len();
 
     if execute {
-        for id in &to_archive {
-            conn.execute(
-                "UPDATE memories SET is_archived = 1 WHERE id = ?1",
-                params![id],
-            )?;
+        // CLEAN-2: wrap the bulk UPDATE loop in one transaction so the dedup is
+        // atomic and avoids a per-row fsync. See step_a for why we drive the
+        // transaction by SQL rather than conn.transaction().
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let archived = (|| -> Result<()> {
+            for id in &to_archive {
+                conn.execute(
+                    "UPDATE memories SET is_archived = 1 WHERE id = ?1",
+                    params![id],
+                )?;
+            }
+            Ok(())
+        })();
+        match archived {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e);
+            }
         }
         println!("  Archived {} duplicate growth rows.", count);
     } else {
@@ -284,6 +322,15 @@ fn main() -> Result<()> {
     let conn = Connection::open(&args.db)?;
 
     if let Some(ref key) = args.key {
+        // SECURITY: the key is interpolated into a PRAGMA; restrict it to hex so
+        // a value containing a quote cannot break out of the `x'...'` literal
+        // and inject SQL/PRAGMAs.
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(1),
+                Some("--key/ENGRAM_DB_KEY must be a non-empty hex string".into()),
+            ));
+        }
         // SQLCipher raw-hex key mode, matching the server (kleos-lib pool.rs):
         // emit `PRAGMA key = x'<hex>';` verbatim via execute_batch. pragma_update
         // single-quotes the value, turning the raw key into a passphrase, which

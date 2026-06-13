@@ -308,10 +308,12 @@ fn parse_ttl(s: &str) -> Result<u64, String> {
     let s = s.trim();
     if let Some(days) = s.strip_suffix('d') {
         let n: u64 = days.parse().map_err(|_| format!("invalid TTL: {}", s))?;
-        Ok(n * 86400)
+        n.checked_mul(86400)
+            .ok_or_else(|| format!("TTL too large: {}", s))
     } else if let Some(hours) = s.strip_suffix('h') {
         let n: u64 = hours.parse().map_err(|_| format!("invalid TTL: {}", s))?;
-        Ok(n * 3600)
+        n.checked_mul(3600)
+            .ok_or_else(|| format!("TTL too large: {}", s))
     } else {
         s.parse::<u64>()
             .map_err(|_| format!("invalid TTL: {} (use Nd or Nh)", s))
@@ -1768,14 +1770,46 @@ async fn handle_identity_init(
         }
     }
 
-    let sig_hex = match signer.sign_enrollment_proof() {
+    // Post-bootstrap enrollments must bind the proof to a server-issued
+    // single-use nonce. Try the challenge endpoint first; when it is not
+    // available (bootstrap has no credentials yet, or the server predates
+    // the challenge flow) fall back to the legacy nonce-less proof.
+    let nonce: Option<String> = match client
+        .post("/identity-keys/enroll/challenge", json!({}))
+        .await
+    {
+        // A successful response that lacks a usable nonce is a real problem
+        // (mangled by a proxy, or a schema change) -- do not silently degrade
+        // to a nonce-less proof the server will then reject. Abort with a
+        // clear message instead.
+        Ok(v) => match v.get("nonce").and_then(|n| n.as_str()) {
+            Some(n) => Some(n.to_string()),
+            None => {
+                eprintln!(
+                    "Enrollment challenge response did not contain a nonce; aborting. Response: {}",
+                    v
+                );
+                std::process::exit(1);
+            }
+        },
+        // A transport/HTTP error means the endpoint is unavailable: this is
+        // the bootstrap (no credentials yet) or pre-challenge-server case, so
+        // fall back to the legacy nonce-less proof.
+        Err(_) => None,
+    };
+
+    let sig_result = match &nonce {
+        Some(n) => signer.sign_enrollment_proof_with_nonce(n),
+        None => signer.sign_enrollment_proof(),
+    };
+    let sig_hex = match sig_result {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Error signing enrollment proof: {}", e);
             std::process::exit(1);
         }
     };
-    let body = json!({
+    let mut body = json!({
         "tier": signer.tier(),
         "algo": signer.algo().as_str(),
         "pubkey_pem": signer.pubkey_pem(),
@@ -1784,6 +1818,11 @@ async fn handle_identity_init(
         "serial": serial,
         "sig_hex": sig_hex,
     });
+    // Only attach the nonce when one was issued; the bootstrap middleware
+    // parses the body strictly and the legacy proof has no nonce field.
+    if let Some(n) = &nonce {
+        body["nonce"] = json!(n);
+    }
 
     let result = client.post("/identity-keys/enroll", body).await;
     match result {
@@ -2469,16 +2508,30 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                         .and_then(|x| x.as_str())
                         .unwrap_or("");
                     let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("agent");
-                    let filename = if plugin.is_empty() {
+                    let raw_filename = if plugin.is_empty() {
                         format!("{}.md", name)
                     } else {
                         format!("{}__{}.md", plugin, name)
                     };
-                    let path = format!("{}/{}", target_dir, filename);
+                    // `name`/`plugin` are server-controlled. Strip any directory
+                    // components so a crafted skill name (e.g. "../../.bashrc")
+                    // cannot escape target_dir. sanitize_download_name returns a
+                    // single safe path component or None.
+                    let Some(safe_name) = sanitize_download_name(&raw_filename) else {
+                        eprintln!(
+                            "Refusing to materialize skill #{}: name '{}' yields no safe filename",
+                            id, name
+                        );
+                        return;
+                    };
                     if let Err(e) = std::fs::create_dir_all(&target_dir) {
                         eprintln!("Failed to create {}: {}", target_dir, e);
                         return;
                     }
+                    let path = std::path::Path::new(&target_dir)
+                        .join(&safe_name)
+                        .to_string_lossy()
+                        .into_owned();
                     // Reconstruct: prefer metadata['frontmatter'] when the
                     // importer stored the original; otherwise synthesize a
                     // minimal frontmatter from name + description.
@@ -2529,7 +2582,16 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                 Ok(v) => {
                     if let Some(m) = v.get("materialization") {
                         if let Some(path) = m.get("target_path").and_then(|x| x.as_str()) {
-                            if let Err(e) = std::fs::remove_file(path) {
+                            // target_path comes from the server. Only delete a
+                            // file that looks like a materialized agent (a .md
+                            // with no traversal component) so a poisoned record
+                            // cannot turn dematerialize into arbitrary deletion.
+                            if !is_safe_materialization_path(path) {
+                                eprintln!(
+                                    "Refusing to remove suspicious materialization path: {}",
+                                    path
+                                );
+                            } else if let Err(e) = std::fs::remove_file(path) {
                                 if e.kind() != std::io::ErrorKind::NotFound {
                                     eprintln!("Failed to remove {}: {}", path, e);
                                 }
@@ -2792,6 +2854,22 @@ fn sanitize_download_name(server_name: &str) -> Option<std::path::PathBuf> {
         return None;
     }
     Some(std::path::PathBuf::from(name))
+}
+
+/// True when a server-supplied materialization path is safe to delete: it must
+/// be a `.md` file (what materialize writes) and contain no `..` traversal
+/// component. Guards dematerialize against a poisoned record pointing the
+/// removal at an arbitrary file.
+fn is_safe_materialization_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let is_md = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("md"));
+    let no_traversal = !p
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    is_md && no_traversal
 }
 
 /// Encodes a byte slice as lowercase hexadecimal.
@@ -3990,8 +4068,24 @@ async fn handle_artifact_command(client: &Client, cmd: &ArtifactCommands) {
 /// Tests for CLI-side input sanitization helpers.
 #[cfg(test)]
 mod tests {
-    use super::{resolve_credential_authority_url, sanitize_download_name};
+    use super::{
+        is_safe_materialization_path, resolve_credential_authority_url, sanitize_download_name,
+    };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
+
+    /// Dematerialize only deletes .md files with no traversal component.
+    #[test]
+    fn safe_materialization_path_guards_deletion() {
+        assert!(is_safe_materialization_path(
+            "/home/u/.claude/agents/foo.md"
+        ));
+        assert!(is_safe_materialization_path("agents/bar.md"));
+        // Wrong extension or traversal is refused.
+        assert!(!is_safe_materialization_path("/etc/cron.d/evil"));
+        assert!(!is_safe_materialization_path("/home/u/.bashrc"));
+        assert!(!is_safe_materialization_path("../../etc/passwd.md"));
+        assert!(!is_safe_materialization_path("agents/../../x.md"));
+    }
 
     /// A server-supplied filename is reduced to its final, CWD-relative component.
     #[test]

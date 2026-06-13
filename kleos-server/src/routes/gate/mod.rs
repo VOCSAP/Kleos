@@ -1,5 +1,5 @@
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
@@ -35,10 +35,14 @@ async fn check_handler(
     // declared agent must match that agent's name. Prevents one agent's key
     // being used under another agent's identity.
     if let Some(bound_id) = auth.key.agent_id {
+        // AND is_active = 1: revoking an agent (agents.is_active = 0) must also
+        // disarm any API key bound to it. Without this predicate a key bound to
+        // a revoked agent still passed the agent-identity gate, since revoke
+        // never touched api_keys.agent_id.
         let expected: Option<String> = db
             .read(move |conn| {
                 conn.query_row(
-                    "SELECT name FROM agents WHERE id = ?1",
+                    "SELECT name FROM agents WHERE id = ?1 AND is_active = 1",
                     params![bound_id],
                     |row| row.get::<_, String>(0),
                 )
@@ -59,7 +63,7 @@ async fn check_handler(
             }
             None => {
                 return Err(AppError::from(kleos_lib::EngError::Forbidden(format!(
-                    "api key bound to agent id {} which no longer exists",
+                    "api key bound to agent id {} which no longer exists or is revoked",
                     bound_id
                 ))));
             }
@@ -128,7 +132,7 @@ async fn check_handler(
 
     // Agent-tool model preference enrichment
     if result.allowed && body.tool_name.as_deref() == Some("Agent") {
-        if let Some(directive) = agent_model_enrichment(&db).await {
+        if let Some(directive) = agent_model_enrichment(&db, auth.effective_user_id()).await {
             let mut e = result.enrichment.unwrap_or_default();
             if !e.is_empty() {
                 e.push_str("\n\n");
@@ -282,6 +286,39 @@ async fn respond_handler(
     Auth(auth): Auth,
     Json(body): Json<RespondBody>,
 ) -> Result<Json<Value>, AppError> {
+    // Resolve the responder's bound agent (if the key is agent-scoped) so the
+    // CAS can reject self-approval: an agent must not approve a gate it opened.
+    // A non-agent (human/operator) key has no binding and may approve.
+    // Fail closed when the key is agent-bound but the agent row is gone: the
+    // self-approval guard below only fires for Some(_), so resolving a missing
+    // agent to None would silently let an agent approve its own gate (e.g. if
+    // the agents row was deleted after the gate was opened). An agent-scoped
+    // key with no resolvable agent is rejected outright.
+    let responder_agent: Option<String> = if let Some(bound_id) = auth.key.agent_id {
+        let name = db
+            .read(move |conn| {
+                conn.query_row(
+                    "SELECT name FROM agents WHERE id = ?1",
+                    params![bound_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|e| kleos_lib::EngError::DatabaseMessage(e.to_string()))
+            })
+            .await?;
+        match name {
+            Some(n) => Some(n),
+            None => {
+                return Err(AppError(kleos_lib::EngError::Auth(format!(
+                    "api key bound to agent id {} which no longer exists",
+                    bound_id
+                ))));
+            }
+        }
+    } else {
+        None
+    };
+
     // SECURITY (SEC-CRIT-2): the DB CAS in respond_to_gate is the authoritative
     // transition. Persist first; only on success signal the waiter. If another
     // responder or the timeout path already decided, respond_to_gate returns
@@ -292,6 +329,7 @@ async fn respond_handler(
         body.approved,
         body.reason.as_deref(),
         auth.effective_user_id(),
+        responder_agent,
     )
     .await?;
 
@@ -378,20 +416,21 @@ async fn guard_handler(
         )));
     }
 
-    // Search for high-importance static memories that might conflict.
-    // ResolvedDb hands us the caller's tenant shard; tenant scoping is
-    // implicit. Migration #25 (drop_user_id_memory_core) removed the
-    // per-row user_id column, so a WHERE user_id = ? predicate here
-    // erroneously errors with "no such column".
-    let _ = auth;
+    // Search for high-importance static memories that might conflict. The
+    // user_id predicate is a no-op in a single-owner shard and the tenant
+    // boundary in shared (monolith) mode, where ResolvedDb hands back the
+    // shared state.db; migration 64 re-added memories.user_id (tenant v55), so
+    // without it /guard would disclose every tenant's static rules.
+    let user_id = auth.effective_user_id();
     let rules: Vec<Value> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
                  WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
+                 AND user_id = ?1
                  ORDER BY importance DESC LIMIT 20",
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(params![user_id], |row| {
                 let id: i64 = row.get(0)?;
                 let content: String = row.get(1)?;
                 let importance: i64 = row.get(2)?;
@@ -568,19 +607,20 @@ async fn complete_latest_handler(
     }
 }
 
-async fn agent_model_enrichment(db: &kleos_lib::db::Database) -> Option<String> {
+async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> Option<String> {
     let rules: Vec<String> = db
-        .read(|conn| {
+        .read(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT content FROM memories
                  WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
+                 AND user_id = ?1
                  AND (content LIKE '%agent.model.preference%'
                       OR content LIKE '%force-agent-models%'
                       OR content LIKE '%delegate to opencode%'
                       OR content LIKE '%MODEL DELEGATION%')
                  ORDER BY importance DESC LIMIT 3",
             )?;
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let rows = stmt.query_map(params![user_id], |row| row.get::<_, String>(0))?;
             let mut out = Vec::new();
             for r in rows {
                 out.push(r?);
