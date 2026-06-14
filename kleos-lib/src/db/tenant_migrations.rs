@@ -377,6 +377,11 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     // reserved "frameshift-growth" tenant is wired through /frameshift-growth/*.
     // No backfill: it is a new table with no pre-existing rows.
     tenant_migration!(73, "frameshift_growth", apply_schema_v73_frameshift_growth),
+    // agent-forge absorption: stateful reasoning tables now live in the
+    // Kleos tenant DB. Prefixed `forge_` to avoid collisions with legacy local
+    // tables. All tables carry `user_id`; forge_specs and forge_hypotheses also
+    // carry `session_id` for the gate enforcement query. No backfill needed.
+    tenant_migration!(74, "forge_tables", apply_schema_v74_forge),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -771,6 +776,11 @@ tenant_migration_sql!(
     apply_schema_v73_frameshift_growth,
     "v73",
     "../tenant/schema_v73_frameshift_growth.sql"
+);
+tenant_migration_sql!(
+    apply_schema_v74_forge,
+    "v74",
+    "../tenant/schema_v74_forge_tables.sql"
 );
 
 /// Tenant v37: drops user_id from portability tables including conversations.
@@ -2888,7 +2898,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(has_user_id, 0, "precondition: memories has no user_id at v54");
+        assert_eq!(
+            has_user_id, 0,
+            "precondition: memories has no user_id at v54"
+        );
 
         // Seed pre-existing rows the way a populated production shard would have.
         for i in 0..3 {
@@ -2915,7 +2928,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(owned, 3, "every pre-existing row backfilled to the shard owner");
+        assert_eq!(
+            owned, 3,
+            "every pre-existing row backfilled to the shard owner"
+        );
 
         let integrity: String = conn
             .query_row("PRAGMA integrity_check", [], |r| r.get(0))
