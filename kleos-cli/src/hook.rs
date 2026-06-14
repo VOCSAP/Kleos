@@ -170,6 +170,81 @@ fn bootstrap_task_query(input: &Value) -> String {
     query
 }
 
+/// Returns the project label for the session: the basename of the working
+/// directory it started in. Used to scope the session.start activity record and
+/// the coordination read-back so Chiasm/Axon know which checkout this session
+/// is in (the record previously reported a useless "unknown").
+fn cwd_project(input: &Value) -> Option<String> {
+    let cwd = input
+        .get("cwd")
+        .and_then(|c| c.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()))?;
+    std::path::Path::new(&cwd)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+}
+
+/// Formats the coordination banner from active tasks already open in the
+/// session's project. This is the read-back half of coordination: sessions
+/// register via /activity but never saw who else was working the same checkout,
+/// so two agents would collide on one git working tree. Injecting this banner
+/// every session makes the coordination state visible mechanically, rather than
+/// relying on the model to query it (which it does not). Empty when nobody else
+/// is active, so quiet by default.
+fn format_coordination_banner(project: &str, tasks: &[Value]) -> String {
+    if tasks.is_empty() {
+        return String::new();
+    }
+    let mut lines = vec![
+        format!(
+            "## Coordination -- {} active task(s) in project `{}`",
+            tasks.len(),
+            project
+        ),
+        "Another session may be working in this checkout. Coordinate, or use a \
+         separate git worktree -- two agents in one working tree race on HEAD \
+         and the index and will clobber each other's uncommitted work."
+            .to_string(),
+    ];
+    for t in tasks.iter().take(6) {
+        let agent = t.get("agent").and_then(|a| a.as_str()).unwrap_or("?");
+        let status = t.get("status").and_then(|a| a.as_str()).unwrap_or("active");
+        let title: String = t
+            .get("title")
+            .and_then(|a| a.as_str())
+            .unwrap_or("")
+            .chars()
+            .take(90)
+            .collect();
+        lines.push(format!("- {agent} ({status}): {title}"));
+    }
+    lines.join("\n")
+}
+
+/// Fetches active tasks in the session's project and renders the coordination
+/// banner. Best-effort: any error or absent project yields an empty banner.
+async fn fetch_coordination_banner(client: &Client, project: Option<&str>) -> String {
+    let Some(project) = project else {
+        return String::new();
+    };
+    let path = format!(
+        "/tasks?status=active&project={}&limit=10",
+        utf8_percent_encode(project, NON_ALPHANUMERIC)
+    );
+    match client.get_with_timeout(&path, DEFAULT_TIMEOUT).await {
+        Ok(v) => {
+            let tasks = v
+                .get("tasks")
+                .and_then(|t| t.as_array())
+                .cloned()
+                .unwrap_or_default();
+            format_coordination_banner(project, &tasks)
+        }
+        Err(_) => String::new(),
+    }
+}
+
 /// Resolves the agent identity for hook reporting and living-context generation.
 ///
 /// Prefers the `KLEOS_AGENT_LABEL` env var, which each harness sets to identify
@@ -305,8 +380,15 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 
 async fn handle_session_start(client: &Client, input: &Value) {
     let agent = resolve_agent();
+    let project = cwd_project(input);
 
-    // Register session with activity (best-effort)
+    // Read coordination state BEFORE registering this session, so the banner
+    // reflects who was already working in this project, not our own arrival.
+    let coordination = fetch_coordination_banner(client, project.as_deref()).await;
+
+    // Register session with activity (best-effort). Report the real project
+    // (working-directory basename) so Chiasm/Axon know which checkout this
+    // session is in; the record previously always said "unknown".
     let _ = client
         .post_with_timeout(
             "/activity",
@@ -314,7 +396,7 @@ async fn handle_session_start(client: &Client, input: &Value) {
                 "agent": agent.clone(),
                 "action": "session.start",
                 "summary": "session started",
-                "project": "unknown"
+                "project": project.clone().unwrap_or_else(|| "unknown".to_string())
             }),
             DEFAULT_TIMEOUT,
         )
@@ -374,6 +456,10 @@ async fn handle_session_start(client: &Client, input: &Value) {
     if !growth_text.is_empty() {
         ctx.push_str("\n\n--- Growth Context ---\n");
         ctx.push_str(&growth_text);
+    }
+    if !coordination.is_empty() {
+        ctx.push_str("\n\n--- Coordination ---\n");
+        ctx.push_str(&coordination);
     }
     ctx.push_str("\n\n=== END EIDOLON CONTEXT ===");
 
@@ -638,6 +724,26 @@ mod tests {
         // A cwd with no basename (filesystem root) falls back to the legacy query.
         let root = serde_json::json!({ "cwd": "/" });
         assert_eq!(bootstrap_task_query(&root), LEGACY_BOOTSTRAP_QUERY);
+    }
+
+    #[test]
+    /// Empty task list yields no banner (quiet when nobody else is working here).
+    fn test_coordination_banner_empty() {
+        assert!(format_coordination_banner("Kleos", &[]).is_empty());
+    }
+
+    #[test]
+    /// A non-empty task list renders agent + title lines under a project header.
+    fn test_coordination_banner_lists_active_tasks() {
+        let tasks = vec![
+            json!({"agent": "synapse", "status": "active", "title": "READ-ONLY security audit"}),
+            json!({"agent": "codex", "status": "active", "title": "migration backfill"}),
+        ];
+        let out = format_coordination_banner("Kleos", &tasks);
+        assert!(out.contains("2 active task(s) in project `Kleos`"));
+        assert!(out.contains("synapse (active): READ-ONLY security audit"));
+        assert!(out.contains("codex (active): migration backfill"));
+        assert!(out.contains("separate git worktree"));
     }
 
     #[test]
