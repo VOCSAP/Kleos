@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-06-16
+
+### Added
+
+- MCP: clients can attach artifacts inline on `memory.store` and on read tools (#98).
+- MCP: underscore-normalized tool-name aliases so strict clients such as VS Code can call every tool (#97).
+- forge: agent-forge absorbed into Kleos as a server-side CLI plus MCP tool surface (#96).
+- cli: inject coordination read-back at session start so agents see live task/feed state.
+- cli: derive the session-start bootstrap query from the cwd project and git branch.
+- db: bounded `run_migrations_to` / `run_tenant_migrations_to` helpers for partial migration runs.
+
+### Fixed
+
+- gate: forge-authorized Write/Edit now bypass the human-approval wait instead of blocking on it (#99).
+- chiasm: reap stale never-heartbeated idle tasks, not only overdue ones.
+
 ## [1.7.0] - 2026-06-13
 
 ### Added
