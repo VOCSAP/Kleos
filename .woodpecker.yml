@@ -94,9 +94,11 @@ steps:
       - cargo build --profile release-prod -p kleos-cli -p kleos-sidecar
       - cargo build --profile release-prod --features kleos-cred/gui -p kleos-credd -p kleos-cred -p kleos-mcp
       - cargo build --profile release-prod -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
+      # kleos-ingest (transcript ingest daemon) + kleos-cleanup (operator junk pruner): linux-only release artifacts.
+      - cargo build --profile release-prod -p kleos-ingest -p kleos-cleanup
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kleos-ingest kleos-cleanup kr kw ke; do
           src="target/release-prod/$bin"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-linux-x64"
