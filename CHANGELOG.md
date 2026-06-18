@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-06-18
+
+### Security
+
+- server: SSRF-harden outbound webhook and LLM delivery so callbacks cannot reach internal or link-local addresses (#103).
+- auth: protect the owner account from deprovisioning so the last admin cannot be locked out (#103).
+- auth: require `read` scope on read-only POST endpoints instead of leaving them unscoped (#103).
+- cred: require a confidential transport for credential bearer tokens (#103).
+- credd: deny the proxy by default unless an explicit domain allowlist is configured (#103).
+
+### Build
+
+- hooks: pre-commit now auto-formats staged Rust so CI `cargo fmt --all -- --check` cannot fail on push.
+
 ## [1.7.1] - 2026-06-16
 
 ### Added

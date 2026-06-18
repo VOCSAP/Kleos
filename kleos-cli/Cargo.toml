@@ -1,6 +1,6 @@
 [package]
 name = "kleos-cli"
-version = "1.7.1"
+version = "1.7.2"
 edition = "2021"
 rust-version.workspace = true
 description = "CLI client for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
