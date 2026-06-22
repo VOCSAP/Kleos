@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-06-22
+
+### CI
+
+- release: build and publish `kleos-ingest` and `kleos-cleanup` as linux-x64 release artifacts so operators have a binary to pull. The `kleos-ingest` installer component previously had no matching release asset.
+
 ## [1.7.2] - 2026-06-18
 
 ### Security
