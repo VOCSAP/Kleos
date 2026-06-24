@@ -185,6 +185,26 @@ pub async fn auth_middleware(
         return Ok(next.run(request).await);
     }
 
+    // Skip middleware-level auth for POST /phylax/kleos/token: this endpoint
+    // exists to mint a bearer, so it cannot require one. Its handler enforces
+    // Unix-socket-only transport plus SO_PEERCRED same-owner UID instead.
+    if request.method() == axum::http::Method::POST && request.uri().path() == "/phylax/kleos/token"
+    {
+        return Ok(next.run(request).await);
+    }
+
+    // Skip middleware-level auth for POST /phylax/approvals/{id}/decide-token:
+    // the single-use capability token carried in the body is the authorization,
+    // so this route cannot require a bearer. The handler verifies the token
+    // against the hash stored on the approval row. `{id}` is dynamic, so this is
+    // matched by prefix + suffix rather than exact path.
+    if request.method() == axum::http::Method::POST {
+        let path = request.uri().path();
+        if path.starts_with("/phylax/approvals/") && path.ends_with("/decide-token") {
+            return Ok(next.run(request).await);
+        }
+    }
+
     let token = extract_bearer_token(&request).ok_or(StatusCode::UNAUTHORIZED)?;
 
     // Check if it's the master key (try hex-decoded first, then raw)

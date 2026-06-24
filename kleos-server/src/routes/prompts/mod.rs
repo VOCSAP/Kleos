@@ -22,6 +22,55 @@ use crate::state::AppState;
 mod types;
 use types::{GeneratePromptRequest, HeaderBody, PromptQuery};
 
+/// Default minimum cosine similarity a memory must clear to enter the living prompt.
+/// Mirrors the sidecar recall gate so both injection paths share one policy.
+const DEFAULT_LIVING_MIN_SEMANTIC: f64 = 0.55;
+
+/// Default categories excluded from the living-prompt "Relevant Memories" section.
+const DEFAULT_LIVING_EXCLUDE_CATEGORIES: &str = "general,state";
+
+/// Reads the semantic-relevance floor for living-prompt memory injection.
+fn living_min_semantic() -> f64 {
+    std::env::var("KLEOS_RECALL_MIN_SEMANTIC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_LIVING_MIN_SEMANTIC)
+}
+
+/// Reads the lowercased set of categories excluded from living-prompt injection.
+fn living_excluded_categories() -> std::collections::HashSet<String> {
+    std::env::var("KLEOS_RECALL_EXCLUDE_CATEGORIES")
+        .unwrap_or_else(|_| DEFAULT_LIVING_EXCLUDE_CATEGORIES.to_string())
+        .split(',')
+        .map(|c| c.trim().to_ascii_lowercase())
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// Returns true for curated sources that are exempt from the category denylist.
+///
+/// Plan documents ingest as `plan:<relpath>`, but the auto-categorizer relabels
+/// them general/reference; without this exemption the denylist would drop the
+/// curated plans the ingest exists to surface. The semantic floor still applies.
+fn is_curated_source(source: &str) -> bool {
+    source.starts_with("plan:")
+}
+
+/// Decides whether a search result is relevant enough for the living prompt.
+///
+/// Gates on raw cosine (`semantic_score`) rather than the boosted compound
+/// `score`, so recent/personality-boosted but off-topic memories are dropped.
+/// Results with no embedding survive only on an exact lexical hit (`fts_score`).
+fn living_result_is_relevant(
+    r: &kleos_lib::memory::types::SearchResult,
+    min_semantic: f64,
+) -> bool {
+    match r.semantic_score {
+        Some(sem) => sem >= min_semantic,
+        None => r.fts_score.is_some(),
+    }
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/prompt", get(get_prompt))
@@ -100,9 +149,32 @@ async fn post_prompt_generate(
         "You are {agent}, an agent working under the Kleos memory system. Be concise, accurate, and cite memories when useful."
     ));
 
+    // Embed the query once up front. hybrid_search only runs its semantic
+    // channel when req.embedding is Some -- without it, recall degrades to FTS
+    // over the raw task string (which for bootstrap queries is a keyword salad
+    // that matches little). The /search route does the same embed-then-search.
+    // Helper closure keeps each SearchRequest's embedding independent.
+    let embed_query = |text: &str| {
+        let text = text.to_string();
+        let state = state.clone();
+        async move {
+            match state.current_embedder().await {
+                Some(embedder) => match embedder.embed(&text).await {
+                    Ok(emb) => Some(emb),
+                    Err(e) => {
+                        tracing::warn!("prompt/generate embedding failed: {}", e);
+                        None
+                    }
+                },
+                None => None,
+            }
+        }
+    };
+
     if include_personality {
         let personality_req = SearchRequest {
             query: format!("{agent} personality"),
+            embedding: embed_query(&format!("{agent} personality")).await,
             limit: Some(3),
             user_id: Some(auth.effective_user_id()),
             category: Some("personality".into()),
@@ -127,18 +199,53 @@ async fn post_prompt_generate(
     }
 
     if include_memories {
+        // Use a recall-oriented query rather than the raw bootstrap task. The
+        // session-start task ("session-bootstrap agent-rules infrastructure
+        // active-tasks recent-decisions") is a label, not something stored
+        // memories phrase themselves as; expanding it improves both the
+        // embedding and the FTS match.
+        let recall_query = if task.contains("session-bootstrap") {
+            format!(
+                "{task} infrastructure servers credentials architecture \
+                 recent decisions active tasks past failures"
+            )
+        } else {
+            task.to_string()
+        };
         let memory_req = SearchRequest {
-            query: task.to_string(),
+            query: recall_query.clone(),
+            embedding: embed_query(&recall_query).await,
             limit: Some(memory_limit),
             user_id: Some(auth.effective_user_id()),
             ..Default::default()
         };
         let results = hybrid_search(&db, memory_req).await?;
-        if !results.is_empty() {
+        // Relevance policy: drop noise categories (chatter, personal facts) and
+        // memories that are not semantically about the bootstrap query. Without
+        // this gate the synthetic session-start query rakes in whatever ranks
+        // least-badly -- stale audit dumps, Discord banter -- because nothing
+        // floors the long tail. Both knobs are env-tunable and shared with the
+        // sidecar recall gate so one config governs every injection path.
+        let min_semantic = living_min_semantic();
+        let excluded = living_excluded_categories();
+        let relevant: Vec<&kleos_lib::memory::types::SearchResult> = results
+            .iter()
+            .filter(|r| {
+                is_curated_source(&r.memory.source)
+                    || !excluded.contains(&r.memory.category.to_ascii_lowercase())
+            })
+            .filter(|r| living_result_is_relevant(r, min_semantic))
+            .collect();
+        if !relevant.is_empty() {
             let mut buf = String::from("## Relevant Memories\n");
-            for r in results.iter() {
+            for r in relevant {
+                // Scrub credentials before injection, matching the brain path
+                // (which scrubs each MemorySummary). Without this, raw stored
+                // content (including any leaked secret or tool-call fragment)
+                // would pass straight into the agent's context.
+                let scrubbed = scrub_credentials(r.memory.content.trim());
                 buf.push_str("- ");
-                buf.push_str(r.memory.content.trim());
+                buf.push_str(scrubbed.trim());
                 buf.push('\n');
                 sources.push(json!({
                     "id": r.memory.id,
@@ -295,13 +402,16 @@ async fn post_prompt_generate(
 
     // Living prompt: Growth observations
     if include_growth {
-        // Patch 33 -- pass None for space filter to preserve upstream
-        // behaviour (prompts compose observations from all spaces of the
-        // tenant; scoping at the prompts layer is left to a follow-up
-        // patch). auth.user_id is required by the new signature for the
-        // default-space subquery (only consulted when space_id is set).
+        // 727d97fc merge -- align on the unified list_observations signature
+        // (db, limit, space_id, include_unscoped, user_id):
+        //  - Patch 33: pass None/None for the space filter to preserve upstream
+        //    behaviour (prompts compose observations from all spaces of the
+        //    tenant; scoping at the prompts layer is left to a follow-up patch).
+        //  - upstream #70/#93: use effective_user_id() so that under delegation
+        //    (act_as set) the growth observations are pulled from the delegated
+        //    tenant, not the delegator's, like every other fetch in this handler.
         if let Ok(observations) =
-            list_observations(&db, growth_limit, None, None, auth.user_id).await
+            list_observations(&db, growth_limit, None, None, auth.effective_user_id()).await
         {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");
@@ -453,6 +563,19 @@ mod tests {
         assert!(req.include_instincts.is_none());
         assert!(req.brain_limit.is_none());
         assert!(req.growth_limit.is_none());
+    }
+
+    /// Curated plan sources are exempt from the category denylist; other
+    /// sources (and the empty/default source) are not.
+    #[test]
+    fn curated_source_exemption_matches_plan_prefix_only() {
+        assert!(is_curated_source("plan:bav-assistant/design.md"));
+        assert!(is_curated_source("plan:henosis/phase-3.md"));
+        assert!(!is_curated_source("claude-code"));
+        assert!(!is_curated_source("synapse@Verse"));
+        assert!(!is_curated_source(""));
+        // The prefix must be exact: a category named "plan" is not a source.
+        assert!(!is_curated_source("planning-notes"));
     }
 
     #[test]

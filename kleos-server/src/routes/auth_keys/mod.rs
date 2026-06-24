@@ -476,6 +476,7 @@ async fn create_instance_grant(
         "instance_grant",
         &owner.to_string(),
         Some(&auth_ctx.user_id.to_string()),
+        Some(auth_ctx.user_id),
         None,
         Some(json!({ "owner": owner, "grantee": grantee, "access": access.as_str() })),
     )
@@ -546,6 +547,7 @@ async fn revoke_instance_grant(
         "instance_grant",
         &owner.to_string(),
         Some(&auth_ctx.user_id.to_string()),
+        Some(auth_ctx.user_id),
         Some(json!({ "owner": owner, "grantee": grantee })),
         None,
     )

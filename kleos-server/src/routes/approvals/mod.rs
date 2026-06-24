@@ -177,8 +177,22 @@ async fn decide_handler(
         let approved = matches!(approval.status, kleos_lib::approvals::ApprovalStatus::Approved)
             || body.decision == ApprovalDecision::Approved;
         let reason_for_gate = body.reason.as_deref();
-        if let Err(err) = respond_to_gate(&db, gate_id, approved, reason_for_gate, auth.user_id)
-            .await
+        // 727d97fc merge: respond_to_gate gained a `responder_agent` param
+        // (upstream #93 self-approval guard). The /approvals decide path is
+        // operator-facing -- the responding principal is the human operator
+        // (carried in `decided_by`), not an agent -- so pass None; the guard
+        // only fires for agent-bound keys on the direct /gate/respond path.
+        // Use effective_user_id() to match the `decide` call above so the gate
+        // CAS targets the delegated tenant under act_as.
+        if let Err(err) = respond_to_gate(
+            &db,
+            gate_id,
+            approved,
+            reason_for_gate,
+            auth.effective_user_id(),
+            None,
+        )
+        .await
         {
             tracing::warn!(
                 "approvals: bridged gate_id={} respond_to_gate failed: {}",

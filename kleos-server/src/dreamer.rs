@@ -109,7 +109,7 @@ pub fn new_stats_handle() -> DreamerStatsHandle {
     Arc::new(RwLock::new(DreamerStats::default()))
 }
 
-async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
+pub(crate) async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
     db.read(|conn| {
         let mut stmt = conn.prepare("SELECT id FROM users ORDER BY id")?;
         let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
@@ -274,19 +274,31 @@ async fn run_cycle(
         }
     }
 
-    let mut brain_result: Option<Value> = None;
-    let mut brain_ok = false;
+    let mut brain_results: std::collections::HashMap<i64, Value> = std::collections::HashMap::new();
+    let mut brain_cycle_ok = 0u64;
+    let mut brain_cycle_err = 0u64;
     let mut evolution_ran = false;
     if let Some(b) = brain {
         if b.is_ready() {
-            match b.dream_cycle().await {
-                Ok(resp) => {
-                    brain_ok = resp.ok;
-                    info!(data = ?resp.data, "dreamer: brain dream_cycle complete");
-                    brain_result = resp.data;
-                }
-                Err(e) => {
-                    warn!(error = %e, "dreamer: brain dream_cycle failed");
+            // Fan out dream_cycle over every active tenant so patterns are
+            // consolidated per-user, not only for the operator namespace.
+            for user_id in &users {
+                match b.dream_cycle(*user_id).await {
+                    Ok(resp) => {
+                        if resp.ok {
+                            brain_cycle_ok += 1;
+                        } else {
+                            brain_cycle_err += 1;
+                        }
+                        info!(user_id, data = ?resp.data, "dreamer: brain dream_cycle complete");
+                        if let Some(data) = resp.data {
+                            brain_results.insert(*user_id, data);
+                        }
+                    }
+                    Err(e) => {
+                        brain_cycle_err += 1;
+                        warn!(user_id, error = %e, "dreamer: brain dream_cycle failed");
+                    }
                 }
             }
             // Post-dream hook 1: evolution training step.
@@ -330,26 +342,31 @@ async fn run_cycle(
         }
     }
 
-    // Deserialize dream cycle result for growth context enrichment.
-    let dream_cycle: Option<DreamCycleResult> = brain_result.as_ref().and_then(|v| {
-        match serde_json::from_value::<DreamCycleResult>(v.clone()) {
-            Ok(c) => Some(c),
-            Err(e) => {
-                warn!(error = %e, "dreamer: failed to deserialize dream cycle for growth context");
-                None
-            }
-        }
-    });
-
     // Post-dream hook 2: probabilistic growth reflection per (user, space)
     // pair. Patch 35 -- iterate per space to fix Kleos #3028 (growth
     // observations leaked across projects when the per-user reflection
     // mixed contexts from unrelated spaces). Patch 33 6/N already extended
     // `GrowthReflectRequest.space_id` and the INSERT; this site finally
     // propagates a concrete value instead of the placeholder `None`.
+    // 727d97fc merge: upstream #101 made the brain dream result per-user
+    // (`brain_results` HashMap); deserialize each user's own result inside
+    // the per-user loop, before the per-space fan-out.
     let mut growth_calls = 0u64;
     let mut growth_stored = 0u64;
     for user_id in &users {
+        // Deserialize this user's own dream cycle result for growth context
+        // enrichment (upstream #101 keyed the result per user).
+        let dream_cycle: Option<DreamCycleResult> =
+            brain_results.get(user_id).and_then(|v| {
+                match serde_json::from_value::<DreamCycleResult>(v.clone()) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        warn!(user_id = *user_id, error = %e, "dreamer: failed to deserialize dream cycle for growth context");
+                        None
+                    }
+                }
+            });
+
         let spaces = match list_user_spaces(db, *user_id).await {
             Ok(s) => s,
             Err(e) => {
@@ -437,15 +454,14 @@ async fn run_cycle(
     s.last_pipeline_ok = total_ok;
     s.last_pipeline_failed = total_failed;
     s.last_pipeline_report = last_report;
-    s.last_brain_result = brain_result;
+    // last_brain_result is display/debug only; stores one arbitrary tenant
+    // result. A future refactor can expose Vec<Value> indexed by user_id.
+    s.last_brain_result = brain_results.into_values().next();
     s.totals.pipeline_ok += total_ok as u64;
     s.totals.pipeline_failed += total_failed as u64;
     if brain.is_some() {
-        if brain_ok {
-            s.totals.brain_cycles += 1;
-        } else {
-            s.totals.brain_errors += 1;
-        }
+        s.totals.brain_cycles += brain_cycle_ok;
+        s.totals.brain_errors += brain_cycle_err;
         if evolution_ran {
             s.totals.evolution_trainings += 1;
         }
@@ -637,27 +653,34 @@ async fn list_user_spaces(
 /// split per branch because `IS NULL` is not equivalent to `= ?` for the
 /// NULL sentinel (NULL!=NULL in SQL semantics).
 ///
-/// `_user_id` is kept for API symmetry but ignored: Phase 5.1 dropped
-/// `memories.user_id`, so the tenant DB itself is the user partition.
+/// `user_id` filters rows by owner: upstream #93 re-added `memories.user_id`
+/// (migration 64 / tenant v55) for monolith multi-user isolation, so the query
+/// scopes by BOTH user and space. In sharded mode the predicate is a no-op
+/// (one tenant per shard); in monolith mode it prevents cross-tenant leakage.
 async fn recent_memory_contents_for_space(
     db: &Database,
-    _user_id: i64,
+    user_id: i64,
     space_id: Option<i64>,
     limit: usize,
 ) -> Result<Vec<String>, EngError> {
     let limit_i64 = limit as i64;
+    // 727d97fc merge: combine Patch 35's space scoping with upstream #93's
+    // user_id predicate. Upstream re-added `memories.user_id` (migration 64 /
+    // tenant v55) for monolith multi-user isolation, so the growth pass must
+    // filter BOTH the space (avoid cross-project leakage, Kleos #3028) AND the
+    // user (avoid cross-tenant leakage in monolith mode).
     db.read(move |conn| match space_id {
         Some(sid) => {
             let mut stmt = conn
                 .prepare(
                     "SELECT content FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
-                       AND is_latest = 1 AND space_id = ?1 \
+                       AND is_latest = 1 AND user_id = ?3 AND space_id = ?1 \
                      ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(rusqlite::params![sid, limit_i64], |row| {
+                .query_map(rusqlite::params![sid, limit_i64, user_id], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -669,12 +692,12 @@ async fn recent_memory_contents_for_space(
                 .prepare(
                     "SELECT content FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
-                       AND is_latest = 1 AND space_id IS NULL \
+                       AND is_latest = 1 AND user_id = ?2 AND space_id IS NULL \
                      ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
             let rows = stmt
-                .query_map(rusqlite::params![limit_i64], |row| {
+                .query_map(rusqlite::params![limit_i64, user_id], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
