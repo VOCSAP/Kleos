@@ -5,10 +5,13 @@
 //! key management. If no policies are configured, behavior is
 //! identical to plain credd.
 
+pub mod approval_token;
 pub mod audit;
 pub mod handlers;
 pub mod middleware;
 pub mod migrate;
 pub mod models;
+pub mod notify;
 pub mod router;
+pub mod ssh_ca_signer;
 pub mod state;

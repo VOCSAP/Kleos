@@ -79,6 +79,16 @@ struct Approval {
     seconds_remaining: i64,
 }
 
+impl Approval {
+    /// Total approval window in seconds (`expires_at - created_at`), floored at
+    /// 1 to avoid division by zero. BF-5: the timer gauges divide by this real
+    /// window instead of a hardcoded 120s, so the bar stays accurate when the
+    /// server's approval timeout differs from 120s.
+    fn window_secs(&self) -> f64 {
+        (self.expires_at - self.created_at).num_seconds().max(1) as f64
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct PendingResponse {
@@ -118,6 +128,9 @@ struct App {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
+    /// Identity recorded in audit log for every approve/deny decision.
+    /// Defaults to the $USER environment variable, falling back to "tui-operator".
+    decided_by: String,
     approvals: Vec<Approval>,
     selected: usize,
     list_state: ListState,
@@ -184,15 +197,23 @@ impl App {
         list_state.select(Some(0));
         // Patch 20: configure the reqwest client with the long-poll timeout
         // so a single GET can sit on the wire while the server holds the
-        // connection open in long-poll mode.
+        // connection open in long-poll mode. 727d97fc merge: keep upstream's
+        // (TUI-1) connect_timeout so connection establishment is bounded
+        // separately from the long-poll request wait.
         let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(http_longpoll_timeout())
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
+        // Resolve operator identity at startup for audit attribution (TUI-1,
+        // upstream #93): replaces the hardcoded "tui-operator" literal so the
+        // approval audit records the real operator user.
+        let decided_by = std::env::var("USER").unwrap_or_else(|_| "tui-operator".to_string());
         Self {
             client,
             base_url: url,
             api_key,
+            decided_by,
             approvals: Vec::new(),
             selected: 0,
             list_state,
@@ -294,9 +315,14 @@ impl App {
         let url = format!("{}/approvals/{}/decide", self.base_url, approval.id);
         let api_key = self.api_key.clone();
         let client = self.client.clone();
+        // TUI-1 (upstream #93): real operator identity resolved at startup
+        // instead of a hardcoded "tui-operator" literal, for audit attribution.
+        // Cloned into a local so the `async move` task can own it (cannot borrow
+        // `self` across the spawn).
+        let decided_by = self.decided_by.clone();
         let body = DecideRequest {
             decision: if approved { "approved" } else { "denied" }.to_string(),
-            decided_by: Some("tui-operator".to_string()),
+            decided_by: Some(decided_by),
             reason: None,
         };
         let handle = tokio::spawn(async move {
@@ -414,6 +440,14 @@ impl App {
                 self.last_error = Some(msg);
             }
         }
+        // Always refresh the pending list regardless of outcome so stale items
+        // do not remain in the display after a failed decide (TUI-2). 727d97fc
+        // merge: upstream did this with a synchronous `fetch_pending().await`,
+        // but in the Patch 20b non-blocking model the refresh is driven by the
+        // event loop -- clearing the cooldown makes the next tick's
+        // `try_start_fetch` fire immediately (the Ok arm above also aborts the
+        // in-flight fetch for the same effect).
+        self.last_fetch_completed_at = None;
     }
 
     fn select_next(&mut self) {
@@ -449,7 +483,7 @@ fn ui(frame: &mut Frame, app: &App) {
 
     // Title bar
     let title = Paragraph::new(format!(
-        " ENGRAM APPROVAL CONSOLE                                    Pending: {}",
+        " KLEOS APPROVAL CONSOLE                                     Pending: {}",
         app.approvals.len()
     ))
     .style(Style::default().fg(Color::White).bg(Color::Blue).bold())
@@ -507,7 +541,7 @@ fn render_list(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, a)| {
             let marker = if i == app.selected { ">" } else { " " };
-            let time_bar = make_time_bar(a.seconds_remaining);
+            let time_bar = make_time_bar(a.seconds_remaining, a.window_secs());
             ListItem::new(vec![
                 Line::from(vec![
                     Span::raw(format!("{} [{}] ", marker, i + 1)),
@@ -559,8 +593,8 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // Timer gauge
-    let ratio = (approval.seconds_remaining as f64 / 120.0).clamp(0.0, 1.0);
+    // Timer gauge (BF-5: denominator is the real approval window, not 120s).
+    let ratio = (approval.seconds_remaining as f64 / approval.window_secs()).clamp(0.0, 1.0);
     let gauge = Gauge::default()
         .block(
             Block::default()
@@ -602,8 +636,10 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(detail, chunks[1]);
 }
 
-fn make_time_bar(seconds: i64) -> String {
-    let filled = ((seconds as f64 / 120.0) * 6.0).ceil() as usize;
+fn make_time_bar(seconds: i64, window_secs: f64) -> String {
+    // BF-5: scale against the real approval window rather than a hardcoded 120s.
+    let window = window_secs.max(1.0);
+    let filled = ((seconds as f64 / window) * 6.0).ceil() as usize;
     let filled = filled.min(6);
     let empty = 6 - filled;
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
@@ -627,6 +663,15 @@ async fn main() -> io::Result<()> {
             }
         }
     };
+
+    // Restore the terminal on panic: a crash mid-render would otherwise leave
+    // the user's shell in raw mode and the alternate screen.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
 
     // Setup terminal
     enable_raw_mode()?;

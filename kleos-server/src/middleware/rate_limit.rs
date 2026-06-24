@@ -10,7 +10,7 @@ use kleos_lib::auth::AuthContext;
 use kleos_lib::gate::approval_patterns;
 use kleos_lib::ratelimit;
 
-use crate::middleware::client_ip::client_ip_key;
+use crate::middleware::client_ip::client_ip;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
@@ -28,16 +28,27 @@ const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
 const DEFAULT_PREAUTH_IP_LIMIT: i64 = 60;
 
 /// Patch 28 (2026-05-23): read `KLEOS_PREAUTH_IP_LIMIT` per-request. Invalid
-/// or non-positive values silently fall back to `DEFAULT_PREAUTH_IP_LIMIT` so
-/// a typo cannot accidentally disable the preauth rate limit. Read on every
-/// request (no `LazyLock`) so the operator can hot-tune via a service reload
-/// without a full restart cycle.
-fn preauth_ip_limit() -> i64 {
+/// or non-positive values silently fall back to `fallback` so a typo cannot
+/// accidentally disable the preauth rate limit. Read on every request (no
+/// `LazyLock`) so the operator can hot-tune via a service reload without a full
+/// restart cycle.
+///
+/// 727d97fc merge: the fallback is now the upstream config field
+/// `preauth_ip_rpm` (#93, default 60 == `DEFAULT_PREAUTH_IP_LIMIT`) rather than
+/// the bare const, so the env var still wins for hot-tuning while an unset env
+/// var tracks the operator's config value. Both defaults are 60, so behaviour
+/// is unchanged unless one is explicitly set.
+fn preauth_ip_limit(fallback: i64) -> i64 {
+    let fallback = if fallback > 0 {
+        fallback
+    } else {
+        DEFAULT_PREAUTH_IP_LIMIT
+    };
     std::env::var("KLEOS_PREAUTH_IP_LIMIT")
         .ok()
         .and_then(|v| v.parse::<i64>().ok())
         .filter(|v| *v > 0)
-        .unwrap_or(DEFAULT_PREAUTH_IP_LIMIT)
+        .unwrap_or(fallback)
 }
 
 /// Patch 28 (2026-05-23): resolve the path of the trusted-IPs whitelist file.
@@ -167,20 +178,39 @@ pub async fn preauth_rate_limit_middleware(
         return next.run(request).await;
     }
 
-    let key = client_ip_key(&request, &state.config.trusted_proxies);
-
-    // Patch 28 (2026-05-23): trusted-IP whitelist bypass. `key` is formatted
-    // by `client_ip_key` as `ip:<addr>` (see kleos-server/src/middleware/
-    // client_ip.rs:62); strip the prefix to match the raw IP form the
-    // operator writes in the whitelist file.
-    let ip = key.strip_prefix("ip:").unwrap_or(&key);
-    if preauth_ip_trusted_set().contains(ip) {
-        return next.run(request).await;
+    // Resolve the caller's IP once (upstream #93 `client_ip`). Two independent
+    // trusted-source bypasses apply, unioned at the 727d97fc merge:
+    //   - upstream #93: CIDR exempt list from config (`rate_limit_exempt_cidrs`)
+    //     for trusted local/mesh sources (loopback, WireGuard mesh) so a local
+    //     agent fleet sharing one source IP doesn't throttle itself against a
+    //     limit meant for untrusted internet brute-force. Empty list = no exempt.
+    //   - Patch 28 (VOCSAP): operator-managed exact-IP file whitelist
+    //     (`preauth_ip_trusted.txt`), defense-in-depth on known source IPs.
+    let resolved = client_ip(&request, &state.config.trusted_proxies);
+    if let Some(ip) = &resolved {
+        if state.config.is_rate_limit_exempt(ip) {
+            return next.run(request).await;
+        }
+        // Patch 28 (2026-05-23): file-based trusted-IP whitelist bypass.
+        if preauth_ip_trusted_set().contains(ip) {
+            return next.run(request).await;
+        }
     }
-
-    // Patch 28: limit is now read from env on every request (default 20/min
-    // upstream-aligned).
-    let limit = preauth_ip_limit();
+    let key = match &resolved {
+        Some(ip) => format!("ip:{}", ip),
+        None => {
+            // Mirror client_ip_key: bucket all unresolved callers together
+            // rather than letting them bypass the limiter.
+            tracing::warn!(
+                "ConnectInfo<SocketAddr> not available; rate-limit key will be \"ip:unknown\""
+            );
+            "ip:unknown".to_string()
+        }
+    };
+    // Patch 28: `KLEOS_PREAUTH_IP_LIMIT` env var wins for hot-tuning; when unset
+    // the limit tracks upstream's config field `preauth_ip_rpm` (#93, default
+    // 60). Read per-request so the operator can adjust either lever live.
+    let limit = preauth_ip_limit(state.config.preauth_ip_rpm);
     match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
         Ok(true) => next.run(request).await,
         Ok(false) => {
@@ -237,6 +267,15 @@ pub async fn rate_limit_middleware(
         .any(|p| path == *p || path.starts_with(&format!("{}/", p)))
     {
         return next.run(request).await;
+    }
+
+    // Trusted local/mesh callers bypass the per-user limit too: a fleet that
+    // shares one agent key would otherwise exhaust that key's weighted budget
+    // (e.g. /context costs 5 each) even though the traffic is trusted.
+    if let Some(ip) = client_ip(&request, &state.config.trusted_proxies) {
+        if state.config.is_rate_limit_exempt(&ip) {
+            return next.run(request).await;
+        }
     }
 
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();

@@ -1,11 +1,62 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-06-01 (merge upstream aa6a0bec)
+**Dernière mise à jour :** 2026-06-24 (merge upstream 727d97fc / release 1.7.3)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
 re-appliquer si perdus.
+
+---
+
+## Statut apres merge upstream 727d97fc / release 1.7.3 (2026-06-24)
+
+**Branche :** `local/patches` (base merge-base `3ee0b0bf`, tag de sauvegarde
+`backup/pre-merge-727d97fc@2035dc4c`).
+**Type :** merge (non rebase) de `Ghost-Frame/Kleos` upstream `727d97fc` (main FF, 47
+commits depuis le merge-base ; 144 commits VOCSAP sur `local/patches`). **Driver des
+conflits :** commit upstream `6b984784` (#93 security audit + monolith multi-user
+isolation) = 9 conflits sur 10. **10 fichiers en conflit, 13 blocs**, tous de contenu.
+Plan pre-merge : `docs/dev-notes/merge-main-into-local-patches-plan.md`.
+
+**Etat a la redaction :** working tree resolu, **`cargo check --workspace` vert (WSL)**,
+`cargo clippy --workspace` propre (seuls warnings de style pre-existants), tests
+`eidolon-supervisor` + `kleos-mcp` verts. Merge **non committe**. Deploy serveur Linux
+(WSL build release) + reconciliation LXC 121 a venir.
+
+### Resolution conflit par conflit
+
+| # | Fichier | Effort | Resolution |
+|---|---|---|---|
+| 1 | `eidolon-supervisor/src/checks/rule_match.rs` | MOYEN | Filtre `tool_name` Patch 46 reapplique sur la struct `CompiledRule` upstream (regex pre-compilees). `check_type==RuleMatch` deja filtre dans `compile_rules`. Tests Patch 46 adaptes a la nouvelle signature `check(entry, &[CompiledRule])` via `compile_rules`. |
+| 2 | `kleos-approval-tui/src/main.rs` | MOYEN (2 blocs + 1 cross-region) | Union : client long-poll Patch 20 (`http_longpoll_timeout`) + `connect_timeout(10s)` upstream + `decided_by` resolu au startup (TUI-1) au lieu du literal "tui-operator". Pattern non-bloquant Patch 20b (`DecideOutcome`/`decide_handle`) preserve. Cross-region : `apply_decide_outcome` (sync) appelait `self.fetch_pending().await` (fragment upstream) -> remplace par `last_fetch_completed_at = None` (refresh via tick loop). |
+| 3 | `kleos-cli/src/main.rs` | FAIBLE | Juxtaposition : bras `Commands::Space` (Patch 33) + `Commands::Forge` (upstream #96). |
+| 4 | `kleos-lib/src/db/tenant_migrations.rs` | FAIBLE-MOYEN | Accepte v72/73/74 upstream (tables disjointes des overlays Patch 41, verifie). Commentaire overlay + appel `apply_tenant_overlays` conserves (survit dans `run_tenant_migrations_to`, seul chemin reel). |
+| 5 | `kleos-lib/src/gate/mod.rs` | MOYEN | Combine : self-approval guard upstream #93 (place avant l'UPDATE) + `WHERE status IN ('pending','pending_approval')` Patch 21. |
+| 6 | `kleos-lib/src/llm/local.rs` | FAIBLE | Bloc `think` Patch 14 conserve (upstream avait vide son cote ; `think` toujours consomme en aval). |
+| 7 | `kleos-mcp/src/tools.rs` | MOYEN-ELEVE | Patch 18 (`KLEOS_MCP_TOOL_ALLOWLIST`) **obsolete** (supprime par "Curate the daily MCP surface", superseded par `DAILY_TOOL_NAMES`). Base upstream entiere (registry underscore-normalize + dedup, `is_mcp_blocked`, tests) + greffe Patch 33 (auto-inject `space` dans `dispatch` + helpers `maybe_inject_space`/`read_session_space_name`). |
+| 8 | `kleos-server/src/dreamer.rs` | ELEVE (2 blocs) | Fusion des deux dimensions multi-tenant : boucle par-user (upstream #101 `brain_results` HashMap, `dream_cycle` deserialise per-user) + boucle par-space (Patch 35). `recent_memory_contents_for_space` filtre desormais `user_id` ET `space_id` (upstream a re-ajoute `memories.user_id` migration 64 / tenant v55 -> sans le predicat user, fuite cross-tenant en monolith). |
+| 9 | `kleos-server/src/middleware/rate_limit.rs` | MOYEN (2 blocs) | Union des deux bypass trusted-IP : CIDR config upstream #93 (`is_rate_limit_exempt`) + fichier whitelist Patch 28 (`preauth_ip_trusted_set`). Limite : `KLEOS_PREAUTH_IP_LIMIT` env var prioritaire, fallback sur `config.preauth_ip_rpm` upstream (les deux defauts = 60). `preauth_ip_limit()` prend desormais un argument fallback. |
+| 10 | `kleos-server/src/routes/prompts/mod.rs` | MOYEN-ELEVE | Piege dur #1 **resolu favorablement** : `growth.rs::list_observations` s'est auto-merge en signature unifiee `(db, limit, space_id, include_unscoped, user_id)` (union Patch 33 + upstream #70). Call site aligne : `(&db, growth_limit, None, None, auth.effective_user_id())` -- garde le None/None Patch 33 + le fix delegation `effective_user_id` upstream. |
+
+### Incoherences cross-region (attrapees uniquement au `cargo check`)
+
+| Fichier | Erreur | Fix |
+|---|---|---|
+| `kleos-approval-tui/src/main.rs:445` | `self.fetch_pending().await` dans fn sync + methode inexistante (fragment upstream auto-merge dans `apply_decide_outcome` Patch 20b) | Remplace par `last_fetch_completed_at = None` (mecanisme refresh Patch 20b) |
+| `kleos-server/src/routes/approvals/mod.rs:180` | `respond_to_gate` a gagne un 6e param `responder_agent` (#93) ; call site Patch 21 bridge passait 5 args | Ajoute `None` (path operator-facing, guard non applicable) + aligne `auth.user_id` -> `effective_user_id()` (coherent avec `decide` au-dessus) |
+
+### Pieges durs (statut)
+
+1. **`list_observations`** : auto-merge favorable en signature unifiee. 3 call sites accordes (`growth.rs` def, `routes/growth/mod.rs:53`, `routes/prompts/mod.rs:414`).
+2. **Overlays Patch 41** : `apply_tenant_overlays` toujours appele dans `run_tenant_migrations_to` (seul chemin). v72-74 upstream = tables disjointes, zero collision.
+3. **Double agent-forge** : upstream #96 a internalise agent-forge (`forge_*` tables, `Commands::Forge`, mcp `forge.*`). Binaire externe VOCSAP coexiste. Pas de collision de routes/CLI au `cargo check`. A auditer fonctionnellement au deploy.
+
+### Conditions de retrait
+
+Merge structurel, pas un patch retirable. Les resolutions individuelles deviennent obsoletes
+si upstream absorbe les features VOCSAP correspondantes (cf. backlog PR upstream :
+prompts-overrides, i18n kleos-ingest).
 
 ---
 

@@ -191,8 +191,12 @@ pub async fn decide_approval(
     )
     .await;
 
-    // If approved, mint a lease.
-    if decision == ApprovalStatus::Approved {
+    // If approved, mint a lease -- EXCEPT for ssh-sign approvals.
+    // The sign handler reads Approved status directly and decrypts the key
+    // itself; a redeemable lease for an ssh-sign approval would be a latent
+    // key-exfiltration side channel (any lease holder could redeem it for the
+    // raw private key via the normal resolve path).
+    if decision == ApprovalStatus::Approved && a.resolve_mode != "ssh-sign" {
         let l = lease::mint_lease(
             &state.inner.db,
             a.user_id,
@@ -227,6 +231,11 @@ pub async fn decide_approval(
             "status": "approved",
             "lease": l.to_json(),
         })));
+    }
+
+    // For ssh-sign approvals, return approved status without a lease.
+    if decision == ApprovalStatus::Approved {
+        return Ok(Json(json!({ "status": "approved" })));
     }
 
     Ok(Json(json!({
@@ -266,5 +275,41 @@ pub async fn wait_for_decision(
         }
 
         tokio::time::sleep(poll_interval).await;
+    }
+}
+
+/// Request body for a capability-token approval decision.
+#[derive(Deserialize)]
+pub struct DecideTokenRequest {
+    /// The single-use capability token issued when the approval was raised.
+    pub token: String,
+    /// Decision: "approved" or "denied".
+    pub decision: String,
+}
+
+/// Decide an approval using a single-use capability token instead of a bearer.
+///
+/// `POST /phylax/approvals/{id}/decide-token`. This route is exempt from bearer
+/// auth (see `auth_middleware`): the single-use token IS the capability. It lets
+/// an external, operator-run notifier relay a human decision without holding a
+/// credential. A wrong or already-used token is rejected without distinguishing
+/// the cases.
+pub async fn decide_with_token(
+    State(state): State<PhylaxState>,
+    Path(id): Path<i64>,
+    Json(body): Json<DecideTokenRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let approved = match body.decision.as_str() {
+        "approved" => true,
+        "denied" => false,
+        _ => {
+            return Err(
+                CredError::InvalidInput("decision must be 'approved' or 'denied'".into()).into(),
+            )
+        }
+    };
+    match approval::decide_with_token(&state.inner.db, id, &body.token, approved).await {
+        Ok(status) => Ok(Json(json!({ "status": status as i32 }))),
+        Err(_) => Err(CredError::PermissionDenied("decision rejected".into()).into()),
     }
 }

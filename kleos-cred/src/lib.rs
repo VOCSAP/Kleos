@@ -12,6 +12,8 @@ pub mod agent_keys;
 pub mod agent_keys_file;
 pub mod audit;
 pub mod crypto;
+pub mod encryption;
+pub mod net;
 pub mod piv;
 pub mod recovery;
 pub mod storage;
