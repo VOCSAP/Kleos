@@ -689,7 +689,11 @@ impl Default for Config {
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
             reranker_enabled: true,
-            reranker_top_k: 12,
+            // SEC-recall-2.1: the reranker now sees a candidate pool sized to this window
+            // (see hybrid_search_reranked), so a larger value lets the cross-encoder pull
+            // more buried-but-relevant memories into the final top-k. Tunable via
+            // RERANKER_TOP_K env.
+            reranker_top_k: 24,
             reranker_model_dir: None,
             data_dir: dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -946,6 +950,19 @@ impl Config {
                     config.vector_dimensions
                 ),
             }
+        }
+        // Vector safety: the embedder output dimension and the vector-store schema
+        // dimension must match. A mismatch otherwise surfaces only later as a runtime
+        // InvalidInput that silently drops vectors from the index. Warn loudly at load so
+        // the misconfiguration is visible immediately rather than as missing recall.
+        if config.embedding_dim != config.vector_dimensions {
+            tracing::warn!(
+                "embedding_dim ({}) != vector_dimensions ({}); embeddings will fail to \
+                 index and semantic recall will silently degrade. Set EMBEDDING_DIM and \
+                 VECTOR_DIMENSIONS to the same value.",
+                config.embedding_dim,
+                config.vector_dimensions
+            );
         }
         if let Ok(v) = crate::kleos_env("USE_LANCE_INDEX") {
             config.use_lance_index = v != "0" && !v.eq_ignore_ascii_case("false");
