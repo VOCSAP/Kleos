@@ -50,6 +50,8 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+unicode-normalization = { workspace = true }
+rust-stemmers = { workspace = true }
 url = { workspace = true }
 ipnet = { workspace = true }
 ort = { workspace = true }
@@ -79,8 +81,6 @@ zeroize = { workspace = true }
 toml = { workspace = true }
 metrics = { workspace = true }
 rust_decimal = { workspace = true }
-unicode-normalization = { workspace = true }
-rust-stemmers = { workspace = true }
 
 # Crypto: ECDH bootstrap + Sparkling Fairy PIV-Everywhere auth.
 p256 = { version = "0.13", features = ["ecdh", "ecdsa", "pem"] }

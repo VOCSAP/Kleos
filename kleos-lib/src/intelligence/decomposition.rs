@@ -19,19 +19,19 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-/// Embedded default for `memory/decompose` (Patch 15 overlay-capable).
+/// Embedded default for the decomposition system prompt. Overridable at
+/// runtime via the prompt repository under `memory/decompose/system.txt`.
 const DECOMPOSITION_PROMPT_DEFAULT: &str =
     include_str!("../../prompts/memory/decompose/system.txt");
 
-/// Load the live `memory/decompose` system prompt (honors any overlay
-/// in `KLEOS_LLM_PROMPT_REPOSITORY` / `${KLEOS_DATA_DIR}/prompts`).
+/// Resolve the decomposition system prompt, honoring any runtime override.
 fn decomposition_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt("memory/decompose/system", DECOMPOSITION_PROMPT_DEFAULT)
 }
 
-/// Build the meta-sentence stoplist from the i18n lexicon.
+/// Build the filler-prefix list from the i18n lexicon.
 ///
-/// Patch 38 L2 sites 9 + 10 -- the previous hardcoded English-only
+/// The previous hardcoded English-only
 /// FILLER_PREFIXES and META_STOPLIST constants now source their content
 /// from the lexicon (filler_prefixes and meta_stoplist classes) for
 /// every supported language. French / English transcripts are filtered
@@ -236,8 +236,7 @@ async fn try_llm_decomposition(content: &str) -> Option<DecompositionResult> {
         max_tokens: 512,
     };
 
-    let system = decomposition_prompt();
-    match call_llm(system.as_ref(), content, Some(opts)).await {
+    match call_llm(&decomposition_prompt(), content, Some(opts)).await {
         Ok(response) => {
             let parsed: Option<LlmDecompositionResponse> = repair_and_parse_json(&response);
             match parsed {
@@ -268,7 +267,7 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
         .filter(|s| s.len() >= 10 && s.len() <= 300)
         .collect();
 
-    // Filter meta-sentences (Patch 38 L2 site 10 + normalize).
+    // Filter meta-sentences .
     // Compare folded source vs folded meta phrase so accents and casing
     // never block a match. The meta_stoplist class allows stemming by
     // default in the TOML, but multi-word entries stem token by token
@@ -281,9 +280,11 @@ fn decompose_rule_based(content: &str) -> DecompositionResult {
                 crate::lexicon::word_class(lang, "meta_stoplist")
                     .iter()
                     .any(|meta| {
-                        folded_s.contains(
-                            &crate::lexicon::fold_word_for_class(meta, lang, "meta_stoplist"),
-                        )
+                        folded_s.contains(&crate::lexicon::fold_word_for_class(
+                            meta,
+                            lang,
+                            "meta_stoplist",
+                        ))
                     })
             })
         })
@@ -366,7 +367,7 @@ fn decompose_template(content: &str) -> DecompositionResult {
     }
 }
 
-/// Strip leading filler phrases (Patch 38 L2 site 9 -- lexicon-driven).
+/// Strip leading filler phrases (lexicon-driven).
 fn strip_filler(s: &str) -> String {
     let lower = s.to_lowercase();
     for filler in filler_prefixes() {

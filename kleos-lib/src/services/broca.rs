@@ -564,6 +564,34 @@ struct GenericLlmRequest {
     system: String,
 }
 
+/// Embedded defaults for the narration prompt pair, overridable at runtime via
+/// the prompt repository under `broca/narrate/{system,user}.txt`.
+const NARRATE_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/narrate/system.txt");
+const NARRATE_USER_DEFAULT: &str = include_str!("../../prompts/broca/narrate/user.txt");
+
+/// Resolves the narration system prompt through the prompt repository.
+fn narrate_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("broca/narrate/system", NARRATE_SYSTEM_DEFAULT)
+}
+
+/// Renders the narration user prompt for one agent action through the prompt
+/// repository, falling back to the embedded default template.
+fn narrate_user_prompt(
+    agent: &str,
+    service: &str,
+    action: &str,
+    payload: &serde_json::Value,
+) -> String {
+    let payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let vars = serde_json::json!({
+        "agent": agent,
+        "service": service,
+        "action": action,
+        "payload": payload,
+    });
+    crate::llm::prompts::load_and_render("broca/narrate/user", NARRATE_USER_DEFAULT, &vars)
+}
+
 /// Generate a narrative for a stored action via LLM.
 ///
 /// Used as a fallback when no template matched at ingest. Returns a short,
@@ -601,24 +629,8 @@ pub async fn llm_narrate(
 
     let model = broca_llm_model();
 
-    // Patch 15 -- prompt overlay for broca/narrate (system + user template).
-    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
-        "broca/narrate",
-        include_str!("../../prompts/broca/narrate/system.txt"),
-        include_str!("../../prompts/broca/narrate/user.txt"),
-    );
-    let system: &str = system_cow.as_ref();
-    let payload_str =
-        serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
-    let user_prompt = crate::llm::template::interpolate(
-        user_template_cow.as_ref(),
-        &serde_json::json!({
-            "agent": agent,
-            "service": service,
-            "action": action,
-            "payload": payload_str,
-        }),
-    );
+    let system = narrate_system_prompt();
+    let user_prompt = narrate_user_prompt(agent, service, action, payload);
 
     // Detect endpoint style -- mirrors narrator.ts detection logic.
     let is_ollama_or_openai_compat = url_base.contains("11434")
@@ -1093,23 +1105,30 @@ fn scrub_llm_error(e: &str) -> &'static str {
 /// optional fields (`agent`, `service`, `since`, `limit`) and nothing else.
 /// If the LLM is unavailable or returns non-JSON, the function falls back
 /// to [`ask_keyword_heuristic`] so the pipeline always makes progress.
+/// Embedded default for the ask-plan system prompt, overridable at runtime via
+/// the prompt repository under `broca/ask_plan/system.txt`.
+const ASK_PLAN_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/ask_plan/system.txt");
+/// Patch 16 -- VOCSAP-only overlay: upstream overlays only the ask-plan
+/// system prompt, VOCSAP additionally wraps the question in an overridable
+/// user template (`broca/ask_plan/user.txt`).
+const ASK_PLAN_USER_DEFAULT: &str = include_str!("../../prompts/broca/ask_plan/user.txt");
+
+/// Resolves the ask-plan system prompt through the prompt repository.
+fn ask_plan_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("broca/ask_plan/system", ASK_PLAN_SYSTEM_DEFAULT)
+}
+
 async fn ask_plan_call(question: &str) -> AskPlan {
     let Some(url_base) = broca_llm_url() else {
         tracing::debug!("ask: LLM not configured, using keyword heuristic for plan");
         return ask_keyword_heuristic(question);
     };
 
-    // Patch 15 -- prompts overlay: load system/user from the embedded
-    // defaults, with optional runtime override via
-    // KLEOS_LLM_PROMPT_REPOSITORY/broca/ask_plan/{system,user}.txt.
-    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
-        "broca/ask_plan",
-        include_str!("../../prompts/broca/ask_plan/system.txt"),
-        include_str!("../../prompts/broca/ask_plan/user.txt"),
-    );
-    let system: &str = system_cow.as_ref();
+    let system = ask_plan_system_prompt();
+    // Patch 16 -- overlay-capable user template (defaults to `{{question}}`).
+    let user_template = crate::llm::prompts::load_prompt("broca/ask_plan/user", ASK_PLAN_USER_DEFAULT);
     let user_prompt = crate::llm::template::interpolate(
-        user_template_cow.as_ref(),
+        user_template.as_ref(),
         &serde_json::json!({ "question": question }),
     );
 

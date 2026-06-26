@@ -37,6 +37,7 @@ fn context_timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
+/// Routes for context assembly (JSON and SSE streaming endpoints).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/context", post(build_context))
@@ -68,12 +69,14 @@ async fn build_context(
     }
 
     let embedder = state.embedder.read().await.clone();
+    let reranker = state.current_reranker().await;
     let result = assemble_context(
         &db,
         body,
         auth.effective_user_id(),
         embedder,
         state.llm.clone(),
+        reranker,
     )
     .await?;
 
@@ -108,12 +111,14 @@ async fn build_context_stream(
         .is_some_and(|v| v.contains("text/event-stream"));
     if !accepts_sse {
         let embedder = state.embedder.read().await.clone();
+        let reranker = state.current_reranker().await;
         let result = assemble_context(
             &resolved_db,
             body,
             auth.effective_user_id(),
             embedder,
             state.llm.clone(),
+            reranker,
         )
         .await?;
         // Wrap in SSE-style JSON so callers get a consistent shape.
@@ -136,6 +141,7 @@ async fn build_context_stream(
     // M-R3-007: stream assembly also routes to the caller's shard.
     let db = resolved_db.clone();
     let llm = state.llm.clone();
+    let reranker = state.current_reranker().await;
     let user_id = auth.effective_user_id();
 
     // Output channel for SSE events (progress + final result).
@@ -152,7 +158,9 @@ async fn build_context_stream(
                     tracing::debug!("context SSE assembly drained on shutdown");
                 }
                 _ = async {
-                    let result = assemble_context_streaming(&db, body, user_id, embedder, llm, tx).await;
+                    let result =
+                        assemble_context_streaming(&db, body, user_id, embedder, llm, reranker, tx)
+                            .await;
                     match result {
                         Ok(ctx) => {
                             // R8 R-009: log rather than silently drop send errors --

@@ -2,7 +2,7 @@ schema_version = 1
 language = "fr"
 
 # French baseline lexicon for the kleos-lib intelligence pipeline.
-# Patch 38 Livrable 2 normalize: the runtime matcher folds inputs and
+# The runtime matcher folds inputs and
 # lexicon entries through lowercase + Unicode-NFD diacritic strip +
 # optional Snowball stemming (lexicon::fold_for_matching). The TOML
 # can therefore carry the orthographically-correct French forms with
@@ -225,7 +225,7 @@ stem = false
 words = ["plat", "film", "livre", "série", "jeu", "chanson", "couleur", "sport", "endroit", "boisson", "artiste", "groupe", "auteur", "nourriture"]
 
 [classes.is_or_are]
-# Copule utilisée dans le motif favorite_regex et par le filtre Patch 38.1
+# Copule utilisée dans le motif favorite_regex et par le filtre
 # cross-pattern collision skip (extraction.rs object_starts_with_copula).
 # Enrichi pour couvrir indicatif présent/imparfait/futur + subjonctif courants
 # au lieu d'attendre des cas oubliés en production.
@@ -419,7 +419,7 @@ words = ["voyage", "voyager", "visiter", "trajet", "destination"]
 words = ["interdit", "interdite", "prohibé", "prohibée", "non autorisé", "refusé", "bloqué", "restreint", "ne doit pas", "ne peut pas", "jamais", "ne pas", "banni"]
 
 # ---------------------------------------------------------------------------
-# Patch 38.2 -- extraction.rs unit-specific patterns. FR convention:
+# extraction.rs unit-specific patterns. FR convention:
 # currency goes AFTER the amount (50 euros, 50€).
 # ---------------------------------------------------------------------------
 

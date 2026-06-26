@@ -1,11 +1,50 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-06-24 (merge upstream 727d97fc / release 1.7.3)
+**Dernière mise à jour :** 2026-06-26 (merge upstream f4e7eb3f -- absorption PR i18n + prompt-overlay)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
 re-appliquer si perdus.
+
+---
+
+## Statut apres merge upstream f4e7eb3f (2026-06-26)
+
+**Branche** : `merge/upstream-f4e7eb3f`. `HEAD` = `23e17d66` (tip `local/patches` post-727d97fc), `MERGE_HEAD` = `f4e7eb3f`. 75 fichiers stages. Strategie : "Base upstream + re-appli VOCSAP" (upstream canonique, on ne re-applique que les extensions VOCSAP non couvertes par les PR mergees).
+
+### Evenement majeur : absorption upstream des 2 PR VOCSAP
+
+Upstream Ghost-Frame a accepte et merge les deux PR VOCSAP. Leur fondation bascule donc de "delta local" a "code upstream" :
+
+| Patch | Avant f4e7eb3f | Apres f4e7eb3f |
+|---|---|---|
+| **15 / 16 -- prompt overlay** (`KLEOS_LLM_PROMPT_REPOSITORY`, `llm::prompts` + `llm::template`) | delta local CONSERVE | **fondation ABSORBEE upstream**. Le loader cascade et l'arborescence `prompts/<service>/<purpose>/` sont desormais upstream. Restructure visible : `growth/<slug>_reflection/` -> `growth/<slug>/` (rename upstream). Verifier si des extensions VOCSAP residuelles subsistent (suffixes Patch 16, ids specifiques) ; sinon Patch 15/16 retirables. |
+| **38 -- i18n core lexicon** (`KLEOS_LEXICON_REPOSITORY`, module `lexicon/`) | delta local CONSERVE | **fondation ABSORBEE upstream**. Module `lexicon/{cache,loader,mod}.rs` + overlay TOML desormais upstream. Verifier residus VOCSAP (classes ajoutees, baselines en/fr). |
+
+Consequence : ces patches restent visibles au grep (tokens presents) mais ne sont plus du delta a defendre au rebase -- ils SONT upstream. La carte `delta-upstream` doit etre reduite en consequence.
+
+### Canal schema overlay (Patch 41)
+
+Le merge f4e7eb3f n'a touche le canal overlay que via deux suivis, documentes en detail plus bas :
+- **Suivi 41a** : guard `table_exists` prefixe sur tous les overlays.
+- **Suivi 41b** : ajout de l'overlay monolith manquant `conversations.space_id` (symetrique au tenant).
+
+### Patch 5 (rappel)
+
+`KLEOS_EMBEDDING_BACKEND` reste **ABANDONNE** (cf. table aa6a0bec ligne ~79 et section Patch 5 en bas). Token absent du source ; selection backend via presence de `KLEOS_EMBEDDING_URL` (`embeddings/openai.rs`). Inchange par ce merge.
+
+### Tests
+
+Build + `cargo test -p kleos-lib` verts sur **WSL ET Windows**, **4 workers** (`--test-threads=4`), avec `KLEOS_NET_ALLOW_PRIVATE` unset (sinon 6 unittests net/gate echouent et masquent les binaires d'integration par fail-fast cible -- cf. Suivi 41a). Detail dans Suivi 41b.
+
+### Audit de presence (2026-06-26)
+
+Verification source de tous les patches listes : tous PRESENTS sauf les absences/absorptions deja documentees (1, 4 absorbes ; 5 abandonne ; 6 remplace par 7 ; 18 retire ; 19 abandonne ; 27 partiellement obsolete) + les 2 fondations 15/16 et 38 desormais upstream (ci-dessus). Aucun patch cense present n'a ete droppe par ce merge.
+
+### Conditions de retrait
+
+Merge structurel, pas un patch retirable. Les statuts individuels evoluent quand upstream absorbe d'autres features VOCSAP (cf. PR backlog).
 
 ---
 
@@ -435,13 +474,23 @@ let mut f = opts.open(path).unwrap_or_else(|e| { ... });
 
 ---
 
-## Patch 5 -- Embedding backend configurable (KLEOS_EMBEDDING_BACKEND)
+## Patch 5 -- Embedding backend configurable (KLEOS_EMBEDDING_BACKEND) -- ABANDONNE
 
-**Fichiers :**
+> **ABANDONNE depuis le merge aa6a0bec (cf. table de statut aa6a0bec, ligne ~79).** Upstream
+> a refactore `OpenAiProvider::from_env` : la selection du backend OpenAI-compatible se fait
+> desormais par **presence de `KLEOS_EMBEDDING_URL`** (avec `KLEOS_EMBEDDING_API_KEY` /
+> `KLEOS_EMBEDDING_MODEL`), pas par un flag `KLEOS_EMBEDDING_BACKEND`. Le token
+> `KLEOS_EMBEDDING_BACKEND` est **totalement absent du source** ; verifie 2026-06-26 sur
+> `merge/upstream-f4e7eb3f`. La description ci-dessous est conservee a titre historique
+> (mecanisme VOCSAP d'origine), elle ne reflete plus le code. Cote LXC 121, configurer
+> `KLEOS_EMBEDDING_URL=http://192.168.10.16:11434/v1` (+ API_KEY/MODEL) au lieu des anciennes
+> `KLEOS_EMBEDDING_OPENAI_*`.
+
+**Fichiers (historique) :**
 - `kleos-lib/src/embeddings/openai.rs`
 - `kleos-server/src/main.rs`
 
-**Statut upstream :** Absent. Fonctionnalité locale nécessaire pour Ollama.
+**Statut upstream :** Mecanisme superseded par upstream (`KLEOS_EMBEDDING_URL` detection). Voir encadre ci-dessus.
 **Contexte :** L'upstream hardcode `OnnxProvider` (modèle ONNX local). Le serveur VOCSAP
 utilise Ollama (192.168.10.16:11434) via l'API OpenAI-compatible. Sans ce patch, le
 serveur essaie de charger un modèle ONNX inexistant et le vector search est désactivé.
@@ -4596,12 +4645,91 @@ verts (apply puis no-op monolith + tenant, no-op sur schema complet, dedup avant
 unique index, skip backfill si owner None). 137 tests `db::` verts. verify
 agent-forge 2/2.
 
+### Suivi 41a -- guard `table_exists` sur les overlays (merge f4e7eb3f, 2026-06-26)
+
+agent-forge hyp `hyp_9e191295`. Decouvert pendant le merge f4e7eb3f : deux
+nouveaux tests upstream (`tenant_migrations::tests::scratchpad_constraint_reshaped_after_v23`,
+`user_id_absent_from_scratchpad_after_v23`) appellent `run_tenant_migrations_to(conn, None, 23)`
+(migration **partielle** a v23). Or `apply_tenant_overlays` tourne malgre tout en
+fin de runner, et a v23 la table `supervisor_injections` (creee a v46) n'existe
+pas encore.
+
+**Cause racine :** les guards `needs` testaient `!table_has_column(...)` /
+`!index_exists(...)`. Ces helpers retournent `false` sur une table **absente**
+(zero ligne dans `pragma_table_info`) -> `needs = true` -> `apply` tentait un
+`ALTER TABLE` sur une table inexistante -> panic `no such table: supervisor_injections`.
+L'hypothese d'origine du canal Patch 41 (les overlays tournent toujours apres que
+la chaine upstream a tout cree) est fausse sur le chemin migration partielle.
+
+**Fix (niveau additif, dans le canal overlay VOCSAP -- zero delta upstream) :**
+chaque `needs` des 6 overlays (1 monolith + 5 tenant) `AND` desormais
+`table_exists(conn, <table>)` devant son probe colonne/index. `table_exists`
+(qui etait `#[allow(dead_code)]`) devient utilise ; le `#[allow]` est retire et
+les doc-comments de `table_has_column` / `table_exists` corriges. Nouveau test
+`overlays_are_noop_when_target_tables_absent` (connexion sans aucune table -> tous
+les `needs` doivent etre `false`, les deux entry points ne doivent pas erreur).
+Fichier touche : `kleos-lib/src/db/vocsap/mod.rs` uniquement.
+
+**Tests :** premier run Windows `cargo test -p kleos-lib --features bundled-sqlite`
+avec `KLEOS_NET_ALLOW_PRIVATE=1` (present dans l'env operateur) = 1061 passed,
+6 failed cote unittests lib. Piege important : `cargo test` est fail-fast au
+**niveau cible** -- l'echec des unittests lib stoppe le run AVANT que les
+binaires de tests d'integration (`tests/*.rs`) ne soient lances. Le "1061/6"
+ne validait donc QUE les unittests lib, pas l'integration. Run correct = env var
+unset : unittests 1067 passed / 0 failed, puis tous les binaires d'integration
+verts (CARGO_EXIT=0). Les 2 tests overlay v23 + le nouveau test passent.
+
 ### Conditions de retrait
 
 Candidat PR upstream incertain : le mecanisme est generique mais la liste
 d'overlays est specifique VOCSAP. Upstream pourrait adopter le pattern de canal
 lateral pour ses propres forks downstream. A retirer seulement si Kleos cesse
 d'etre un fork actif.
+
+### Suivi 41b -- overlay monolith manquant pour `conversations.space_id` (merge f4e7eb3f, 2026-06-26)
+
+agent-forge hyp `hyp_4105d96c`. Decouvert APRES Suivi 41a une fois que le run
+Windows env-unset a enfin execute les tests d'integration (cf. piege fail-fast
+ci-dessus) : `single_db_isolation::conversations_isolated_between_users_single_db`
+echoue avec `table conversations has no column named space_id`. Reproduit aussi
+sur WSL.
+
+**Cause racine :** trou pre-existant de Patch 41 (pas une regression du merge --
+verifie identique a HEAD pre-merge). L'overlay `conversations_space_id` (ALTER
+qui ajoute la colonne, Patch 33, ex tenant v74 / origine v57) n'etait enregistre
+que dans `VOCSAP_TENANT_OVERLAYS`, jamais dans `VOCSAP_MONOLITH_OVERLAYS`. Or
+`Database::connect_memory` (mode monolith single-DB) applique `run_migrations`
+(qui appelle `apply_monolith_overlays` en fin, migrations.rs:500), et
+`create_conversation` (conversations.rs:285) INSERT `space_id` sans condition.
+Resultat : un monolith **frais** (in-memory de test) n'a jamais la colonne. La
+prod LXC 121 n'est PAS affectee : sa DB monolith a ete creee avant Patch 41
+quand `conversations.space_id` etait une migration monolith numerotee (colonne
+legacy presente). Seul le chemin fresh-schema diverge. Le test n'avait jamais
+ete execute en monolith faute du fail-fast Windows + WSL non lance jusque-la.
+
+**Fix (niveau additif, canal overlay VOCSAP -- zero delta upstream) :** ajout
+d'un overlay monolith `conversations_space_id` symetrique a `approvals_gate_id`
+(qui lui existe bien dans les deux registres). Nouvelle fn
+`monolith_conversations_space_id_apply` (meme DDL que la version tenant : `ALTER
+TABLE conversations ADD COLUMN space_id INTEGER` + `CREATE INDEX IF NOT EXISTS
+idx_conv_space`). Guard `needs` = `table_exists(conn, "conversations") AND
+!table_has_column(conn, "conversations", "space_id")` (conforme a la regle
+Suivi 41a). Fixture de test `make_monolith_base` etendue avec une table
+`conversations`, et `monolith_overlays_apply_then_noop` asserte desormais l'ajout
+de `space_id` + `idx_conv_space`. Fichier touche : `kleos-lib/src/db/vocsap/mod.rs`
+uniquement.
+
+**Tests :** Windows `cargo test -p kleos-lib --features bundled-sqlite -j 2 --
+--test-threads=4` (env var unset) : unittests 1067/0, `single_db_isolation`
+20/0 (dont `conversations_isolated_between_users_single_db ... ok`), tous les
+autres binaires d'integration 0 failed, CARGO_EXIT=0. WSL `cargo test -p
+kleos-lib -j 2 -- --test-threads=4` (env var unset) : `single_db_isolation`
+20/0, tous binaires + doctests 0 failed. Les deux plateformes vertes, 4 workers.
+
+### Conditions de retrait (41b)
+
+Identiques a Patch 41 / Suivi 41a : a retirer avec tout le canal overlay si
+Kleos cesse d'etre un fork actif.
 
 ---
 

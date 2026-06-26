@@ -170,37 +170,35 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
     .await
 }
 
-/// Service-specific reflection prompts.
-// Patch 15 -- embedded defaults for the growth/* reflection prompts.
-const GROWTH_KLEOS_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/kleos_reflection/system.txt");
-const GROWTH_CLAUDE_CODE_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/claude_code_reflection/system.txt");
-const GROWTH_EIDOLON_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/eidolon_reflection/system.txt");
-const GROWTH_DEFAULT_REFLECTION_DEFAULT: &str =
-    include_str!("../../prompts/growth/default_reflection/system.txt");
+/// Embedded defaults for the service-specific reflection system prompts.
+/// Each is overridable at runtime via the prompt repository under
+/// `growth/<service>/system.txt`.
+const ENGRAM_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/engram/system.txt");
+const CLAUDE_CODE_REFLECTION_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/system.txt");
+const EIDOLON_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/eidolon/system.txt");
+const DEFAULT_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/default/system.txt");
 
 // Patch 16 -- embedded defaults for the per-service rules suffix and user
-// templates. Colocated with the existing system prompts (Option C of plan
-// mossy-launching-origami): the same Rules text is duplicated across the
-// four services so an operator can tune one without touching the others.
-const GROWTH_KLEOS_REFLECTION_SUFFIX_DEFAULT: &str =
-    include_str!("../../prompts/growth/kleos_reflection/system_suffix.txt");
-const GROWTH_CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT: &str =
-    include_str!("../../prompts/growth/claude_code_reflection/system_suffix.txt");
-const GROWTH_EIDOLON_REFLECTION_SUFFIX_DEFAULT: &str =
-    include_str!("../../prompts/growth/eidolon_reflection/system_suffix.txt");
-const GROWTH_DEFAULT_REFLECTION_SUFFIX_DEFAULT: &str =
-    include_str!("../../prompts/growth/default_reflection/system_suffix.txt");
-const GROWTH_KLEOS_REFLECTION_USER_DEFAULT: &str =
-    include_str!("../../prompts/growth/kleos_reflection/user.txt");
-const GROWTH_CLAUDE_CODE_REFLECTION_USER_DEFAULT: &str =
-    include_str!("../../prompts/growth/claude_code_reflection/user.txt");
-const GROWTH_EIDOLON_REFLECTION_USER_DEFAULT: &str =
-    include_str!("../../prompts/growth/eidolon_reflection/user.txt");
-const GROWTH_DEFAULT_REFLECTION_USER_DEFAULT: &str =
-    include_str!("../../prompts/growth/default_reflection/user.txt");
+// templates. Colocated with the upstream system prompts (Option C): the same
+// Rules text is duplicated across the four services so an operator can tune
+// one without touching the others. Realigned on the upstream slug naming
+// (growth/<service>/...) at the f4e7eb3f merge.
+const ENGRAM_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/engram/system_suffix.txt");
+const CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/system_suffix.txt");
+const EIDOLON_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon/system_suffix.txt");
+const DEFAULT_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/default/system_suffix.txt");
+const ENGRAM_REFLECTION_USER_DEFAULT: &str = include_str!("../../prompts/growth/engram/user.txt");
+const CLAUDE_CODE_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/user.txt");
+const EIDOLON_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon/user.txt");
+const DEFAULT_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/default/user.txt");
 
 struct ServicePromptPaths {
     system_id: &'static str,
@@ -213,44 +211,47 @@ struct ServicePromptPaths {
 
 // Map the dispatch key to a canonical prompt slug. The kleos / engram
 // aliasing collapses to the same canonical files so legacy growth rows
-// tagged "engram" still pick up the same reflection prompt as "kleos" rows.
+// tagged "kleos" still pick up the same reflection prompt as "engram" rows.
 fn service_prompt_paths(service: &str) -> ServicePromptPaths {
     match service {
         "engram" | "kleos" => ServicePromptPaths {
-            system_id: "growth/kleos_reflection/system",
-            system_default: GROWTH_KLEOS_REFLECTION_DEFAULT,
-            suffix_id: "growth/kleos_reflection/system_suffix",
-            suffix_default: GROWTH_KLEOS_REFLECTION_SUFFIX_DEFAULT,
-            user_id: "growth/kleos_reflection/user",
-            user_default: GROWTH_KLEOS_REFLECTION_USER_DEFAULT,
+            system_id: "growth/engram/system",
+            system_default: ENGRAM_REFLECTION_DEFAULT,
+            suffix_id: "growth/engram/system_suffix",
+            suffix_default: ENGRAM_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/engram/user",
+            user_default: ENGRAM_REFLECTION_USER_DEFAULT,
         },
         "claude-code" => ServicePromptPaths {
-            system_id: "growth/claude_code_reflection/system",
-            system_default: GROWTH_CLAUDE_CODE_REFLECTION_DEFAULT,
-            suffix_id: "growth/claude_code_reflection/system_suffix",
-            suffix_default: GROWTH_CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT,
-            user_id: "growth/claude_code_reflection/user",
-            user_default: GROWTH_CLAUDE_CODE_REFLECTION_USER_DEFAULT,
+            system_id: "growth/claude_code/system",
+            system_default: CLAUDE_CODE_REFLECTION_DEFAULT,
+            suffix_id: "growth/claude_code/system_suffix",
+            suffix_default: CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/claude_code/user",
+            user_default: CLAUDE_CODE_REFLECTION_USER_DEFAULT,
         },
         "eidolon" => ServicePromptPaths {
-            system_id: "growth/eidolon_reflection/system",
-            system_default: GROWTH_EIDOLON_REFLECTION_DEFAULT,
-            suffix_id: "growth/eidolon_reflection/system_suffix",
-            suffix_default: GROWTH_EIDOLON_REFLECTION_SUFFIX_DEFAULT,
-            user_id: "growth/eidolon_reflection/user",
-            user_default: GROWTH_EIDOLON_REFLECTION_USER_DEFAULT,
+            system_id: "growth/eidolon/system",
+            system_default: EIDOLON_REFLECTION_DEFAULT,
+            suffix_id: "growth/eidolon/system_suffix",
+            suffix_default: EIDOLON_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/eidolon/user",
+            user_default: EIDOLON_REFLECTION_USER_DEFAULT,
         },
         _ => ServicePromptPaths {
-            system_id: "growth/default_reflection/system",
-            system_default: GROWTH_DEFAULT_REFLECTION_DEFAULT,
-            suffix_id: "growth/default_reflection/system_suffix",
-            suffix_default: GROWTH_DEFAULT_REFLECTION_SUFFIX_DEFAULT,
-            user_id: "growth/default_reflection/user",
-            user_default: GROWTH_DEFAULT_REFLECTION_USER_DEFAULT,
+            system_id: "growth/default/system",
+            system_default: DEFAULT_REFLECTION_DEFAULT,
+            suffix_id: "growth/default/system_suffix",
+            suffix_default: DEFAULT_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/default/user",
+            user_default: DEFAULT_REFLECTION_USER_DEFAULT,
         },
     }
 }
 
+/// Service-specific reflection prompts. An explicit `prompt_override` wins;
+/// otherwise the per-service embedded default is resolved through the prompt
+/// repository so operators can override it at runtime.
 fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> String {
     if let Some(override_prompt) = prompt_override {
         return override_prompt.to_string();

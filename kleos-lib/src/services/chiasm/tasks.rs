@@ -622,11 +622,11 @@ pub async fn generate_plan(db: &Database, id: i64, user_id: i64) -> Result<Task>
         )
     })?;
 
-    // Patch 15 -- prompt overlay for chiasm/generate_plan (system + user
-    // template). The expected_output and summary fields are optional, so we
-    // pre-format them into ready-to-insert blocks (each empty when absent)
-    // to preserve the upstream behavior of omitting the line entirely
-    // instead of leaving it dangling with an empty value.
+    // Prompt overlay for chiasm/generate_plan (system + user template). The
+    // expected_output and summary fields are optional, so we pre-format them
+    // into ready-to-insert blocks (each empty when absent) to preserve the
+    // behavior of omitting the line entirely instead of leaving it dangling
+    // with an empty value.
     let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
         "chiasm/generate_plan",
         include_str!("../../../prompts/chiasm/generate_plan/system.txt"),

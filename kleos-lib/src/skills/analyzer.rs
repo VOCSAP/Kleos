@@ -74,17 +74,14 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
     .await
 }
 
-/// Embedded default for `skills/analyze_execution` (Patch 15 overlay-capable).
+/// Embedded default for the skill-execution analysis system prompt.
+/// Overridable at runtime via the prompt repository under
+/// `skills/analyze_execution/system.txt`.
 pub const ANALYSIS_SYSTEM_PROMPT_DEFAULT: &str =
     include_str!("../../prompts/skills/analyze_execution/system.txt");
 
-/// Backward-compatible alias for callers that imported the historic name.
-/// New code should call [`analysis_system_prompt`] to honour any runtime
-/// overlay configured via `KLEOS_LLM_PROMPT_REPOSITORY` /
-/// `${KLEOS_DATA_DIR}/prompts`.
-pub const ANALYSIS_SYSTEM_PROMPT: &str = ANALYSIS_SYSTEM_PROMPT_DEFAULT;
-
-/// Load the live `skills/analyze_execution` system prompt.
+/// Resolve the skill-execution analysis system prompt, honoring any runtime
+/// override.
 pub fn analysis_system_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt(
         "skills/analyze_execution/system",

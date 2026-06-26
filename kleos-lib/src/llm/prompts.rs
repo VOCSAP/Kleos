@@ -1,20 +1,27 @@
 // ============================================================================
-// LLM -- Dynamic prompt overlay (Patch 15).
+// LLM -- Dynamic prompt overlay.
 //
 // Loads LLM system / user prompts with an embedded default that can be
-// overridden at runtime by a file under `KLEOS_LLM_PROMPT_REPOSITORY`.
+// overridden at runtime by a file in an external prompt repository. This lets
+// operators iterate on prompt wording without recompiling: edit the file, and
+// the next request (within `TTL_SECS`) picks it up.
 //
-// Layout: `<repo>/<service>/<purpose>/system.txt` (and `user.txt` for
-// prompts that have a user-side template). The `id` parameter expected by
-// the helpers below is the dot-free path *without* the `.txt` extension,
-// e.g. `"broca/ask_plan/system"`.
+// Layout: `<repo>/<service>/<purpose>/system.txt` (and `user.txt` for prompts
+// that have a user-side template, plus optional `system_suffix.txt` and
+// `<phase>_user_suffix.txt` rule blocks). The `id` parameter expected by the
+// helpers below is the slash path *without* the `.txt` extension, e.g.
+// `"broca/ask_plan/system"`.
+//
+// Resolution of the override repository, in priority order:
+//   1. `KLEOS_LLM_PROMPT_REPOSITORY` env var (explicit, any directory).
+//   2. `KLEOS_DATA_DIR/prompts` (or `ENGRAM_DATA_DIR/prompts`) when present.
+//   3. None -> always return the embedded default (zero I/O, hot path).
 //
 // Behavior:
-// - If `KLEOS_LLM_PROMPT_REPOSITORY` is unset -> always return the embedded
-//   default (zero I/O, hot path).
-// - If set and `<repo>/<id>.txt` exists -> return its content (cached up to
-//   `TTL_SECS` between mtime rechecks).
-// - If set but file missing / unreadable -> log a `warn!` once per id and
+// - If no override repository is configured -> return the embedded default.
+// - If configured and `<repo>/<id>.txt` exists -> return its content (cached
+//   up to `TTL_SECS` between mtime rechecks).
+// - If configured but the file is missing / unreadable -> log once per id and
 //   fall back to the embedded default. Never panic.
 //
 // The cache stores `Arc<String>` so repeated lookups are cheap clones, and
@@ -23,7 +30,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -48,49 +55,62 @@ fn cache() -> &'static RwLock<HashMap<String, CacheEntry>> {
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn repo_root() -> Option<&'static PathBuf> {
-    static REPO: OnceLock<Option<PathBuf>> = OnceLock::new();
-    REPO.get_or_init(|| {
-        // 1. Explicit override: KLEOS_LLM_PROMPT_REPOSITORY (any directory).
-        if let Some(raw) = std::env::var_os("KLEOS_LLM_PROMPT_REPOSITORY") {
-            let p = PathBuf::from(raw);
-            if !p.as_os_str().is_empty() {
-                return Some(p);
+/// Resolve the prompt override repository root, if one is configured.
+///
+/// Re-evaluated on every call. It is only reached on the LLM-invocation path,
+/// which is far more expensive than these few env reads and one `is_dir`
+/// check, so resolving fresh keeps the overlay hot: a prompt repository
+/// created after process start, or an env var repointed at a new location, is
+/// picked up on the next prompt load instead of being frozen at first use.
+fn repo_root() -> Option<PathBuf> {
+    // 1. Explicit override: KLEOS_LLM_PROMPT_REPOSITORY (any directory).
+    if let Some(raw) = std::env::var_os("KLEOS_LLM_PROMPT_REPOSITORY") {
+        let p = PathBuf::from(raw);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    // 2. Implicit fallback: <KLEOS_DATA_DIR>/prompts when the convention
+    //    directory exists. Avoids introducing a second env var when the
+    //    operator already provides a canonical data root. Both the
+    //    `KLEOS_` and legacy `ENGRAM_` prefixes are honored.
+    for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+        if let Some(raw) = std::env::var_os(env) {
+            let candidate = PathBuf::from(raw).join("prompts");
+            if candidate.is_dir() {
+                return Some(candidate);
             }
         }
-        // 2. Implicit fallback: <KLEOS_DATA_DIR>/prompts when the convention
-        //    directory exists. Avoids introducing a second env var when the
-        //    operator already provides a canonical data root (deploy/kleos.env
-        //    ships KLEOS_DATA_DIR=/var/lib/kleos by default). Mirrors the
-        //    KLEOS_* / ENGRAM_* migration done by `config::migrate_env_prefix`
-        //    by reading both names.
-        for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
-            if let Some(raw) = std::env::var_os(env) {
-                let candidate = PathBuf::from(raw).join("prompts");
-                if candidate.is_dir() {
-                    return Some(candidate);
-                }
-            }
-        }
-        None
-    })
-    .as_ref()
+    }
+    None
 }
 
-fn path_for(repo: &PathBuf, id: &str) -> PathBuf {
+fn path_for(repo: &Path, id: &str) -> PathBuf {
     repo.join(format!("{id}.txt"))
 }
 
-/// Load a single prompt by its dot-free id (e.g. `"broca/ask_plan/system"`).
+/// Load a single prompt by its slash id (e.g. `"broca/ask_plan/system"`).
 ///
 /// Returns a borrowed `Cow` over the embedded default in the common case
 /// (no override repo configured, or override missing). Returns an owned
 /// `Cow` over the file content when an override is in effect.
 pub fn load_prompt(id: &str, embedded_default: &'static str) -> Cow<'static, str> {
+    // Reject ids that could escape the prompt repository. Real ids are
+    // slash-separated relative paths of known prompts (for example
+    // "broca/ask_plan/system"); a ".." segment, an absolute path, a backslash,
+    // or a NUL byte is never legitimate and could traverse out of the repo if a
+    // future caller passed user input. Fall back to the embedded default.
+    if id.starts_with('/')
+        || id.contains('\\')
+        || id.contains('\0')
+        || id.split('/').any(|seg| seg == ".." || seg.is_empty())
+    {
+        return Cow::Borrowed(embedded_default);
+    }
     let Some(repo) = repo_root() else {
         return Cow::Borrowed(embedded_default);
     };
-    match resolve_override(repo, id) {
+    match resolve_override(&repo, id) {
         Some(content) => Cow::Owned((*content).clone()),
         None => Cow::Borrowed(embedded_default),
     }
@@ -125,7 +145,7 @@ pub fn load_and_render(
 
 /// Resolve the override for `id` by hitting the cache first; refresh from
 /// disk when the entry is older than `TTL_SECS` or absent.
-fn resolve_override(repo: &PathBuf, id: &str) -> Option<Arc<String>> {
+fn resolve_override(repo: &Path, id: &str) -> Option<Arc<String>> {
     // Fast path: cache hit within TTL window.
     {
         let cache_g = cache().read().ok()?;
@@ -157,8 +177,25 @@ fn resolve_override(repo: &PathBuf, id: &str) -> Option<Arc<String>> {
         }
     }
 
-    // mtime missing or different: re-read from disk.
-    let new_content = std::fs::read_to_string(&path).ok().map(Arc::new);
+    // mtime missing or different: re-read from disk. Cap the size first so a
+    // large or hostile override file (in a directory an attacker or a
+    // misconfiguration made writable) cannot be loaded into memory and sent
+    // verbatim to the LLM endpoint (DoS / API-cost exhaustion). Oversized
+    // overrides fall back to the embedded default.
+    const MAX_PROMPT_BYTES: u64 = 64 * 1024;
+    let oversized = std::fs::metadata(&path)
+        .map(|m| m.len() > MAX_PROMPT_BYTES)
+        .unwrap_or(false);
+    let new_content = if oversized {
+        tracing::warn!(
+            prompt_id = id,
+            path = %path.display(),
+            "prompt override exceeds {MAX_PROMPT_BYTES} bytes; using embedded default"
+        );
+        None
+    } else {
+        std::fs::read_to_string(&path).ok().map(Arc::new)
+    };
     if new_content.is_none() {
         // Log a single warning per id-miss so operators can spot typos.
         // We use `debug` for the case where no override file is expected
@@ -217,15 +254,6 @@ mod tests {
         dir
     }
 
-    /// Drop the `repo_root` OnceLock by reading it: we can't reset a OnceLock
-    /// directly, so each test that wants a different env value must run in a
-    /// subprocess or rely on the fact that the OnceLock is initialised lazily
-    /// on first call. The tests below avoid that limitation by checking the
-    /// underlying `resolve_override` directly and bypassing the OnceLock for
-    /// the env var, OR by accepting that the first test sets the value for
-    /// the whole binary (we serialize with `env_lock()` and read the env at
-    /// each call within `resolve_override` is not possible -- so we test the
-    /// invariants we can without touching OnceLock).
     #[test]
     fn load_prompt_no_repo_returns_embedded() {
         let _g = env_lock().lock().unwrap();
@@ -274,8 +302,7 @@ mod tests {
         assert_eq!(&*resolve_override(&dir, id).unwrap(), "v1");
 
         // Wait past the TTL window and rewrite with a different mtime.
-        std::thread::sleep(Duration::from_millis((TTL_SECS as u64) * 1000 + 200));
-        // Touch with explicit modified-time bump (sleep already past TTL).
+        std::thread::sleep(Duration::from_millis(TTL_SECS * 1000 + 200));
         fs::write(&file, "v2").unwrap();
         assert_eq!(&*resolve_override(&dir, id).unwrap(), "v2");
     }
@@ -291,7 +318,6 @@ mod tests {
         fs::write(&sys, "SYS_OVERRIDE").unwrap();
         fs::write(&usr, "USR_OVERRIDE {{x}}").unwrap();
 
-        // Use the lower-level resolve to avoid depending on OnceLock state.
         let s = resolve_override(&dir, "svc/p/system").unwrap();
         let u = resolve_override(&dir, "svc/p/user").unwrap();
         assert_eq!(&*s, "SYS_OVERRIDE");
@@ -300,9 +326,11 @@ mod tests {
 
     #[test]
     fn render_interpolates_overridden_template() {
-        // Render through interpolate directly (avoids OnceLock).
         let tmpl = "Hello {{who}}!";
         let vars = serde_json::json!({ "who": "kleos" });
-        assert_eq!(super::super::template::interpolate(tmpl, &vars), "Hello kleos!");
+        assert_eq!(
+            super::super::template::interpolate(tmpl, &vars),
+            "Hello kleos!"
+        );
     }
 }

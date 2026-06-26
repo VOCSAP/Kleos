@@ -2,7 +2,7 @@ schema_version = 1
 language = "en"
 
 # English baseline lexicon for the kleos-lib intelligence pipeline.
-# Patch 38 Livrable 1 -- additive, no consumer yet. Future patches refactor
+# The intelligence sites refactor
 # extraction.rs, personality.rs, valence.rs, sentiment.rs, etc. to read from
 # this lexicon rather than hardcoded constants.
 
@@ -223,7 +223,7 @@ stem = false
 words = ["food", "movie", "book", "show", "game", "song", "color", "colour", "sport", "place", "drink", "artist", "band", "author"]
 
 [classes.is_or_are]
-# Copula used inside the favorite_regex tail and by the Patch 38.1
+# Copula used inside the favorite_regex tail and by the
 # cross-pattern collision skip (extraction.rs object_starts_with_copula).
 # Enriched to cover present/past/future/perfect copula forms up-front
 # rather than waiting for missed cases in production.
@@ -415,7 +415,7 @@ words = ["travel", "visit", "trip"]
 words = ["forbidden", "prohibited", "not allowed", "denied", "blocked", "restricted", "must not", "shall not", "never", "do not", "don't", "banned"]
 
 # ---------------------------------------------------------------------------
-# Patch 38.2 -- extraction.rs unit-specific patterns (buy/spent/have/exercise/
+# extraction.rs unit-specific patterns (buy/spent/have/exercise/
 # made/earned). EN convention: currency goes BEFORE the amount ($50). FR uses
 # the suffix convention (50 euros). Each language populates only the
 # convention it natively uses; the helper picks the non-empty class.
