@@ -173,14 +173,14 @@ pub fn make_atom_id(atom_type: AtomType, canonical_form: &str) -> String {
 
 // --- Compiled regexes (lazy) ---
 
-// Patch 38 L2.B 4/4 -- the 4 atom-extraction regexes become per-language
+// The 4 atom-extraction regexes become per-language
 // templates fed by the lexicon (atom_<kind>_markers classes). The static
 // RE_ENTITY_PATH and RE_ENTITY_LABEL below stay language-agnostic because
 // they encode structural patterns (path prefixes, `file:` / `service:`
 // label syntax) that do not vary across human languages.
 
 fn build_atom_regex(lang: &str, class: &str) -> Option<Regex> {
-    // Patch 38 L2.B wildcard-after-stem: stem each marker (one-shot at
+    // Wildcard-after-stem: stem each marker (one-shot at
     // load) and append `\w*` so inflected forms (`decided` -> `decide`
     // matches `decides`, `decideront`) catch without TOML duplication.
     // Multi-word markers ("we will") keep the inner-whitespace `\s+`
@@ -206,10 +206,11 @@ fn build_atom_regex(lang: &str, class: &str) -> Option<Regex> {
         })
         .collect::<Vec<_>>()
         .join("|");
-    Regex::new(&format!(
-        r"(?i)(?:\b|(?<=^|\s))(?:{alternation})\w*.{{0,120}}"
-    ))
-    .ok()
+    // `\b` already anchors at a word boundary (including string start), so a
+    // lookbehind is unnecessary. The standard `regex` crate has no lookbehind
+    // support, so the previous `(?<=^|\s)` made this pattern fail to compile,
+    // and `.ok()` silently turned that into `None` (no markers ever matched).
+    Regex::new(&format!(r"(?i)\b(?:{alternation})\w*.{{0,120}}")).ok()
 }
 
 fn atom_decision_regex_for(lang: &str) -> Option<Regex> {
@@ -300,7 +301,7 @@ pub fn extract_heuristic(text: &str) -> Vec<ExtractedAtom> {
         }};
     }
 
-    // Patch 38 L2.B 4/4 -- iterate over every supported language and apply
+    // Iterate over every supported language and apply
     // that language's atom regex. The push! macro already deduplicates by
     // canonical lowercase form, so bilingual source text producing two
     // overlapping matches collapses to a single atom.
@@ -386,17 +387,22 @@ struct LlmAtomItem {
     confidence: Option<f64>,
 }
 
+/// Embedded default for the atom-extraction system prompt, overridable at
+/// runtime via the prompt repository under `extraction/atoms/system.txt`.
+const ATOMS_SYSTEM_PROMPT_DEFAULT: &str = include_str!("../../prompts/extraction/atoms/system.txt");
+
+/// Resolves the atom-extraction system prompt through the prompt repository,
+/// falling back to the embedded default.
+fn atoms_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("extraction/atoms/system", ATOMS_SYSTEM_PROMPT_DEFAULT)
+}
+
 /// Attempts to extract atoms from `text` via an Ollama-compatible LLM endpoint.
 ///
 /// On any failure (network, parse, timeout) this function logs a warning and
 /// returns an empty vector -- callers should fall back to [`extract_heuristic`].
 pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
-    // Patch 15 -- prompt overlay for extraction/atoms (system only).
-    let system_prompt_cow = crate::llm::prompts::load_prompt(
-        "extraction/atoms/system",
-        include_str!("../../prompts/extraction/atoms/system.txt"),
-    );
-    let system_prompt: &str = system_prompt_cow.as_ref();
+    let system_prompt = atoms_system_prompt();
 
     let mut body = serde_json::json!({
         "model": "llama3",

@@ -7,28 +7,30 @@ use crate::skills;
 use crate::{EngError, Result};
 use rusqlite::params;
 
-/// Embedded default for `skills/fix_prompt` (Patch 15 overlay-capable).
+/// Embedded defaults for the skill-evolution system prompts. Each is
+/// overridable at runtime via the prompt repository under
+/// `skills/<purpose>/system.txt`.
 pub const FIX_SYSTEM_PROMPT_DEFAULT: &str =
     include_str!("../../prompts/skills/fix_prompt/system.txt");
-/// Embedded default for `skills/derive_prompt` (Patch 15 overlay-capable).
 pub const DERIVE_SYSTEM_PROMPT_DEFAULT: &str =
     include_str!("../../prompts/skills/derive_prompt/system.txt");
-/// Embedded default for `skills/capture_prompt` (Patch 15 overlay-capable).
 pub const CAPTURE_SYSTEM_PROMPT_DEFAULT: &str =
     include_str!("../../prompts/skills/capture_prompt/system.txt");
 
-/// Load the live `skills/fix_prompt` system prompt (honors any overlay
-/// in `KLEOS_LLM_PROMPT_REPOSITORY` / `${KLEOS_DATA_DIR}/prompts`).
-pub fn fix_system_prompt() -> std::borrow::Cow<'static, str> {
+/// Resolve the skill-fix system prompt, honoring any runtime override.
+fn fix_system_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt("skills/fix_prompt/system", FIX_SYSTEM_PROMPT_DEFAULT)
 }
-/// Load the live `skills/derive_prompt` system prompt.
-pub fn derive_system_prompt() -> std::borrow::Cow<'static, str> {
+/// Resolve the skill-derive system prompt, honoring any runtime override.
+fn derive_system_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt("skills/derive_prompt/system", DERIVE_SYSTEM_PROMPT_DEFAULT)
 }
-/// Load the live `skills/capture_prompt` system prompt.
-pub fn capture_system_prompt() -> std::borrow::Cow<'static, str> {
-    crate::llm::prompts::load_prompt("skills/capture_prompt/system", CAPTURE_SYSTEM_PROMPT_DEFAULT)
+/// Resolve the skill-capture system prompt, honoring any runtime override.
+fn capture_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/capture_prompt/system",
+        CAPTURE_SYSTEM_PROMPT_DEFAULT,
+    )
 }
 
 // Patch 16 -- per-call-site user suffix shots, externalized so an operator
@@ -337,11 +339,9 @@ pub async fn fix_skill(
         code_suffix.trim()
     );
 
-    let fix_sys = fix_system_prompt();
-    let fix_sys_ref = fix_sys.as_ref();
-    let name_raw = llm_shot(llm, fix_sys_ref, &name_user, 64).await?;
-    let desc_raw = llm_shot(llm, fix_sys_ref, &desc_user, 256).await?;
-    let code_raw = llm_shot(llm, fix_sys_ref, &code_user, 2000).await?;
+    let name_raw = llm_shot(llm, &fix_system_prompt(), &name_user, 64).await?;
+    let desc_raw = llm_shot(llm, &fix_system_prompt(), &desc_user, 256).await?;
+    let code_raw = llm_shot(llm, &fix_system_prompt(), &code_user, 2000).await?;
 
     let name = sanitize_slug(&name_raw);
     let description = sanitize_description(&desc_raw);
@@ -444,11 +444,9 @@ pub async fn derive_skill(
         code_suffix.trim()
     );
 
-    let derive_sys = derive_system_prompt();
-    let derive_sys_ref = derive_sys.as_ref();
-    let name_raw = llm_shot(llm, derive_sys_ref, &name_user, 64).await?;
-    let desc_raw = llm_shot(llm, derive_sys_ref, &desc_user, 256).await?;
-    let code_raw = llm_shot(llm, derive_sys_ref, &code_user, 2000).await?;
+    let name_raw = llm_shot(llm, &derive_system_prompt(), &name_user, 64).await?;
+    let desc_raw = llm_shot(llm, &derive_system_prompt(), &desc_user, 256).await?;
+    let code_raw = llm_shot(llm, &derive_system_prompt(), &code_user, 2000).await?;
 
     let name = sanitize_slug(&name_raw);
     let description = sanitize_description(&desc_raw);
@@ -519,11 +517,9 @@ pub async fn capture_skill(
         code_suffix.trim()
     );
 
-    let capture_sys = capture_system_prompt();
-    let capture_sys_ref = capture_sys.as_ref();
-    let name_raw = llm_shot(llm, capture_sys_ref, &name_user, 64).await?;
-    let desc_raw = llm_shot(llm, capture_sys_ref, &desc_user, 256).await?;
-    let code_raw = llm_shot(llm, capture_sys_ref, &code_user, 2000).await?;
+    let name_raw = llm_shot(llm, &capture_system_prompt(), &name_user, 64).await?;
+    let desc_raw = llm_shot(llm, &capture_system_prompt(), &desc_user, 256).await?;
+    let code_raw = llm_shot(llm, &capture_system_prompt(), &code_user, 2000).await?;
 
     let name = sanitize_slug(&name_raw);
     let description_final = sanitize_description(&desc_raw);

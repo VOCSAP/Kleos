@@ -17,12 +17,12 @@ use crate::llm::{local::LocalModelClient, repair_and_parse_json};
 use crate::memory::{self, types::StoreRequest};
 use std::sync::Arc;
 
-/// Embedded default for `extraction/facts` (Patch 15 overlay-capable).
+/// Embedded default for the extraction system prompt. Overridable at runtime
+/// via the prompt repository under `extraction/facts/system.txt`.
 const EXTRACT_SYSTEM_PROMPT_DEFAULT: &str =
     include_str!("../../../prompts/extraction/facts/system.txt");
 
-/// Load the live `extraction/facts` system prompt (honors any overlay
-/// in `KLEOS_LLM_PROMPT_REPOSITORY` / `${KLEOS_DATA_DIR}/prompts`).
+/// Resolve the extraction system prompt, honoring any runtime override.
 fn extract_system_prompt() -> std::borrow::Cow<'static, str> {
     crate::llm::prompts::load_prompt("extraction/facts/system", EXTRACT_SYSTEM_PROMPT_DEFAULT)
 }

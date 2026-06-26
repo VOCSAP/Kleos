@@ -1,19 +1,16 @@
 // ============================================================================
-// Lexicon -- i18n core module (Patch 38 Livrable 1).
+// Lexicon -- i18n core module.
 //
 // Centralises multilingual word lists and (later) regex overrides used by
 // the intelligence pipeline (extraction.rs, personality.rs, valence.rs,
-// sentiment.rs, etc.). Livrable 1 is purely additive: nothing in the
-// codebase consumes this module yet. Livrable 2 will refactor the 15
-// hardcoded sites identified in `docs/dev-notes/i18n-audit.md` to read
-// from here instead.
+// sentiment.rs, etc.). These sites read their word classes from here
+// instead of the hardcoded constants they previously embedded.
 //
 // Public API:
 //   - word_class(lang, class)             -> Vec<String>
 //   - word_class_alternation(lang, class) -> String (joined with '|')
 //   - supported_languages()               -> Vec<String>
-//   - complex_regex(id)                   -> Option<String> (stub for Layer B,
-//                                            populated in Livrable 2)
+//   - complex_regex(id)                   -> Option<String> (stub for Layer B)
 //
 // Cascade for the source of truth, in priority order:
 //   1. `KLEOS_LEXICON_REPOSITORY` env var (explicit, any directory).
@@ -104,11 +101,16 @@ pub fn word_class(lang: &str, class: &str) -> Vec<String> {
 }
 
 /// Convenience: pipe-joined alternation suitable for direct interpolation
-/// into a regex template. The values are emitted verbatim -- callers that
-/// need regex-escaping should escape themselves (Livrable 2 may add a
-/// helper once the consumer call sites are concrete).
+/// into a regex template. Each word is `regex::escape`-ed so a lexicon entry
+/// containing regex metacharacters (`.`, `*`, `(`, and the like) cannot
+/// produce a broken or injectable pattern. For inflected matching that also
+/// stems each word, use [`word_class_alternation_stemmed`].
 pub fn word_class_alternation(lang: &str, class: &str) -> String {
-    word_class(lang, class).join("|")
+    word_class(lang, class)
+        .iter()
+        .map(|w| regex::escape(w))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 /// Pipe-joined alternation of the **stemmed** words for a class. The
@@ -117,7 +119,7 @@ pub fn word_class_alternation(lang: &str, class: &str) -> String {
 /// special characters in the stemmed form do not break the surrounding
 /// regex template.
 ///
-/// Patch 38 L2.B helper. Use this when the regex compiled from the
+/// Helper. Use this when the regex compiled from the
 /// alternation will be matched against **raw source text** AND you want
 /// inflected forms to match: pair this with a `\w*` wildcard after the
 /// non-capturing group in the template. Example:
@@ -196,44 +198,48 @@ fn stemmer_for(lang: &str) -> Option<Stemmer> {
 /// `école` becomes `ecole`, `déçu` becomes `decu`, `naïve` becomes `naive`.
 fn strip_diacritics(s: &str) -> String {
     use unicode_normalization::char::is_combining_mark;
-    s.nfd()
-        .filter(|c| !is_combining_mark(*c))
-        .nfc()
-        .collect()
+    s.nfd().filter(|c| !is_combining_mark(*c)).nfc().collect()
 }
 
 /// Fold a single token or multi-word phrase for matching.
 ///
-/// Pipeline: lowercase -> strip diacritics -> optional Snowball stem
-/// (per token if the input has spaces). `with_stem = false` skips
-/// the morphological step (used for grammar-word classes).
+/// Pipeline: lowercase -> optional Snowball stem (per token if the input has
+/// spaces) -> strip diacritics. `with_stem = false` skips the morphological
+/// step (used for grammar-word classes) and just lowercases + strips.
+///
+/// The stem step runs BEFORE diacritic stripping on purpose: the Snowball
+/// French (and Romance/Nordic) algorithms use diacritics to identify endings,
+/// so stripping first would mis-stem inflected forms (for example the French
+/// past participle "aimee" would not reduce to the same stem as "aimer").
+/// Stripping the diacritics from the resulting stem keeps the final key
+/// accent-invariant either way.
 ///
 /// The function is invoked at both ends of a comparison so that the
 /// match is invariant to diacritics, casing, and (when stemming
 /// applies) inflection.
 pub fn fold_for_matching(s: &str, lang: &str, with_stem: bool) -> String {
     let lower = s.to_lowercase();
-    let stripped = strip_diacritics(&lower);
     if !with_stem {
-        return stripped;
+        return strip_diacritics(&lower);
     }
     let Some(stemmer) = stemmer_for(lang) else {
-        return stripped;
+        return strip_diacritics(&lower);
     };
     // Snowball operates on a single word. For multi-word entries (causal
-    // phrases like "a cause de"), split on whitespace, stem each token,
-    // then rejoin with spaces to preserve the phrase structure.
-    stripped
+    // phrases like "a cause de"), split on whitespace, stem each token on its
+    // accented form, then rejoin with spaces to preserve the phrase structure.
+    let stemmed = lower
         .split_whitespace()
         .map(|tok| stemmer.stem(tok).into_owned())
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    strip_diacritics(&stemmed)
 }
 
 /// Look up whether `class` has `stem = true` (default) or `stem = false`
 /// in the lexicon, then call `fold_for_matching` with the appropriate
 /// stemming behavior. Use this when the class identity is known to the
-/// caller (which is the typical pattern after Patch 38 L2.A).
+/// caller (which is the typical pattern for Layer A sites).
 pub fn fold_word_for_class(word: &str, lang: &str, class: &str) -> String {
     let with_stem = class_stem_enabled(lang, class);
     fold_for_matching(word, lang, with_stem)
@@ -357,12 +363,12 @@ pub fn reload_overrides() {
     cache::purge_runtime_cache();
 }
 
-/// Stub for Layer B (Patch 38 Livrable 2): retrieve a complex regex
+/// Stub for Layer B (): retrieve a complex regex
 /// override by its dot-free id (e.g. `"intelligence.extraction.facts.fr.
-/// negation_discontinuous"`). Always returns `None` in Livrable 1; the
+/// negation_discontinuous"`). Always returns `None` for now; the
 /// real implementation reads from `<repo>/patterns/<id>.toml`.
 ///
-/// Exposed now so Livrable 2 consumer code can be written against the
+/// Exposed so consumer code can be written against the
 /// final signature without churn.
 pub fn complex_regex(_id: &str) -> Option<String> {
     None
@@ -376,42 +382,50 @@ pub fn class_valence_arousal(lang: &str, class: &str) -> Option<(f64, f64)> {
     let from_override = cache::repo_root()
         .and_then(|repo| cache::resolve_override(repo, lang))
         .and_then(|p| {
-            p.classes.get(class).and_then(|c| match (c.valence, c.arousal) {
-                (Some(v), Some(a)) => Some((v, a)),
-                _ => None,
-            })
+            p.classes
+                .get(class)
+                .and_then(|c| match (c.valence, c.arousal) {
+                    (Some(v), Some(a)) => Some((v, a)),
+                    _ => None,
+                })
         });
     if from_override.is_some() {
         return from_override;
     }
     embedded(lang).and_then(|p| {
-        p.classes.get(class).and_then(|c| match (c.valence, c.arousal) {
-            (Some(v), Some(a)) => Some((v, a)),
-            _ => None,
-        })
+        p.classes
+            .get(class)
+            .and_then(|c| match (c.valence, c.arousal) {
+                (Some(v), Some(a)) => Some((v, a)),
+                _ => None,
+            })
     })
 }
 
 /// Return the optional `(valence, intensity)` metadata for an emotion class.
-/// Used by Livrable 2 personality.rs / valence.rs refactor. Returns `None`
+/// Used by the personality.rs / valence.rs refactor. Returns `None`
 /// when the class has no metadata or the language is unknown.
 pub fn class_emotion_metadata(lang: &str, class: &str) -> Option<(f64, f64)> {
     let from_override = cache::repo_root()
         .and_then(|repo| cache::resolve_override(repo, lang))
         .and_then(|p| {
-            p.classes.get(class).and_then(|c| match (c.valence, c.intensity) {
-                (Some(v), Some(i)) => Some((v, i)),
-                _ => None,
-            })
+            p.classes
+                .get(class)
+                .and_then(|c| match (c.valence, c.intensity) {
+                    (Some(v), Some(i)) => Some((v, i)),
+                    _ => None,
+                })
         });
     if from_override.is_some() {
         return from_override;
     }
     embedded(lang).and_then(|p| {
-        p.classes.get(class).and_then(|c| match (c.valence, c.intensity) {
-            (Some(v), Some(i)) => Some((v, i)),
-            _ => None,
-        })
+        p.classes
+            .get(class)
+            .and_then(|c| match (c.valence, c.intensity) {
+                (Some(v), Some(i)) => Some((v, i)),
+                _ => None,
+            })
     })
 }
 
@@ -434,8 +448,8 @@ mod tests {
         let words = word_class("fr", "verb_like");
         assert!(words.contains(&"aimer".to_string()));
         assert!(words.contains(&"adorer".to_string()));
-        assert!(words.contains(&"apprecier".to_string()));
-        assert!(words.contains(&"preferer".to_string()));
+        assert!(words.contains(&"apprécier".to_string()));
+        assert!(words.contains(&"préférer".to_string()));
     }
 
     #[test]
@@ -501,8 +515,8 @@ mod tests {
     fn fold_stems_french_conjugations() {
         // All four French forms should fold to the same stem.
         let infinitive = fold_for_matching("aimer", "fr", true);
-        let past_participle = fold_for_matching("aimee", "fr", true);
-        let plural = fold_for_matching("aimees", "fr", true);
+        let past_participle = fold_for_matching("aimée", "fr", true);
+        let plural = fold_for_matching("aimées", "fr", true);
         let imperfect = fold_for_matching("aimait", "fr", true);
         assert_eq!(infinitive, past_participle);
         assert_eq!(infinitive, plural);
@@ -545,7 +559,7 @@ mod tests {
 
     #[test]
     fn class_stem_default_is_true() {
-        // verb_like has no explicit `stem` field in the embedded TOML and
+        // Verb_like has no explicit `stem` field in the embedded TOML and
         // should default to true.
         assert!(class_stem_enabled("en", "verb_like"));
         assert!(class_stem_enabled("fr", "verb_like"));
@@ -553,7 +567,7 @@ mod tests {
 
     #[test]
     fn fold_word_for_class_respects_stem_metadata() {
-        // verb_like stems by default: "aimerions" should change.
+        // Verb_like stems by default: "aimerions" should change.
         let stemmed = fold_word_for_class("aimerions", "fr", "verb_like");
         assert_ne!(stemmed, "aimerions");
     }
@@ -561,7 +575,10 @@ mod tests {
     #[test]
     fn class_emotion_metadata_returns_some_for_emotion_classes() {
         let meta = class_emotion_metadata("en", "emotion_happy");
-        assert!(meta.is_some(), "emotion_happy must expose (valence, intensity)");
+        assert!(
+            meta.is_some(),
+            "emotion_happy must expose (valence, intensity)"
+        );
         let (valence, intensity) = meta.unwrap();
         assert!(valence > 0.0, "happy is positive valence");
         assert!(intensity > 0.0 && intensity <= 1.0);
@@ -569,7 +586,7 @@ mod tests {
 
     #[test]
     fn class_emotion_metadata_returns_none_for_layer_a_classes() {
-        // articles / stopwords have no valence/intensity, so metadata must
+        // Articles / stopwords have no valence/intensity, so metadata must
         // be None even though the class exists.
         assert!(class_emotion_metadata("en", "articles").is_none());
         assert!(class_emotion_metadata("en", "stopwords").is_none());
@@ -578,7 +595,7 @@ mod tests {
     #[test]
     fn embedded_en_has_full_class_set() {
         // Smoke test that the embedded EN baseline declares every class the
-        // Livrable 2 refactor will need. Any class missing here will cause
+        // the refactored sites need. Any class missing here will cause
         // an empty result downstream, so we check upfront.
         for class in [
             "verb_like",
@@ -637,7 +654,7 @@ mod tests {
         }
     }
 
-    // Patch 38 L2.B helper tests.
+    // Helper tests.
 
     #[test]
     fn word_class_alternation_stemmed_fr_verbs_match_inflected_forms() {
@@ -648,8 +665,17 @@ mod tests {
         let alt = word_class_alternation_stemmed("fr", "verb_like");
         let pattern = format!(r"(?i)\b(?:{alt})\w*\b");
         let re = regex::Regex::new(&pattern).expect("compiled");
-        for inflected in &["j'aime", "j'aimais", "j'aimerions", "j'adore", "j'adorerais"] {
-            assert!(re.is_match(inflected), "FR inflected `{inflected}` must match");
+        for inflected in &[
+            "j'aime",
+            "j'aimais",
+            "j'aimerions",
+            "j'adore",
+            "j'adorerais",
+        ] {
+            assert!(
+                re.is_match(inflected),
+                "FR inflected `{inflected}` must match"
+            );
         }
     }
 

@@ -59,8 +59,11 @@ struct VocsapTenantOverlay {
 // --- schema introspection helpers (the idempotence guards) ---
 
 /// True if `table` has a column named `column`. Returns `false` for a missing
-/// table (no rows in `pragma_table_info`), which is safe here because overlays
-/// run after the upstream dispatch has created every table.
+/// table (no rows in `pragma_table_info`). A missing table and a present-but-
+/// column-less table are therefore indistinguishable here, so every overlay
+/// `needs` guard ANDs this with [`table_exists`]: overlays also run after a
+/// PARTIAL migration (e.g. tests that stop before the version that creates the
+/// table), where the table may legitimately not exist yet.
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let count: i64 = conn
         .query_row(
@@ -84,10 +87,10 @@ fn index_exists(conn: &Connection, index: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
-/// True if a table named `table` exists. Currently unused by the overlays (all
-/// target tables are upstream-created) but exposed for future overlays that may
-/// create-then-populate their own table.
-#[allow(dead_code)]
+/// True if a table named `table` exists. Every overlay `needs` guard ANDs this
+/// in front of its column/index probe so an overlay cleanly skips when its target
+/// table has not been created yet -- the case under a PARTIAL migration (upstream
+/// tests that stop before the version that creates the table run the overlays too).
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let count: i64 = conn
         .query_row(
@@ -111,6 +114,23 @@ fn monolith_approvals_gate_id_apply(conn: &Connection) -> Result<()> {
             ON approvals(gate_id) WHERE gate_id IS NOT NULL;",
     )
     .map_err(|e| EngError::DatabaseMessage(format!("vocsap overlay approvals_gate_id failed: {e}")))?;
+    Ok(())
+}
+
+/// Add nullable `space_id INTEGER` to the monolith `conversations` table so the
+/// spaces partitioning convention extends to multi-turn agent threads in single-DB
+/// mode (Patch 33). The tenant shards get this via [`tenant_conversations_space_id_apply`];
+/// the monolith path was missing its mirror overlay, so a fresh single-DB built by
+/// [`super::Database::connect_memory`] had no `conversations.space_id` even though
+/// `create_conversation` INSERTs it unconditionally. Identical DDL to the tenant body.
+fn monolith_conversations_space_id_apply(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE conversations ADD COLUMN space_id INTEGER;
+         CREATE INDEX IF NOT EXISTS idx_conv_space ON conversations(space_id);",
+    )
+    .map_err(|e| {
+        EngError::DatabaseMessage(format!("vocsap overlay conversations_space_id failed: {e}"))
+    })?;
     Ok(())
 }
 
@@ -220,36 +240,69 @@ fn tenant_structured_facts_extraction_source_apply(
 
 // --- overlay registries ---
 
-static VOCSAP_MONOLITH_OVERLAYS: &[VocsapOverlay] = &[VocsapOverlay {
-    name: "approvals_gate_id",
-    needs: |conn| Ok(!table_has_column(conn, "approvals", "gate_id")?),
-    apply: monolith_approvals_gate_id_apply,
-}];
+// Each `needs` guard ANDs `table_exists` in front of its column/index probe.
+// `table_has_column` / `index_exists` return false on a MISSING table, which on
+// its own would make `needs` true and fire `apply` against a non-existent table
+// under a PARTIAL migration (e.g. upstream tests that stop before the version
+// that creates the table, which still run the overlays). The `table_exists`
+// guard makes such an overlay a clean no-op until its target table exists.
+static VOCSAP_MONOLITH_OVERLAYS: &[VocsapOverlay] = &[
+    VocsapOverlay {
+        name: "approvals_gate_id",
+        needs: |conn| {
+            Ok(table_exists(conn, "approvals")? && !table_has_column(conn, "approvals", "gate_id")?)
+        },
+        apply: monolith_approvals_gate_id_apply,
+    },
+    VocsapOverlay {
+        name: "conversations_space_id",
+        needs: |conn| {
+            Ok(table_exists(conn, "conversations")?
+                && !table_has_column(conn, "conversations", "space_id")?)
+        },
+        apply: monolith_conversations_space_id_apply,
+    },
+];
 
 static VOCSAP_TENANT_OVERLAYS: &[VocsapTenantOverlay] = &[
     VocsapTenantOverlay {
         name: "supervisor_injections_repair",
-        needs: |conn| Ok(!table_has_column(conn, "supervisor_injections", "claimed_at")?),
+        needs: |conn| {
+            Ok(table_exists(conn, "supervisor_injections")?
+                && !table_has_column(conn, "supervisor_injections", "claimed_at")?)
+        },
         apply: tenant_supervisor_injections_repair_apply,
     },
     VocsapTenantOverlay {
         name: "approvals_gate_id",
-        needs: |conn| Ok(!table_has_column(conn, "approvals", "gate_id")?),
+        needs: |conn| {
+            Ok(table_exists(conn, "approvals")?
+                && !table_has_column(conn, "approvals", "gate_id")?)
+        },
         apply: tenant_approvals_gate_id_apply,
     },
     VocsapTenantOverlay {
         name: "conversations_space_id",
-        needs: |conn| Ok(!table_has_column(conn, "conversations", "space_id")?),
+        needs: |conn| {
+            Ok(table_exists(conn, "conversations")?
+                && !table_has_column(conn, "conversations", "space_id")?)
+        },
         apply: tenant_conversations_space_id_apply,
     },
     VocsapTenantOverlay {
         name: "structured_facts_unique_index",
-        needs: |conn| Ok(!index_exists(conn, "idx_structured_facts_subj_pred_obj")?),
+        needs: |conn| {
+            Ok(table_exists(conn, "structured_facts")?
+                && !index_exists(conn, "idx_structured_facts_subj_pred_obj")?)
+        },
         apply: tenant_structured_facts_unique_apply,
     },
     VocsapTenantOverlay {
         name: "structured_facts_extraction_source",
-        needs: |conn| Ok(!table_has_column(conn, "structured_facts", "extraction_source")?),
+        needs: |conn| {
+            Ok(table_exists(conn, "structured_facts")?
+                && !table_has_column(conn, "structured_facts", "extraction_source")?)
+        },
         apply: tenant_structured_facts_extraction_source_apply,
     },
 ];
@@ -293,7 +346,8 @@ mod tests {
     fn make_monolith_base() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE approvals (id INTEGER PRIMARY KEY, status TEXT);",
+            "CREATE TABLE approvals (id INTEGER PRIMARY KEY, status TEXT);
+             CREATE TABLE conversations (id INTEGER PRIMARY KEY, title TEXT);",
         )
         .unwrap();
         conn
@@ -325,10 +379,13 @@ mod tests {
     fn monolith_overlays_apply_then_noop() {
         let conn = make_monolith_base();
         assert!(!table_has_column(&conn, "approvals", "gate_id").unwrap());
+        assert!(!table_has_column(&conn, "conversations", "space_id").unwrap());
 
         apply_monolith_overlays(&conn).unwrap();
         assert!(table_has_column(&conn, "approvals", "gate_id").unwrap());
         assert!(index_exists(&conn, "idx_approvals_gate_id").unwrap());
+        assert!(table_has_column(&conn, "conversations", "space_id").unwrap());
+        assert!(index_exists(&conn, "idx_conv_space").unwrap());
 
         // Second run: every needs() is now false -> no apply, no error.
         for o in VOCSAP_MONOLITH_OVERLAYS {
@@ -384,6 +441,27 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 2, "the duplicate row must have been removed");
         assert!(index_exists(&conn, "idx_structured_facts_subj_pred_obj").unwrap());
+    }
+
+    #[test]
+    fn overlays_are_noop_when_target_tables_absent() {
+        // Partial-migration scenario: a connection where NONE of the target tables
+        // exist yet (e.g. run_tenant_migrations_to(conn, _, 23), which stops before
+        // the versions that create supervisor_injections/approvals/etc. but still
+        // calls apply_*_overlays). Without the table_exists guard, table_has_column
+        // returns false on a missing table -> needs() = true -> apply() = ERROR
+        // "no such table". With the guard every overlay must cleanly no-op.
+        let conn = Connection::open_in_memory().unwrap();
+        for o in VOCSAP_MONOLITH_OVERLAYS {
+            assert!(!(o.needs)(&conn).unwrap(), "monolith overlay {} must skip when its table is absent", o.name);
+        }
+        for o in VOCSAP_TENANT_OVERLAYS {
+            assert!(!(o.needs)(&conn).unwrap(), "tenant overlay {} must skip when its table is absent", o.name);
+        }
+        // The entry points must not error against the table-less connection.
+        apply_monolith_overlays(&conn).unwrap();
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+        apply_tenant_overlays(&conn, None).unwrap();
     }
 
     #[test]
