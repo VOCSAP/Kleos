@@ -14,6 +14,7 @@ use crate::Client;
 
 // --- CLI definition ---
 
+/// CLI subcommands for each Claude Code hook event.
 #[derive(Subcommand)]
 pub enum HookCommands {
     /// SessionStart hook -- registers session, fetches context
@@ -41,12 +42,18 @@ pub enum HookCommands {
 /// not match the operator's policy.
 const FALLBACK_MANDATORY_RULES: &str = "";
 
+/// Maximum age in seconds before the on-disk policy cache is considered stale.
 const POLICY_CACHE_TTL_SECS: u64 = 60;
 
+/// Timeout for /gate/check requests -- long because the gate may queue behind human review.
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
+/// Default timeout for best-effort server calls (activity, supervisor, coordination).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout for sidecar /recall requests (memory retrieval before prompt processing).
 const SIDECAR_RECALL_TIMEOUT: Duration = Duration::from_secs(12);
+/// Timeout for sidecar /observe requests (tool result observation storage).
 const SIDECAR_OBSERVE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Timeout for sidecar /end requests (session teardown notification).
 const SIDECAR_END_TIMEOUT: Duration = Duration::from_secs(15);
 
 // --- Policy fetch with cache ---
@@ -116,6 +123,7 @@ fn write_policy_cache(rules: &str) {
 
 // --- Helpers ---
 
+/// Reads all of stdin and parses it as JSON, returning `Value::Null` on failure.
 fn read_stdin_json() -> Value {
     let mut buf = String::new();
     let _ = std::io::stdin().read_to_string(&mut buf);
@@ -386,6 +394,8 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 
 // --- Hook handlers ---
 
+/// Handles SessionStart by registering the session, fetching living context,
+/// and injecting the coordination banner plus mandatory rules on stdout.
 async fn handle_session_start(client: &Client, input: &Value) {
     let agent = resolve_agent();
     let project = cwd_project(input);
@@ -686,6 +696,7 @@ async fn handle_post_tool(client: &Client, input: &Value) {
 
 // --- Entry point ---
 
+/// Dispatches a hook subcommand to its handler after reading JSON from stdin.
 pub async fn run_hook(cmd: &HookCommands, client: &Client) {
     match cmd {
         HookCommands::SessionStart => {
@@ -713,6 +724,7 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
 
 // --- Tests ---
 
+/// Unit tests for hook helpers and output builders.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -77,7 +77,12 @@ fn sweep_config(semantic: f64) -> AbstainConfig {
         // ce=0.752 -- below the old 0.80 floor, which false-abstained it. 0.70 sits in the wide
         // valley below that case and well above the irrelevant cluster.
         ce_rescue: 0.70,
-        ce_floor: 0.0,
+        // Recommended operating point for bge-reranker-v2-m3 (enabled on prod via
+        // KLEOS_ABSTAIN_CE_FLOOR; code default is 0.0/off). A best CE below this floor abstains
+        // even when the cosine cleared the threshold -- closing the live high-cosine/low-CE gap
+        // where the bi-encoder scored a topically-adjacent non-answer at 0.69-0.75 but the
+        // reranker correctly said ~0.00. 0.10 sits far below every answerable CE (min 0.752).
+        ce_floor: 0.10,
         margin: 0.0,
     }
 }

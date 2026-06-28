@@ -174,6 +174,7 @@ pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value, Strin
     app.client.call_route(route, args).await
 }
 
+/// Unit tests for the curated tool registry.
 #[cfg(test)]
 mod tests {
     use super::*;

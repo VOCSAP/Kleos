@@ -73,9 +73,12 @@ const DEFAULT_CE_RESCUE: f64 = 0.70;
 static CE_RESCUE: LazyLock<f64> =
     LazyLock::new(|| env_f64("KLEOS_ABSTAIN_CE_RESCUE", DEFAULT_CE_RESCUE, 0.0, 1.0));
 
-/// Optional cross-encoder abstain floor for the semantic-absent path. Default 0.0
-/// (disabled) so CE never causes an abstain on its own until an operator calibrates it
-/// against their deployed reranker. Clamped to [0, 1].
+/// Optional cross-encoder abstain floor. When > 0, a best `ce_confidence` below this floor
+/// forces an abstain even if the raw cosine cleared the semantic threshold -- the reranker is
+/// confident nothing in the pool is relevant. Default 0.0 (disabled) so CE never causes an
+/// abstain on its own until an operator calibrates it against their deployed reranker. A value
+/// around 0.10 suits bge-reranker-v2-m3's bimodal output (relevant ~0.98-1.0, irrelevant
+/// ~0.00). Clamped to [0, 1].
 const DEFAULT_CE_FLOOR: f64 = 0.0;
 static CE_FLOOR: LazyLock<f64> =
     LazyLock::new(|| env_f64("KLEOS_ABSTAIN_CE_FLOOR", DEFAULT_CE_FLOOR, 0.0, 1.0));
@@ -138,7 +141,7 @@ pub struct AbstainConfig {
     pub fact_relax: f64,
     /// CE score at/above which an abstain is vetoed.
     pub ce_rescue: f64,
-    /// CE score below which the gate abstains when no semantic signal exists (0 = off).
+    /// CE score below which the gate abstains regardless of the semantic score (0 = off).
     pub ce_floor: f64,
     /// AND-margin tightener band (0 = off).
     pub margin: f64,
@@ -241,15 +244,28 @@ pub fn evaluate_signals(
     }
 
     // 2. CE rescue: a strong cross-encoder match vetoes any abstain. CE only RESCUES at
-    //    the defaults; it never causes an abstain on its own (its scale is not a
-    //    calibrated probability) unless step 4's calibrated floor is configured.
+    //    the defaults; it forces an abstain only when step 3's calibrated floor is set.
     if let Some(ce) = best_ce {
         if ce >= cfg.ce_rescue {
             return make(false, None, "ce_rescue");
         }
     }
 
-    // 3. Semantic-primary absolute threshold -- the empirically-grounded signal.
+    // 3. CE abstain floor (opt-in, default off). A confidently-LOW best cross-encoder score
+    //    means the reranker is certain nothing in the pool answers the query, so abstain even
+    //    when the raw cosine is high. This catches the failure mode where the bi-encoder maps
+    //    a topically-adjacent-but-non-answering memory to a misleadingly-high `semantic_score`
+    //    (observed live: unanswerable queries at cosine 0.69-0.75 with ce ~0.00). It applies
+    //    regardless of whether a semantic score is present -- the cross-encoder's bimodal,
+    //    calibrated-probability output (e.g. bge-reranker-v2-m3) is the more reliable signal.
+    //    Off at the default (0.0) so it never fires until an operator calibrates it.
+    if let Some(ce) = best_ce {
+        if cfg.ce_floor > 0.0 && ce < cfg.ce_floor {
+            return make(true, Some("ce_below_floor"), "ce");
+        }
+    }
+
+    // 4. Semantic-primary absolute threshold -- the empirically-grounded signal.
     if let Some(sem) = best_sem {
         let thresh = semantic_threshold(qt, cfg);
         if sem < thresh {
@@ -269,12 +285,8 @@ pub fn evaluate_signals(
         return make(false, None, "semantic");
     }
 
-    // 4. Only a (below-rescue) CE signal exists, no semantic. Abstain only when an
-    //    operator has set a calibrated floor; otherwise answer.
-    if let Some(ce) = best_ce {
-        if cfg.ce_floor > 0.0 && ce < cfg.ce_floor {
-            return make(true, Some("ce_below_floor"), "ce");
-        }
+    // 5. Only a CE signal exists (no semantic) and it cleared the floor above -> answer.
+    if best_ce.is_some() {
         return make(false, None, "ce");
     }
 
@@ -443,6 +455,45 @@ mod tests {
             &cfg(0.65, 0.8, 0.0),
         );
         assert!(!d.abstain);
+        assert_eq!(d.signal, "ce_rescue");
+    }
+
+    /// CE floor (opt-in): a confidently-low CE forces an abstain even when the cosine cleared
+    /// the threshold -- the bi-encoder was fooled by a topically-adjacent non-answer, the
+    /// reranker was not. This is the live high-cosine/low-CE gap the floor closes.
+    #[test]
+    fn ce_floor_abstains_despite_high_semantic() {
+        let cfg = AbstainConfig {
+            ce_floor: 0.10,
+            ..cfg(0.65, 0.70, 0.0)
+        };
+        let d = evaluate_signals(
+            Some(0.75),
+            Some(0.004),
+            None,
+            QuestionType::FactRecall,
+            &cfg,
+        );
+        assert!(
+            d.abstain,
+            "low CE must abstain even above the semantic threshold"
+        );
+        assert_eq!(d.signal, "ce");
+        assert_eq!(d.reason.as_deref(), Some("ce_below_floor"));
+    }
+
+    /// With the floor set, a genuinely-relevant high CE still answers: rescue precedes the floor.
+    #[test]
+    fn ce_floor_yields_to_ce_rescue() {
+        let cfg = AbstainConfig {
+            ce_floor: 0.10,
+            ..cfg(0.65, 0.70, 0.0)
+        };
+        let d = evaluate_signals(Some(0.60), Some(0.95), None, QuestionType::FactRecall, &cfg);
+        assert!(
+            !d.abstain,
+            "a strong CE must rescue regardless of the floor"
+        );
         assert_eq!(d.signal, "ce_rescue");
     }
 

@@ -1,5 +1,5 @@
 {
-  "_doc": "Calibration set for the L2 ABSTAIN gate (kleos-lib/tests/abstain_calibration.rs). Each query is labelled `answerable` (a relevant memory exists in the store) or `unanswerable` (none does). `sem_top`/`ce_top` are the best semantic_score (raw cosine) and best ce_confidence (normalized cross-encoder) a real retrieval produced for that query. The harness sweeps the semantic threshold through the production `evaluate_signals` logic and reports false-abstain rate (FAR) and true-abstain rate (TAR), asserting FAR<5%% / TAR>80%% at the shipped default (0.65). PROVENANCE: RE-CAPTURED 2026-06-28 from an isolated kleos-server (real bge-m3 embedder + bge-reranker-v2-m3 ONNX reranker, scratch DB) running each `q` against the `corpus` -- these are live signals, not seeds. bge-reranker-v2-m3 produces a sharply bimodal cross-encoder distribution (relevant pairs ~0.98-1.0, irrelevant ~0.00) vs granites compressed 0.5-0.9, so the CE rescue floor was recalibrated 0.80 -> 0.70 (the old floor wrongly dropped ans-dahlia-rescued at ce=0.752). A query that returns ZERO results (sem_top=null AND ce_top=null, e.g. un-atlantis) abstains in production via results.is_empty(); the harness mirrors that. Before freezing for a NEW embedder/reranker, re-capture and re-run the sweep. `corpus` exists for that live re-capture.",
+  "_doc": "Calibration set for the L2 ABSTAIN gate (kleos-lib/tests/abstain_calibration.rs). Each query is labelled `answerable` (a relevant memory exists in the store) or `unanswerable` (none does). `sem_top`/`ce_top` are the best semantic_score (raw cosine) and best ce_confidence (normalized cross-encoder) a real retrieval produced for that query. The harness sweeps the semantic threshold through the production `evaluate_signals` logic and reports false-abstain rate (FAR) and true-abstain rate (TAR), asserting FAR<5%% / TAR>80%% at the shipped default (0.65). PROVENANCE: RE-CAPTURED 2026-06-28 from an isolated kleos-server (real bge-m3 embedder + bge-reranker-v2-m3 ONNX reranker, scratch DB) running each `q` against the `corpus` -- these are live signals, not seeds. bge-reranker-v2-m3 produces a sharply bimodal cross-encoder distribution (relevant pairs ~0.98-1.0, irrelevant ~0.00) vs granites compressed 0.5-0.9, so the CE rescue floor was recalibrated 0.80 -> 0.70 (the old floor wrongly dropped ans-dahlia-rescued at ce=0.752). A query that returns ZERO results (sem_top=null AND ce_top=null, e.g. un-atlantis) abstains in production via results.is_empty(); the harness mirrors that. Before freezing for a NEW embedder/reranker, re-capture and re-run the sweep. `corpus` exists for that live re-capture. DECEPTIVE CASES (2026-06-28): un-calyx-pg-version / un-cobalt-cost / un-vexel-port are unanswerable queries topically adjacent to a corpus doc (high cosine) whose specific fact no doc states (low CE); they exercise the ce_floor abstain path that semantic-only misses.",
   "corpus": [
     {
       "key": "calyx_db",
@@ -242,6 +242,30 @@
       "q": "what is the capital of atlantis",
       "sem_top": null,
       "ce_top": null
+    },
+    {
+      "id": "un-calyx-pg-version",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "what version of postgresql does calyx run",
+      "sem_top": 0.7094,
+      "ce_top": 0.9172
+    },
+    {
+      "id": "un-cobalt-cost",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "how much did the cobalt v2 storage migration cost",
+      "sem_top": 0.6605,
+      "ce_top": 0.0296
+    },
+    {
+      "id": "un-vexel-port",
+      "class": "unanswerable",
+      "question_type": "fact_recall",
+      "q": "what network port does vexel database listen on",
+      "sem_top": 0.5218,
+      "ce_top": 0.0275
     }
   ]
 }
