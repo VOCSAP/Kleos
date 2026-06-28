@@ -565,6 +565,10 @@ pub struct Config {
     #[serde(skip, default)]
     pub gui_enabled: bool,
     pub gui_build_dir: Option<String>,
+    /// Optional directory of audio files served same-origin at /media/music/*
+    /// for the GUI music player. Unset means the player stays hidden. Set via
+    /// KLEOS_GUI_MUSIC_DIR (or legacy ENGRAM_GUI_MUSIC_DIR).
+    pub gui_music_dir: Option<String>,
     pub pagerank_refresh_interval_secs: u64,
     pub pagerank_dirty_threshold: u32,
     pub pagerank_max_concurrent: usize,
@@ -751,6 +755,7 @@ impl Default for Config {
             facts_channel_enabled: false,
             gui_enabled: false,
             gui_build_dir: None,
+            gui_music_dir: None,
             pagerank_refresh_interval_secs: 300,
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
@@ -1034,6 +1039,9 @@ impl Config {
         }
         if let Ok(v) = crate::kleos_env("GUI_BUILD_DIR") {
             config.gui_build_dir = Some(v);
+        }
+        if let Ok(v) = crate::kleos_env("GUI_MUSIC_DIR") {
+            config.gui_music_dir = Some(v);
         }
         if let Ok(v) = crate::kleos_env("PAGERANK_REFRESH_INTERVAL") {
             match v.parse() {
@@ -1606,5 +1614,13 @@ default_max_tokens = 8000
         assert!(err.contains("parse"));
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
+    }
+
+    /// gui_music_dir must default to None so the music player stays hidden
+    /// unless the operator explicitly sets KLEOS_GUI_MUSIC_DIR.
+    #[test]
+    fn gui_music_dir_defaults_none() {
+        let c = Config::default();
+        assert!(c.gui_music_dir.is_none(), "music dir must default to None");
     }
 }
