@@ -817,11 +817,13 @@ impl Config {
     }
 
     /// Resolve the TOML config path using (in order):
-    /// 1. `ENGRAM_CONFIG_FILE` env var
-    /// 2. `./engram.toml` in the current directory
-    /// 3. `$XDG_CONFIG_HOME/engram/config.toml` (or `~/.config/engram/config.toml`)
+    /// 1. `KLEOS_CONFIG_FILE` env var (legacy `ENGRAM_CONFIG_FILE` via `kleos_env`)
+    /// 2. `./kleos.toml` in the current directory (legacy `./engram.toml`)
+    /// 3. `$XDG_CONFIG_HOME/kleos/config.toml` (legacy `.../engram/config.toml`)
     ///
-    /// Returns `None` if no config file is found.
+    /// The `kleos`-named locations are preferred; the legacy `engram` names are
+    /// still checked so pre-rename installs keep working. Returns `None` if no
+    /// config file is found.
     fn resolve_config_path() -> Option<std::path::PathBuf> {
         if let Ok(p) = crate::kleos_env("CONFIG_FILE") {
             let path = std::path::PathBuf::from(p);
@@ -829,19 +831,23 @@ impl Config {
                 return Some(path);
             } else {
                 tracing::warn!(
-                    "ENGRAM_CONFIG_FILE set but file not found: {}",
+                    "KLEOS_CONFIG_FILE set but file not found: {}",
                     path.display()
                 );
             }
         }
-        let cwd_path = std::path::PathBuf::from("engram.toml");
-        if cwd_path.exists() {
-            return Some(cwd_path);
+        for name in ["kleos.toml", "engram.toml"] {
+            let cwd_path = std::path::PathBuf::from(name);
+            if cwd_path.exists() {
+                return Some(cwd_path);
+            }
         }
         if let Some(cfg_dir) = dirs::config_dir() {
-            let path = cfg_dir.join("engram").join("config.toml");
-            if path.exists() {
-                return Some(path);
+            for app in ["kleos", "engram"] {
+                let path = cfg_dir.join(app).join("config.toml");
+                if path.exists() {
+                    return Some(path);
+                }
             }
         }
         None
