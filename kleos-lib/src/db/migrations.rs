@@ -447,6 +447,9 @@ pub static MIGRATIONS: &[Migration] = &[
     ),
     // v95: nullable memories.lang column, populated by detect_lang on write.
     migration!(95, "add_memory_lang", run_migration_add_memory_lang, tx),
+    // v96: attention_notes — persistent, tenant-scoped sticky reminders. No
+    // decay, no expiry; agents delete explicitly when done.
+    migration!(96, "attention_notes", run_migration_attention_notes, tx),
 ];
 
 // --- Version constants ---
@@ -4068,6 +4071,23 @@ fn run_migration_fts_unicode61(conn: &rusqlite::Connection) -> Result<()> {
 fn run_migration_add_memory_lang(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute("ALTER TABLE memories ADD COLUMN lang TEXT", [])?;
     info!("Migration 95 complete: memories.lang column added");
+    Ok(())
+}
+
+fn run_migration_attention_notes(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS attention_notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            content     TEXT NOT NULL,
+            priority    INTEGER NOT NULL DEFAULT 5 CHECK (priority BETWEEN 1 AND 10),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_attention_notes_user_priority
+            ON attention_notes(user_id, priority DESC, created_at ASC);",
+    )?;
+    info!("Migration 96 complete: attention_notes table created");
     Ok(())
 }
 

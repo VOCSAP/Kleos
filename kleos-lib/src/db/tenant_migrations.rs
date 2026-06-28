@@ -406,6 +406,8 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     ),
     // v78: nullable memories.lang column (mirror of global migration 95).
     tenant_migration!(78, "add_memory_lang", apply_schema_v78_memory_lang),
+    // v79: attention_notes table (mirror of global migration 96).
+    tenant_migration!(79, "attention_notes", apply_schema_v79_attention_notes),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -737,6 +739,12 @@ tenant_migration_sql!(
     apply_schema_v78_memory_lang,
     "v78",
     "../tenant/schema_v78_memory_lang.sql"
+);
+// Tenant v79: attention_notes table.
+tenant_migration_sql!(
+    apply_schema_v79_attention_notes,
+    "v79",
+    "../tenant/schema_v79_attention_notes.sql"
 );
 tenant_migration_sql!(
     apply_schema_v55_memories_readd,

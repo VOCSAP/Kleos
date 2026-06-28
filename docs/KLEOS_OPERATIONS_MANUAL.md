@@ -327,6 +327,63 @@ Use for:
 
 - `curl`, SDKs, deployment tools, or any child process that needs a secret.
 
+### Attention notes
+
+Think Post-its on a monitor, not memories. Attention notes are not ingested,
+ranked, embedded, or decayed — they just sit there and stare at you until you
+explicitly delete them. Use them for short "don't forget to …" items that need
+to survive session boundaries without getting buried in recall noise.
+
+Priority range is 1 (low) to 10 (high), default 5. The list is always returned
+sorted by priority descending, then creation time ascending (oldest high-priority
+note first).
+
+**HTTP API**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/attention` | Create a note |
+| `GET` | `/attention` | List all open notes |
+| `PATCH` | `/attention/{id}` | Update content and/or priority |
+| `DELETE` | `/attention/{id}` | Delete a note (mark as done) |
+
+**POST /attention**
+
+```json
+{ "content": "rebase the watcher fix onto main", "priority": 8 }
+```
+
+Returns the created note (201). `priority` is optional; defaults to 5.
+
+**GET /attention**
+
+```
+GET /attention?limit=50
+```
+
+Returns `{ "notes": [...], "count": N }`. `limit` defaults to 50, max 200.
+
+**PATCH /attention/{id}**
+
+Both fields are optional; omit what you don't want to change.
+
+```json
+{ "priority": 10 }
+```
+
+Returns the updated note.
+
+**DELETE /attention/{id}**
+
+Returns 204 on success, 404 if the note does not exist or belongs to another
+tenant.
+
+**Typical agent workflow**
+
+1. On session start: `GET /attention` — review open reminders.
+2. During work: `POST /attention` — pin a new reminder for next time.
+3. When a task is done: `DELETE /attention/{id}` — remove the note.
+
 ### Handoffs
 
 #### `kleos-cli handoff dump [--project P] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
