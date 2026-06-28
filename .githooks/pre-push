@@ -18,10 +18,13 @@ if [[ "${PREFLIGHT_SKIP:-0}" == "1" ]]; then
 fi
 
 ROOT="$(git rev-parse --show-toplevel)"
-if [[ ! -x "$ROOT/scripts/preflight.sh" ]]; then
-    echo "pre-push: scripts/preflight.sh missing or not executable -- skipping." >&2
+if [[ ! -f "$ROOT/scripts/preflight.sh" ]]; then
+    echo "pre-push: scripts/preflight.sh missing -- skipping." >&2
     exit 0
 fi
 
+# Invoke via `bash` rather than exec'ing the script directly: the repo lives on
+# a filesystem with core.fileMode = false, so the script's executable bit is not
+# reliable. bash reads it regardless, so the gate always runs.
 echo "pre-push: running scripts/preflight.sh (fmt + clippy + deny). PREFLIGHT_SKIP=1 to bypass."
-exec "$ROOT/scripts/preflight.sh"
+exec bash "$ROOT/scripts/preflight.sh"
