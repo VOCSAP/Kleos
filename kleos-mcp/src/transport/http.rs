@@ -21,7 +21,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
 
+/// Maximum request body size (2 MiB).
 const BODY_LIMIT: usize = 2 * 1024 * 1024;
+/// Per-request timeout in seconds before the server returns 408.
 const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// Handles one `/mcp` JSON-RPC request.

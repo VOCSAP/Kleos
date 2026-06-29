@@ -149,9 +149,26 @@ fn default_dream_interval_secs() -> u64 {
     300
 }
 
+/// Default interval between scheduled community-detection cycles (6h; communities change slowly).
+fn default_community_detection_interval_secs() -> u64 {
+    21600
+}
+
 /// Default idle window before dreamer work starts.
 fn default_dream_idle_threshold_secs() -> u64 {
     60
+}
+
+/// Default switch for the associative auto-linker (restored after a regression
+/// left memories unlinked). Enabled so new memories rejoin the graph.
+fn default_auto_link_enabled() -> bool {
+    true
+}
+
+/// Default number of unlinked memories the auto-linker processes per dreamer
+/// cycle. Bounds per-tick work so a large backlog drains gradually.
+fn default_auto_link_batch() -> usize {
+    50
 }
 
 /// Default switch for autonomous skill evolution.
@@ -665,11 +682,19 @@ pub struct Config {
     pub reranker_enabled: bool,
     pub reranker_top_k: usize,
     pub reranker_model_dir: Option<String>,
+    /// Reranker model identifier. Selects the download URL set and the on-disk
+    /// model subdir. "granite-embedding-reranker-english-r2" (English) or
+    /// "bge-reranker-v2-m3" (multilingual). Override: KLEOS_RERANKER_MODEL_NAME.
+    pub reranker_model: String,
     pub data_dir: String,
     pub lance_index_path: Option<String>,
     pub vector_dimensions: usize,
     pub use_lance_index: bool,
     pub use_chunk_vector_search: bool,
+    /// L5: enable `structured_facts` as an RRF retrieval channel in `hybrid_search`.
+    /// Default false -- this changes ranked output, so per the rollout gate it is opt-in via
+    /// `KLEOS_FACTS_CHANNEL_ENABLED` and only after the per-tenant mis-scoped-row guard passes.
+    pub facts_channel_enabled: bool,
     /// Whether the GUI is enabled. Set via KLEOS_GUI_PASSWORD or the legacy
     /// ENGRAM_GUI_PASSWORD (any non-empty value enables the GUI).
     /// A separate gui_password field can be added later
@@ -677,10 +702,22 @@ pub struct Config {
     #[serde(skip, default)]
     pub gui_enabled: bool,
     pub gui_build_dir: Option<String>,
+    /// Optional directory of audio files served same-origin at /media/music/*
+    /// for the GUI music player. Unset means the player stays hidden. Set via
+    /// KLEOS_GUI_MUSIC_DIR (or legacy ENGRAM_GUI_MUSIC_DIR).
+    pub gui_music_dir: Option<String>,
     pub pagerank_refresh_interval_secs: u64,
     pub pagerank_dirty_threshold: u32,
     pub pagerank_max_concurrent: usize,
     pub pagerank_enabled: bool,
+    /// L4b: run the scheduled community-detection job that keeps `community_id` fresh for
+    /// the community retrieval channel. Default false (periodic compute + ranked-output change
+    /// once the channel is enabled).
+    #[serde(default)]
+    pub community_detection_enabled: bool,
+    /// Interval between scheduled community-detection cycles, in seconds. Default 21600 (6h).
+    #[serde(default = "default_community_detection_interval_secs")]
+    pub community_detection_interval_secs: u64,
     /// Whether consolidation endpoints are available. Default false --
     /// consolidation merges memories into vague summaries and hides the
     /// originals, degrading search quality.
@@ -697,6 +734,15 @@ pub struct Config {
     /// work. Set to 0 to disable idle gating. Default: 60.
     #[serde(default = "default_dream_idle_threshold_secs")]
     pub dream_idle_threshold_secs: u64,
+    /// Whether the dreamer's associative auto-linker runs. When true, each cycle
+    /// links a batch of unlinked memories to their nearest neighbours
+    /// (`similarity` links), reviving the dedup/consolidation passes that read
+    /// them. Default: true.
+    #[serde(default = "default_auto_link_enabled")]
+    pub auto_link_enabled: bool,
+    /// Unlinked memories the auto-linker processes per dreamer cycle. Default: 50.
+    #[serde(default = "default_auto_link_batch")]
+    pub auto_link_batch: usize,
     /// Run the hermes-style autonomous skill evolution phase inside the
     /// dreamer tick. Gates fix/capture/derive passes together.
     #[serde(default = "default_skill_evolution_enabled")]
@@ -832,6 +878,8 @@ impl Default for Config {
             // RERANKER_TOP_K env.
             reranker_top_k: 24,
             reranker_model_dir: None,
+            // Multilingual cross-encoder by default so retrieval is not English-only.
+            reranker_model: "bge-reranker-v2-m3".to_string(),
             data_dir: dirs::data_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("kleos")
@@ -841,16 +889,22 @@ impl Default for Config {
             vector_dimensions: 1024,
             use_lance_index: true,
             use_chunk_vector_search: false,
+            facts_channel_enabled: false,
             gui_enabled: false,
             gui_build_dir: None,
+            gui_music_dir: None,
             pagerank_refresh_interval_secs: 300,
             pagerank_dirty_threshold: 100,
             pagerank_max_concurrent: 2,
             pagerank_enabled: true,
+            community_detection_enabled: false,
+            community_detection_interval_secs: default_community_detection_interval_secs(),
             consolidation_enabled: false,
             dreamer_enabled: default_dreamer_enabled(),
             dream_interval_secs: default_dream_interval_secs(),
             dream_idle_threshold_secs: default_dream_idle_threshold_secs(),
+            auto_link_enabled: default_auto_link_enabled(),
+            auto_link_batch: default_auto_link_batch(),
             skill_evolution_enabled: default_skill_evolution_enabled(),
             skill_evolution_interval_secs: default_skill_evolution_interval_secs(),
             skill_evolution_max_fixes_per_tick: default_skill_evolution_max_fixes_per_tick(),
@@ -900,11 +954,13 @@ impl Config {
     }
 
     /// Resolve the TOML config path using (in order):
-    /// 1. `ENGRAM_CONFIG_FILE` env var
-    /// 2. `./engram.toml` in the current directory
-    /// 3. `$XDG_CONFIG_HOME/engram/config.toml` (or `~/.config/engram/config.toml`)
+    /// 1. `KLEOS_CONFIG_FILE` env var (legacy `ENGRAM_CONFIG_FILE` via `kleos_env`)
+    /// 2. `./kleos.toml` in the current directory (legacy `./engram.toml`)
+    /// 3. `$XDG_CONFIG_HOME/kleos/config.toml` (legacy `.../engram/config.toml`)
     ///
-    /// Returns `None` if no config file is found.
+    /// The `kleos`-named locations are preferred; the legacy `engram` names are
+    /// still checked so pre-rename installs keep working. Returns `None` if no
+    /// config file is found.
     fn resolve_config_path() -> Option<std::path::PathBuf> {
         if let Ok(p) = crate::kleos_env("CONFIG_FILE") {
             let path = std::path::PathBuf::from(p);
@@ -912,19 +968,23 @@ impl Config {
                 return Some(path);
             } else {
                 tracing::warn!(
-                    "ENGRAM_CONFIG_FILE set but file not found: {}",
+                    "KLEOS_CONFIG_FILE set but file not found: {}",
                     path.display()
                 );
             }
         }
-        let cwd_path = std::path::PathBuf::from("engram.toml");
-        if cwd_path.exists() {
-            return Some(cwd_path);
+        for name in ["kleos.toml", "engram.toml"] {
+            let cwd_path = std::path::PathBuf::from(name);
+            if cwd_path.exists() {
+                return Some(cwd_path);
+            }
         }
         if let Some(cfg_dir) = dirs::config_dir() {
-            let path = cfg_dir.join("engram").join("config.toml");
-            if path.exists() {
-                return Some(path);
+            for app in ["kleos", "engram"] {
+                let path = cfg_dir.join(app).join("config.toml");
+                if path.exists() {
+                    return Some(path);
+                }
             }
         }
         None
@@ -1062,6 +1122,13 @@ impl Config {
         if let Ok(v) = crate::kleos_env("RERANKER_MODEL_DIR") {
             config.reranker_model_dir = Some(v);
         }
+        // Local-ONNX reranker model selection. Distinct from KLEOS_RERANKER_MODEL,
+        // which the HTTP reranker backend uses for a remote endpoint.
+        if let Ok(v) = crate::kleos_env("RERANKER_MODEL_NAME") {
+            if !v.trim().is_empty() {
+                config.reranker_model = v;
+            }
+        }
         if let Ok(v) = crate::kleos_env("RERANKER_TOP_K") {
             match v.parse() {
                 Ok(n) => config.reranker_top_k = n,
@@ -1107,11 +1174,17 @@ impl Config {
         if let Ok(v) = std::env::var("KLEOS_USE_CHUNK_VECTOR_SEARCH") {
             config.use_chunk_vector_search = v == "1" || v.eq_ignore_ascii_case("true");
         }
+        if let Ok(v) = std::env::var("KLEOS_FACTS_CHANNEL_ENABLED") {
+            config.facts_channel_enabled = v == "1" || v.eq_ignore_ascii_case("true");
+        }
         if let Ok(v) = crate::kleos_env("GUI_PASSWORD") {
             config.gui_enabled = !v.is_empty();
         }
         if let Ok(v) = crate::kleos_env("GUI_BUILD_DIR") {
             config.gui_build_dir = Some(v);
+        }
+        if let Ok(v) = crate::kleos_env("GUI_MUSIC_DIR") {
+            config.gui_music_dir = Some(v);
         }
         if let Ok(v) = crate::kleos_env("PAGERANK_REFRESH_INTERVAL") {
             match v.parse() {
@@ -1146,11 +1219,37 @@ impl Config {
         if let Ok(v) = crate::kleos_env("PAGERANK_ENABLED") {
             config.pagerank_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
         }
+        if let Ok(v) = crate::kleos_env("COMMUNITY_DETECTION_ENABLED") {
+            config.community_detection_enabled = v == "1" || v.eq_ignore_ascii_case("true");
+        }
+        if let Ok(v) = crate::kleos_env("COMMUNITY_DETECTION_INTERVAL_SECS") {
+            match v.parse() {
+                Ok(n) => config.community_detection_interval_secs = n,
+                Err(_) => tracing::warn!(
+                    "invalid env community detection interval {}, using default {}",
+                    v,
+                    config.community_detection_interval_secs
+                ),
+            }
+        }
         if let Ok(v) = std::env::var("KLEOS_CONSOLIDATION_ENABLED") {
             config.consolidation_enabled = v == "1" || v.eq_ignore_ascii_case("true");
         }
         if let Ok(v) = crate::kleos_env("DREAMER_ENABLED") {
             config.dreamer_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("AUTO_LINK_ENABLED") {
+            config.auto_link_enabled = v != "0" && !v.eq_ignore_ascii_case("false");
+        }
+        if let Ok(v) = crate::kleos_env("AUTO_LINK_BATCH") {
+            match v.parse() {
+                Ok(n) => config.auto_link_batch = n,
+                Err(_) => tracing::warn!(
+                    "invalid env ENGRAM_AUTO_LINK_BATCH={}, using default {}",
+                    v,
+                    config.auto_link_batch
+                ),
+            }
         }
         if let Ok(v) = crate::kleos_env("DREAM_INTERVAL_SECS") {
             match v.parse() {
@@ -1658,5 +1757,13 @@ default_max_tokens = 8000
         assert!(err.contains("parse"));
         std::fs::remove_file(&path).ok();
         std::fs::remove_dir(&dir).ok();
+    }
+
+    /// gui_music_dir must default to None so the music player stays hidden
+    /// unless the operator explicitly sets KLEOS_GUI_MUSIC_DIR.
+    #[test]
+    fn gui_music_dir_defaults_none() {
+        let c = Config::default();
+        assert!(c.gui_music_dir.is_none(), "music dir must default to None");
     }
 }

@@ -6,7 +6,9 @@
 //! tool registry. This binary is a thin bridge between the MCP stdio/HTTP
 //! transport and the authenticated server endpoint.
 
+/// MCP tool registry, dispatcher, and curated tool list.
 pub mod tools;
+/// Transport layer (stdio and optional HTTP).
 pub mod transport;
 
 use kleos_client::Client;

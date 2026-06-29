@@ -225,6 +225,7 @@ fn maybe_inject_space(mut args: Value) -> Value {
     args
 }
 
+/// Unit tests for the curated tool registry.
 #[cfg(test)]
 mod tests {
     use super::*;

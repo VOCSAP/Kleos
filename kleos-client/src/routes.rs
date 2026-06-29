@@ -4258,6 +4258,39 @@ pub static ROUTES: &[Route] = &[
         "Auto: GET /llms.txt.",
         r#"{"type":"object","additionalProperties":true}"#
     ),
+    // -- attention notes --------------------------------------------------
+    route!(
+        Post,
+        Write,
+        "attention.create",
+        "/attention",
+        "Create an attention note (persistent sticky reminder for agents).",
+        r#"{"type":"object","properties":{"content":{"type":"string"},"priority":{"type":"integer","description":"1 (low) to 10 (high), default 5"}},"required":["content"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "attention.list",
+        "/attention",
+        "List open attention notes, ordered by priority then age.",
+        r#"{"type":"object","properties":{"limit":{"type":"integer"}}}"#
+    ),
+    route!(
+        Patch,
+        Write,
+        "attention.update",
+        "/attention/{id}",
+        "Update content or priority of an attention note.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"},"content":{"type":"string"},"priority":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Delete,
+        Write,
+        "attention.delete",
+        "/attention/{id}",
+        "Delete an attention note (mark as done).",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
 ];
 
 #[cfg(test)]
