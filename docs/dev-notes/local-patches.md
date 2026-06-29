@@ -3051,6 +3051,19 @@ L'operateur doit auditer `/var/lib/kleos/gate/{blocked,require_approval,extra_da
 
 agent-forge spec_id : `spec_aa233554`, hypothesis : `hyp_e1d4c948`.
 
+### Note merge d905d4e7 (1.8.0) -- config.rs deplace vers le crate kleos-config
+
+Depuis le merge `d905d4e7` (release 1.8.0), upstream a deplace `config.rs` de
+`kleos-lib/src/config.rs` vers le nouveau crate `kleos-config/src/config.rs`.
+Les patches gate VOCSAP (19b / 19c / 25) ont suivi le move et y resident
+desormais (`kleos-config/src/config.rs`: `GateConfig`, `blocked_patterns`,
+`require_approval_patterns`, `extra_dangerous_patterns`, `gate_data_file`,
+helper de cascade operator-first). Le consommateur `kleos-lib/src/gate/*`
+reste cable cross-crate via la re-export `pub use kleos_config::config;`
+(`kleos-lib/src/lib.rs`), donc `use crate::config::Config;` continue de
+resoudre sans changement de code cote gate. Tout futur patch config gate cible
+`kleos-config`, plus `kleos-lib`.
+
 ---
 
 ## Patch 26 -- WARN tracing sur reject 429 (preauth + per-key) (2026-05-23)
