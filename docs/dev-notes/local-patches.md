@@ -1511,6 +1511,46 @@ signature modifiee), il faut **adapter** plutot que checkout brut. Inspecter
 la nouvelle API publique via `git show main:<crate>/src/<file>.rs | grep "pub "`,
 puis reecrire le commit local.
 
+### Patch 14/14b/14c -- passage a une semantique upstream-neutre (2026-06-29)
+
+**Changement :** Patch 14 injectait TOUJOURS `think` + `reasoning_effort`, avec
+un defaut OFF (`think_enabled()` retournait `false` quand `LLM_THINK` etait
+absent). Ce n'etait PAS neutre : un upstream sans champ `think` laisse le modele
+decider (thinking ON sur les reasoning models), alors que notre injection
+forcait OFF par defaut.
+
+**Nouvelle semantique :** `think_enabled() -> bool` est remplace par
+`think_setting() -> Option<bool>` (via `parse_think_setting(Option<String>)`,
+pur et teste). Lecture par `crate::kleos_env("LLM_THINK")` -> canonique
+`KLEOS_LLM_THINK`, fallback legacy `ENGRAM_LLM_THINK`. Table de parsing :
+absent/vide -> `None` ; `1/true/yes/on` -> `Some(true)` ; `0/false/no/off` ->
+`Some(false)` ; autre -> `None` + warn. `inject_openai_compat_reasoning` (et le
+coeur `inject_reasoning_setting(body, Option<bool>)`) font un early-return sur
+`None` : **body inchange = comportement upstream preserve**. Le bloc inline
+Patch 14b de `broca::call_llm_endpoint` delegue desormais au helper (dedup).
+`local.rs` resout `config.think.or_else(think_setting)` (la precedence sidecar
+Patch 11 `KLEOS_SIDECAR_LLM_THINK` est preservee) et n'injecte que si `Some`.
+
+**Impact ops (IMPORTANT) :** le defaut n'est plus OFF mais "no-op". Pour garder
+le reasoning OFF sur qwen3 cote VOCSAP, l'operateur DOIT poser
+`KLEOS_LLM_THINK=0` dans `/etc/kleos/kleos.env` (LXC 121). Sans cette variable,
+qwen3 repasse thinking-ON (et Broca renvoie des reponses vides, le contenu etant
+consomme dans le champ `thinking`). Pose cote LXC 121.
+
+**Fichiers touches :** `kleos-lib/src/llm/mod.rs` (think_setting + parse +
+inject neutre + core), `kleos-lib/src/llm/local.rs` (rework neutre + precedence
+config.think), `kleos-lib/src/services/broca.rs` (inline -> helper),
+`kleos-lib/src/llm/types.rs` (doc-ref). Niveau delta : chirurgical/refactor.
+
+**Volet PR upstream :** le mecanisme env-var pur (sans `OllamaConfig.think`,
+sans le path sidecar Patch 11) est propose en PR Ghost-Frame depuis un worktree
+base sur `upstream/main` (branche `pr/llm-thinking-neutral`, commit isole
+upstream-pur). `OllamaConfig.think` reste cote fork uniquement.
+
+**Conditions de retrait :** si upstream merge la PR thinking-neutral, le coeur
+`think_setting`/`parse_think_setting`/`inject_*` disparait du fork ; seul le
+delta `OllamaConfig.think` + precedence `local.rs` reste a maintenir.
+
 ---
 
 ## Patch 15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)

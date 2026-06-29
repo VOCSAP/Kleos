@@ -249,10 +249,6 @@ impl LocalModelClient {
             permit
         };
 
-        // Patch 14: opt-out of Ollama thinking mode by default; the per-config
-        // `think` override (sidecar populates from `KLEOS_SIDECAR_LLM_THINK`)
-        // takes precedence over the global `LLM_THINK` env var.
-        let think = self.config.think.unwrap_or_else(super::think_enabled);
         let mut body = serde_json::json!({
             "model": model,
             "messages": [
@@ -262,13 +258,17 @@ impl LocalModelClient {
             "temperature": opts.temperature.unwrap_or(0.1),
             "max_tokens": opts.max_tokens.unwrap_or(2000),
             "stream": false,
-            "think": think,
         });
-        // Patch 14c -- mirror Patch 14b reasoning_effort injection so Qwen3
-        // emits content on /v1/chat/completions when think=false (Ollama
-        // issue #14820). Idempotent via or_insert_with semantics; the
-        // explicit `think` above is preserved.
-        super::inject_openai_compat_reasoning(&mut body);
+        // Patch 14: optionally inject the thinking-mode flag. The per-config
+        // `think` override (sidecar populates it from `KLEOS_SIDECAR_LLM_THINK`,
+        // Patch 11) takes precedence over the global `KLEOS_LLM_THINK`. When
+        // neither is set the result is `None` and nothing is injected, so the
+        // body is byte-identical to upstream (the model decides). When set, it
+        // injects `think` + `reasoning_effort` (Ollama issue #14820: the native
+        // `think` field is ignored on /v1/chat/completions, reasoning_effort is
+        // honoured instead).
+        let think_setting = self.config.think.or_else(super::think_setting);
+        super::inject_reasoning_setting(&mut body, think_setting);
 
         // Cloud OpenAI-proxy compatibility (Foundry/Azure backend). GPT-class
         // models behind the proxy reject the classic `max_tokens` (require
