@@ -27,7 +27,7 @@ pub struct OllamaConfig {
     /// Bearer token for cloud OpenAI-compatible providers. `None` for local Ollama.
     pub api_key: Option<String>,
     /// Per-config thinking-mode override. `None` means the client falls back
-    /// to the global `LLM_THINK` env var (see `kleos_lib::llm::think_enabled`).
+    /// to the global `KLEOS_LLM_THINK` env var (see `kleos_lib::llm::think_setting`).
     /// Sidecar populates this from `KLEOS_SIDECAR_LLM_THINK` so its choice can
     /// diverge from any other caller of `LocalModelClient` in the same process.
     pub think: Option<bool>,
