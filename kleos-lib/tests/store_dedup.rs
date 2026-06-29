@@ -29,6 +29,7 @@ fn req(content: &str, space_id: Option<i64>, parent: Option<i64>) -> StoreReques
         parent_memory_id: parent,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     }
 }
 

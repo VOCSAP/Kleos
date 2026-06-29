@@ -67,6 +67,7 @@ async fn extract_and_link_entities_populates_tables() {
         chunk_embeddings: None,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     };
     let stored = memory::store(&db, store_req, None, false)
         .await
@@ -155,6 +156,7 @@ async fn extract_and_link_entities_skips_lowercase_content() {
         chunk_embeddings: None,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     };
     let stored = memory::store(&db, store_req, None, false)
         .await

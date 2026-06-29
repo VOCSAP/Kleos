@@ -52,6 +52,7 @@ fn corpus_store_req(
         parent_memory_id: None,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     }
 }
 

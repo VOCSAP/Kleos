@@ -243,6 +243,7 @@ mod tests {
                 parent_memory_id: None,
                 sync_id: None,
                 artifacts: None,
+                created_at: None,
             };
             crate::memory::store(&db, req, None, false)
                 .await

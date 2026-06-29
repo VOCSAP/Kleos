@@ -31,6 +31,7 @@ fn req(content: &str, importance: i32, is_static: bool, space_id: Option<i64>) -
         parent_memory_id: None,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     }
 }
 

@@ -614,6 +614,41 @@ pub async fn store(
     })
 }
 
+/// Normalize a caller-supplied created_at override into the schema's TEXT
+/// datetime form ("YYYY-MM-DD HH:MM:SS", UTC). Accepts RFC3339 (with offset),
+/// "YYYY-MM-DD HH:MM:SS" (treated as UTC), and bare "YYYY-MM-DD" (midnight UTC).
+/// Returns InvalidInput on an empty or unparseable value so a bad timestamp is
+/// rejected rather than silently stored or coerced to now.
+fn normalize_created_at(raw: &str) -> Result<String> {
+    use chrono::{NaiveDate, NaiveDateTime};
+    const SQL_FMT: &str = "%Y-%m-%d %H:%M:%S";
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err(EngError::InvalidInput(
+            "created_at must not be empty".to_string(),
+        ));
+    }
+    // RFC3339 / ISO-8601 with timezone -> convert to UTC.
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Ok(dt.naive_utc().format(SQL_FMT).to_string());
+    }
+    // "YYYY-MM-DD HH:MM:SS" without zone -> assume UTC.
+    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, SQL_FMT) {
+        return Ok(ndt.format(SQL_FMT).to_string());
+    }
+    // Bare date -> midnight UTC.
+    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(nd
+            .and_hms_opt(0, 0, 0)
+            .expect("00:00:00 is a valid time")
+            .format(SQL_FMT)
+            .to_string());
+    }
+    Err(EngError::InvalidInput(format!(
+        "created_at '{s}' is not a recognized timestamp (expected RFC3339, 'YYYY-MM-DD HH:MM:SS', or 'YYYY-MM-DD')"
+    )))
+}
+
 /// Insert a memory row inside an existing SQLite transaction.
 fn store_transactional_rusqlite(
     tx: &rusqlite::Transaction<'_>,
@@ -663,19 +698,28 @@ fn store_transactional_rusqlite(
     }
 
     let is_static = req.is_static.unwrap_or(false) as i32;
+    // Optional creation-timestamp override for backfill/import. A NULL bind makes
+    // COALESCE fall through to datetime('now'), preserving default behavior; an
+    // invalid value is rejected before the write.
+    let created_at_override: Option<String> = match req.created_at.as_deref() {
+        Some(raw) => Some(normalize_created_at(raw)?),
+        None => None,
+    };
     tx.execute(
         "INSERT INTO memories (
             content, category, source, session_id, importance,
             version, is_latest, parent_memory_id, root_memory_id,
             is_static, tags, status, space_id,
             fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state,
-            fsrs_reps, fsrs_lapses, model, sync_id, user_id, lang
+            fsrs_reps, fsrs_lapses, model, sync_id, user_id, lang,
+            created_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
             ?9, ?10, 'approved', ?11,
             1.0, 1.0, 0,
-            0, 0, ?12, ?13, ?14, ?15
+            0, 0, ?12, ?13, ?14, ?15,
+            COALESCE(?16, datetime('now'))
         )",
         rusqlite::params![
             content,
@@ -693,7 +737,8 @@ fn store_transactional_rusqlite(
             req.sync_id.clone(),
             user_id,
             // Best-effort content-language detection at ingest; never fails a write.
-            crate::lang::detect_lang(content)
+            crate::lang::detect_lang(content),
+            created_at_override
         ],
     )?;
 
@@ -2272,6 +2317,66 @@ mod tests {
         })
         .await
         .expect("read lang")
+    }
+
+    /// Read back the raw created_at TEXT for a stored memory.
+    async fn read_created_at(db: &Database, id: i64) -> String {
+        db.read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT created_at FROM memories WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .expect("read created_at")
+    }
+
+    /// A created_at override (RFC3339 with offset) is normalized to UTC and
+    /// persisted on the stored row instead of the datetime('now') default.
+    #[tokio::test]
+    async fn store_honors_created_at_override() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let mut req = valence_store_request("backfilled memory with explicit timestamp", 1);
+        // 13:00 at +02:00 is 11:00 UTC -> the stored value must be the UTC form.
+        req.created_at = Some("2025-04-08T13:00:00+02:00".to_string());
+        let stored = store(&db, req, None, false).await.expect("store");
+        assert_eq!(read_created_at(&db, stored.id).await, "2025-04-08 11:00:00");
+    }
+
+    /// A bare YYYY-MM-DD override is stored at midnight UTC.
+    #[tokio::test]
+    async fn store_created_at_override_accepts_bare_date() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let mut req = valence_store_request("backfilled memory dated by day only", 1);
+        req.created_at = Some("2024-11-30".to_string());
+        let stored = store(&db, req, None, false).await.expect("store");
+        assert_eq!(read_created_at(&db, stored.id).await, "2024-11-30 00:00:00");
+    }
+
+    /// Omitting created_at preserves the default: the row is stamped with a
+    /// recent timestamp (this decade), not left null or empty.
+    #[tokio::test]
+    async fn store_without_created_at_uses_now_default() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let req = valence_store_request("memory with no timestamp override", 1);
+        let stored = store(&db, req, None, false).await.expect("store");
+        let ts = read_created_at(&db, stored.id).await;
+        assert!(
+            ts.starts_with("202"),
+            "expected a current timestamp, got {ts}"
+        );
+    }
+
+    /// An unparseable created_at is rejected with InvalidInput rather than
+    /// being silently stored or coerced to now.
+    #[tokio::test]
+    async fn store_rejects_invalid_created_at() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let mut req = valence_store_request("memory with a bad timestamp", 1);
+        req.created_at = Some("not-a-date".to_string());
+        let err = store(&db, req, None, false).await.expect_err("must reject");
+        assert!(matches!(err, EngError::InvalidInput(_)), "got {err:?}");
     }
 
     /// The store path detects and persists the content language (de/fr).

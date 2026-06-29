@@ -293,6 +293,12 @@ pub struct StoreRequest {
     /// Externally-assigned sync identifier for cross-device deduplication.
     #[serde(default)]
     pub sync_id: Option<String>,
+    /// Optional creation-timestamp override for backfill/import. When set and
+    /// parseable (RFC3339, "YYYY-MM-DD HH:MM:SS", or "YYYY-MM-DD"), the stored
+    /// row's created_at uses this value (normalized to UTC) instead of now;
+    /// when omitted the database default datetime('now') applies.
+    #[serde(default)]
+    pub created_at: Option<String>,
     /// Inline artifact attachments (max 10 per store call).
     #[serde(default)]
     pub artifacts: Option<Vec<InlineArtifactInput>>,
@@ -324,6 +330,7 @@ impl Default for StoreRequest {
             parent_memory_id: None,
             sync_id: None,
             artifacts: None,
+            created_at: None,
         }
     }
 }
