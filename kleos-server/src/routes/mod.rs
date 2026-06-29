@@ -3,6 +3,7 @@ pub mod admin;
 pub mod agents;
 pub mod approvals;
 pub mod artifacts;
+pub mod attention;
 pub mod audit;
 pub mod auth_keys;
 pub mod axon;

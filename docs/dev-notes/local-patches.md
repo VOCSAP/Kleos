@@ -3846,6 +3846,33 @@ permet de cibler une projection.
 | Migration NULL legacy -> default (~3500 memoires) | Chantier dedie avec strategie (UPDATE global vs UPDATE selectif via tags vs DUMP+reinjection). | Plan section 11 |
 | KLEOS.md global section 10 "spaces" | Doc operateur, vit dans `claude-config` separe (pas dans ce repo). | Plan section 10 |
 
+### Patch 33 -- re-cablage merge upstream Ghost-Frame d905d4e7 (release 1.8.0, 2026-06-29)
+
+Merge de `d905d4e7` (20 commits au-dela de `f4e7eb3f`) sur la branche
+`merge/upstream-f4e7eb3f`. Deux nouveaux call sites upstream introduits par
+le merge appellent l'ancienne arite de fonctions dont Patch 33 a etendu la
+signature (ajout `space_id`/`include_unscoped`/`space`). Auto-merge propre au
+texte, casse au `cargo check` uniquement (incoherences cross-region). Fix :
+re-cabler sur la signature VOCSAP-etendue en preservant le comportement
+upstream (None = pas de partitionnement, scoping `user_id` conserve), aligne
+sur la discipline majoritaire des call sites SIS-internes (`prompts/mod.rs:414`).
+
+- `kleos-lib/src/intelligence/growth.rs:621` -- `context_growth()` (nouvelle fn
+  upstream #113 `GET /growth/context`, SIS-style prompt injection) appelait
+  `list_observations(db, user_id, pool_size)` (3 args upstream) ->
+  `list_observations(db, pool_size, None, None, user_id)`. Threader `space_id`
+  jusqu'au handler upstream = niveau refactor, reporte a un patch dedie si
+  partitionnement de `/growth/context` souhaite plus tard.
+- `kleos-lib/src/jobs/community_detection.rs:231` -- test upstream (nouveau
+  fichier #113 `feat(search): retrieval-quality v2`) construit un literal
+  `StoreRequest` sans le champ `space` (Patch 33) -> ajout `space: None`.
+
+Niveau delta : chirurgical (2 lignes). Seul conflit textuel du merge :
+`kleos-mcp/src/tools.rs` (greffe Patch 33 `maybe_inject_space`/
+`read_session_space_name` + doc-comment upstream, additif, cf. table ci-dessus
+entree 7). Verifs lang upstream OK (`MEMORY_COLUMN_COUNT==48`, `lang` en fin de
+`MEMORY_COLUMNS`, `row_to_memory` `lang: row.get(47)?`), `space_id` reste index 31.
+
 ---
 
 ## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)

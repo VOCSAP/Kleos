@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kleos-lib", "kleos-server", "kleos-cli", "kleos-client", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest", "forge", "kleos-install-core", "kleos-install", "kleos-install-gui", "kleos-phylax", "kleos-phylaxd", "kleos-token-client", "kleos-phylax-ssh-agent", "kleos-phylax-ssh-agentd"]
+members = ["kleos-config", "kleos-lib", "kleos-server", "kleos-cli", "kleos-client", "kleos-sidecar", "kleos-approval-tui", "kleos-mcp", "kleos-cred", "kleos-credd", "agent-forge", "kleos-migrate", "kleos-sh", "kleos-fs", "eidolon-supervisor", "kleos-cleanup", "kleos-ingest", "forge", "kleos-install-core", "kleos-install", "kleos-install-gui", "kleos-phylax", "kleos-phylaxd", "kleos-token-client", "kleos-phylax-ssh-agent", "kleos-phylax-ssh-agentd"]
 exclude = []
 
 [workspace.package]
@@ -42,10 +42,12 @@ shell-words = "1.1"
 # i18n core lexicon -- accent strip (NFD) + morphological stemming.
 unicode-normalization = "0.1"
 rust-stemmers = "1.2"
+# Statistical content-language detection (feeds per-language NLP routing).
+whatlang = "0.16"
 url = "2"
 ipnet = "2"
 zip = "2"
-pdf-extract = "0.7"
+pdf-extract = "0.12"
 rand = "0.9"
 async-trait = "0.1"
 arrow-array = "57"

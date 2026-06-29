@@ -6,6 +6,8 @@
 //! - [`vector`]       vector-search helpers over the LanceDB embeddings index.
 //! - [`vector_sync`]  backfill + replay of the `vector_sync_pending` ledger.
 //! - [`scoring`]      decay, pagerank, and per-channel scoring utilities.
+//! - [`abstain`]      L2 ABSTAIN gate -- "insufficient evidence" on low-confidence hits.
+//! - [`facts_channel`] structured_facts as an RRF retrieval channel (L5).
 //! - [`simhash`]      near-duplicate detection via SimHash / Hamming buckets.
 //! - [`types`]        request/response DTOs, `Memory`, `SearchResult`.
 //!
@@ -15,7 +17,9 @@
 //! SELECT shape and row-to-struct mapping in sync -- see the guard tests at
 //! the bottom of this file.
 
+pub mod abstain;
 pub mod auto_tag;
+pub mod facts_channel;
 pub mod fts;
 pub mod scoring;
 pub mod search;
@@ -344,6 +348,7 @@ pub(crate) fn row_to_memory(row: &rusqlite::Row<'_>, owner_user_id: i64) -> Resu
         updated_at: row.get(44)?,
         is_superseded: row.get::<_, i32>(45)? != 0,
         is_consolidated: row.get::<_, i32>(46)? != 0,
+        lang: row.get(47)?,
     })
 }
 
@@ -358,14 +363,14 @@ pub(crate) const MEMORY_COLUMNS: &str = "id, content, category, source, session_
     episode_id, decay_score, confidence, sync_id, status, space_id, \
     fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, \
     fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, \
-    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated";
+    valence, arousal, dominant_emotion, created_at, updated_at, is_superseded, is_consolidated, lang";
 
 /// Number of columns in `MEMORY_COLUMNS`. Must match the highest index
 /// `row_to_memory` reads from (indices 0..MEMORY_COLUMN_COUNT-1). Consumed
 /// only by the test guard below; a non-test reference would be redundant
 /// with the SELECT list itself.
 #[cfg(test)]
-pub(crate) const MEMORY_COLUMN_COUNT: usize = 47;
+pub(crate) const MEMORY_COLUMN_COUNT: usize = 48;
 
 // -- Public CRUD functions ---
 
@@ -664,13 +669,13 @@ fn store_transactional_rusqlite(
             version, is_latest, parent_memory_id, root_memory_id,
             is_static, tags, status, space_id,
             fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state,
-            fsrs_reps, fsrs_lapses, model, sync_id, user_id
+            fsrs_reps, fsrs_lapses, model, sync_id, user_id, lang
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
             ?9, ?10, 'approved', ?11,
             1.0, 1.0, 0,
-            0, 0, ?12, ?13, ?14
+            0, 0, ?12, ?13, ?14, ?15
         )",
         rusqlite::params![
             content,
@@ -686,7 +691,9 @@ fn store_transactional_rusqlite(
             req.space_id,
             Option::<String>::None,
             req.sync_id.clone(),
-            user_id
+            user_id,
+            // Best-effort content-language detection at ingest; never fails a write.
+            crate::lang::detect_lang(content)
         ],
     )?;
 
@@ -836,6 +843,16 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
             }
         }
     }
+    if let Some(ref from) = opts.from {
+        conditions.push(format!("created_at >= ?{}", param_idx));
+        param_values.push(rusqlite::types::Value::Text(from.clone()));
+        param_idx += 1;
+    }
+    if let Some(ref to) = opts.to {
+        conditions.push(format!("created_at < ?{}", param_idx));
+        param_values.push(rusqlite::types::Value::Text(to.clone()));
+        param_idx += 1;
+    }
 
     // Add limit and offset as parameters
     conditions.push("1=1".to_string()); // placeholder for LIMIT/OFFSET which go after WHERE
@@ -862,6 +879,91 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
             memories.push(row_to_memory(row, owner_user_id)?);
         }
         Ok(memories)
+    })
+    .await
+}
+
+/// Aggregate a user's active memories into date buckets for the timeline.
+///
+/// `granularity` selects the bucket: "year" groups by year (newest first);
+/// "month" requires `year` and groups that year's rows by month number 1..12;
+/// "day" requires `year` and `month` and groups that month's rows by day 1..31.
+/// Returns (bucket, count) pairs. Only latest, non-forgotten, non-archived,
+/// non-consolidated rows for `user_id` are counted -- matching `list`.
+pub async fn calendar_counts(
+    db: &Database,
+    user_id: i64,
+    granularity: &str,
+    year: Option<i32>,
+    month: Option<u32>,
+) -> Result<Vec<(String, i64)>> {
+    // Shared active-row predicate, identical to `list`'s visibility rules.
+    const ACTIVE: &str = "user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+                          AND is_latest = 1 AND is_consolidated = 0";
+
+    // Resolve the grouping expression and any extra time-scoping clauses.
+    let (group_expr, extra, params): (&str, String, Vec<rusqlite::types::Value>) = match granularity
+    {
+        "year" => (
+            "strftime('%Y', created_at)",
+            String::new(),
+            vec![rusqlite::types::Value::Integer(user_id)],
+        ),
+        "month" => {
+            let y = year.ok_or_else(|| {
+                crate::EngError::InvalidInput("year is required for month granularity".into())
+            })?;
+            (
+                "strftime('%m', created_at)",
+                " AND strftime('%Y', created_at) = ?2".to_string(),
+                vec![
+                    rusqlite::types::Value::Integer(user_id),
+                    rusqlite::types::Value::Text(format!("{y:04}")),
+                ],
+            )
+        }
+        "day" => {
+            let y = year.ok_or_else(|| {
+                crate::EngError::InvalidInput("year is required for day granularity".into())
+            })?;
+            let m = month.ok_or_else(|| {
+                crate::EngError::InvalidInput("month is required for day granularity".into())
+            })?;
+            (
+                "strftime('%d', created_at)",
+                " AND strftime('%Y', created_at) = ?2 AND strftime('%m', created_at) = ?3"
+                    .to_string(),
+                vec![
+                    rusqlite::types::Value::Integer(user_id),
+                    rusqlite::types::Value::Text(format!("{y:04}")),
+                    rusqlite::types::Value::Text(format!("{m:02}")),
+                ],
+            )
+        }
+        other => {
+            return Err(crate::EngError::InvalidInput(format!(
+                "invalid granularity: {other}"
+            )))
+        }
+    };
+
+    // Newest bucket first for year; ascending for month/day so cards read in order.
+    let order = if granularity == "year" { "DESC" } else { "ASC" };
+    let sql = format!(
+        "SELECT {group_expr} AS bucket, COUNT(*) AS n FROM memories \
+         WHERE {ACTIVE}{extra} GROUP BY bucket ORDER BY bucket {order}"
+    );
+
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(params.iter().cloned()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     })
     .await
 }
@@ -1421,7 +1523,7 @@ fn update_transactional_rusqlite(
             confidence, model,
             is_archived, is_fact, is_decomposed, source_count,
             episode_id, forget_after, forget_reason, decay_score,
-            sync_id, valence, arousal, dominant_emotion, user_id
+            sync_id, valence, arousal, dominant_emotion, user_id, lang
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
@@ -1431,7 +1533,7 @@ fn update_transactional_rusqlite(
             ?21, ?22,
             ?23, ?24, ?25, ?26,
             ?27, ?28, ?29, ?30,
-            ?31, ?32, ?33, ?34, ?35
+            ?31, ?32, ?33, ?34, ?35, ?36
         )",
         rusqlite::params![
             new_content,
@@ -1468,7 +1570,10 @@ fn update_transactional_rusqlite(
             old.valence,
             old.arousal,
             old.dominant_emotion.clone(),
-            user_id
+            user_id,
+            // Recompute language from the new content; do not carry the old value
+            // since an edit can change the language.
+            crate::lang::detect_lang(new_content)
         ],
     )?;
 
@@ -2178,6 +2283,50 @@ mod tests {
         .expect("read valence")
     }
 
+    /// Read the persisted content-language for a memory.
+    async fn read_lang(db: &Database, id: i64) -> Option<String> {
+        db.read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT lang FROM memories WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .expect("read lang")
+    }
+
+    /// The store path detects and persists the content language (de/fr).
+    #[tokio::test]
+    async fn store_persists_detected_language() {
+        let db = Database::connect_memory().await.expect("in-mem db");
+        let de = store(
+            &db,
+            valence_store_request(
+                "Die Geschwindigkeitsbegrenzung auf dieser Straße beträgt fünfzig Stundenkilometer.",
+                1,
+            ),
+            None,
+            false,
+        )
+        .await
+        .expect("store de");
+        assert_eq!(read_lang(&db, de.id).await.as_deref(), Some("de"));
+
+        let fr = store(
+            &db,
+            valence_store_request(
+                "La vitesse autorisée sur cette route nationale est de cinquante kilomètres heure.",
+                1,
+            ),
+            None,
+            false,
+        )
+        .await
+        .expect("store fr");
+        assert_eq!(read_lang(&db, fr.id).await.as_deref(), Some("fr"));
+    }
+
     /// Positive affective content should persist positive valence metadata.
     #[tokio::test]
     async fn store_persists_positive_valence_for_happy_content() {
@@ -2230,5 +2379,67 @@ mod tests {
         let (valence, emotion) = read_valence(&db, stored.id).await;
         assert_eq!(valence, None, "neutral content leaves valence null");
         assert_eq!(emotion, None);
+    }
+
+    /// list with from/to bounds returns only rows whose created_at falls in
+    /// the half-open [from, to) window.
+    #[tokio::test]
+    async fn list_filters_by_date_window() {
+        use rusqlite::params;
+        let db = Database::connect_memory().await.expect("in-mem db");
+        // Seed three memories on three different days for user 1.
+        for day in ["2026-03-01", "2026-03-14", "2026-03-30"] {
+            let ts = format!("{day} 12:00:00");
+            db.write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, confidence, \
+                     user_id, created_at, updated_at, is_latest, is_forgotten, is_archived, is_consolidated) \
+                     VALUES ('d', 'general', 'test', 5, 1.0, 1, ?1, ?1, 1, 0, 0, 0)",
+                    params![ts],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed");
+        }
+        let opts = ListOptions {
+            user_id: Some(1),
+            from: Some("2026-03-10".to_string()),
+            to: Some("2026-03-20".to_string()),
+            ..Default::default()
+        };
+        let got = list(&db, opts).await.expect("list");
+        assert_eq!(got.len(), 1, "only the 2026-03-14 row is in window");
+    }
+
+    /// calendar_counts groups a user's memories by year and returns per-year totals.
+    #[tokio::test]
+    async fn calendar_counts_groups_by_year() {
+        use rusqlite::params;
+        let db = Database::connect_memory().await.expect("in-mem db");
+        for ts in [
+            "2025-06-01 09:00:00",
+            "2026-03-14 12:00:00",
+            "2026-08-02 18:00:00",
+        ] {
+            db.write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, confidence, \
+                     user_id, created_at, updated_at, is_latest, is_forgotten, is_archived, is_consolidated) \
+                     VALUES ('c', 'general', 'test', 5, 1.0, 1, ?1, ?1, 1, 0, 0, 0)",
+                    params![ts],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed");
+        }
+        let buckets = calendar_counts(&db, 1, "year", None, None)
+            .await
+            .expect("calendar");
+        assert_eq!(
+            buckets,
+            vec![("2026".to_string(), 2), ("2025".to_string(), 1)]
+        );
     }
 }

@@ -140,6 +140,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::brain::router())
         .merge(routes::context::router())
         .merge(routes::inbox::router())
+        .merge(routes::attention::router())
         .merge(routes::ingestion::router())
         .merge(routes::jobs::router())
         .merge(routes::pack::router())

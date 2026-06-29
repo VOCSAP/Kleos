@@ -167,6 +167,9 @@ pub struct Memory {
     pub updated_at: String,
     pub is_superseded: bool,
     pub is_consolidated: bool,
+    /// Detected ISO 639-1 content language ("en"/"fr"/"de"), or None for rows
+    /// stored before language detection landed (treated as "en" downstream).
+    pub lang: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -483,6 +486,17 @@ pub struct SearchResult {
     pub linked: Option<Vec<LinkedMemory>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version_chain: Option<Vec<VersionChainEntry>>,
+    /// Raw cross-encoder relevance score in [0, 1], captured immediately after
+    /// reranker inference and BEFORE it is blended into `score`. Present on each
+    /// row the reranker actually cross-encoded; `None` on the no-reranker path
+    /// (FTS-only, filter path, vector-only without a reranker). This is the
+    /// uncontaminated confidence signal the ABSTAIN gate prefers over `score`,
+    /// which is entangled with decay, pagerank, and recency boosts. Normalized
+    /// to [0, 1] across backends (ONNX/Cohere are already in range; raw TEI
+    /// logits are passed through a sigmoid before storage) so a single threshold
+    /// is comparable regardless of reranker backend.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ce_confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +514,10 @@ pub struct ListOptions {
     pub include_unscoped: Option<bool>,
     pub include_forgotten: bool,
     pub include_archived: bool,
+    /// Inclusive lower bound on created_at (YYYY-MM-DD), or None.
+    pub from: Option<String>,
+    /// Exclusive upper bound on created_at (YYYY-MM-DD), or None.
+    pub to: Option<String>,
 }
 impl Default for ListOptions {
     fn default() -> Self {
@@ -513,6 +531,8 @@ impl Default for ListOptions {
             include_unscoped: None,
             include_forgotten: false,
             include_archived: false,
+            from: None,
+            to: None,
         }
     }
 }

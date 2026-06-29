@@ -1,3 +1,8 @@
+//! Binary entry point for `kleos-mcp`.
+//!
+//! Parses CLI flags, bootstraps the `App`, and hands off to the selected
+//! transport (stdio or HTTP).
+
 use clap::Parser;
 
 /// CLI flags for the kleos-mcp binary.

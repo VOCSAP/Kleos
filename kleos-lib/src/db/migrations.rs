@@ -430,6 +430,26 @@ pub static MIGRATIONS: &[Migration] = &[
         "readd_user_id_scratchpad",
         run_migration_readd_user_id_scratchpad
     ),
+    // facts_fts FTS5 index over structured_facts for the L5 facts retrieval channel.
+    // Additive: create the virtual table + sync triggers and rebuild from existing rows so
+    // upgraded installs get a populated index. Fresh installs already create facts_fts via
+    // AUXILIARY_SCHEMA_STATEMENTS; both paths are IF NOT EXISTS / idempotent. No PRAGMA toggle,
+    // so it runs transactionally.
+    migration!(93, "facts_fts", run_migration_facts_fts, tx),
+    // Rebuild all 6 global FTS tables with the language-neutral unicode61+diacritics
+    // tokenizer (drops English-only porter stemming). Pure DDL + FTS rebuild, no
+    // PRAGMA toggle, so transactional.
+    migration!(
+        94,
+        "fts_unicode61_diacritics",
+        run_migration_fts_unicode61,
+        tx
+    ),
+    // v95: nullable memories.lang column, populated by detect_lang on write.
+    migration!(95, "add_memory_lang", run_migration_add_memory_lang, tx),
+    // v96: attention_notes — persistent, tenant-scoped sticky reminders. No
+    // decay, no expiry; agents delete explicitly when done.
+    migration!(96, "attention_notes", run_migration_attention_notes, tx),
 ];
 
 // --- Version constants ---
@@ -3945,6 +3965,139 @@ fn run_migration_forge_tables(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration 93: facts_fts FTS5 index over structured_facts for the L5 facts channel.
+///
+/// External-content FTS5 over `structured_facts` (subject/predicate/object/verb). Creates the
+/// virtual table and its INSERT/DELETE/UPDATE sync triggers, then rebuilds the index from the
+/// existing rows so upgraded installs get a populated index immediately. Idempotent: the
+/// `IF NOT EXISTS` statements no-op on fresh installs (which already created facts_fts via
+/// `AUXILIARY_SCHEMA_STATEMENTS`), and the FTS5 'rebuild' command fully replaces the shadow
+/// tables. No `PRAGMA foreign_keys` toggle, so it runs inside the migration SAVEPOINT.
+fn run_migration_facts_fts(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        // Index user_id so the facts channel's `sf.user_id = ?` filter has B-tree support on
+        // multi-user monolith DBs (tenant shards already carry idx_facts_user from v14).
+        "CREATE INDEX IF NOT EXISTS idx_facts_user ON structured_facts(user_id);
+        CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+            subject, predicate, object, verb,
+            content='structured_facts', content_rowid='id',
+            tokenize='porter unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS facts_fts_insert AFTER INSERT ON structured_facts BEGIN
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END;
+        CREATE TRIGGER IF NOT EXISTS facts_fts_delete AFTER DELETE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+        END;
+        CREATE TRIGGER IF NOT EXISTS facts_fts_update AFTER UPDATE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END;
+        INSERT INTO facts_fts(facts_fts) VALUES('rebuild');",
+    )?;
+    info!("Migration 93 complete: facts_fts virtual table + triggers created and rebuilt");
+    Ok(())
+}
+
+/// Migration 94: rebuild the six global external-content FTS5 tables with the
+/// language-neutral `unicode61 remove_diacritics 2` tokenizer so existing
+/// databases match the schema_sql.rs change (drops English-only porter stemming,
+/// folds diacritics so e.g. Hauser/Häuser and francais/français match). Each
+/// virtual table is dropped, recreated with the new tokenizer, then rebuilt from
+/// its content table. The base-table `*_fts_insert/delete/update` triggers live
+/// independently of the virtual table and survive the drop, so they are left in
+/// place; the column lists below are the verbatim shapes from schema_sql.rs.
+fn run_migration_fts_unicode61(conn: &rusqlite::Connection) -> Result<()> {
+    // (table name, recreate SQL) for each external-content FTS table.
+    const RECREATE: &[(&str, &str)] = &[
+        (
+            "memories_fts",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                content, category, source,
+                content='memories', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )",
+        ),
+        (
+            "episodes_fts",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
+                title, summary, agent,
+                content='episodes', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )",
+        ),
+        (
+            "messages_fts",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                content, role,
+                content='messages', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )",
+        ),
+        (
+            "skills_fts",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
+                name, description, code,
+                content='skill_records', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )",
+        ),
+        (
+            "artifacts_fts",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts USING fts5(
+                name, content,
+                content='artifacts', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )",
+        ),
+        (
+            "facts_fts",
+            "CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+                subject, predicate, object, verb,
+                content='structured_facts', content_rowid='id',
+                tokenize='unicode61 remove_diacritics 2'
+            )",
+        ),
+    ];
+    for (name, create_sql) in RECREATE {
+        conn.execute(&format!("DROP TABLE IF EXISTS {name}"), [])?;
+        conn.execute_batch(create_sql)?;
+        conn.execute(&format!("INSERT INTO {name}({name}) VALUES('rebuild')"), [])?;
+    }
+    info!("Migration 94 complete: 6 global FTS tables rebuilt with unicode61+diacritics tokenizer");
+    Ok(())
+}
+
+/// Migration 95: add a nullable `lang` column to the global `memories` table for
+/// the detected ISO 639-1 content language. Nullable with no backfill -- NULL
+/// means "unknown / treat as en". Populated by detect_lang on subsequent writes.
+fn run_migration_add_memory_lang(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute("ALTER TABLE memories ADD COLUMN lang TEXT", [])?;
+    info!("Migration 95 complete: memories.lang column added");
+    Ok(())
+}
+
+fn run_migration_attention_notes(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS attention_notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            content     TEXT NOT NULL,
+            priority    INTEGER NOT NULL DEFAULT 5 CHECK (priority BETWEEN 1 AND 10),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_attention_notes_user_priority
+            ON attention_notes(user_id, priority DESC, created_at ASC);",
+    )?;
+    info!("Migration 96 complete: attention_notes table created");
+    Ok(())
+}
+
 /// Migration 48: rebuilds api_keys without the cross-database agent FK.
 fn run_migration_drop_api_keys_agent_fk(conn: &rusqlite::Connection) -> Result<()> {
     // In the sharded architecture agents live in per-tenant databases while
@@ -5034,6 +5187,69 @@ mod tests {
             "MIGRATIONS array contains v{highest_in_array} but run_migrations only applied up to v{applied}. \
              Did you add an entry to the MIGRATIONS array without adding the matching dispatch block?"
         );
+    }
+
+    /// Migration 94: rebuilding the global FTS tables with the unicode61+diacritics
+    /// tokenizer must preserve row parity, fold diacritics for keyword match, run
+    /// idempotently on an already-populated DB, and leave the sync triggers firing.
+    #[test]
+    fn migration_94_rebuild_parity_folds_diacritics_triggers_fire() {
+        let conn = open_test_db();
+        run_migrations(&conn).expect("fresh migrate to head (includes v94)");
+        // Populate with German + French content before re-running the rebuild.
+        conn.execute(
+            "INSERT INTO memories (content) VALUES ('Häuser stehen am Fluss')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memories (content) VALUES ('La forêt française est dense')",
+            [],
+        )
+        .unwrap();
+        let base: i64 = conn
+            .query_row("SELECT count(*) FROM memories", [], |r| r.get(0))
+            .unwrap();
+
+        // Re-run the rebuild migration directly: idempotent, preserves parity.
+        super::run_migration_fts_unicode61(&conn).expect("rerun migration 94");
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM memories_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts, base, "FTS row parity after rebuild");
+
+        // Diacritic-folded keyword match: the umlaut/accent is dropped in the query.
+        let de: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'hauser'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(de, 1, "'hauser' folds to match 'Häuser'");
+        let fr: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'foret'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fr, 1, "'foret' folds to match 'forêt'");
+
+        // The base-table sync trigger still fires after the rebuild.
+        conn.execute(
+            "INSERT INTO memories (content) VALUES ('Müller wohnt in München')",
+            [],
+        )
+        .unwrap();
+        let trig: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM memories_fts WHERE memories_fts MATCH 'munchen'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(trig, 1, "post-rebuild trigger fires and folds 'München'");
     }
 
     /// Migration 84: the control-DB `instance_grants` table backs Space

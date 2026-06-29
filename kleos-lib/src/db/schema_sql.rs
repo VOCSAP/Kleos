@@ -1102,7 +1102,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
             content, category, source,
             content='memories', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
             INSERT INTO memories_fts(rowid, content, category, source)
@@ -1121,7 +1121,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS episodes_fts USING fts5(
             title, summary, agent,
             content='episodes', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS episodes_fts_insert AFTER INSERT ON episodes BEGIN
             INSERT INTO episodes_fts(rowid, title, summary, agent)
@@ -1140,7 +1140,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             content, role,
             content='messages', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
             INSERT INTO messages_fts(rowid, content, role)
@@ -1159,7 +1159,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS skills_fts USING fts5(
             name, description, code,
             content='skill_records', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS skills_fts_insert AFTER INSERT ON skill_records BEGIN
             INSERT INTO skills_fts(rowid, name, description, code)
@@ -1178,7 +1178,7 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
     r#"CREATE VIRTUAL TABLE IF NOT EXISTS artifacts_fts USING fts5(
             name, content,
             content='artifacts', content_rowid='id',
-            tokenize='porter unicode61'
+            tokenize='unicode61 remove_diacritics 2'
         )"#,
     r#"CREATE TRIGGER IF NOT EXISTS artifacts_fts_insert AFTER INSERT ON artifacts BEGIN
             INSERT INTO artifacts_fts(rowid, name, content)
@@ -1193,6 +1193,29 @@ pub const AUXILIARY_SCHEMA_STATEMENTS: &[&str] = &[
             VALUES ('delete', old.id, old.name, old.content);
             INSERT INTO artifacts_fts(rowid, name, content)
             VALUES (new.id, new.name, new.content);
+        END"#,
+    // facts_fts: FTS5 index over structured_facts SPO + verb, for the L5 facts
+    // retrieval channel. External-content (content='structured_facts'); the triggers below
+    // keep it in sync. Fresh installs start empty so no 'rebuild' is needed here -- existing
+    // installs are backfilled by the facts_fts upgrade migration.
+    r#"CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+            subject, predicate, object, verb,
+            content='structured_facts', content_rowid='id',
+            tokenize='unicode61 remove_diacritics 2'
+        )"#,
+    r#"CREATE TRIGGER IF NOT EXISTS facts_fts_insert AFTER INSERT ON structured_facts BEGIN
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
+        END"#,
+    r#"CREATE TRIGGER IF NOT EXISTS facts_fts_delete AFTER DELETE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+        END"#,
+    r#"CREATE TRIGGER IF NOT EXISTS facts_fts_update AFTER UPDATE ON structured_facts BEGIN
+            INSERT INTO facts_fts(facts_fts, rowid, subject, predicate, object, verb)
+            VALUES ('delete', old.id, old.subject, old.predicate, old.object, old.verb);
+            INSERT INTO facts_fts(rowid, subject, predicate, object, verb)
+            VALUES (new.id, new.subject, new.predicate, new.object, new.verb);
         END"#,
     r#"INSERT OR IGNORE INTO users (id, username, role, is_admin) VALUES (1, 'owner', 'admin', 1)"#,
     r#"INSERT OR IGNORE INTO spaces (user_id, name) VALUES (1, 'default')"#,
