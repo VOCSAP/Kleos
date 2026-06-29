@@ -5197,6 +5197,42 @@ dans la voie nominale).
 
 ---
 
+## Patch 48 -- timeout reranker HTTP/TEI surchargeable par env var (2026-06-29)
+
+**Symptome :** Le timeout de requete du reranker HTTP/TEI etait code en dur a
+10s dans `HttpReranker::new_with_db` (`kleos-lib/src/reranker/mod.rs`,
+`.timeout(Duration::from_secs(10))`). Sur un reranker TEI distant lent (CPU,
+gros batch), 10s peut etre insuffisant ; aucun moyen de l'ajuster sans rebuild.
+
+**Approche (niveau chirurgical, candidat PR upstream propre) :** Lire
+`KLEOS_RERANKER_TIMEOUT_SECS` (legacy `ENGRAM_RERANKER_TIMEOUT_SECS`) via
+`crate::kleos_env`, parser un `u64`, clamp `[1, 300]`, defaut `10` si absent ou
+invalide (warn sur invalide, miroir de `RERANKER_TOP_K` dans `config.rs`).
+Helper pur `resolve_reranker_timeout_secs(Option<String>) -> u64` (testable sans
+race env) + consts `DEFAULT/MIN/MAX_RERANKER_TIMEOUT_SECS`. `connect_timeout(5s)`
+de `safe_client_builder` non touche. `timeout_secs` ajoute au tracing
+"HTTP reranker configured" et au doc-comment `from_env`. **Defaut 10s preserve =
+byte-identique au comportement upstream quand la var est absente.**
+
+**Workflow PR isole :** patch cree d'abord dans un worktree base sur
+`upstream/main` pur (branche `pr/reranker-timeout-env`, 1 commit `e7f2544a`,
+diff 100% upstream-pur, zero patch VOCSAP) puis cherry-pick sur
+`merge/upstream-f4e7eb3f` (commit `82746960`). Le diff ne touche que
+`kleos-lib/src/reranker/mod.rs` (upstream-pur cote VOCSAP, aucun conflit).
+
+**Fichiers touches :** `kleos-lib/src/reranker/mod.rs` (additif/chirurgical,
++63/-1). Niveau delta : chirurgical.
+
+**Tests :** `cargo check` + `cargo test -p kleos-lib --features bundled-sqlite
+--lib reranker` verts (7 tests : 3 fallback + 4 nouveaux timeout : unset->10,
+30->30, invalide->10, clamp 0->1 et 500->300). agent-forge `spec_2be63a2b`,
+verify 2/2.
+
+**Conditions de retrait :** candidat PR upstream Ghost-Frame (env-overridable
+timeout, behavior-neutral). A retirer du fork si upstream merge la PR.
+
+---
+
 ## Binaires compilés pour chaque plateforme
 
 | Binaire | Windows (MSVC) | Linux musl (WSL) |
