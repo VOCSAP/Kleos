@@ -650,6 +650,47 @@ fn normalize_created_at(raw: &str) -> Result<String> {
 }
 
 /// Insert a memory row inside an existing SQLite transaction.
+/// Review gate master switch. Default-off; set `KLEOS_REVIEW_GATE_ENABLED=1`
+/// to route freshly stored memories whose source is in [`REVIEW_GATE_SOURCES`]
+/// into the `pending` inbox instead of auto-approving them. When unset the
+/// store path is byte-identical to before this gate existed.
+static REVIEW_GATE_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("KLEOS_REVIEW_GATE_ENABLED")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+});
+
+/// Lower-cased allowlist of memory sources that require review when the gate
+/// is enabled. Parsed once from the comma-separated `KLEOS_REVIEW_GATE_SOURCES`
+/// env var. Empty (the default) means nothing is gated even when the master
+/// switch is on -- a deliberately safe no-op.
+static REVIEW_GATE_SOURCES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    parse_gate_sources(std::env::var("KLEOS_REVIEW_GATE_SOURCES").ok().as_deref())
+});
+
+/// Parse a comma-separated source allowlist into trimmed, lower-cased entries,
+/// dropping blanks. Pure helper so the parsing is unit-testable without env.
+fn parse_gate_sources(raw: Option<&str>) -> Vec<String> {
+    raw.unwrap_or("")
+        .split(',')
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Decide the initial `status` for a newly stored memory. Returns `"pending"`
+/// only when the gate is enabled and `source` is in the allowlist; otherwise
+/// `"approved"`, preserving historical behavior. Pure so it can be tested
+/// against explicit `enabled`/`sources` inputs without touching process env.
+fn resolve_initial_status(source: &str, enabled: bool, sources: &[String]) -> &'static str {
+    if enabled && sources.iter().any(|s| s == &source.to_ascii_lowercase()) {
+        "pending"
+    } else {
+        "approved"
+    }
+}
+
+/// Insert one memory row inside an open transaction, returning its new id.
 fn store_transactional_rusqlite(
     tx: &rusqlite::Transaction<'_>,
     content: &str,
@@ -716,7 +757,7 @@ fn store_transactional_rusqlite(
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5,
             ?6, 1, ?7, ?8,
-            ?9, ?10, 'approved', ?11,
+            ?9, ?10, ?17, ?11,
             1.0, 1.0, 0,
             0, 0, ?12, ?13, ?14, ?15,
             COALESCE(?16, datetime('now'))
@@ -738,7 +779,10 @@ fn store_transactional_rusqlite(
             user_id,
             // Best-effort content-language detection at ingest; never fails a write.
             crate::lang::detect_lang(content),
-            created_at_override
+            created_at_override,
+            // ?17: initial status. 'approved' unless the review gate is enabled
+            // and this memory's source is in the configured allowlist.
+            resolve_initial_status(&req.source, *REVIEW_GATE_ENABLED, &REVIEW_GATE_SOURCES)
         ],
     )?;
 
@@ -2226,6 +2270,42 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The source allowlist parser trims, lower-cases, and drops blank entries.
+    #[test]
+    fn parse_gate_sources_normalizes_and_drops_blanks() {
+        assert_eq!(parse_gate_sources(None), Vec::<String>::new());
+        assert_eq!(parse_gate_sources(Some("   ")), Vec::<String>::new());
+        assert_eq!(
+            parse_gate_sources(Some(" Activity , ,Extraction,GUI ")),
+            vec![
+                "activity".to_string(),
+                "extraction".to_string(),
+                "gui".to_string()
+            ]
+        );
+    }
+
+    /// The review gate only rewrites status to 'pending' when it is enabled AND
+    /// the source is in the allowlist; everything else stays 'approved'.
+    #[test]
+    fn resolve_initial_status_only_gates_enabled_listed_sources() {
+        let sources = vec!["activity".to_string(), "extraction".to_string()];
+        // Disabled -> always approved, regardless of source.
+        assert_eq!(
+            resolve_initial_status("activity", false, &sources),
+            "approved"
+        );
+        // Enabled + listed (case-insensitive) -> pending.
+        assert_eq!(
+            resolve_initial_status("Activity", true, &sources),
+            "pending"
+        );
+        // Enabled + unlisted (e.g. an explicit user store) -> approved.
+        assert_eq!(resolve_initial_status("user", true, &sources), "approved");
+        // Enabled + empty allowlist -> approved (safe no-op).
+        assert_eq!(resolve_initial_status("activity", true, &[]), "approved");
+    }
 
     /// Guard: MEMORY_COLUMNS and row_to_memory must stay aligned. If this test
     /// fails, either the SELECT column list or the row_to_memory mapping

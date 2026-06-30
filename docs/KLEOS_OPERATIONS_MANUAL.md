@@ -1327,6 +1327,21 @@ Operational notes:
 - Initial bootstrap key flow is separate from normal auth.
 - Multi-user tenant sharding is enabled by default.
 
+Optional GUI-population flags (all default-off; behavior is byte-identical to
+prior releases when unset):
+
+- `KLEOS_PROJECTS_DERIVE_ENABLED=1` -- the Memory > Projects tab augments the
+  explicit `projects` rows with projects derived from distinct `tasks.project`
+  values (Chiasm activity), scoped to the caller. Derived cards show the task
+  count and are never persisted. Use this when you tag activity with
+  `--project` but do not curate explicit project records.
+- `KLEOS_REVIEW_GATE_ENABLED=1` plus `KLEOS_REVIEW_GATE_SOURCES=src1,src2,...`
+  -- newly stored memories whose `source` is in the comma-separated allowlist
+  are written with `status='pending'` so they land in the Memory > Inbox
+  (Review) queue for approve/reject instead of being auto-approved. Sources not
+  listed (and all stores when the allowlist is empty) stay `approved`, so
+  explicit `memory_store` calls are never gated unless you opt their source in.
+
 ## `kleos-mcp`
 
 Synopsis:

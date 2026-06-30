@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 pub const VALID_PROJECT_STATUSES: &[&str] = &["active", "paused", "completed", "archived"];
 
+/// A project record as returned to callers: identity, metadata, and the count
+/// of memories linked to it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectRow {
     pub id: i64,
@@ -22,6 +24,8 @@ pub struct ProjectRow {
     pub memory_count: Option<i64>,
 }
 
+/// Request body for creating a project; all fields optional so the handler can
+/// apply defaults and validation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateProjectBody {
     pub name: Option<String>,
@@ -30,6 +34,8 @@ pub struct CreateProjectBody {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Request body for updating a project; each present field overwrites the
+/// stored value, absent fields are left unchanged.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateProjectBody {
     pub name: Option<String>,
@@ -38,6 +44,7 @@ pub struct UpdateProjectBody {
     pub metadata: Option<serde_json::Value>,
 }
 
+/// Insert a new project owned by `user_id`, returning its id and created_at.
 #[tracing::instrument(skip(db, description, metadata), fields(name = %name, status = %status, user_id))]
 pub async fn create_project(
     db: &Database,
@@ -68,6 +75,7 @@ pub async fn create_project(
     .await
 }
 
+/// Fetch a single project by id, scoped to its owner; None if absent or foreign.
 #[tracing::instrument(skip(db), fields(project_id = id, user_id))]
 pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<ProjectRow>> {
     db.read(move |conn| {
@@ -86,6 +94,69 @@ pub async fn get_project(db: &Database, id: i64, user_id: i64) -> Result<Option<
     .await
 }
 
+/// Project derivation master switch. Default-off; set
+/// `KLEOS_PROJECTS_DERIVE_ENABLED=1` to surface projects that exist only as
+/// `tasks.project` values (Chiasm activity) alongside the explicit `projects`
+/// rows. When unset, `list_projects` returns exactly the explicit rows as
+/// before.
+static PROJECTS_DERIVE_ENABLED: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
+    std::env::var("KLEOS_PROJECTS_DERIVE_ENABLED")
+        .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+});
+
+/// Deterministic, always-negative synthetic id for a derived project. Negative
+/// so it can never collide with a real (positive) `projects.id`, and stable per
+/// name so the GUI's React keys do not churn between refetches.
+fn derived_project_id(name: &str) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.to_ascii_lowercase().hash(&mut hasher);
+    -((hasher.finish() & (i64::MAX as u64)) as i64) - 1
+}
+
+/// Append projects that exist only as `tasks.project` values (not as explicit
+/// `projects` rows) to `result`, scoped to `user_id`. `existing_lower` holds the
+/// lower-cased names already present so explicit rows always win. `memory_count`
+/// is set to the task count for that project so the card renders a non-zero
+/// badge (and is not hidden by the GUI's zero-count filter). Synthetic rows are
+/// reported with status `active`.
+fn append_derived_task_projects(
+    conn: &rusqlite::Connection,
+    user_id: i64,
+    existing_lower: &std::collections::HashSet<String>,
+    result: &mut Vec<ProjectRow>,
+) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT project, COUNT(*) AS cnt FROM tasks \
+         WHERE user_id = ?1 AND project IS NOT NULL AND TRIM(project) <> '' \
+         GROUP BY project ORDER BY project COLLATE NOCASE",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![user_id])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(0)?;
+        let count: i64 = row.get(1)?;
+        if existing_lower.contains(&name.to_ascii_lowercase()) {
+            continue;
+        }
+        result.push(ProjectRow {
+            id: derived_project_id(&name),
+            name,
+            description: Some("Derived from Chiasm task activity".to_string()),
+            status: "active".to_string(),
+            metadata: None,
+            user_id,
+            created_at: String::new(),
+            updated_at: None,
+            memory_count: Some(count),
+        });
+    }
+    Ok(())
+}
+
+/// List a user's projects (optionally filtered by status). When project
+/// derivation is enabled, also folds in task-only projects (see
+/// [`append_derived_task_projects`]).
 #[tracing::instrument(skip(db), fields(user_id, status = ?status))]
 pub async fn list_projects(
     db: &Database,
@@ -93,6 +164,8 @@ pub async fn list_projects(
     status: Option<&str>,
 ) -> Result<Vec<ProjectRow>> {
     let status = status.map(|s| s.to_string());
+    // Snapshot the flag before entering the blocking closure.
+    let derive = *PROJECTS_DERIVE_ENABLED;
 
     db.read(move |conn| {
         let mut result = Vec::new();
@@ -129,11 +202,20 @@ pub async fn list_projects(
                 result.push(row_to_project(row)?);
             }
         }
+        // Derived (task-only) projects are synthetic 'active' rows, so only fold
+        // them in when the caller is not filtering to some other status.
+        let status_admits_active = status.as_deref().map(|s| s == "active").unwrap_or(true);
+        if derive && status_admits_active {
+            let existing_lower: std::collections::HashSet<String> =
+                result.iter().map(|p| p.name.to_ascii_lowercase()).collect();
+            append_derived_task_projects(conn, user_id, &existing_lower, &mut result)?;
+        }
         Ok(result)
     })
     .await
 }
 
+/// Update a project's mutable fields (owner-scoped); absent fields are kept.
 #[tracing::instrument(skip(db, name, description, metadata), fields(project_id = id, user_id, status = ?status))]
 pub async fn update_project(
     db: &Database,
@@ -165,6 +247,7 @@ pub async fn update_project(
     .await
 }
 
+/// Delete a project by id, scoped to its owner.
 #[tracing::instrument(skip(db), fields(project_id = id, user_id))]
 pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
@@ -177,6 +260,7 @@ pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> 
     .await
 }
 
+/// Link a memory to a project after verifying both are owned by `user_id`.
 #[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
 pub async fn link_memory(
     db: &Database,
@@ -229,6 +313,7 @@ pub async fn link_memory(
     .await
 }
 
+/// Remove a memory-to-project link after verifying the project's ownership.
 #[tracing::instrument(skip(db), fields(memory_id, project_id, user_id))]
 pub async fn unlink_memory(
     db: &Database,
@@ -262,6 +347,7 @@ pub async fn unlink_memory(
     .await
 }
 
+/// Return the ids of memories linked to a project, owner-scoped on both sides.
 #[tracing::instrument(skip(db), fields(project_id, user_id))]
 pub async fn get_project_memory_ids(
     db: &Database,
@@ -300,6 +386,8 @@ pub async fn get_project_memory_ids(
     .await
 }
 
+/// Map a SQL result row (id, name, description, status, metadata, user_id,
+/// created_at, updated_at, memory_count) into a [`ProjectRow`].
 fn row_to_project(row: &rusqlite::Row<'_>) -> Result<ProjectRow> {
     Ok(ProjectRow {
         id: row
@@ -324,11 +412,13 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> Result<ProjectRow> {
     })
 }
 
+/// Unit tests for project CRUD, tenant scoping, and task-project derivation.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Database;
 
+    /// VALID_PROJECT_STATUSES contains the accepted statuses and nothing else.
     #[test]
     fn test_valid_statuses() {
         assert!(VALID_PROJECT_STATUSES.contains(&"active"));
@@ -376,5 +466,59 @@ mod tests {
             .await
             .expect("list ids");
         assert_eq!(ids, vec![own], "listing must be scoped to the owner");
+    }
+
+    /// Synthetic ids are negative (never collide with real positive ids) and
+    /// stable per name so the GUI's React keys do not churn between refetches.
+    #[test]
+    fn derived_project_id_is_negative_and_stable() {
+        let a = derived_project_id("Kleos");
+        let b = derived_project_id("Kleos");
+        let c = derived_project_id("Synapse");
+        assert!(a < 0 && c < 0, "derived ids must be negative");
+        assert_eq!(a, b, "same name -> same id");
+        assert_ne!(a, c, "distinct names -> distinct ids");
+    }
+
+    /// Derivation surfaces task-only projects, scoped to the owner, while
+    /// excluding explicit duplicates and skipping blank/NULL project values.
+    #[tokio::test]
+    async fn derives_task_projects_excluding_explicit_and_blank() {
+        let db = Database::connect_memory().await.expect("db");
+        db.write(|conn| {
+            for (title, project, user) in [
+                ("a", Some("Kleos"), 1), // duplicate of an explicit row
+                ("b", Some("Kleos"), 1),
+                ("c", Some("Synapse"), 1), // task-only -> should derive
+                ("d", Some(""), 1),        // blank -> skipped
+                ("e", None, 1),            // NULL -> skipped
+                ("f", Some("Other"), 2),   // foreign owner -> out of scope
+            ] {
+                conn.execute(
+                    "INSERT INTO tasks (title, project, user_id) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![title, project, user],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("seed tasks");
+
+        let derived = db
+            .read(|conn| {
+                let mut result = Vec::new();
+                let existing: std::collections::HashSet<String> =
+                    ["kleos".to_string()].into_iter().collect();
+                append_derived_task_projects(conn, 1, &existing, &mut result)?;
+                Ok(result)
+            })
+            .await
+            .expect("derive");
+
+        assert_eq!(derived.len(), 1, "only the task-only project derives");
+        assert_eq!(derived[0].name, "Synapse");
+        assert_eq!(derived[0].memory_count, Some(1));
+        assert_eq!(derived[0].status, "active");
+        assert!(derived[0].id < 0, "derived id must be negative");
     }
 }
