@@ -46,6 +46,28 @@ pub fn monotonic_millis() -> u64 {
 const GROWTH_REFLECT_CHANCE: f64 = 0.2;
 /// Number of recent memory contents to feed growth::reflect as context.
 const GROWTH_CONTEXT_SIZE: usize = 20;
+/// Number of most-recent growth observations fed back as `existing_growth`,
+/// so the LLM's "do NOT repeat things already known" instruction has actual
+/// prior observations to check against instead of always seeing `None`.
+const EXISTING_GROWTH_LIMIT: usize = 15;
+
+/// Join the most-recent growth observations into a single string for the
+/// `existing_growth` field of `GrowthReflectRequest`.
+async fn existing_growth_context(db: &Database, user_id: i64) -> Option<String> {
+    match growth::list_observations(db, user_id, EXISTING_GROWTH_LIMIT).await {
+        Ok(obs) if !obs.is_empty() => Some(
+            obs.into_iter()
+                .map(|o| o.content)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Ok(_) => None,
+        Err(e) => {
+            warn!(user_id, error = %e, "dreamer: failed to load existing growth observations");
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct DreamerStats {
@@ -377,7 +399,7 @@ async fn run_cycle(
                 let req = GrowthReflectRequest {
                     service: "dreamer".to_string(),
                     context: merged_ctx,
-                    existing_growth: None,
+                    existing_growth: existing_growth_context(db, *user_id).await,
                     prompt_override: None,
                 };
                 match growth::reflect(db, &req, *user_id).await {
@@ -668,7 +690,7 @@ async fn run_cycle_tenants(
                         let req = GrowthReflectRequest {
                             service: "dreamer".to_string(),
                             context: ctx,
-                            existing_growth: None,
+                            existing_growth: existing_growth_context(&tenant_db, *user_id).await,
                             prompt_override: None,
                         };
                         if let Err(e) = growth::reflect(&tenant_db, &req, *user_id).await {
