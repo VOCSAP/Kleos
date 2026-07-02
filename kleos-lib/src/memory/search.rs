@@ -451,11 +451,14 @@ async fn hydrate_candidates(
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     // Scope to the owner (bound after the id list) so single-DB mode never
     // hydrates another user's candidate; a no-op in a single-owner shard.
+    // status != 'pending' drops review-gate pending memories from every search
+    // result: hybrid/reranked funnel all candidate ids through here, so this is
+    // the single choke point. A no-op on pre-gate data (all rows approved).
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
          fsrs_stability, content, category, is_archived, is_consolidated \
-         FROM memories WHERE id IN ({}) AND user_id = ?",
+         FROM memories WHERE id IN ({}) AND user_id = ? AND status != 'pending'",
         placeholders
     );
 
@@ -1918,7 +1921,13 @@ async fn faceted_db_scan(
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
     // Build SQL with applicable WHERE clauses pushed to DB level.
-    let mut conditions = vec!["is_forgotten = 0".to_string(), "is_latest = 1".to_string()];
+    // status != 'pending' keeps review-gate pending memories out of faceted
+    // search results; a no-op on pre-gate data.
+    let mut conditions = vec![
+        "is_forgotten = 0".to_string(),
+        "is_latest = 1".to_string(),
+        "status != 'pending'".to_string(),
+    ];
     let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![];
     let mut idx = 1usize;
 
@@ -2192,6 +2201,7 @@ mod tests {
     /// honors the cap, so a hop-2 neighbor always ranks beneath its full-weight hop-1 parents.
     #[test]
     fn inject_graph_neighbors_applies_multiplier_and_cap() {
+        // Build a GraphExpansionRow fixture with the given link id for the test.
         fn row(id: i64) -> GraphExpansionRow {
             GraphExpansionRow {
                 link_id: id,

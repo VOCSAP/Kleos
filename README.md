@@ -37,6 +37,7 @@ Memory in Kleos follows the same arc as biological memory -- acquisition, consol
 - **Modern Hopfield network** (feature-gated) with softmax attention and capacity exponential in dimension. Backs an associative instinct system with causal edge scoring.
 - **Personality-shaped recall** -- six signal types (preference, value, motivation, decision, emotion, identity) extracted from stored text. Two agents querying the same memories get different results.
 - **On-store processing** -- SimHash deduplication, SVO contradiction detection, atomic fact decomposition, entity extraction, and auto-linking all happen before the store call returns.
+- **Optional human review gate (off by default).** When enabled, memories from configured sources land in a pending inbox for approve, reject, or edit before they become recallable, instead of auto-approving. Pending memories are withheld from recall, search, and listings until approved. Opt in with `KLEOS_REVIEW_GATE_ENABLED=1` plus `KLEOS_REVIEW_GATE_SOURCES` (a comma-separated source allowlist); leaving either unset keeps every store auto-approved, exactly as before.
 
 ### Context assembly
 

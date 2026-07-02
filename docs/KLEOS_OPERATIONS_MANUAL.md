@@ -1341,6 +1341,10 @@ prior releases when unset):
   (Review) queue for approve/reject instead of being auto-approved. Sources not
   listed (and all stores when the allowlist is empty) stay `approved`, so
   explicit `memory_store` calls are never gated unless you opt their source in.
+  While pending, a memory is withheld from recall, search, and listings (the
+  `include_pending` opt-in surfaces it for the Inbox view) and only becomes
+  recallable once approved. The gate is off by default, so a fresh install
+  behaves byte-identically to releases without it: nothing is held for review.
 
 ## `kleos-mcp`
 

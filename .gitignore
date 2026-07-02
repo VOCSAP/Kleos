@@ -59,3 +59,7 @@ repomix.config.json
 
 # Debug artifacts
 dbgmd-*
+
+# Tool session artifacts (never project content)
+.playwright-mcp/
+.build-fleet/

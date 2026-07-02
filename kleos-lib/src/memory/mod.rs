@@ -895,6 +895,17 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     conditions.push("is_latest = 1".to_string());
     conditions.push("is_consolidated = 0".to_string());
 
+    // Review gate: withhold memories still pending human review (matches the
+    // original inbox design: list/recall/search filter status != 'pending').
+    // `!= 'pending'` (not `= 'approved'`) is deliberate -- it preserves the
+    // trash view, where rejected+archived rows must still surface. Pre-gate
+    // rows are status='approved' so this is a no-op there; the Inbox path
+    // queries pending rows directly. Callers that must browse pending set
+    // include_pending.
+    if !opts.include_pending {
+        conditions.push("status != 'pending'".to_string());
+    }
+
     if let Some(ref cat) = opts.category {
         conditions.push(format!("category = ?{}", param_idx));
         param_values.push(rusqlite::types::Value::Text(cat.clone()));
@@ -965,8 +976,10 @@ pub async fn calendar_counts(
     month: Option<u32>,
 ) -> Result<Vec<(String, i64)>> {
     // Shared active-row predicate, identical to `list`'s visibility rules.
+    // status != 'pending' withholds review-gate pending memories from timeline
+    // counts; a no-op on pre-gate data where every row is already approved.
     const ACTIVE: &str = "user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
-                          AND is_latest = 1 AND is_consolidated = 0";
+                          AND is_latest = 1 AND is_consolidated = 0 AND status != 'pending'";
 
     // Resolve the grouping expression and any extra time-scoping clauses.
     let (group_expr, extra, params): (&str, String, Vec<rusqlite::types::Value>) = match granularity
@@ -1055,7 +1068,7 @@ pub async fn list_static(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
-               AND space_id = ?2 \
+               AND status != 'pending' AND space_id = ?2 \
              ORDER BY importance DESC, created_at DESC LIMIT ?3",
             cols = MEMORY_COLUMNS,
         )
@@ -1064,6 +1077,7 @@ pub async fn list_static(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+               AND status != 'pending' \
              ORDER BY importance DESC, created_at DESC LIMIT ?2",
             cols = MEMORY_COLUMNS,
         )
@@ -1104,7 +1118,7 @@ pub async fn list_important(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
-               AND space_id = ?3 \
+               AND status != 'pending' AND space_id = ?3 \
              ORDER BY importance DESC, id DESC LIMIT ?4",
             cols = MEMORY_COLUMNS,
         )
@@ -1113,6 +1127,7 @@ pub async fn list_important(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
+               AND status != 'pending' \
              ORDER BY importance DESC, id DESC LIMIT ?3",
             cols = MEMORY_COLUMNS,
         )
@@ -2604,5 +2619,63 @@ mod tests {
             buckets,
             vec![("2026".to_string(), 2), ("2025".to_string(), 1)]
         );
+    }
+
+    /// The review gate withholds status='pending' memories from default
+    /// listings and the recall tiers, while include_pending surfaces them.
+    /// Pre-gate rows (status='approved') are unaffected.
+    #[tokio::test]
+    async fn recall_withholds_pending_memories() {
+        use rusqlite::params;
+        let db = Database::connect_memory().await.expect("in-mem db");
+        for (content, status) in [("approved fact", "approved"), ("pending fact", "pending")] {
+            db.write(move |conn| {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, confidence, \
+                     user_id, created_at, updated_at, is_latest, is_forgotten, is_archived, \
+                     is_consolidated, is_static, status) \
+                     VALUES (?1, 'general', 'activity', 80, 1.0, 1, '2026-03-14 12:00:00', \
+                     '2026-03-14 12:00:00', 1, 0, 0, 0, 1, ?2)",
+                    params![content, status],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed");
+        }
+
+        // Default list withholds the pending row.
+        let listed = list(
+            &db,
+            ListOptions {
+                user_id: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("list");
+        assert_eq!(listed.len(), 1, "default list withholds pending");
+        assert_eq!(listed[0].content, "approved fact");
+
+        // include_pending surfaces both rows.
+        let all = list(
+            &db,
+            ListOptions {
+                user_id: Some(1),
+                include_pending: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("list all");
+        assert_eq!(all.len(), 2, "include_pending surfaces pending");
+
+        // Recall tiers withhold pending.
+        let statics = list_static(&db, 1, None, 10).await.expect("static");
+        assert_eq!(statics.len(), 1, "list_static withholds pending");
+        let important = list_important(&db, 1, None, 50, 10)
+            .await
+            .expect("important");
+        assert_eq!(important.len(), 1, "list_important withholds pending");
     }
 }
