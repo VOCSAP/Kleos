@@ -559,9 +559,15 @@ async fn fetch_memories_batch(
 
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     // Scope to the owner (bound after the id list); a no-op in a single-owner shard.
+    // status != 'pending' is the review-gate backstop: this is the only content
+    // fetch for hybrid_search output (assembly drops any id absent from the map),
+    // so it also blocks pending memories pulled in by the graph/facts/community
+    // channels, whose neighbor/member queries run after hydration and do not
+    // themselves filter status.
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1",
+         WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
+         AND status != 'pending'",
         MEMORY_COLUMNS, placeholders
     );
 
@@ -992,7 +998,16 @@ pub async fn hybrid_search(
         let ids: Arc<[i64]> = results.keys().copied().collect::<Vec<i64>>().into();
         if !ids.is_empty() {
             if let Ok(rows) = hydrate_candidates(db, Arc::clone(&ids), user_id).await {
+                // Review gate: hydrate_candidates omits status='pending' rows, so any
+                // vector/FTS candidate absent from the hydrated set is pending (or was
+                // deleted mid-query). Record which ids survived so we can drop the rest
+                // before ranking, truncation, or graph-seed expansion -- otherwise a
+                // pending memory pollutes the pool and can displace a real result that
+                // is then never fetched. This makes hydration the real choke point the
+                // doc-comment on hydrate_candidates already claims it to be.
+                let mut hydrated_ids: HashSet<i64> = HashSet::with_capacity(rows.len());
                 for row in rows {
+                    hydrated_ids.insert(row.id);
                     if let Some(c) = results.get_mut(&row.id) {
                         c.created_at = row.created_at;
                         c.importance = row.importance;
@@ -1023,6 +1038,10 @@ pub async fn hybrid_search(
                         c.is_consolidated = row.is_consolidated;
                     }
                 }
+                // Drop candidates that did not hydrate (pending, or gone mid-query).
+                // Guarded by the Ok arm: a transient hydrate failure keeps the pool
+                // intact rather than blanking every result.
+                results.retain(|id, _| hydrated_ids.contains(id));
             }
         }
     }
@@ -1498,7 +1517,17 @@ pub async fn hybrid_search(
                 }
             }
             if let Some(thr) = filter_threshold {
-                if r.score < thr as f64 {
+                // Same scale caveat as context assembly: r.score is on the [0,1]
+                // similarity scale only when the reranker ran; otherwise it is the
+                // raw RRF-fusion value. Gate on the cosine semantic_score when not
+                // reranked so a caller's similarity-scale threshold does not
+                // silently drop every result.
+                if !scoring::passes_relevance_gate(
+                    r.reranked,
+                    r.score,
+                    r.semantic_score,
+                    thr as f64,
+                ) {
                     return false;
                 }
             }

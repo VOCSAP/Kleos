@@ -424,7 +424,13 @@ async fn download_artifact(
                     format!("attachment; filename=\"{}\"", safe_filename),
                 )
                 .body(body)
-                .unwrap()
+                .map_err(|e| {
+                    // A crafted stored mime_type can produce an invalid header value;
+                    // fail with 500 rather than panicking the worker.
+                    AppError(kleos_lib::EngError::Internal(format!(
+                        "failed to build artifact response: {e}"
+                    )))
+                })?
                 .into_response())
         }
     } else {

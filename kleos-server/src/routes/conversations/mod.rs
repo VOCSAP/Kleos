@@ -18,6 +18,7 @@ use kleos_lib::memory::types::StoreRequest;
 mod types;
 use types::{GetConversationParams, ListConversationsParams, ListMessagesParams, MessageBody};
 
+/// Builds the router for conversation and message routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/conversations", post(create).get(list))
@@ -200,8 +201,8 @@ async fn memorize(
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let conv = conversations::get_conversation_for_user(&db, id, auth.user_id).await?;
-    let messages = conversations::list_messages(&db, id, auth.user_id, 1000, 0).await?;
+    let conv = conversations::get_conversation_for_user(&db, id, auth.effective_user_id()).await?;
+    let messages = conversations::list_messages(&db, id, auth.effective_user_id(), 1000, 0).await?;
 
     if messages.is_empty() {
         return Ok(Json(json!({ "memorized": false, "reason": "no messages" })));
@@ -225,7 +226,7 @@ async fn memorize(
         category: "conversation".to_string(),
         source: conv.agent.clone(),
         importance: 5,
-        user_id: Some(auth.user_id),
+        user_id: Some(auth.effective_user_id()),
         ..StoreRequest::default()
     };
 
@@ -239,7 +240,7 @@ async fn memorize(
     if let Some(brain) = state.brain.clone() {
         let embedder = state.embedder.clone();
         let memory_id = result.id;
-        let user_id = auth.user_id;
+        let user_id = auth.effective_user_id();
         let agent = conv.agent.clone();
         if let Ok(permit) = state.brain_absorb_sem.clone().acquire_owned().await {
             let shutdown = state.shutdown_token.clone();

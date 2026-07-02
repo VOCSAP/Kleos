@@ -248,15 +248,20 @@ async fn delete_entity_handler(
 ) -> Result<Json<Value>, AppError> {
     let user_id = auth.effective_user_id();
 
-    db.write(move |conn| {
-        conn.execute(
-            "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
-            params![id, user_id],
-        )?;
-        Ok(())
-    })
-    .await?;
+    let affected = db
+        .write(move |conn| {
+            Ok(conn.execute(
+                "DELETE FROM entities WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
+            )?)
+        })
+        .await?;
 
+    if affected == 0 {
+        return Err(AppError(kleos_lib::EngError::NotFound(format!(
+            "entity {id} not found"
+        ))));
+    }
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 

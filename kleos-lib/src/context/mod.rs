@@ -736,13 +736,23 @@ async fn assemble_context_inner(
             }
         }
 
-        let raw_score = r.score;
-        if raw_score < min_relev {
+        // Gate on a [0,1] relevance signal. r.score is the CE-blended confidence
+        // only when the reranker ran; otherwise it is the raw RRF-fusion value
+        // (~0.02) that no real match can clear, so the cosine semantic_score is
+        // used instead (FTS-only hits with no cosine are kept). Comparing the raw
+        // fusion score against min_relev=0.55 previously dropped the entire
+        // semantic layer whenever the reranker was disabled.
+        if !crate::memory::scoring::passes_relevance_gate(
+            r.reranked,
+            r.score,
+            r.semantic_score,
+            min_relev,
+        ) {
             continue;
         }
 
         // Recency boost: last 48h get +10%
-        let mut score = raw_score;
+        let mut score = r.score;
         if let Ok(created) = r
             .memory
             .created_at

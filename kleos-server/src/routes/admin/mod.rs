@@ -261,14 +261,14 @@ async fn bootstrap(
         return Ok((
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "bootstrap disabled: set ENGRAM_BOOTSTRAP_SECRET to enable"
+                "error": "bootstrap disabled: set KLEOS_BOOTSTRAP_SECRET to enable"
             })),
         ));
     };
     if expected.is_empty() {
         return Ok((
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "bootstrap disabled: ENGRAM_BOOTSTRAP_SECRET is empty" })),
+            Json(json!({ "error": "bootstrap disabled: KLEOS_BOOTSTRAP_SECRET is empty" })),
         ));
     }
 
