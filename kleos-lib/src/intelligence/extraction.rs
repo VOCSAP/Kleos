@@ -397,6 +397,45 @@ fn object_starts_with_copula(object: &str, lang: &str) -> bool {
     LANG_REGEX.all_copulas.contains(&folded)
 }
 
+/// Reject location/role captures that look like code, config, or structured
+/// data rather than natural-language text describing where someone lives or
+/// what they do. The location/role regexes have no semantic understanding --
+/// they capture everything up to the next punctuation mark -- so a sentence
+/// mentioning a config flag or a cron path ("... the mechanical no_agent:
+/// true path") reads as grammatically identical to a real location/role
+/// statement. This is a cheap syntactic guard, not a semantic one: it catches
+/// code/config leakage but not natural-language jokes or metaphors ("im
+/// Beast-Mode"), which need actual context understanding to filter.
+fn looks_like_code_or_config(text: &str) -> bool {
+    if text.contains(['{', '}', '"', '`'])
+        || text.contains("::")
+        || text.contains("->")
+        || text.contains("=>")
+    {
+        return true;
+    }
+    // `key: true` / `key: 123 <trailing text>` style config fragments -- only
+    // the token right after the colon needs to look like a config value, the
+    // rest of the sentence may continue past it.
+    if let Some((_, rest)) = text.split_once(':') {
+        let first_word = rest.split_whitespace().next().unwrap_or("");
+        if first_word == "true" || first_word == "false" || first_word.parse::<f64>().is_ok() {
+            return true;
+        }
+    }
+    // Snake_case identifiers (`no_agent`, `is_active`) are a strong signal
+    // of code/config rather than prose -- natural language rarely uses
+    // underscores. Flag when at least half the words carry one.
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if !words.is_empty() {
+        let underscored = words.iter().filter(|w| w.contains('_')).count();
+        if underscored * 2 >= words.len() {
+            return true;
+        }
+    }
+    false
+}
+
 // All 11 prior English-only static regexes
 // (like, dislike, favorite, location, role, buy, spent, have, exercise,
 // made, earned) are now superseded by their per-language `_regex_for`
@@ -616,10 +655,12 @@ pub async fn fast_extract_facts(
     if let Some(re) = LANG_REGEX.location.get(&lang) {
         for cap in re.captures_iter(content) {
             let location = cap[1].trim();
-            states.push(StateUpsert {
-                key: "current_location".to_string(),
-                value: format!("{location} (memory:{memory_id})"),
-            });
+            if location.len() > 3 && location.len() < 100 && !looks_like_code_or_config(location) {
+                states.push(StateUpsert {
+                    key: "current_location".to_string(),
+                    value: format!("{location} (memory:{memory_id})"),
+                });
+            }
         }
     }
 
@@ -627,7 +668,7 @@ pub async fn fast_extract_facts(
     if let Some(re) = LANG_REGEX.role.get(&lang) {
         for cap in re.captures_iter(content) {
             let role = cap[1].trim();
-            if role.len() > 3 && role.len() < 100 {
+            if role.len() > 3 && role.len() < 100 && !looks_like_code_or_config(role) {
                 states.push(StateUpsert {
                     key: "current_role".to_string(),
                     value: format!("{role} (memory:{memory_id})"),
@@ -953,6 +994,37 @@ mod tests {
         assert_eq!(
             format_fact_object("", Some(5), Some("miles"), Some("yesterday")),
             " [qty:5] [unit:miles] [date:yesterday]"
+        );
+    }
+
+    #[test]
+    fn test_looks_like_code_or_config_flags_kv_fragments() {
+        assert!(looks_like_code_or_config(
+            "the mechanical no_agent: true path"
+        ));
+        assert!(looks_like_code_or_config("retry_count: 3"));
+        assert!(looks_like_code_or_config(r#"{"service": "dreamer"}"#));
+        assert!(looks_like_code_or_config("kleos_lib::intelligence::growth"));
+        assert!(looks_like_code_or_config("no_agent and is_active"));
+    }
+
+    #[test]
+    fn test_looks_like_code_or_config_allows_prose() {
+        assert!(!looks_like_code_or_config("a small house near the lake"));
+        assert!(!looks_like_code_or_config("im Beast-Mode"));
+        assert!(!looks_like_code_or_config("a senior backend engineer"));
+    }
+
+    #[test]
+    fn fast_extract_facts_skips_code_like_role_capture() {
+        let content = fold("ich bin jetzt im no_agent: true path");
+        let re = role_regex_for("de").expect("DE role regex must compile");
+        let caps: Vec<_> = re.captures_iter(&content).collect();
+        assert!(!caps.is_empty(), "role regex should still match the phrase");
+        assert!(
+            looks_like_code_or_config(caps[0][1].trim()),
+            "captured role text should be recognised as code/config: {:?}",
+            &caps[0][1]
         );
     }
 }
