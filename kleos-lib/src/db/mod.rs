@@ -8,8 +8,11 @@ pub mod tenant_migrations;
 pub mod types;
 
 use crate::config::Config;
-use crate::vector::{LanceIndex, VectorIndex};
+#[cfg(feature = "ml")]
+use crate::vector::LanceIndex;
+use crate::vector::VectorIndex;
 use crate::{EngError, Result};
+#[cfg(feature = "ml")]
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -17,6 +20,8 @@ use tracing::{info, warn};
 pub use pool::DatabasePools;
 pub use types::DbPoolConfig;
 
+/// Async SQLite database handle: pooled connections plus the optional
+/// ANN vector indices and per-connection retrieval configuration.
 pub struct Database {
     db_path: String,
     pools: DatabasePools,
@@ -33,6 +38,7 @@ pub struct Database {
     is_tenant: bool,
 }
 
+/// Constructors and connection/pool plumbing.
 impl Database {
     /// Connect to a rusqlite database file without encryption.
     ///
@@ -53,6 +59,7 @@ impl Database {
         Self::connect_with_config(&config, key).await
     }
 
+    /// Connect using an explicit `Config` (encryption key optional).
     pub async fn connect_with_config(
         config: &Config,
         encryption_key: Option<[u8; 32]>,
@@ -60,6 +67,8 @@ impl Database {
         Self::connect_with_pool_config(config, DbPoolConfig::default(), encryption_key).await
     }
 
+    /// Connect with explicit pool sizing; runs migrations and opens the
+    /// vector indices per config.
     pub async fn connect_with_pool_config(
         config: &Config,
         pool_config: DbPoolConfig,
@@ -250,10 +259,12 @@ impl Database {
         self.is_tenant
     }
 
+    /// Path of the underlying database file (":memory:" for test DBs).
     pub fn db_path(&self) -> &str {
         &self.db_path
     }
 
+    /// The underlying reader/writer connection pools.
     pub fn pools(&self) -> &DatabasePools {
         &self.pools
     }
@@ -304,6 +315,10 @@ impl Database {
     }
 }
 
+/// Open the LanceDB memory + chunk vector indices per config. Either index
+/// failing to open degrades to `None` (FTS + sqlite-vec retrieval) rather
+/// than failing the whole database connection.
+#[cfg(feature = "ml")]
 async fn open_vector_indices(
     config: &Config,
 ) -> (Option<Arc<dyn VectorIndex>>, Option<Arc<dyn VectorIndex>>) {
@@ -332,7 +347,7 @@ async fn open_vector_indices(
     let chunk_index = match LanceIndex::open_with_table(
         &lance_path,
         config.vector_dimensions,
-        crate::vector::lance::CHUNK_TABLE_NAME,
+        crate::vector::CHUNK_TABLE_NAME,
     )
     .await
     {
@@ -347,4 +362,20 @@ async fn open_vector_indices(
     };
 
     (memory_index, chunk_index)
+}
+
+/// ml-off stub: no ANN backend is compiled in, so both indices are `None`
+/// regardless of `use_lance_index`; retrieval degrades to FTS + sqlite-vec
+/// exactly as it does when a Lance open fails at runtime.
+#[cfg(not(feature = "ml"))]
+async fn open_vector_indices(
+    config: &Config,
+) -> (Option<Arc<dyn VectorIndex>>, Option<Arc<dyn VectorIndex>>) {
+    if config.use_lance_index {
+        warn!(
+            "use_lance_index is set but this build has the 'ml' feature disabled; \
+             continuing without ANN vector indices"
+        );
+    }
+    (None, None)
 }

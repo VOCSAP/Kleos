@@ -17,11 +17,18 @@ path = "src/main.rs"
 name = "kleos_server"
 
 [features]
-default = ["piv"]
+default = ["piv", "ml"]
 piv = ["kleos-mcp/piv"]
+# Local ML inference in kleos-lib (ONNX embedder + cross-encoder reranker +
+# LanceDB ANN indices). Disable for a lean server that uses remote embedding
+# and reranking providers over HTTP and FTS + sqlite-vec retrieval.
+ml = ["kleos-lib/ml"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }
+# default-features = false so the ml stack is controlled solely by this
+# crate's own `ml` feature above; brain_hopfield is re-added explicitly since
+# the dreamer's growth reflection consumes dream-cycle telemetry.
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", default-features = false, features = ["sqlcipher", "brain_hopfield"] }
 kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
 kleos-client = { path = "../kleos-client", version = "1.2.1", default-features = false }
 kleos-mcp = { path = "../kleos-mcp", version = "1.2.1", default-features = false }
@@ -43,7 +50,9 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-reqwest = { workspace = true }
+# `stream` is used directly by routes/onboard (bytes_stream); previously it
+# arrived only transitively via the ml stack's deps, so an ml-off build lost it.
+reqwest = { workspace = true, features = ["stream"] }
 url = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
