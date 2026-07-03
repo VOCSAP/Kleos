@@ -11,13 +11,22 @@
 use std::path::PathBuf;
 
 /// Canonicalize `path` and return it only when it lies under one of the roots
-/// listed in `KLEOS_FORGE_FS_ROOTS` (colon-separated). Returns `None` if:
-/// - the env var is unset or empty,
-/// - `path` cannot be canonicalized (does not exist, bad encoding, etc.),
-/// - the canonicalized path does not start_with any allowed root.
+/// listed in `KLEOS_FORGE_FS_ROOTS` (colon-separated). Returns `None` if the
+/// env var is unset or empty, `path` cannot be canonicalized (does not exist,
+/// bad encoding, etc.), or the canonicalized path is not under any allowed
+/// root. Thin wrapper that reads the process environment once and delegates the
+/// matching to [`resolve_within_roots_in`].
 pub fn resolve_within_roots(path: &str) -> Option<PathBuf> {
-    // Read and split the allow-list.
     let roots_raw = std::env::var("KLEOS_FORGE_FS_ROOTS").ok()?;
+    resolve_within_roots_in(path, &roots_raw)
+}
+
+/// Pure core of [`resolve_within_roots`]: match `path` against the
+/// colon-separated `roots_raw` allow-list with no environment access, so it is
+/// deterministic and safe to exercise from parallel test threads. Returns
+/// `None` when `roots_raw` is blank, `path` cannot be canonicalized, or the
+/// canonicalized path is not under any listed root.
+fn resolve_within_roots_in(path: &str, roots_raw: &str) -> Option<PathBuf> {
     if roots_raw.trim().is_empty() {
         return None;
     }
@@ -45,20 +54,15 @@ pub fn resolve_within_roots(path: &str) -> Option<PathBuf> {
     None
 }
 
+// Unit tests for the resolver. They drive the pure `resolve_within_roots_in`
+// helper with an explicit roots list instead of mutating the process-global
+// `KLEOS_FORGE_FS_ROOTS`, so they stay deterministic and parallel-safe.
+// Mutating a shared env var here used to race with concurrent `getenv` from
+// other tests in the same binary and failed intermittently.
 #[cfg(test)]
 mod tests {
-    /// Unit tests for `resolve_within_roots`. Each test manipulates the
-    /// process-global env variable, so they serialize on `ENV_LOCK` --
-    /// without it, parallel test threads race on set_var/remove_var and
-    /// fail intermittently.
     use super::*;
-    use std::env;
-    use std::sync::Mutex;
     use tempfile::TempDir;
-
-    /// Serializes tests that mutate `KLEOS_FORGE_FS_ROOTS`. A poisoned lock
-    /// (earlier test panicked) is still safe to reuse for env serialization.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// Helper: create a real temp directory whose canonical form we can use.
     fn make_tempdir() -> TempDir {
@@ -68,7 +72,6 @@ mod tests {
     /// A path that is a direct child of a configured root is allowed.
     #[test]
     fn within_root_returns_some() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = make_tempdir();
         let root = dir.path().to_str().expect("tempdir must be valid UTF-8");
 
@@ -76,9 +79,7 @@ mod tests {
         let child = dir.path().join("file.txt");
         std::fs::write(&child, b"x").unwrap();
 
-        env::set_var("KLEOS_FORGE_FS_ROOTS", root);
-        let result = resolve_within_roots(child.to_str().unwrap());
-        env::remove_var("KLEOS_FORGE_FS_ROOTS");
+        let result = resolve_within_roots_in(child.to_str().unwrap(), root);
 
         assert!(result.is_some(), "child of configured root must resolve");
     }
@@ -86,7 +87,6 @@ mod tests {
     /// A path outside every configured root must be rejected.
     #[test]
     fn outside_root_returns_none() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let allowed = make_tempdir();
         let other = make_tempdir();
 
@@ -95,24 +95,20 @@ mod tests {
         std::fs::write(&child, b"x").unwrap();
 
         let root = allowed.path().to_str().unwrap();
-        env::set_var("KLEOS_FORGE_FS_ROOTS", root);
-        let result = resolve_within_roots(child.to_str().unwrap());
-        env::remove_var("KLEOS_FORGE_FS_ROOTS");
+        let result = resolve_within_roots_in(child.to_str().unwrap(), root);
 
         assert!(result.is_none(), "path outside roots must be rejected");
     }
 
-    /// When the env var is absent the function must always return None.
+    /// An empty (unset-equivalent) roots list must always return None.
     #[test]
-    fn no_env_returns_none() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    fn empty_roots_returns_none() {
         let dir = make_tempdir();
         let child = dir.path().join("file.txt");
         std::fs::write(&child, b"x").unwrap();
 
-        env::remove_var("KLEOS_FORGE_FS_ROOTS");
-        let result = resolve_within_roots(child.to_str().unwrap());
+        let result = resolve_within_roots_in(child.to_str().unwrap(), "");
 
-        assert!(result.is_none(), "absent env var must yield None");
+        assert!(result.is_none(), "empty roots list must yield None");
     }
 }
