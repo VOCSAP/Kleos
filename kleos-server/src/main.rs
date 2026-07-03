@@ -1,6 +1,7 @@
 use kleos_lib::config::{Config, EncryptionMode};
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
+#[cfg(feature = "ml")]
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::openai::OpenAiProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
@@ -108,28 +109,7 @@ async fn main() {
                     }
                 }
             } else {
-                tracing::info!("loading ONNX embedding model in background...");
-                match OnnxProvider::new(&config).await {
-                    Ok(provider) => {
-                        let prewarm_start = std::time::Instant::now();
-                        match provider.embed("warmup").await {
-                            Ok(_) => tracing::info!(
-                                elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
-                                "embedder pre-warm complete"
-                            ),
-                            Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
-                        }
-                        tracing::info!("ONNX embedding provider ready");
-                        Some(Arc::new(provider))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
-                                e
-                            );
-                        None
-                    }
-                }
+                load_local_onnx_embedder(&config).await
             };
 
             let mut guard = embedder.write().await;
@@ -864,4 +844,44 @@ async fn supervise(mut tasks: Vec<Supervised>, shutdown: CancellationToken) {
         tasks[idx].handle = new_handle;
         tracing::info!(task = name, attempts, "background task respawned");
     }
+}
+
+/// Load and pre-warm the in-process ONNX embedding provider (ml builds).
+/// Failure degrades to no embedder: vector search disabled, FTS retrieval
+/// stays active, mirroring the remote-provider probe-failure path.
+#[cfg(feature = "ml")]
+async fn load_local_onnx_embedder(config: &Config) -> Option<Arc<dyn EmbeddingProvider>> {
+    tracing::info!("loading ONNX embedding model in background...");
+    match OnnxProvider::new(config).await {
+        Ok(provider) => {
+            let prewarm_start = std::time::Instant::now();
+            match provider.embed("warmup").await {
+                Ok(_) => tracing::info!(
+                    elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
+                    "embedder pre-warm complete"
+                ),
+                Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
+            }
+            tracing::info!("ONNX embedding provider ready");
+            Some(Arc::new(provider))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// ml-off stub: no in-process embedder is compiled into this build. Configure
+/// KLEOS_EMBEDDING_URL for a remote provider, or run FTS-only.
+#[cfg(not(feature = "ml"))]
+async fn load_local_onnx_embedder(_config: &Config) -> Option<Arc<dyn EmbeddingProvider>> {
+    tracing::info!(
+        "no KLEOS_EMBEDDING_URL configured and this build has the 'ml' feature disabled; \
+         running without an embedding provider (vector search disabled, FTS retrieval active)"
+    );
+    None
 }

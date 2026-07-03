@@ -479,6 +479,11 @@ pub async fn store(
     //     own predecessor; skip the scan entirely.
     //   - Scope the scan to the same space (`space_id IS ?2`, IS so NULL matches NULL)
     //     so a write in one space is not deduped against an identical write in another.
+    //
+    // The scan is intentionally unbounded within that scope: a recency cap
+    // (formerly LIMIT 1000) silently re-stored duplicates of anything older
+    // than the newest thousand memories. Newest-first ordering keeps the
+    // common case (duplicate of something recent) an early exit.
     let duplicate = if req.parent_memory_id.is_some() {
         None
     } else {
@@ -486,7 +491,7 @@ pub async fn store(
         let dup_sql = "SELECT id, content FROM memories \
             WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
               AND space_id IS ?2 \
-            ORDER BY id DESC LIMIT 1000";
+            ORDER BY id DESC";
         db.read(move |conn| {
             let mut stmt = conn.prepare(dup_sql)?;
             let mut rows = stmt.query(rusqlite::params![user_id, dup_space_id])?;
