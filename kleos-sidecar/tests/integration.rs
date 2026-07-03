@@ -331,6 +331,10 @@ async fn test_happy_path_observe_and_flush() {
 
 #[tokio::test]
 async fn test_retry_exhaustion_returns_503() {
+    // Manual serve loop (no spawn_sidecar): set the loopback allowance so the
+    // flush actually reaches the mock and exhausts on real HTTP 500s, rather
+    // than failing earlier (and vacuously) on outbound-URL validation.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let (upstream_url, ms, _upstream) = spawn_mock_upstream().await;
     ms.set_batch_status(500);
 
@@ -401,6 +405,13 @@ async fn test_retry_exhaustion_returns_503() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_flushes_pending() {
+    // This test wires its own serve loop (to control with_graceful_shutdown)
+    // instead of going through spawn_sidecar, so it must set the loopback
+    // allowance itself: without it validate_outbound_url rejects the mock
+    // upstream and the shutdown flush silently sends nothing. Under threaded
+    // cargo test, sibling tests' spawn_sidecar calls leaked this process-global
+    // var and masked the dependency; per-test-process runners (nextest) do not.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let (upstream_url, ms, _upstream) = spawn_mock_upstream().await;
     let token = "test-token-shutdown";
 
