@@ -97,7 +97,9 @@ openssl = { version = "0.10", optional = true }
 protoc-bin-vendored-linux-x86_64 = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+# test-util enables tokio::test(start_paused) so timer-race tests (e.g. the
+# circuit-breaker cancelled-probe tests) resolve virtually with no real sleeps.
+tokio = { workspace = true, features = ["test-util"] }
 axum = { workspace = true }
 criterion = { workspace = true }
 tempfile = { workspace = true }
