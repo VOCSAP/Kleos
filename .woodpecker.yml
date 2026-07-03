@@ -45,9 +45,12 @@ steps:
       - cargo build --profile release-prod -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
       # kleos-ingest (transcript ingest daemon) + kleos-cleanup (operator junk pruner): linux-only release artifacts.
       - cargo build --profile release-prod -p kleos-ingest -p kleos-cleanup
+      # Installer binaries: README's recommended install path. The GUI builds
+      # natively on linux only for now; Windows GUI cross-compile is unvalidated.
+      - cargo build --profile release-prod -p kleos-install -p kleos-install-gui
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kleos-ingest kleos-cleanup kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kleos-ingest kleos-cleanup kr kw ke kleos-install kleos-install-gui; do
           src="target/release-prod/$bin"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-linux-x64"
@@ -64,10 +67,16 @@ steps:
       - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add x86_64-pc-windows-gnu
       - export CARGO_BUILD_JOBS=4
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor
+      # kleos-server/ml re-enables the local ONNX/LanceDB stack that
+      # --no-default-features would otherwise drop now that kleos-lib gates it
+      # behind the default-on `ml` feature (ort/lancedb have cross-compiled for
+      # windows-gnu in every release to date). kleos-fs and kleos-credd were
+      # missing from the build although the copy loop below expects
+      # kr/kw/ke/kleos-credd.exe, so past Windows releases silently lacked them.
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui,kleos-server/ml -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-credd -p kleos-fs -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor -p kleos-install
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-credd kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kr kw ke kleos-install; do
           src="target-windows/x86_64-pc-windows-gnu/release-prod/$bin.exe"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-windows-x64.exe"
@@ -90,6 +99,13 @@ steps:
       generate_release_notes: true
       checksum:
         - sha256
+      # Canonical manifest name + flattened entries: the installers
+      # (kleos-install-core download.rs, dist/install.sh, dist/install.ps1)
+      # all verify against SHA256SUMS with bare filenames. The plugin default
+      # (sha256sum.txt with release-artifacts/ prefixes) matched none of them,
+      # so integrity verification had silently never worked on any release.
+      checksum-file: SHA256SUMS
+      checksum-flatten: true
 
   build-docker:
     image: woodpeckerci/plugin-docker-buildx
@@ -98,6 +114,10 @@ steps:
     failure: ignore
     settings:
       repo: ghostframe/kleos
+      # The Dockerfile's final stage is the sidecar image; without an explicit
+      # target, buildx builds that LAST stage, so the published image was the
+      # sidecar binary masquerading as the server.
+      target: runtime
       tags:
         - latest
         - "${CI_COMMIT_TAG}"
