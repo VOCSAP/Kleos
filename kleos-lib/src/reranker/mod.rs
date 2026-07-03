@@ -1,3 +1,4 @@
+#[cfg(feature = "ml")]
 pub mod pool;
 mod types;
 
@@ -9,15 +10,22 @@ use self::types::{
 };
 use crate::config::Config;
 use crate::db::Database;
+#[cfg(feature = "ml")]
 use crate::embeddings::download::ensure_reranker_model;
 use crate::resilience::ServiceGuard;
 use crate::{EngError, Result};
 use async_trait::async_trait;
+#[cfg(feature = "ml")]
 use ort::session::Session;
+#[cfg(feature = "ml")]
 use ort::value::Tensor;
+#[cfg(feature = "ml")]
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(feature = "ml")]
+use std::sync::Mutex;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+#[cfg(feature = "ml")]
 use tokenizers::Tokenizer;
 use tracing::{info, warn};
 
@@ -66,12 +74,14 @@ pub trait Reranker: Send + Sync {
 // --- ONNX cross-encoder backend (IBM Granite) ---
 
 /// Cross-encoder reranker using IBM Granite model via ONNX Runtime.
+#[cfg(feature = "ml")]
 pub struct OnnxReranker {
     inner: Arc<RerankerInner>,
     top_k: usize,
 }
 
 /// Shared, thread-safe inner state for the ONNX reranker (model session + tokenizer).
+#[cfg(feature = "ml")]
 struct RerankerInner {
     /// ONNX Runtime session guarded by a mutex (the session is not Sync).
     session: Mutex<Session>,
@@ -82,6 +92,7 @@ struct RerankerInner {
 }
 
 /// A staged reranker model discovered on disk: its directory and short name.
+#[cfg(feature = "ml")]
 struct StagedReranker {
     /// Directory holding `tokenizer.json` + `model_quantized.onnx`.
     dir: PathBuf,
@@ -98,6 +109,7 @@ struct StagedReranker {
 /// reranker (`reranker`/`granite`) and that hold BOTH model files qualify, so the embedder
 /// dir (bge-m3) is never mistaken for a cross-encoder. Returns the lowest-named match for
 /// determinism, or `None` when nothing usable is staged.
+#[cfg(feature = "ml")]
 fn find_staged_reranker_fallback(
     configured_dir: &Path,
     configured_name: &str,
@@ -124,6 +136,7 @@ fn find_staged_reranker_fallback(
 }
 
 /// Constructor for the local ONNX cross-encoder reranker.
+#[cfg(feature = "ml")]
 impl OnnxReranker {
     /// Load the Granite cross-encoder model and tokenizer and build the reranker.
     pub async fn new(config: &Config) -> Result<Self> {
@@ -207,6 +220,7 @@ impl OnnxReranker {
 }
 
 /// Cross-encoder scoring on the shared model session.
+#[cfg(feature = "ml")]
 impl RerankerInner {
     /// Score a single query-document pair. Returns relevance score 0-1 (sigmoid of logit).
     fn score_pair(&self, query: &str, document: &str) -> Result<f32> {
@@ -264,6 +278,7 @@ impl RerankerInner {
 }
 
 /// Reranker implementation backed by the local ONNX cross-encoder.
+#[cfg(feature = "ml")]
 #[async_trait]
 impl Reranker for OnnxReranker {
     #[tracing::instrument(
@@ -789,10 +804,21 @@ pub async fn create_reranker(
         .to_lowercase();
 
     match backend.as_str() {
+        #[cfg(feature = "ml")]
         "onnx" | "local" => {
             let reranker = OnnxReranker::new(config).await?;
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
+        // ml-off builds carry no local cross-encoder: fail with actionable
+        // guidance instead of a missing-model error. Callers already treat
+        // create_reranker errors as "run without a reranker".
+        #[cfg(not(feature = "ml"))]
+        "onnx" | "local" => Err(EngError::InvalidInput(
+            "the onnx reranker backend requires a build with the 'ml' feature; \
+             rebuild with default features, or set KLEOS_RERANKER_BACKEND=http \
+             or none"
+                .into(),
+        )),
         "http" | "remote" | "cohere" | "jina" | "tei" => {
             let reranker = HttpReranker::from_env(config.reranker_top_k, db).ok_or_else(|| {
                 EngError::InvalidInput(
@@ -809,8 +835,9 @@ pub async fn create_reranker(
     }
 }
 
-#[cfg(test)]
-/// Tests for the offline staged-reranker fallback resolution.
+#[cfg(all(test, feature = "ml"))]
+/// Tests for the offline staged-reranker fallback resolution (an ml-only
+/// concern: the fallback exists to keep the local ONNX backend alive).
 mod tests {
     use super::*;
 

@@ -6,6 +6,7 @@
 
 use super::types::{QuotaConfig, TenantConfig, TenantHandle, TenantRow, TenantStatus};
 use crate::db::Database;
+#[cfg(feature = "ml")]
 use crate::vector::LanceIndex;
 use crate::{EngError, Result};
 use std::collections::HashMap;
@@ -31,7 +32,10 @@ pub struct TenantLoader {
     /// Per-tenant locks that collapse concurrent first-touch loads into one open path.
     load_guards: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
 
-    /// Dimension of embedding vectors.
+    /// Dimension of embedding vectors. Only read by the ml-gated Lance
+    /// index construction; retained unconditionally to keep the constructor
+    /// signature feature-independent.
+    #[cfg_attr(not(feature = "ml"), allow(dead_code))]
     vector_dimensions: usize,
 
     /// Whether to enable chunk-level vector search on tenant databases.
@@ -137,44 +141,53 @@ impl TenantLoader {
             .map_err(|e| EngError::Internal(format!("failed to create tenant directory: {}", e)))?;
 
         // Load the vector index first so it can be handed to the Database.
-        let lance_path = tenant_dir.join("hnsw").join("memories.lance");
-        if let Some(parent) = lance_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                EngError::Internal(format!("failed to create lance directory: {}", e))
-            })?;
-        }
+        // ml-off builds carry no ANN backend: both indices stay None and the
+        // shard runs FTS + sqlite-vec, mirroring the non-tenant
+        // `open_vector_indices` stub.
+        /// Local alias for the optional trait-object index handles.
+        type OptIndex = Option<Arc<dyn crate::vector::VectorIndex>>;
+        #[cfg(feature = "ml")]
+        let (vector_index, chunk_vector_index): (OptIndex, OptIndex) = {
+            let lance_path = tenant_dir.join("hnsw").join("memories.lance");
+            if let Some(parent) = lance_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    EngError::Internal(format!("failed to create lance directory: {}", e))
+                })?;
+            }
 
-        let vector_index: Arc<dyn crate::vector::VectorIndex> = Arc::new(
-            LanceIndex::open(
-                lance_path.to_string_lossy().as_ref(),
-                self.vector_dimensions,
-            )
-            .await
-            .map_err(|e| EngError::Internal(format!("failed to open vector index: {}", e)))?,
-        );
+            let vector_index: Arc<dyn crate::vector::VectorIndex> = Arc::new(
+                LanceIndex::open(
+                    lance_path.to_string_lossy().as_ref(),
+                    self.vector_dimensions,
+                )
+                .await
+                .map_err(|e| EngError::Internal(format!("failed to open vector index: {}", e)))?,
+            );
 
-        let chunk_vector_index: Option<Arc<dyn crate::vector::VectorIndex>> = if self
-            .use_chunk_vector_search
-        {
-            match LanceIndex::open_with_table(
-                lance_path.to_string_lossy().as_ref(),
-                self.vector_dimensions,
-                crate::vector::lance::CHUNK_TABLE_NAME,
-            )
-            .await
-            {
-                Ok(idx) => Some(Arc::new(idx)),
-                Err(e) => {
-                    debug!(
+            let chunk_vector_index: OptIndex = if self.use_chunk_vector_search {
+                match LanceIndex::open_with_table(
+                    lance_path.to_string_lossy().as_ref(),
+                    self.vector_dimensions,
+                    crate::vector::CHUNK_TABLE_NAME,
+                )
+                .await
+                {
+                    Ok(idx) => Some(Arc::new(idx)),
+                    Err(e) => {
+                        debug!(
                             "chunk vector index unavailable for tenant {}: {} (falling back to centroid)",
                             tenant_id, e
                         );
-                    None
+                        None
+                    }
                 }
-            }
-        } else {
-            None
+            } else {
+                None
+            };
+            (Some(vector_index), chunk_vector_index)
         };
+        #[cfg(not(feature = "ml"))]
+        let (vector_index, chunk_vector_index): (OptIndex, OptIndex) = (None, None);
 
         // Open the tenant's SQLite pool. The existing deployment path is
         // `tenants/<id>/kleos.db`; migration (tenant chain v1+) runs inside
@@ -186,7 +199,7 @@ impl TenantLoader {
         let owner_user_id = row.user_id.parse::<i64>().ok();
         let mut db = Database::open_tenant(
             &db_path,
-            Some(Arc::clone(&vector_index)),
+            vector_index.clone(),
             self.encryption_key,
             owner_user_id,
         )

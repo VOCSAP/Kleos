@@ -594,6 +594,19 @@ pub(crate) fn passes_relevance_gate(
     }
 }
 
+/// Pick the default relevance floor for the signal `passes_relevance_gate`
+/// will compare. The two arms live on different scales (the CE-blended score
+/// runs far lower than raw bge-m3 cosines; see
+/// `DEFAULT_RERANKED_MIN_RELEVANCE`), so each arm gets its own default. An
+/// explicit caller-supplied floor wins for both arms unchanged.
+pub(crate) fn effective_min_relevance(explicit: Option<f64>, reranked: Option<bool>) -> f64 {
+    match (explicit, reranked) {
+        (Some(x), _) => x,
+        (None, Some(true)) => crate::context::types::DEFAULT_RERANKED_MIN_RELEVANCE,
+        (None, _) => crate::context::types::DEFAULT_MIN_RELEVANCE,
+    }
+}
+
 /// Computes a reciprocal-rank score for one result position.
 pub fn rrf_score(rank: usize) -> f64 {
     1.0 / (rrf_k() + rank as f64 + 1.0)
@@ -737,6 +750,36 @@ mod tests {
         assert!(!passes_relevance_gate(Some(false), 0.02, Some(0.30), 0.55));
         // FTS-only hit (no cosine) is kept regardless of the tiny fusion score.
         assert!(passes_relevance_gate(Some(false), 0.02, None, 0.55));
+    }
+
+    /// Each gate arm gets a scale-appropriate default floor (cosine 0.55 vs
+    /// CE-blend 0.25), while an explicit caller floor overrides both arms.
+    #[test]
+    fn effective_min_relevance_defaults_split_by_arm() {
+        use crate::context::types::{DEFAULT_MIN_RELEVANCE, DEFAULT_RERANKED_MIN_RELEVANCE};
+        // Explicit override wins on both arms.
+        assert_eq!(effective_min_relevance(Some(0.9), Some(true)), 0.9);
+        assert_eq!(effective_min_relevance(Some(0.9), None), 0.9);
+        // Reranked default is the CE-blend-scale floor.
+        assert_eq!(
+            effective_min_relevance(None, Some(true)),
+            DEFAULT_RERANKED_MIN_RELEVANCE
+        );
+        // Non-reranked (and unknown) defaults stay on the cosine-scale floor.
+        assert_eq!(
+            effective_min_relevance(None, Some(false)),
+            DEFAULT_MIN_RELEVANCE
+        );
+        assert_eq!(effective_min_relevance(None, None), DEFAULT_MIN_RELEVANCE);
+        // A wanted reranked block at the observed 0.28-0.34 band survives the
+        // new default where the old shared 0.55 floor dropped it.
+        assert!(passes_relevance_gate(
+            Some(true),
+            0.28,
+            Some(0.10),
+            effective_min_relevance(None, Some(true))
+        ));
+        assert!(!passes_relevance_gate(Some(true), 0.28, Some(0.10), 0.55));
     }
 
     /// Verifies month-day phrases normalize to a calendar date.

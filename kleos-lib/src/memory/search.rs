@@ -178,6 +178,11 @@ struct Candidate {
     /// new or never-reviewed memories. The decay block falls back to
     /// `initial_stability(Rating::Good)` in that case.
     fsrs_stability: Option<f64>,
+    /// Timestamp of the memory's last FSRS review, when one has happened.
+    /// The decay block anchors elapsed time here; None falls back to
+    /// `created_at`, which matches an unreviewed memory's true FSRS
+    /// reference point.
+    fsrs_last_review_at: Option<String>,
     semantic_score: Option<f64>,
     personality_signal_score: Option<f64>,
     score: f64,
@@ -212,6 +217,8 @@ struct HydratedCandidateRow {
     category: String,
     is_archived: bool,
     is_consolidated: bool,
+    /// Last FSRS review timestamp; see `Candidate::fsrs_last_review_at`.
+    fsrs_last_review_at: Option<String>,
 }
 
 /// Joined memory metadata for graph expansion candidates.
@@ -337,6 +344,7 @@ fn minimal_injected_candidate(id: i64) -> Candidate {
         access_count: 0,
         pagerank_score: 0.0,
         fsrs_stability: None,
+        fsrs_last_review_at: None,
         semantic_score: None,
         personality_signal_score: None,
         score: 0.0,
@@ -398,6 +406,7 @@ fn inject_graph_neighbors(
                     access_count: 0,
                     pagerank_score: 0.0,
                     fsrs_stability: None,
+                    fsrs_last_review_at: None,
                     semantic_score: None,
                     personality_signal_score: None,
                     score: 0.0,
@@ -457,7 +466,8 @@ async fn hydrate_candidates(
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
-         fsrs_stability, content, category, is_archived, is_consolidated \
+         fsrs_stability, content, category, is_archived, is_consolidated, \
+         fsrs_last_review_at \
          FROM memories WHERE id IN ({}) AND user_id = ? AND status != 'pending'",
         placeholders
     );
@@ -492,6 +502,7 @@ async fn hydrate_candidates(
                 category: row.get(13)?,
                 is_archived: row.get::<_, i32>(14)? != 0,
                 is_consolidated: row.get::<_, i32>(15)? != 0,
+                fsrs_last_review_at: row.get(16)?,
             });
         }
         Ok(hydrated)
@@ -868,6 +879,7 @@ pub async fn hybrid_search(
                         access_count: 0,
                         pagerank_score: 0.0,
                         fsrs_stability: None,
+                        fsrs_last_review_at: None,
                         semantic_score: semantic,
                         personality_signal_score: None,
                         score: 0.0,
@@ -918,6 +930,7 @@ pub async fn hybrid_search(
                     access_count: 0,
                     pagerank_score: 0.0,
                     fsrs_stability: None,
+                    fsrs_last_review_at: None,
                     semantic_score: None,
                     personality_signal_score: None,
                     score: 0.0,
@@ -1028,6 +1041,7 @@ pub async fn hybrid_search(
                         c.access_count = row.access_count;
                         c.pagerank_score = row.pagerank_score;
                         c.fsrs_stability = row.fsrs_stability;
+                        c.fsrs_last_review_at = row.fsrs_last_review_at;
                         if c.content.is_empty() {
                             c.content = row.content;
                         }
@@ -1083,7 +1097,13 @@ pub async fn hybrid_search(
             let stability = c.fsrs_stability.unwrap_or_else(|| {
                 crate::fsrs::initial_stability(crate::fsrs::Rating::Good) as f64
             });
-            let ref_str = &c.created_at;
+            // Anchor elapsed time on the last FSRS review when one happened
+            // (matching fsrs::recall and the /fsrs routes); created_at is only
+            // the correct reference point for never-reviewed memories. Anchoring
+            // reviewed memories on created_at paired a fresh stability with a
+            // full-lifetime elapsed, crushing retrievability toward zero for
+            // old-but-actively-reinforced memories on every search surface.
+            let ref_str = c.fsrs_last_review_at.as_deref().unwrap_or(&c.created_at);
             let elapsed = if !ref_str.is_empty() {
                 let normalized = if ref_str.contains('Z') {
                     ref_str.to_string()
@@ -2384,6 +2404,7 @@ mod tests {
             access_count: 0,
             pagerank_score: 0.0,
             fsrs_stability: None,
+            fsrs_last_review_at: None,
             semantic_score: None,
             personality_signal_score: None,
             score: 1.0,
@@ -2408,5 +2429,87 @@ mod tests {
         assert!(boosted_score > 1.0);
         assert_eq!(candidate.score, candidate.combined_score);
         assert!(candidate.score > boosted_score);
+    }
+
+    // A memory reviewed recently must not decay as if never reviewed: the
+    // decay anchor is fsrs_last_review_at, falling back to created_at only
+    // for never-reviewed memories. Regression test for the search-time decay
+    // block pairing a fresh post-review stability with a full-lifetime
+    // elapsed, which crushed old-but-reinforced memories on every surface.
+    #[tokio::test]
+    async fn decay_anchors_on_last_fsrs_review_not_created_at() {
+        let db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-mem db");
+        let mut ids = Vec::new();
+        for marker in ["reviewed anchor probe", "unreviewed anchor probe"] {
+            let stored = crate::memory::store(
+                &db,
+                crate::memory::types::StoreRequest {
+                    content: format!("fsrs decay {marker} content"),
+                    user_id: Some(1),
+                    ..Default::default()
+                },
+                None,
+                false,
+            )
+            .await
+            .expect("seed store");
+            ids.push(stored.id);
+        }
+        let (reviewed_id, unreviewed_id) = (ids[0], ids[1]);
+
+        // Both memories: created a year ago with identical strong stability;
+        // only the first was FSRS-reviewed just now.
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET created_at = datetime('now', '-365 days'), \
+                 fsrs_stability = 10.0 WHERE id IN (?1, ?2)",
+                [reviewed_id, unreviewed_id],
+            )?;
+            conn.execute(
+                "UPDATE memories SET fsrs_last_review_at = datetime('now') WHERE id = ?1",
+                [reviewed_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("backdate + review stamp");
+
+        let results = super::hybrid_search(
+            &db,
+            crate::memory::types::SearchRequest {
+                query: "fsrs decay anchor probe".to_string(),
+                user_id: Some(1),
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("hybrid_search");
+
+        let decay_of = |id: i64| {
+            results
+                .iter()
+                .find(|r| r.memory.id == id)
+                .and_then(|r| r.decay_score)
+                .expect("result carries decay_score")
+        };
+        let (reviewed, unreviewed) = (decay_of(reviewed_id), decay_of(unreviewed_id));
+        // decay_score = importance (5) * retrievability. Anchored on the
+        // just-now review, elapsed ~= 0 so retrievability ~= 1.0 and the
+        // score sits at ~5.0; anchored on the year-old created_at (the
+        // pre-fix behavior, and still the control's anchor) it decays well
+        // below that. Pre-fix both memories scored identically (~2.9).
+        assert!(
+            reviewed >= 4.9,
+            "reviewed-just-now memory must be anchored on its review time \
+             (expected decay_score ~5.0, got {reviewed}; control {unreviewed})"
+        );
+        assert!(
+            unreviewed < 4.0,
+            "never-reviewed year-old control must decay from created_at \
+             (got {unreviewed})"
+        );
     }
 }

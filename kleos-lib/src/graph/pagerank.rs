@@ -819,20 +819,29 @@ pub async fn compute_pagerank_by_communities(
     Ok(all_scores)
 }
 
-/// Ensure the pagerank cache is populated for this user. If empty, runs a
-/// Non-blocking pagerank check. If `memory_pagerank` is empty, signals the
-/// background refresh job to compute ASAP and returns immediately. The search
-/// pipeline uses neutral `pr_boost = 1.0` (pagerank_score = 0.0) until scores
-/// are populated by the background job.
+/// Non-blocking pagerank check for one user. If `memory_pagerank` holds no
+/// row for any of THIS user's memories, signals the background refresh job to
+/// compute ASAP and returns immediately. The search pipeline uses neutral
+/// `pr_boost = 1.0` (pagerank_score = 0.0) until scores are populated by the
+/// background job.
+///
+/// The existence check joins through `memories.user_id` because
+/// `memory_pagerank` itself carries no user column: a bare
+/// `COUNT(*) FROM memory_pagerank` was satisfied by ANY user's rows in
+/// shared-DB (non-sharded) mode, so a new user's empty pagerank never
+/// triggered a refresh while any other user had scores. A no-op difference in
+/// tenant-sharded mode, where every row in the shard belongs to the owner.
 #[tracing::instrument(skip(db))]
-pub async fn ensure_pagerank_for_user(db: &Database, _user_id: i64) -> Result<()> {
+pub async fn ensure_pagerank_for_user(db: &Database, user_id: i64) -> Result<()> {
     let count: i64 = db
         .read(move |conn| {
-            Ok(
-                conn.query_row("SELECT COUNT(*) FROM memory_pagerank LIMIT 1", [], |row| {
-                    row.get(0)
-                })?,
-            )
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM memory_pagerank p \
+                 JOIN memories m ON m.id = p.memory_id \
+                 WHERE m.user_id = ?1 LIMIT 1",
+                [user_id],
+                |row| row.get(0),
+            )?)
         })
         .await?;
 
