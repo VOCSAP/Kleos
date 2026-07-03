@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Reranker fusion normalization: min-max normalize the RRF-scale fusion score before the cross-encoder blend, in both the ONNX and HTTP backends, so the fusion weight is no longer negligible (#148)
+- HTTP reranker (TEI): blend the sigmoid-normalized cross-encoder confidence instead of the raw unbounded logit, keeping blended scores in [0,1] (#150)
+- Retrieval recall + review-gate leak + panic/tenant hardening (P0/P1 bundle) (#145)
+- Session-state extraction: reject code/config-like text in location/role capture (#144)
+- Dreamer: feed existing growth observations back into growth reflection (#143)
+- Sidecar integration tests: wait on real observables instead of fixed sleeps; remove hidden cross-test env dependency
+- Forge fsroots resolver tests made parallel-safe (#147)
+
+### Added
+- Admin route to mint API keys for another user
+
+### Changed
+- CI: PR wall clock cut from ~25min to ~10min (nextest 2-way partition, parallel lint job, prebuilt cargo-deny) (#149)
+- cargo-deny: ignore unfixable transitive quick-xml DoS advisories (#146)
+
+## [1.8.0] - 2026-06-28
+
+### Added
+- Language-agnostic NLP: content-language detection routing across the intelligence stack (#124)
+- Language-agnostic retrieval: multilingual reranker + unicode61 FTS (#119)
+- i18n lexicon module (EN/FR) with French folding (#108); German (de) baseline lexicon (#114)
+- Retrieval-quality v2: abstain gate, facts/episode/community channels, hop-2 expansion, fusion tuning (all default-off) (#112)
+- Runtime-overridable LLM prompts with embedded defaults, security-hardened (#110)
+- GET /growth/context for SIS-style prompt injection (#113)
+
+### Fixed
+- Offline reranker fallback + abstain recalibration for bge-reranker-v2-m3 (#123)
+- Store/search/recall correctness fixes + retrieval-quality tuning (#105)
+- Scratchpad: restore user_id tenant isolation (cross-tenant working-memory leak) (#107)
+- Associative auto-linker restored as a background pass (#117)
+- Sidecar watcher path parsing + Dockerfile sidecar stage (#116)
+- Plaintext secret retrieval gated behind interactivity; least-privilege mirror token (#118)
+- GUI: removed 3D graph flow-trail particles (#121)
+
+### Changed
+- opentelemetry migrated 0.27 -> 0.32 (#111)
+
 ## [1.7.3] - 2026-06-22
 
 ### CI

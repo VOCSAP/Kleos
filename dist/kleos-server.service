@@ -1,0 +1,23 @@
+# Systemd user unit for a from-source kleos-server install. The interactive
+# installer generates a tailored unit; this static template is the stopgap for
+# operators who build from source (see README Quick Start).
+#
+#   cp dist/kleos-server.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now kleos-server
+[Unit]
+Description=Kleos memory server
+Documentation=https://github.com/Ghost-Frame/Kleos
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/kleos-server
+# Environment (KLEOS_BOOTSTRAP_SECRET, KLEOS_SESSION_KEY, KLEOS_DB_KEY, ...)
+# belongs in this file, chmod 0600.
+EnvironmentFile=-%h/.config/kleos/kleos.env
+Environment=RUST_LOG=info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
