@@ -683,6 +683,18 @@ impl Reranker for HttpReranker {
         // Apply scores: blend remote score with the original (default 70/30,
         // KLEOS_RERANKER_CE_WEIGHT tunable).
         let w = reranker_ce_weight();
+        // Normalize the fusion scores across the reranked set onto [0,1] before
+        // blending (see the ONNX backend): the fusion score is RRF-scale while the
+        // remote CE score is [0,1], so without this the (1-w) fusion weight is
+        // negligible and reranked order is effectively pure cross-encoder.
+        let (fusion_min, fusion_max) = rerank_resp
+            .iter()
+            .filter(|item| item.index < results.len())
+            .map(|item| results[item.index].score)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), s| {
+                (lo.min(s), hi.max(s))
+            });
+        let fusion_span = fusion_max - fusion_min;
         for item in &rerank_resp {
             if item.index < results.len() {
                 // L2 ABSTAIN: capture a [0,1]-normalized cross-encoder confidence
@@ -696,7 +708,13 @@ impl Reranker for HttpReranker {
                     RerankFormat::Cohere => item.score,
                 };
                 results[item.index].ce_confidence = Some(ce_norm);
-                results[item.index].score = item.score * w + results[item.index].score * (1.0 - w);
+                // Normalized fusion contribution; neutral 0.5 when the span is zero.
+                let norm_fusion = if fusion_span > 0.0 {
+                    (results[item.index].score - fusion_min) / fusion_span
+                } else {
+                    0.5
+                };
+                results[item.index].score = item.score * w + norm_fusion * (1.0 - w);
                 // Provenance: mark this row as reranked (see the ONNX backend).
                 results[item.index].reranked = Some(true);
             }
