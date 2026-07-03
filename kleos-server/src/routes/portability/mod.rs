@@ -3,7 +3,7 @@
 use axum::{
     body::Body,
     extract::{Path, Query},
-    http::header,
+    http::{header, StatusCode},
     response::Response,
     routing::get,
     Json, Router,
@@ -20,6 +20,7 @@ use crate::{
 };
 use kleos_lib::db::Database;
 
+/// Routes for export/import portability plus current-state and preference CRUD.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/export", get(export_handler))
@@ -91,11 +92,45 @@ async fn export_handler(
 
 // --- Import (auto-detect format) ---
 
+/// Cap on per-request import error messages echoed back to the caller.
+const MAX_REPORTED_ERRORS: usize = 5;
+
+/// Build the import response. Any failed write makes the status 207
+/// Multi-Status so callers can detect partial or total data loss instead of
+/// reading an unconditional 200; `skipped` counts only rows intentionally
+/// ignored (empty content), never failures.
+fn import_response(
+    format: &str,
+    imported: i64,
+    skipped: i64,
+    failed: i64,
+    errors: Vec<String>,
+) -> (StatusCode, Json<Value>) {
+    let status = if failed > 0 {
+        StatusCode::MULTI_STATUS
+    } else {
+        StatusCode::OK
+    };
+    (
+        status,
+        Json(json!({
+            "imported": imported,
+            "skipped": skipped,
+            "failed": failed,
+            "errors": errors,
+            "format": format,
+        })),
+    )
+}
+
+/// POST /import: auto-detects the payload format (kleos export, mem0, plain
+/// array) and inserts the rows for the caller. Returns 207 when any write
+/// failed (see `import_response`).
 async fn import_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<Value>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     // Auto-detect format based on shape
     if body.is_array() {
         let arr = body.as_array().ok_or_else(|| {
@@ -137,13 +172,16 @@ async fn import_handler(
     )))
 }
 
+/// Import a versioned Kleos JSON export's memories array.
 async fn import_kleos_export(
     db: &Arc<Database>,
     user_id: i64,
     obj: &serde_json::Map<String, Value>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let mut imported = 0i64;
     let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut errors: Vec<String> = Vec::new();
     if let Some(memories) = obj.get("memories").and_then(|v| v.as_array()) {
         for mem in memories {
             let content = mem
@@ -195,22 +233,29 @@ async fn import_kleos_export(
                 ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
             }).await {
                 Ok(_) => imported += 1,
-                Err(e) => { tracing::warn!("import_kleos_memory_failed: {}", e); skipped += 1; }
+                Err(e) => {
+                    tracing::warn!("import_kleos_memory_failed: {}", e);
+                    if errors.len() < MAX_REPORTED_ERRORS {
+                        errors.push(e.to_string());
+                    }
+                    failed += 1;
+                }
             }
         }
     }
-    Ok(Json(
-        json!({ "imported": imported, "skipped": skipped, "format": "kleos" }),
-    ))
+    Ok(import_response("kleos", imported, skipped, failed, errors))
 }
 
+/// Import a plain JSON array of objects carrying content/text/memory fields.
 async fn import_array(
     db: &Arc<Database>,
     user_id: i64,
     arr: &[Value],
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let mut imported = 0i64;
     let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut errors: Vec<String> = Vec::new();
     for item in arr {
         let content = item
             .get("content")
@@ -245,21 +290,28 @@ async fn import_array(
             ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
         }).await {
             Ok(_) => imported += 1,
-            Err(_) => { skipped += 1; }
+            Err(e) => {
+                tracing::warn!("import_array_write_failed: {}", e);
+                if errors.len() < MAX_REPORTED_ERRORS {
+                    errors.push(e.to_string());
+                }
+                failed += 1;
+            }
         }
     }
-    Ok(Json(
-        json!({ "imported": imported, "skipped": skipped, "format": "array" }),
-    ))
+    Ok(import_response("array", imported, skipped, failed, errors))
 }
 
+/// Import a mem0-style array (memory/text/content + optional metadata).
 async fn import_mem0_array(
     db: &Arc<Database>,
     user_id: i64,
     arr: &[Value],
-) -> Result<Json<Value>, AppError> {
+) -> Result<(StatusCode, Json<Value>), AppError> {
     let mut imported = 0i64;
     let mut skipped = 0i64;
+    let mut failed = 0i64;
+    let mut errors: Vec<String> = Vec::new();
     for mem in arr {
         let content = mem
             .get("memory")
@@ -300,12 +352,16 @@ async fn import_mem0_array(
             ).map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
         }).await {
             Ok(_) => imported += 1,
-            Err(_) => { skipped += 1; }
+            Err(e) => {
+                tracing::warn!("import_mem0_write_failed: {}", e);
+                if errors.len() < MAX_REPORTED_ERRORS {
+                    errors.push(e.to_string());
+                }
+                failed += 1;
+            }
         }
     }
-    Ok(Json(
-        json!({ "imported": imported, "skipped": skipped, "format": "mem0" }),
-    ))
+    Ok(import_response("mem0", imported, skipped, failed, errors))
 }
 
 // --- State ---
@@ -363,10 +419,12 @@ async fn get_state_handler(
 }
 
 #[derive(Debug, serde::Deserialize)]
+/// Query params for GET /state (optional key filter).
 struct GetStateQuery {
     key: Option<String>,
 }
 
+/// DELETE /state: remove the caller's current-state rows (optionally by key).
 async fn delete_state_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -395,6 +453,7 @@ async fn list_preferences_handler(
     Ok(Json(json!({ "items": items, "count": count })))
 }
 
+/// GET /preferences/{key}: fetch one preference for the caller.
 async fn get_preference_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -406,6 +465,7 @@ async fn get_preference_handler(
     })?))
 }
 
+/// PUT /preferences: upsert the caller's preferences from a JSON object.
 async fn put_preferences_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -423,6 +483,7 @@ async fn put_preferences_handler(
     Ok(Json(json!({ "updated": updated })))
 }
 
+/// DELETE /preferences: remove every preference for the caller.
 async fn delete_all_preferences_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -432,6 +493,7 @@ async fn delete_all_preferences_handler(
     Ok(Json(json!({ "deleted": deleted })))
 }
 
+/// DELETE /preferences/{key}: remove one preference for the caller.
 async fn delete_preference_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -439,4 +501,65 @@ async fn delete_preference_handler(
 ) -> Result<Json<Value>, AppError> {
     kleos_lib::preferences::delete_preference(&db, auth.effective_user_id(), &key).await?;
     Ok(Json(json!({ "deleted": true, "key": key })))
+}
+
+#[cfg(test)]
+/// Tests for the import helpers' loss accounting: skipped counts only
+/// intentionally ignored rows, failed writes surface as 207 Multi-Status.
+mod tests {
+    use super::*;
+
+    /// Empty-content rows are skipped, valid rows import, status stays 200.
+    #[tokio::test]
+    async fn import_array_counts_skips_separately_from_failures() {
+        let db = Arc::new(
+            kleos_lib::db::Database::connect_memory()
+                .await
+                .expect("in-mem db"),
+        );
+        let rows = vec![
+            json!({ "content": "a valid imported memory" }),
+            json!({ "content": "   " }),
+            json!({ "note": "no content field at all" }),
+        ];
+        let (status, Json(body)) = import_array(&db, 1, &rows).await.expect("import ok");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["imported"], 1);
+        assert_eq!(body["skipped"], 2);
+        assert_eq!(body["failed"], 0);
+        assert!(body["errors"].as_array().unwrap().is_empty());
+    }
+
+    /// Write failures are reported as failed + 207, never silently folded
+    /// into skipped with a 200 (the silent-data-loss regression this module
+    /// shipped with).
+    #[tokio::test]
+    async fn import_array_write_failures_return_multi_status() {
+        let db = Arc::new(
+            kleos_lib::db::Database::connect_memory()
+                .await
+                .expect("in-mem db"),
+        );
+        // Make every INSERT fail deterministically: move the table away.
+        db.write(|conn| {
+            conn.execute_batch("ALTER TABLE memories RENAME TO memories_gone;")
+                .map_err(|e| kleos_lib::EngError::Internal(e.to_string()))
+        })
+        .await
+        .expect("rename table");
+
+        let rows = vec![
+            json!({ "content": "first row that will fail to write" }),
+            json!({ "content": "second row that will fail to write" }),
+        ];
+        let (status, Json(body)) = import_array(&db, 1, &rows).await.expect("handler returns");
+        assert_eq!(status, StatusCode::MULTI_STATUS);
+        assert_eq!(body["imported"], 0);
+        assert_eq!(body["skipped"], 0);
+        assert_eq!(body["failed"], 2);
+        assert!(
+            !body["errors"].as_array().unwrap().is_empty(),
+            "failure messages must be surfaced to the caller"
+        );
+    }
 }
