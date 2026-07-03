@@ -14,7 +14,7 @@ default = ["piv"]
 piv = ["kleos-lib/piv"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
+kleos-lib = { path = "../kleos-lib", version = "1.2.1", default-features = false }
 percent-encoding = "2.3"
 reqwest = { workspace = true }
 serde_json = { workspace = true }

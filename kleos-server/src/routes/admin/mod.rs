@@ -1288,7 +1288,7 @@ async fn admin_vector_rebuild_index(
     Ok(Json(json!({
         "rebuilt": rebuilt,
         "row_count": row_count,
-        "min_rows_for_index": kleos_lib::vector::lance::MIN_ROWS_FOR_INDEX,
+        "min_rows_for_index": kleos_lib::vector::MIN_ROWS_FOR_INDEX,
     })))
 }
 
