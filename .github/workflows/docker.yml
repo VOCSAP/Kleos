@@ -66,6 +66,11 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          # The Dockerfile's final stage is `sidecar`; without an explicit
+          # target, buildx builds that last stage, so the published image would
+          # be the sidecar binary masquerading as the server. `runtime` is the
+          # kleos-server image (matches .woodpecker.yml build-docker).
+          target: runtime
           platforms: ${{ matrix.platform }}
           cache-from: type=gha,scope=${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.arch }}

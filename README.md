@@ -127,15 +127,23 @@ A protocol that controls how agents think, not just what they remember:
 
 **Install with the interactive installer (recommended):**
 
-Prebuilt installers cover linux-x64 and windows-x64 today. The TUI installer ships for both; the GUI installer is linux-x64 only for now. Other platforms build from source (below). Download the latest installer from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
+Prebuilt binary installers ship for linux-x64: a TUI installer (`kleos-install`) and a GUI installer (`kleos-install-gui`). Download the latest from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
 
 ```bash
-# TUI installer (terminal) -- linux-x64, windows-x64
+# TUI installer (terminal) -- linux-x64
 ./kleos-install
 
-# GUI installer (desktop) -- linux-x64 only for now
+# GUI installer (desktop) -- linux-x64
 ./kleos-install-gui
 ```
+
+On Windows, install with the PowerShell script (it fetches the windows-x64 binaries from the latest release):
+
+```powershell
+irm https://raw.githubusercontent.com/Ghost-Frame/Kleos/main/dist/install.ps1 | iex
+```
+
+Other platforms build from source (below).
 
 The installer walks you through component selection, server configuration, embedding provider setup, security key generation, and optional systemd/launchd service registration. Choose a profile (Server, Agent Host, Full, Custom) or pick individual components.
 
