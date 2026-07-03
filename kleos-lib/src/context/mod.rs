@@ -522,7 +522,11 @@ async fn assemble_context_inner(
     let flags = resolve_layer_flags(&opts, depth);
     let semantic_ceiling = resolve_semantic_ceiling(&context_strategy, opts.semantic_ceiling);
     let semantic_limit = resolve_semantic_limit(&context_strategy, opts.semantic_limit);
-    let min_relev = opts.min_relevance.unwrap_or(DEFAULT_MIN_RELEVANCE);
+    // Relevance floor: resolved PER RESULT at the gate below, because the two
+    // gate arms compare signals on different scales (CE-blended score vs raw
+    // cosine) and therefore carry different defaults. An explicit
+    // `opts.min_relevance` still overrides both arms.
+    let min_relevance_opt = opts.min_relevance;
 
     let truncate = |content: &str| truncate_to_token_budget(content, max_memory_tokens);
 
@@ -739,14 +743,15 @@ async fn assemble_context_inner(
         // Gate on a [0,1] relevance signal. r.score is the CE-blended confidence
         // only when the reranker ran; otherwise it is the raw RRF-fusion value
         // (~0.02) that no real match can clear, so the cosine semantic_score is
-        // used instead (FTS-only hits with no cosine are kept). Comparing the raw
-        // fusion score against min_relev=0.55 previously dropped the entire
-        // semantic layer whenever the reranker was disabled.
+        // used instead (FTS-only hits with no cosine are kept). The default
+        // floor is per-arm (cosine 0.55 vs CE-blend 0.25): sharing the cosine
+        // floor previously dropped wanted reranked blocks, whose blended scores
+        // sit far lower (see DEFAULT_RERANKED_MIN_RELEVANCE for the evidence).
         if !crate::memory::scoring::passes_relevance_gate(
             r.reranked,
             r.score,
             r.semantic_score,
-            min_relev,
+            crate::memory::scoring::effective_min_relevance(min_relevance_opt, r.reranked),
         ) {
             continue;
         }
