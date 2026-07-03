@@ -26,7 +26,9 @@ pub const DEFAULT_SEMANTIC_CEILING_BALANCED: f64 = 0.80;
 pub const DEFAULT_SEMANTIC_CEILING_PRECISION: f64 = 0.82;
 pub const DEFAULT_SEMANTIC_CEILING_BREADTH: f64 = 0.90;
 
-/// Recency boost window: memories within this age (ms) get +10% score.
+/// Recency boost window (ms). No longer applied in context assembly (recency
+/// is scored exactly once, inside hybrid_search's compound score); kept for
+/// API compatibility with external callers of this public module.
 pub const RECENCY_BOOST_MS: i64 = 48 * 60 * 60 * 1000;
 
 /// Static fact budget fractions per strategy.

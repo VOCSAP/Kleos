@@ -698,8 +698,6 @@ async fn assemble_context_inner(
         }
     }
 
-    let now_ms = chrono::Utc::now().timestamp_millis();
-
     for r in semantic_results.iter() {
         if seen_ids.contains(&r.memory.id) {
             continue;
@@ -751,19 +749,11 @@ async fn assemble_context_inner(
             continue;
         }
 
-        // Recency boost: last 48h get +10%
-        let mut score = r.score;
-        if let Ok(created) = r
-            .memory
-            .created_at
-            .replace(' ', "T")
-            .parse::<chrono::DateTime<chrono::Utc>>()
-        {
-            let age_ms = now_ms - created.timestamp_millis();
-            if age_ms < RECENCY_BOOST_MS {
-                score *= 1.10;
-            }
-        }
+        // Recency is already applied exactly once, inside hybrid_search's
+        // compound score (`recency_boost`); a second +10% here double-counted
+        // it in the block's reported score without changing selection or
+        // ordering, which the budget loop above decides before this point.
+        let score = r.score;
 
         // Check if this is a fact with a parent
         let mem_detail = get_memory_without_embedding(db, r.memory.id, user_id)
