@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::components::Platform;
+use crate::error::InstallError;
 
 /// Detected information about the current system environment.
 #[derive(Debug, Clone)]
@@ -32,11 +33,14 @@ impl PlatformInfo {
     /// Reads OS and architecture from compile-time constants, probes for
     /// systemd / launchd availability, and computes default installation
     /// paths following XDG conventions on Unix and Windows conventions on
-    /// Windows.
-    pub fn detect() -> PlatformInfo {
+    /// Windows. Returns `InstallError::Platform` if the machine's OS/arch has
+    /// no published Kleos release (see `Platform::detect`) -- callers should
+    /// surface that message and stop rather than proceeding to a fetch that
+    /// can only fail.
+    pub fn detect() -> Result<PlatformInfo, InstallError> {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
-        let platform = Platform::detect();
+        let platform = Platform::detect()?;
 
         let has_systemd = which_exists("systemctl");
         let has_launchd = os_name == "macos";
@@ -66,7 +70,7 @@ impl PlatformInfo {
             xdg_data_dir().join("kleos").join("data")
         };
 
-        PlatformInfo {
+        Ok(PlatformInfo {
             platform,
             os_name,
             arch,
@@ -75,7 +79,7 @@ impl PlatformInfo {
             default_install_dir,
             default_config_dir,
             default_data_dir,
-        }
+        })
     }
 }
 
