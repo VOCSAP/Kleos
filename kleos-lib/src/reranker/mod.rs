@@ -1,9 +1,11 @@
 pub mod pool;
 mod types;
 
+/// Re-exported so callers can select the HTTP wire format explicitly (see
+/// [`HttpReranker::with_format`]).
+pub use self::types::RerankFormat;
 use self::types::{
-    CohereRerankRequest, CohereRerankResponse, RerankFormat, RerankResult, TeiRerankRequest,
-    TeiRerankResponse,
+    CohereRerankRequest, CohereRerankResponse, RerankResult, TeiRerankRequest, TeiRerankResponse,
 };
 use crate::config::Config;
 use crate::db::Database;
@@ -502,6 +504,14 @@ impl HttpReranker {
     pub fn format(&self) -> RerankFormat {
         self.format
     }
+
+    /// Override the wire format detected from the environment. Lets callers
+    /// (and tests) select TEI vs Cohere explicitly instead of mutating the
+    /// process-global `KLEOS_RERANKER_FORMAT` env var.
+    pub fn with_format(mut self, format: RerankFormat) -> Self {
+        self.format = format;
+        self
+    }
 }
 
 /// Reranker implementation backed by a remote Cohere/Jina/TEI rerank API.
@@ -714,7 +724,12 @@ impl Reranker for HttpReranker {
                 } else {
                     0.5
                 };
-                results[item.index].score = item.score * w + norm_fusion * (1.0 - w);
+                // Blend with the [0,1]-normalized CE confidence, not the raw wire
+                // score: a TEI logit is unbounded and would both swamp the (1-w)
+                // fusion term and push blended scores outside [0,1] (breaking
+                // min-relevance gating downstream). For Cohere, ce_norm IS the
+                // wire score, so this is an identity change for that arm.
+                results[item.index].score = ce_norm * w + norm_fusion * (1.0 - w);
                 // Provenance: mark this row as reranked (see the ONNX backend).
                 results[item.index].reranked = Some(true);
             }

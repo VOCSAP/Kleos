@@ -39,20 +39,26 @@ struct MockState {
     batch_fail_after: Arc<Mutex<Option<usize>>>,
 }
 
+/// Test-facing accessors and knobs for the mock upstream's recorded state.
 impl MockState {
+    /// Number of POST /batch calls the mock upstream has received so far.
     fn batch_call_count(&self) -> usize {
         self.batch_calls.lock().unwrap().len()
     }
 
+    /// Set the HTTP status the mock returns for /batch.
     fn set_batch_status(&self, code: u16) {
         *self.batch_status.lock().unwrap() = code;
     }
 
+    /// Configure /batch to accept the first `k` ops then fail (None = succeed).
     fn set_batch_fail_after(&self, k: Option<usize>) {
         *self.batch_fail_after.lock().unwrap() = k;
     }
 }
 
+/// Mock POST /batch handler: records the request body and applies the
+/// configured status / fail-after behaviour.
 async fn mock_batch(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> impl IntoResponse {
     let status = *ms.batch_status.lock().unwrap();
     let fail_after = *ms.batch_fail_after.lock().unwrap();
@@ -110,6 +116,7 @@ async fn mock_batch(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> 
     }
 }
 
+/// Mock POST /store handler: records the request body and returns a stub id.
 async fn mock_store(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> impl IntoResponse {
     let body_bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
@@ -120,10 +127,12 @@ async fn mock_store(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> 
     (StatusCode::OK, axum::Json(serde_json::json!({"id": 1}))).into_response()
 }
 
+/// Mock health endpoint: always 200.
 async fn mock_health(_req: Request<Body>) -> impl IntoResponse {
     StatusCode::OK
 }
 
+/// Catch-all for unexpected routes: 404.
 async fn mock_catch_all(_req: Request<Body>) -> impl IntoResponse {
     StatusCode::NOT_FOUND
 }
@@ -172,6 +181,8 @@ async fn spawn_sidecar(
     (url, state, handle)
 }
 
+/// Bind the sidecar router for `state` on a random port and serve it in a
+/// background task. Returns (base_url, state, join_handle).
 async fn spawn_sidecar_with_state(
     state: SidecarState,
 ) -> (String, SidecarState, tokio::task::JoinHandle<()>) {
@@ -189,6 +200,54 @@ async fn spawn_sidecar_with_state(
     (url, cloned_state, handle)
 }
 
+/// Poll `cond` every 25ms until it holds or `max` elapses; returns whether it
+/// held. Replaces fixed post-action sleeps, which raced the sidecar's async
+/// flush tasks under loaded parallel test runners (nextest runs many test
+/// processes at once, so scheduling latency varies widely).
+async fn wait_until(max: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + max;
+    while !cond() {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    true
+}
+
+/// Bounded wait for a session's flush BOOKKEEPING: polls until the named
+/// session's (stored_count, pending_count) match the expected pair or `max`
+/// elapses. The mock upstream receives /batch before the sidecar records the
+/// outcome, so the batch call count alone is too early an observable for
+/// assertions about stored/pending state.
+async fn wait_for_counts(
+    state: &SidecarState,
+    sess: &str,
+    stored: usize,
+    pending: usize,
+    max: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + max;
+    loop {
+        let got = {
+            let sessions = state.sessions.read().await;
+            sessions
+                .list()
+                .into_iter()
+                .find(|s| s.id == sess)
+                .map(|s| (s.stored_count, s.pending_count))
+        };
+        if got == Some((stored, pending)) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// reqwest client with a 5s timeout and an optional bearer-token header.
 fn client(token: Option<&str>) -> Client {
     let mut builder = Client::builder().timeout(Duration::from_secs(5));
     if let Some(t) = token {
@@ -238,12 +297,10 @@ async fn test_happy_path_observe_and_flush() {
         assert_eq!(r.status(), StatusCode::ACCEPTED);
     }
 
-    // Give the flush task a moment to complete.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Mock upstream should have received at least one /batch call.
+    // Mock upstream should receive at least one /batch call once the async
+    // flush task runs (bounded wait instead of a fixed sleep).
     assert!(
-        ms.batch_call_count() >= 1,
+        wait_until(Duration::from_secs(10), || ms.batch_call_count() >= 1).await,
         "expected at least 1 /batch call, got {}",
         ms.batch_call_count()
     );
@@ -274,6 +331,10 @@ async fn test_happy_path_observe_and_flush() {
 
 #[tokio::test]
 async fn test_retry_exhaustion_returns_503() {
+    // Manual serve loop (no spawn_sidecar): set the loopback allowance so the
+    // flush actually reaches the mock and exhausts on real HTTP 500s, rather
+    // than failing earlier (and vacuously) on outbound-URL validation.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let (upstream_url, ms, _upstream) = spawn_mock_upstream().await;
     ms.set_batch_status(500);
 
@@ -344,6 +405,13 @@ async fn test_retry_exhaustion_returns_503() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_flushes_pending() {
+    // This test wires its own serve loop (to control with_graceful_shutdown)
+    // instead of going through spawn_sidecar, so it must set the loopback
+    // allowance itself: without it validate_outbound_url rejects the mock
+    // upstream and the shutdown flush silently sends nothing. Under threaded
+    // cargo test, sibling tests' spawn_sidecar calls leaked this process-global
+    // var and masked the dependency; per-test-process runners (nextest) do not.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let (upstream_url, ms, _upstream) = spawn_mock_upstream().await;
     let token = "test-token-shutdown";
 
@@ -406,11 +474,10 @@ async fn test_graceful_shutdown_flushes_pending() {
     // Trigger graceful shutdown.
     let _ = shutdown_tx.send(());
 
-    // Allow time for flush to complete.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+    // Bounded wait matching the 10s flush deadline above: a fixed 500ms sleep
+    // raced the serve task's shutdown flush under parallel test load.
     assert!(
-        ms.batch_call_count() >= 1,
+        wait_until(Duration::from_secs(10), || ms.batch_call_count() >= 1).await,
         "flush should have occurred during graceful shutdown"
     );
 }
@@ -538,6 +605,7 @@ async fn test_compress_too_large_returns_413() {
     );
 }
 
+// With compression disabled, /compress returns the input unchanged.
 #[tokio::test]
 async fn test_compress_disabled_returns_passthrough() {
     let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
@@ -710,9 +778,12 @@ async fn test_partial_batch_requeues_failed_and_counts_only_successes() {
         assert_eq!(r.status(), StatusCode::ACCEPTED);
     }
 
-    // Give the inline flush a moment to finish.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
+    // Bounded wait for the flush bookkeeping (not just the /batch arrival),
+    // then pin the exact call count.
+    assert!(
+        wait_for_counts(&state, "sess-partial", 3, 2, Duration::from_secs(10)).await,
+        "first-flush bookkeeping did not land"
+    );
     assert_eq!(ms.batch_call_count(), 1, "exactly one batch sent so far");
 
     {
@@ -751,8 +822,11 @@ async fn test_partial_batch_requeues_failed_and_counts_only_successes() {
             .unwrap();
         assert_eq!(r.status(), StatusCode::ACCEPTED);
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
+    // Same bookkeeping-based wait for the second flush.
+    assert!(
+        wait_for_counts(&state, "sess-partial", 8, 0, Duration::from_secs(10)).await,
+        "second-flush bookkeeping did not land"
+    );
     assert_eq!(ms.batch_call_count(), 2, "second batch should be flushed");
 
     {

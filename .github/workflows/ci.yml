@@ -8,9 +8,77 @@ on:
 permissions:
   contents: read
 
+env:
+  # Prebuilt tool versions, pinned so CI does not drift with upstream releases.
+  # Bump deliberately. Both are installed from official release tarballs below
+  # instead of `cargo install` (minutes of compile) or third-party actions.
+  NEXTEST_VERSION: 0.9.138
+  CARGO_DENY_VERSION: 0.19.9
+
 jobs:
-  build-and-test:
+  # Type-check + lint + style gates. Runs in parallel with the test matrix so
+  # clippy is never on the test critical path. clippy --all-targets subsumes
+  # the old standalone `cargo check` for every crate except kleos-migrate,
+  # which keeps its own check step (it is excluded from clippy/tests due to
+  # linker conflicts, but `cargo check` does not link).
+  lint:
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Free disk space
+        # Reclaim ~20-30GB of preinstalled toolchains we do not use, so the
+        # workspace build artifacts have headroom on the 14GB hosted runner.
+        # Inline rm avoids a third-party action.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpcsclite-dev
+
+      - name: Cache cargo registry and target dir
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lint
+
+      - name: Clippy
+        run: cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
+
+      - name: Check kleos-migrate
+        # kleos-migrate is excluded from clippy and tests (linker conflicts),
+        # so type-check it explicitly to keep it covered by CI.
+        run: cargo check -p kleos-migrate
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Verify MSRV declaration in workspace
+        run: |
+          grep -q 'rust-version = "1.94"' Cargo.toml \
+            || { echo "workspace rust-version not declared or drifted"; exit 1; }
+
+  # Build and run the test suite under cargo-nextest, split across two runners.
+  # cargo test runs the workspace's ~97 test binaries strictly serially (~17min
+  # of execution); nextest schedules individual tests from all binaries onto
+  # all cores, and the hash partition halves the remaining wall clock. Hash
+  # partitioning is stable across runs, so every test runs in exactly one shard.
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
 
     env:
       # Test binaries statically link the full native dependency tree (lance,
@@ -34,31 +102,29 @@ jobs:
 
       - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@1.94.0
-        with:
-          components: clippy, rustfmt
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libpcsclite-dev
 
       - name: Cache cargo registry and target dir
+        # Both partitions compile the identical artifact set, so they share one
+        # cache and only partition 1 uploads it (a second save would be a no-op
+        # race against the immutable cache key).
         uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: test
+          save-if: ${{ matrix.partition == 1 }}
 
-      - name: Check workspace
-        run: cargo check --workspace
-
-      - name: Clippy
-        run: cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
+      - name: Install cargo-nextest
+        run: curl -LsSf "https://get.nexte.st/${NEXTEST_VERSION}/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
       - name: Test workspace (excluding kleos-migrate due to linker conflicts)
-        run: cargo test --workspace --exclude kleos-migrate
+        run: cargo nextest run --workspace --exclude kleos-migrate --partition "hash:${{ matrix.partition }}/2"
 
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Verify MSRV declaration in workspace
-        run: |
-          grep -q 'rust-version = "1.94"' Cargo.toml \
-            || { echo "workspace rust-version not declared or drifted"; exit 1; }
+      - name: Doc-tests
+        # nextest does not run doctests; run them once, on partition 1 only.
+        if: ${{ matrix.partition == 1 }}
+        run: cargo test --doc --workspace --exclude kleos-migrate
 
   deny:
     runs-on: ubuntu-latest
@@ -70,7 +136,11 @@ jobs:
         uses: dtolnay/rust-toolchain@1.94.0
 
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
+        # Prebuilt release binary; `cargo install --locked cargo-deny` spent
+        # ~2min compiling it from source on every run.
+        run: |
+          curl -LsSf "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar zx --strip-components=1 -C "$HOME/.cargo/bin" "cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl/cargo-deny"
 
       - name: Check licenses, sources, and advisories
         run: |
