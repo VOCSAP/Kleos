@@ -21,12 +21,18 @@ $Suffix = "windows-x64"
 if ($env:KLEOS_BINARIES) {
     $BinList = $env:KLEOS_BINARIES -split ","
 } else {
+    # NOTE: kr/kw/ke (kleos-fs) and kleos-credd are LINUX-ONLY -- they depend on
+    # unix-only crates and are not cross-compiled for windows-gnu (see
+    # .woodpecker.yml build-windows-x64). Do not list them here: with
+    # $ErrorActionPreference = "Stop", a 404 on a missing binary aborts the
+    # whole install. Windows profiles ship only the binaries the release
+    # actually produces for windows-x64.
     switch ($Profile) {
         { $_ -in "agent-host", "agent" } {
-            $BinList = @("kleos-cli", "kleos-sh", "kr", "kw", "ke", "agent-forge", "eidolon-supervisor", "cred", "kleos-credd")
+            $BinList = @("kleos-cli", "kleos-sh", "agent-forge", "eidolon-supervisor", "cred")
         }
         "full" {
-            $BinList = @("kleos-server", "kleos-cli", "kleos-sidecar", "kleos-credd", "cred", "kleos-mcp", "kleos-sh", "kr", "kw", "ke", "agent-forge", "eidolon-supervisor")
+            $BinList = @("kleos-server", "kleos-cli", "kleos-sidecar", "cred", "kleos-mcp", "kleos-sh", "agent-forge", "eidolon-supervisor")
         }
         default {
             $BinList = @("kleos-server", "kleos-cli", "kleos-mcp")

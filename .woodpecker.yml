@@ -70,13 +70,21 @@ steps:
       # kleos-server/ml re-enables the local ONNX/LanceDB stack that
       # --no-default-features would otherwise drop now that kleos-lib gates it
       # behind the default-on `ml` feature (ort/lancedb have cross-compiled for
-      # windows-gnu in every release to date). kleos-fs and kleos-credd were
-      # missing from the build although the copy loop below expects
-      # kr/kw/ke/kleos-credd.exe, so past Windows releases silently lacked them.
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui,kleos-server/ml -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-credd -p kleos-fs -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor -p kleos-install
+      # windows-gnu in every release to date; the ml dep versions are unchanged
+      # since v1.8.0, only newly `optional`).
+      #
+      # kleos-credd, kleos-fs (kr/kw/ke) and kleos-install are LINUX-ONLY and
+      # are deliberately absent from this list. kleos-credd depends on `nix`
+      # (unix-only) and kleos-lib/piv; kleos-fs is a unix filesystem CLI. A
+      # single `cargo build` fails as a whole if any one crate does not compile,
+      # so adding them (attempted for v1.8.1-rc.1) aborted the entire windows
+      # build and dropped even the nine binaries that shipped in v1.8.0. This
+      # list is the proven v1.8.0 crate set plus the ml feature flag. Do not add
+      # unix-only crates here; ship them as linux artifacts only.
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui,kleos-server/ml -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-credd kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kr kw ke kleos-install; do
+        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-mcp kleos-sh agent-forge eidolon-supervisor; do
           src="target-windows/x86_64-pc-windows-gnu/release-prod/$bin.exe"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-windows-x64.exe"
