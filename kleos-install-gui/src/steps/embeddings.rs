@@ -10,6 +10,31 @@ use eframe::egui;
 use crate::theme;
 use crate::wizard::InstallerApp;
 
+/// Validation error for the remote embedding output-dimension field, if any.
+///
+/// Must parse as a positive integer -- `0` is not a valid embedding dimension.
+fn dimension_error(dimension: &str) -> Option<&'static str> {
+    match dimension.parse::<u32>() {
+        Ok(d) if d > 0 => None,
+        _ => Some("Dimension must be a positive integer."),
+    }
+}
+
+/// Return `true` if every field on the embeddings/reranker step is valid.
+///
+/// Local providers have no validatable input. The remote embedding provider
+/// requires a non-empty endpoint URL and a positive-integer output dimension;
+/// the remote reranker requires a non-empty endpoint URL.
+pub fn is_valid(app: &InstallerApp) -> bool {
+    let embed_ok = app.embedding_provider_local
+        || (!app.remote_embed_url.is_empty()
+            && dimension_error(&app.remote_embed_dimension).is_none());
+
+    let reranker_ok = app.reranker_mode != 1 || !app.remote_reranker_url.is_empty();
+
+    embed_ok && reranker_ok
+}
+
 /// Draw the embeddings and reranker configuration step.
 ///
 /// The embedding section uses a radio pair (Local ONNX / Remote). The
@@ -113,9 +138,8 @@ fn draw_remote_embedding_fields(ui: &mut egui::Ui, app: &mut InstallerApp) {
 
     ui.label("Output dimension:");
     ui.add(egui::TextEdit::singleline(&mut app.remote_embed_dimension).hint_text("1024"));
-    let dim_valid = app.remote_embed_dimension.parse::<u32>().is_ok();
-    if !dim_valid {
-        ui.colored_label(theme::COLOR_ERROR, "Dimension must be a positive integer.");
+    if let Some(err) = dimension_error(&app.remote_embed_dimension) {
+        ui.colored_label(theme::COLOR_ERROR, err);
     }
 }
 

@@ -9,7 +9,9 @@ use sha2::{Digest, Sha256};
 use crate::error::InstallError;
 
 /// User-Agent header value sent with every GitHub API and download request.
-const USER_AGENT: &str = "kleos-installer/1.2.1";
+/// Derived from the crate's own version so it can't drift out of sync with
+/// an actual release the way a hardcoded literal did.
+const USER_AGENT: &str = concat!("kleos-installer/", env!("CARGO_PKG_VERSION"));
 
 /// A single downloadable asset attached to a GitHub release.
 #[derive(Debug, Clone, serde::Deserialize)]
