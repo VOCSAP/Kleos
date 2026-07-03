@@ -59,6 +59,11 @@ jobs:
         # so type-check it explicitly to keep it covered by CI.
         run: cargo check -p kleos-migrate
 
+      - name: Check ml-off builds
+        # The default-on `ml` feature gates the ONNX/LanceDB stack; keep the
+        # lean configuration compiling so the gate does not rot.
+        run: cargo check -p kleos-lib -p kleos-server --no-default-features
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

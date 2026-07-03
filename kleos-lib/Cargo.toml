@@ -13,8 +13,13 @@ readme = "../README.md"
 name = "kleos_lib"
 
 [features]
-default = ["brain_hopfield"]
-brain_hopfield = []
+default = ["brain_hopfield", "ml"]
+brain_hopfield = ["dep:ndarray"]
+# Local ML inference stack: ONNX embedder + cross-encoder reranker
+# (ort/tokenizers) and the LanceDB ANN index (lancedb/arrow). Default-on;
+# disabling it builds a lean crate that degrades to remote/HTTP embedding
+# providers, the HTTP reranker backend, and FTS + sqlite-vec retrieval.
+ml = ["dep:ort", "dep:tokenizers", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
 test-utils = []
 # Enable per-tenant sharding (rusqlite-based). Mutually exclusive with libsql tests.
 tenant-sharding = []
@@ -56,9 +61,9 @@ rust-stemmers = { workspace = true }
 whatlang = { workspace = true }
 url = { workspace = true }
 ipnet = { workspace = true }
-ort = { workspace = true }
-tokenizers = { workspace = true }
-ndarray = { workspace = true }
+ort = { workspace = true, optional = true }
+tokenizers = { workspace = true, optional = true }
+ndarray = { workspace = true, optional = true }
 reqwest = { workspace = true }
 dirs = { workspace = true }
 regex = { workspace = true }
@@ -66,13 +71,13 @@ zip = { workspace = true }
 pdf-extract = { workspace = true }
 rand = { workspace = true }
 async-trait = { workspace = true }
-arrow-array = { workspace = true }
-arrow-schema = { workspace = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
 futures = { workspace = true }
 lru = { workspace = true }
 arc-swap = { workspace = true }
 walkdir = { workspace = true }
-lancedb = { workspace = true }
+lancedb = { workspace = true, optional = true }
 flate2 = { workspace = true }
 hex = { workspace = true }
 base64 = { workspace = true }
@@ -113,7 +118,17 @@ serde_json = { workspace = true }
 [[bench]]
 name = "embeddings"
 harness = false
-required-features = ["test-utils"]
+required-features = ["test-utils", "ml"]
+
+# Dev targets that construct the concrete ONNX types directly; skipped (not
+# broken) when the ml feature is off.
+[[example]]
+name = "onnx_probe"
+required-features = ["ml"]
+
+[[test]]
+name = "lang_retrieval"
+required-features = ["ml"]
 
 [[bench]]
 name = "memory_search"

@@ -3,6 +3,8 @@
 //! Observes recent activity, generates observations about patterns, and
 //! stores them as growth memories.
 
+// Dream-cycle telemetry only exists when the brain substrate is compiled in.
+#[cfg(feature = "brain_hopfield")]
 use crate::brain::dream::types::DreamCycleResult;
 use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
@@ -143,6 +145,7 @@ async fn resolve_growth_observation(
 /// describe what the consolidation cycle did. These are prepended to the
 /// recent-memory context so the LLM reflects on both what happened in
 /// the brain and what the agent recently experienced.
+#[cfg(feature = "brain_hopfield")]
 pub fn build_dream_context(
     result: &DreamCycleResult,
     pattern_count: usize,
@@ -547,6 +550,7 @@ mod tests {
         assert!(kw.contains("gemacht"));
     }
 
+    /// Test fixture: a GrowthObservation with the given content and timestamp.
     fn make_obs(content: &str, created_at: &str) -> GrowthObservation {
         GrowthObservation {
             id: 1,
