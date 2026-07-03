@@ -187,3 +187,48 @@ async fn version_update_is_not_deduped() {
     );
     assert_eq!(b.duplicate_of, None);
 }
+
+/// A near-duplicate of a memory buried under more than a thousand newer
+/// memories still collapses: the scan is unbounded within the (user, space)
+/// scope. Regression for the former `LIMIT 1000`, which silently re-stored
+/// duplicates of anything older than the newest thousand rows.
+#[tokio::test]
+async fn duplicate_beyond_former_recency_window_still_collapses() {
+    let db = Database::connect_memory().await.expect("db");
+    let original = store(
+        &db,
+        "ancient artifact catalogued under vault shelf omega",
+        None,
+        None,
+    )
+    .await;
+    assert!(original.created, "first store creates");
+
+    // Bury the original under 1001 newer memories. Every token in a filler
+    // embeds its index, so fillers are pairwise token-disjoint: templated
+    // content that differs only in digits is itself a simhash near-duplicate
+    // and would collapse into the first filler.
+    for i in 0..1001 {
+        let filler = store(
+            &db,
+            &format!("k{i}a k{i}b k{i}c k{i}d k{i}e k{i}f k{i}g k{i}h"),
+            None,
+            None,
+        )
+        .await;
+        assert!(filler.created, "filler {i} must be distinct");
+    }
+
+    let dup = store(
+        &db,
+        "ancient artifact catalogued under vault shelf omega",
+        None,
+        None,
+    )
+    .await;
+    assert!(
+        !dup.created,
+        "duplicate of a deeply buried memory must still be deduped"
+    );
+    assert_eq!(dup.duplicate_of, Some(original.id));
+}
