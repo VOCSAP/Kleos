@@ -285,6 +285,20 @@ impl Reranker for OnnxReranker {
 
         let k = self.top_k.min(results.len());
 
+        // Normalize the fusion scores across the reranked window onto [0,1] before
+        // blending. The fusion score is RRF-scale (~0.006-0.05) while the CE score is
+        // a [0,1] sigmoid, so blending them raw leaves the (1-w) fusion weight
+        // negligible and the reranked order effectively pure cross-encoder. Min-max
+        // scaling restores the intended contribution of the fusion signal.
+        let (fusion_min, fusion_max) = results
+            .iter()
+            .take(k)
+            .map(|r| r.score)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), s| {
+                (lo.min(s), hi.max(s))
+            });
+        let fusion_span = fusion_max - fusion_min;
+
         for result in results.iter_mut().take(k) {
             // Prefer the best-matching chunk over the full memory content: a long memory
             // truncated at the cross-encoder's 512-token window can hide the very passage
@@ -306,10 +320,17 @@ impl Reranker for OnnxReranker {
             // gate reads an uncontaminated [0,1] confidence rather than the compound
             // `score` (which is entangled with decay/pagerank/recency).
             result.ce_confidence = Some(ce_score as f64);
-            // Blend cross-encoder with the original fusion score (default 70/30,
-            // KLEOS_RERANKER_CE_WEIGHT tunable).
+            // Blend cross-encoder with the normalized fusion score (default 70/30,
+            // KLEOS_RERANKER_CE_WEIGHT tunable). With span 0 (single candidate or
+            // all-equal fusion) the fusion term is a neutral 0.5 so ordering falls to
+            // the cross-encoder.
             let w = reranker_ce_weight();
-            result.score = ce_score as f64 * w + result.score * (1.0 - w);
+            let norm_fusion = if fusion_span > 0.0 {
+                (result.score - fusion_min) / fusion_span
+            } else {
+                0.5
+            };
+            result.score = ce_score as f64 * w + norm_fusion * (1.0 - w);
             // Provenance: mark this row as cross-encoded so callers and the eval harness can
             // see the reranker actually ran (hybrid_search defaults reranked=false).
             result.reranked = Some(true);
