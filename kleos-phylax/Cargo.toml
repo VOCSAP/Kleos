@@ -7,9 +7,9 @@ description = "Agent-native credential authority -- approvals, leases, ECDH, nam
 license = "Elastic-2.0"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
-kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
-kleos-credd = { path = "../kleos-credd", version = "1.2.1" }
+kleos-lib = { path = "../kleos-lib", version = "1.8.0" }
+kleos-cred = { path = "../kleos-cred", version = "1.8.0" }
+kleos-credd = { path = "../kleos-credd", version = "1.8.0" }
 
 axum.workspace = true
 tower.workspace = true

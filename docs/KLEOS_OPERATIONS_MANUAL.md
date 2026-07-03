@@ -1326,6 +1326,14 @@ Operational notes:
 - Default bind is `127.0.0.1:4200`.
 - Initial bootstrap key flow is separate from normal auth.
 - Multi-user tenant sharding is enabled by default.
+- `KLEOS_SESSION_KEY` -- 32-byte hex HMAC key for the session manager
+  (`kleos-lib/src/auth_piv.rs`) that lets a PIV/soft-signed identity avoid
+  re-signing every request. If unset, the server generates an ephemeral key at
+  startup and logs a warning; sessions minted under that key do not survive a
+  restart. Set it explicitly for any deployment that should keep sessions alive
+  across restarts. Generate one with `openssl rand -hex 32`.
+- A from-source systemd unit template is provided at
+  `dist/kleos-server.service` for running the server as a long-lived service.
 
 Optional GUI-population flags (all default-off; behavior is byte-identical to
 prior releases when unset):

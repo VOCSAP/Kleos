@@ -127,13 +127,13 @@ A protocol that controls how agents think, not just what they remember:
 
 **Install with the interactive installer (recommended):**
 
-Download the latest installer from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
+Prebuilt installers cover linux-x64 and windows-x64 today. The TUI installer ships for both; the GUI installer is linux-x64 only for now. Other platforms build from source (below). Download the latest installer from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
 
 ```bash
-# TUI installer (terminal)
+# TUI installer (terminal) -- linux-x64, windows-x64
 ./kleos-install
 
-# GUI installer (desktop)
+# GUI installer (desktop) -- linux-x64 only for now
 ./kleos-install-gui
 ```
 
@@ -143,11 +143,41 @@ The installer walks you through component selection, server configuration, embed
 
 ```bash
 git clone https://github.com/Ghost-Frame/Kleos.git && cd Kleos
+
+# System packages (Debian/Ubuntu): protobuf-compiler builds the proto-based
+# vector-store dependency (LanceDB); libpcsclite-dev is for the PIV/YubiKey
+# smartcard path. Both are pulled in by the default workspace build.
+sudo apt install protobuf-compiler libpcsclite-dev
+
 cargo build --release -p kleos-server -p kleos-cli
-KLEOS_BOOTSTRAP_SECRET=pick-a-secret ./target/release/kleos-server
+KLEOS_BOOTSTRAP_SECRET=pick-a-secret \
+KLEOS_SESSION_KEY=$(openssl rand -hex 32) \
+  ./target/release/kleos-server
 ```
 
+`KLEOS_SESSION_KEY` is a 32-byte hex HMAC key for session tokens. Leave it
+unset for a quick local try and the server generates an ephemeral one at
+startup (with a warning) -- fine for one run, but sessions won't survive a
+restart. Set it explicitly for anything you plan to keep running.
+
 Server starts on `127.0.0.1:4200`. In another terminal:
+
+**First run:** with default features, the server background-downloads its local
+ML models from Hugging Face the first time it starts -- a bge-m3 embedding model
+and a cross-encoder reranker (quantized ONNX by default; several hundred MB
+each, up to ~2.3 GiB if you switch the embedder to the FP32 variant). They land
+under `<data dir>/engram/models/<model-name>` (e.g.
+`~/.local/share/engram/models/bge-m3` on Linux), and future restarts skip the
+download once the files are present. For air-gapped or pre-staged deployments,
+set `KLEOS_EMBEDDING_OFFLINE_ONLY=1` to make a missing model file a hard error
+instead of a network fetch, and pre-stage the files yourself (`KLEOS_EMBEDDING_MODEL_DIR`
+/ `KLEOS_RERANKER_MODEL_DIR` control where they're expected). Point `KLEOS_EMBEDDING_URL`
+and/or `KLEOS_RERANKER_URL` (with `KLEOS_RERANKER_BACKEND=http`) at a remote
+provider instead, and the server skips its local download and ONNX runtime
+entirely for that model. To leave the whole local inference stack out of the
+binary, build with `--no-default-features` (the default-on `ml` cargo feature
+gates the ONNX/LanceDB stack; retrieval degrades to FTS + sqlite-vec and the
+remote providers above).
 
 **Bootstrap your admin key (one-time):**
 
@@ -196,12 +226,13 @@ Kleos speaks three protocols:
 
 ### Claude Code integration
 
-Kleos ships ready-to-use hooks in `hooks/`:
-
-- **Simple** -- session start/end, per-turn memory recall, tool observation. Bash + curl.
-- **Full** -- adds Eidolon brain-aware context, automatic sidecar startup, Chiasm task tracking, growth materialization, Agent-Forge protocol enforcement, and session quality scoring.
-
-Copy the hooks, configure `settings.json`, and your agent has persistent memory, coordination, structured reasoning, and real-time supervision across sessions.
+The `hooks/` bundle is under maintenance and not currently shipped. For
+session-start (and other lifecycle) integration today, call the `kleos-cli hook`
+subcommands directly from your own hook scripts -- `kleos-cli hook session-start`,
+`user-prompt`, `stop`, `pre-tool`, `post-tool`, and `post-bash` are supported and
+documented in `docs/KLEOS_OPERATIONS_MANUAL.md`. The mandatory-rules text these
+hooks inject is operator-configurable via the `KLEOS_MANDATORY_RULES` environment
+variable on the server. A new hooks bundle will ship once the surface stabilises.
 
 ### What runs inside
 
@@ -360,7 +391,7 @@ Four channels run per query:
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
 | `kleos-credd` | Base credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
 | `kleos-phylax` | Agent-native credential authority library: approvals, leases, ECDH, namespaces. |
-| `kleos-phylaxd` (`phylaxd`) | The credential daemon actually deployed. Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. The `credd` service runs this binary. |
+| `kleos-phylaxd` (`phylaxd`) | Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. Not yet part of releases or the installer -- `kleos-credd` is the credential daemon that actually ships as the `credd` service. |
 | `kleos-phylax-ssh-agent` | OpenSSH agent protocol server: wire protocol and KeyProvider trait. |
 | `kleos-phylax-ssh-agentd` | Headless SSH agent daemon that brokers keys and signing through phylaxd. |
 | `kleos-token-client` | Tiny std-only client for the phylaxd SO_PEERCRED token broker (no kleos-lib dependency). |
@@ -396,7 +427,7 @@ The installer (`kleos-install` or `kleos-install-gui`) supports four profiles:
 | Profile | Includes |
 |---------|----------|
 | `Server` | kleos-server, kleos-cli |
-| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, phylaxd |
+| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, kleos-credd |
 | `Full` | Every binary |
 | `Custom` | Pick individual components |
 

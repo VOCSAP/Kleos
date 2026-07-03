@@ -9,6 +9,10 @@ cargo build --workspace
 cargo test --workspace --exclude kleos-migrate
 ```
 
+`cargo test` is the simple local option above; it is not exact CI parity. CI runs
+the same test set through `cargo-nextest` with a 2-way partition -- see
+[Before Pushing](#before-pushing) for the nextest install and invocation.
+
 Rust 1.94 or later. The workspace builds on Linux, macOS, and WSL2. Native Windows builds are untested -- use WSL2.
 
 The full workspace is large (26 crates, wants ~8 GiB RAM to build). For day-to-day
@@ -126,8 +130,8 @@ cargo clippy --workspace -- -D warnings
 
 ### Before Pushing
 
-Run the exact CI gate locally -- this is what `ci.yml` runs, and what the
-pre-push hook runs for you:
+Run the local gate before pushing -- this matches most of what `ci.yml` runs,
+and is what the pre-push hook runs for you:
 
 ```bash
 # Fast gate (fmt + clippy + cargo-deny + MSRV) -- a couple of minutes:
@@ -137,7 +141,7 @@ scripts/preflight.sh
 scripts/preflight.sh --full
 ```
 
-The individual CI commands, if you prefer to run them by hand:
+The individual commands, if you prefer to run them by hand:
 
 ```bash
 cargo fmt --all -- --check
@@ -145,6 +149,26 @@ cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
 cargo test --workspace --exclude kleos-migrate
 cargo deny check        # licenses, sources, advisories, bans -- fails independently of your code
 ```
+
+`preflight.sh` and the plain `cargo test` command above run the workspace test
+suite serially through the stock test harness -- close enough for local
+iteration, but not what CI actually runs. CI runs the same tests through
+`cargo-nextest`, split across a 2-way hash partition, for exact parity:
+
+```bash
+# Install cargo-nextest (same release ci.yml pins)
+curl -LsSf "https://get.nexte.st/0.9.138/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+# Reproduce a CI partition locally (partition N of 2)
+cargo nextest run --workspace --exclude kleos-migrate --partition "hash:1/2"
+
+# Or run the whole suite through nextest without partitioning
+cargo nextest run --workspace --exclude kleos-migrate
+```
+
+Release builds run separately, on the project's self-hosted Woodpecker runner
+via `.woodpecker.yml`, triggered by `v*` tags. GitHub Actions (`ci.yml`) only
+runs the PR/push checks above.
 
 ### Code Style
 
@@ -204,7 +228,7 @@ the branch.
 
 - [ ] `cargo fmt --all -- --check` is clean
 - [ ] `cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings` passes
-- [ ] `cargo test --workspace --exclude kleos-migrate` passes
+- [ ] `cargo test --workspace --exclude kleos-migrate` passes (or `cargo nextest run --workspace --exclude kleos-migrate` for exact CI parity, see [Before Pushing](#before-pushing))
 - [ ] `cargo deny check` passes (licenses, sources, advisories, bans)
 - [ ] New code has tests where applicable
 - [ ] Documentation updated if behavior changes

@@ -11,10 +11,10 @@ name = "phylaxd"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1" }
-kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
-kleos-credd = { path = "../kleos-credd", version = "1.2.1" }
-kleos-phylax = { path = "../kleos-phylax", version = "1.2.1" }
+kleos-lib = { path = "../kleos-lib", version = "1.8.0" }
+kleos-cred = { path = "../kleos-cred", version = "1.8.0" }
+kleos-credd = { path = "../kleos-credd", version = "1.8.0" }
+kleos-phylax = { path = "../kleos-phylax", version = "1.8.0" }
 
 axum.workspace = true
 tokio.workspace = true
