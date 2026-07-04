@@ -6,7 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-04
+
+### Added
+- Optional default-on `ml` Cargo feature gating the local ONNX/LanceDB inference stack, so lean builds can drop the heavy inference dependencies with `--no-default-features` (#153)
+- `kleos-server` systemd unit for service installs (#157)
+- Admin route to mint API keys for another user
+
+### Changed
+- Context assembly: scale-appropriate default relevance floor per gate arm (cosine vs reranked), so reranked deployments stop silently dropping wanted context blocks (B2) (#151)
+- CI: PR wall clock cut from ~25min to ~10min (nextest 2-way partition, parallel lint job, prebuilt cargo-deny) (#149)
+- cargo-deny: ignore unfixable transitive quick-xml DoS advisories (#146)
+- Internal crate dependencies pinned to workspace versions; docs aligned to actual routes and crate counts (#157)
+
 ### Fixed
+- Release pipeline: repaired five silent delivery failures -- SHA256SUMS never matched (now bare filenames), installers were never published, Windows binaries were missing, the Docker image was the sidecar stage, and an ml-feature build guard (#155)
+- Release build: stopped shipping unix-only crates (kleos-credd, kleos-fs) in the Windows cross-build, which had aborted it and dropped all nine Windows binaries; the ghcr image now builds the server (runtime) stage instead of the sidecar (#158)
+- GUI: commit `gui/package-lock.json` so the Docker runtime image builds (npm ci needs a committed lockfile) (#159)
+- Installer: upgrade safety (existing secrets preserved and backed up), honest failure reporting, and honest platform claims (#156)
+- Portability: `/import` surfaces per-item write failures with 207 Multi-Status instead of reporting success on partial data loss (#154)
+- Retrieval scoring refinements (B3): FSRS decay anchored on last-review time, near-duplicate detection unbounded, context recency double-count removed, PageRank scoped per user (#152)
 - Reranker fusion normalization: min-max normalize the RRF-scale fusion score before the cross-encoder blend, in both the ONNX and HTTP backends, so the fusion weight is no longer negligible (#148)
 - HTTP reranker (TEI): blend the sigmoid-normalized cross-encoder confidence instead of the raw unbounded logit, keeping blended scores in [0,1] (#150)
 - Retrieval recall + review-gate leak + panic/tenant hardening (P0/P1 bundle) (#145)
@@ -14,13 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Dreamer: feed existing growth observations back into growth reflection (#143)
 - Sidecar integration tests: wait on real observables instead of fixed sleeps; remove hidden cross-test env dependency
 - Forge fsroots resolver tests made parallel-safe (#147)
-
-### Added
-- Admin route to mint API keys for another user
-
-### Changed
-- CI: PR wall clock cut from ~25min to ~10min (nextest 2-way partition, parallel lint job, prebuilt cargo-deny) (#149)
-- cargo-deny: ignore unfixable transitive quick-xml DoS advisories (#146)
 
 ## [1.8.0] - 2026-06-28
 
