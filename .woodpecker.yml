@@ -161,6 +161,13 @@ steps:
             return 1
           fi
         }
+        # Publish in dependency order. kleos-lib gained a dependency on
+        # kleos-config after 1.8.0; kleos-config must be on crates.io before
+        # kleos-lib can resolve it, or the whole publish (and pipeline) fails
+        # with "no matching package named kleos-config found". kleos-config is
+        # standalone (no internal path deps); kleos-cred depends on kleos-lib.
+        publish kleos-config
+        sleep 30
         publish kleos-lib
         sleep 30
         publish kleos-cred

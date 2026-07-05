@@ -1,6 +1,6 @@
 [package]
 name = "kleos-client"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Shared HTTP client for Kleos with PIV/Ed25519 envelope signing"
@@ -14,7 +14,7 @@ default = ["piv"]
 piv = ["kleos-lib/piv"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.8.0", default-features = false }
+kleos-lib = { path = "../kleos-lib", version = "1.9.0", default-features = false }
 percent-encoding = "2.3"
 reqwest = { workspace = true }
 serde_json = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-install-gui"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Native GUI installer for Kleos"
@@ -11,7 +11,7 @@ name = "kleos-install-gui"
 path = "src/main.rs"
 
 [dependencies]
-kleos-install-core = { path = "../kleos-install-core", version = "1.8.0" }
+kleos-install-core = { path = "../kleos-install-core", version = "1.9.0" }
 eframe = "0.31"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
