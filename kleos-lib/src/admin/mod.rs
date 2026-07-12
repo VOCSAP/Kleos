@@ -269,7 +269,7 @@ pub async fn get_usage(db: &Database) -> Result<Vec<UsageRow>> {
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, COALESCE(m.cnt, 0), COALESCE(c.cnt, 0), COALESCE(k.cnt, 0) \
              FROM users u \
-             LEFT JOIN (SELECT 1 AS user_id, COUNT(*) as cnt FROM memories) m ON u.id = m.user_id \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id \
              LEFT JOIN (SELECT 0 as user_id, COUNT(*) as cnt FROM conversations) c ON u.id = c.user_id \
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
@@ -300,7 +300,7 @@ pub async fn get_tenants(db: &Database) -> Result<Vec<TenantRow>> {
         let mut stmt = conn.prepare(
             "SELECT u.id, u.username, u.role, COALESCE(m.cnt, 0), COALESCE(k.cnt, 0), u.created_at \
              FROM users u \
-             LEFT JOIN (SELECT 1 AS user_id, COUNT(*) as cnt FROM memories) m ON u.id = m.user_id \
+             LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM memories GROUP BY user_id) m ON u.id = m.user_id \
              LEFT JOIN (SELECT user_id, COUNT(*) as cnt FROM api_keys WHERE is_active = 1 GROUP BY user_id) k ON u.id = k.user_id \
              ORDER BY u.id",
         )
@@ -668,7 +668,7 @@ pub async fn get_memories_without_facts(
 ) -> Result<Vec<(i64, String, i64)>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.content, 1 FROM memories m \
+            "SELECT m.id, m.content, m.user_id FROM memories m \
                  WHERE m.is_forgotten = 0 \
                  AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
                  LIMIT ?1",
@@ -696,17 +696,19 @@ pub async fn get_memories_without_facts(
 pub async fn get_memories_without_entity_links(
     db: &Database,
     limit: i64,
-) -> Result<Vec<(i64, String)>> {
+) -> Result<Vec<(i64, String, i64)>> {
     db.read(move |conn| {
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.content FROM memories m \
+            "SELECT m.id, m.content, m.user_id FROM memories m \
                  WHERE m.is_forgotten = 0 \
                  AND NOT EXISTS (SELECT 1 FROM memory_entities me WHERE me.memory_id = m.id) \
                  ORDER BY m.id ASC \
                  LIMIT ?1",
         )?;
         let rows = stmt
-            .query_map(params![limit], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map(params![limit], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     })
