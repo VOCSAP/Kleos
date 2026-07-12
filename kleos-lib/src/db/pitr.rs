@@ -3,8 +3,8 @@
 //!
 //! Snapshots live at two cadences:
 //!
-//!   - Hourly: `<backup_dir>/engram-backup-YYYYMMDD-HHMMSS.db`
-//!   - Daily:  `<backup_dir>/daily/engram-backup-YYYYMMDD-HHMMSS.db`
+//!   - Hourly: `<backup_dir>/kleos-backup-YYYYMMDD-HHMMSS.db`
+//!   - Daily:  `<backup_dir>/daily/kleos-backup-YYYYMMDD-HHMMSS.db`
 //!
 //! Given a target timestamp, [`find_snapshot_for`] returns the newest snapshot
 //! whose `created_at` is at or before the target. [`prepare_restore`] copies
@@ -25,10 +25,10 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use std::fs;
 use std::path::Path;
 
-const HOURLY_PREFIX: &str = "engram-backup-";
+const HOURLY_PREFIX: &str = "kleos-backup-";
 const BACKUP_SUFFIX: &str = ".db";
 
-/// Parse `engram-backup-YYYYMMDD-HHMMSS.db` into a UTC timestamp. Returns
+/// Parse `kleos-backup-YYYYMMDD-HHMMSS.db` into a UTC timestamp. Returns
 /// `None` for any filename that does not match the expected shape.
 pub fn parse_backup_time(path: &Path) -> Option<DateTime<Utc>> {
     let name = path.file_name()?.to_str()?;
@@ -150,7 +150,7 @@ mod tests {
 
     #[test]
     fn parse_backup_time_parses_hourly_filename() {
-        let path = PathBuf::from("/tmp/engram-backup-20260101-123456.db");
+        let path = PathBuf::from("/tmp/kleos-backup-20260101-123456.db");
         let ts = parse_backup_time(&path).expect("parse");
         assert_eq!(ts, Utc.with_ymd_and_hms(2026, 1, 1, 12, 34, 56).unwrap());
     }
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn parse_backup_time_rejects_unrelated_filenames() {
         assert!(parse_backup_time(Path::new("/tmp/random.txt")).is_none());
-        assert!(parse_backup_time(Path::new("/tmp/engram-backup-bad.db")).is_none());
+        assert!(parse_backup_time(Path::new("/tmp/kleos-backup-bad.db")).is_none());
     }
 
     #[test]
@@ -167,9 +167,9 @@ mod tests {
         let daily = dir.join("daily");
         fs::create_dir_all(&daily).unwrap();
 
-        write_snapshot_file(&dir.join("engram-backup-20260101-000000.db"), "h1");
-        write_snapshot_file(&dir.join("engram-backup-20260102-000000.db"), "h2");
-        write_snapshot_file(&daily.join("engram-backup-20260101-120000.db"), "d1");
+        write_snapshot_file(&dir.join("kleos-backup-20260101-000000.db"), "h1");
+        write_snapshot_file(&dir.join("kleos-backup-20260102-000000.db"), "h2");
+        write_snapshot_file(&daily.join("kleos-backup-20260101-120000.db"), "d1");
         write_snapshot_file(&dir.join("unrelated.db"), "noise");
 
         let snaps = list_snapshots(&dir);
@@ -189,9 +189,9 @@ mod tests {
     #[test]
     fn find_snapshot_for_returns_latest_before_target() {
         let dir = unique_dir("engram-pitr-find");
-        write_snapshot_file(&dir.join("engram-backup-20260101-000000.db"), "a");
-        write_snapshot_file(&dir.join("engram-backup-20260101-060000.db"), "b");
-        write_snapshot_file(&dir.join("engram-backup-20260101-120000.db"), "c");
+        write_snapshot_file(&dir.join("kleos-backup-20260101-000000.db"), "a");
+        write_snapshot_file(&dir.join("kleos-backup-20260101-060000.db"), "b");
+        write_snapshot_file(&dir.join("kleos-backup-20260101-120000.db"), "c");
 
         let target = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
         let snap = find_snapshot_for(&dir, target).expect("snapshot");
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn find_snapshot_for_inclusive_equal_target() {
         let dir = unique_dir("engram-pitr-equal");
-        write_snapshot_file(&dir.join("engram-backup-20260101-060000.db"), "b");
+        write_snapshot_file(&dir.join("kleos-backup-20260101-060000.db"), "b");
         let target = Utc.with_ymd_and_hms(2026, 1, 1, 6, 0, 0).unwrap();
         let snap = find_snapshot_for(&dir, target).expect("snapshot");
         assert_eq!(snap.created_at, target);
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn find_snapshot_for_returns_none_when_target_predates_all() {
         let dir = unique_dir("engram-pitr-before");
-        write_snapshot_file(&dir.join("engram-backup-20260101-060000.db"), "b");
+        write_snapshot_file(&dir.join("kleos-backup-20260101-060000.db"), "b");
         let target = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
         assert!(find_snapshot_for(&dir, target).is_none());
         let _ = fs::remove_dir_all(&dir);
@@ -224,7 +224,7 @@ mod tests {
     #[tokio::test]
     async fn prepare_restore_copies_and_verifies() {
         let dir = unique_dir("engram-pitr-restore");
-        let src_name = "engram-backup-20260101-060000.db";
+        let src_name = "kleos-backup-20260101-060000.db";
         let src = dir.join(src_name);
         make_valid_sqlite(&src);
 
