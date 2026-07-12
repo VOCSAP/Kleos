@@ -87,11 +87,12 @@ pub fn find_snapshot_for(backup_dir: &Path, target: DateTime<Utc>) -> Option<Sna
 /// Copy the chosen snapshot to `dest_path` (out-of-place) and probe it with
 /// the existing integrity and restore helpers. The live database is never
 /// touched: the operator is responsible for swapping the prepared file in.
-#[tracing::instrument(skip(backup_dir, dest_path))]
+#[tracing::instrument(skip(backup_dir, dest_path, encryption_key))]
 pub async fn prepare_restore(
     backup_dir: &Path,
     target: DateTime<Utc>,
     dest_path: &Path,
+    encryption_key: Option<[u8; 32]>,
 ) -> Result<PreparedRestore> {
     let snapshot = find_snapshot_for(backup_dir, target).ok_or_else(|| {
         EngError::NotFound(format!(
@@ -108,9 +109,9 @@ pub async fn prepare_restore(
         .map_err(|e| EngError::Internal(format!("restore copy join: {e}")))?
         .map_err(|e| EngError::Internal(format!("restore copy failed: {e}")))?;
 
-    let integrity = integrity_check(&dst).await?;
+    let integrity = integrity_check(&dst, encryption_key).await?;
     let integrity_ok = integrity.is_empty();
-    let report = restore_test(&dst).await?;
+    let report = restore_test(&dst, encryption_key).await?;
 
     Ok(PreparedRestore {
         snapshot,
@@ -230,7 +231,7 @@ mod tests {
 
         let dest = dir.join("restored.db");
         let target = Utc.with_ymd_and_hms(2026, 1, 1, 7, 0, 0).unwrap();
-        let prepared = prepare_restore(&dir, target, &dest)
+        let prepared = prepare_restore(&dir, target, &dest, None)
             .await
             .expect("prepare_restore");
         assert!(prepared.integrity_ok, "integrity should pass");
@@ -245,7 +246,9 @@ mod tests {
         let dir = unique_dir("engram-pitr-empty");
         let dest = dir.join("restored.db");
         let target = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        let err = prepare_restore(&dir, target, &dest).await.unwrap_err();
+        let err = prepare_restore(&dir, target, &dest, None)
+            .await
+            .unwrap_err();
         assert!(matches!(err, EngError::NotFound(_)));
         let _ = fs::remove_dir_all(&dir);
     }

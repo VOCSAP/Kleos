@@ -55,6 +55,7 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),

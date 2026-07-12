@@ -980,7 +980,7 @@ async fn backup_handler(
     // operators could save a corrupted file and only discover it at restore
     // time. integrity_check runs SQLite's `PRAGMA integrity_check` against
     // the snapshot and returns early on any reported issue.
-    match kleos_lib::db::backup::integrity_check(&tmp_path).await {
+    match kleos_lib::db::backup::integrity_check(&tmp_path, state.encryption_key).await {
         Ok(messages) if !messages.is_empty() => {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(AppError(kleos_lib::EngError::Internal(format!(
@@ -1145,7 +1145,8 @@ async fn admin_pitr_prepare(
     // Previously any absolute path was accepted, letting an admin token write
     // DB snapshots anywhere the process could reach.
     let dest = sanitize_pitr_dest(&state.config.data_dir, &body.dest_path)?;
-    let prepared = kleos_lib::db::pitr::prepare_restore(&dir, target, &dest).await?;
+    let prepared =
+        kleos_lib::db::pitr::prepare_restore(&dir, target, &dest, state.encryption_key).await?;
     Ok(Json(json!(prepared)))
 }
 
