@@ -19,6 +19,7 @@ use kleos_lib::auth::Scope;
 mod types;
 use types::{RecallDueQuery, ReviewBody, StateQuery};
 
+/// Mount the FSRS review, state, init-backfill, and recall-due routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/fsrs/review", post(review))
@@ -27,12 +28,15 @@ pub fn router() -> Router<AppState> {
         .route("/fsrs/recall-due", get(recall_due))
 }
 
-// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
+// SECURITY: ResolvedDb scopes to the caller's shard, but on the shared-monolith path all
+// tenants share one DB, so every id-addressed query below is additionally scoped by
+// user_id. Do not add state.db calls here without re-binding auth.
 async fn review(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<ReviewBody>,
 ) -> Result<Json<Value>, AppError> {
+    let user_id = auth.effective_user_id();
     let id = body.id.or(body.memory_id).ok_or_else(|| {
         AppError(kleos_lib::EngError::InvalidInput(
             "id (or memory_id) required, grade 1-4".into(),
@@ -61,8 +65,8 @@ async fn review(
     let row_data = db
         .read(move |conn| {
             Ok(conn.query_row(
-                "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
-                params![id],
+                "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
                 |row| {
                     Ok((
                         row.get::<_, Option<f64>>(0)?,
@@ -147,7 +151,7 @@ async fn review(
     db
         .write(move |conn| {
             conn.execute(
-                "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8, access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?9",
+                "UPDATE memories SET fsrs_stability = ?1, fsrs_difficulty = ?2, fsrs_storage_strength = ?3, fsrs_retrieval_strength = ?4, fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, fsrs_last_review_at = ?8, access_count = access_count + 1, last_accessed_at = datetime('now') WHERE id = ?9 AND user_id = ?10",
                 params![
                     stability_new,
                     difficulty_new,
@@ -157,7 +161,8 @@ async fn review(
                     reps_new,
                     lapses_new,
                     last_review_at_new,
-                    id
+                    id,
+                    user_id
                 ],
             )
             ?;
@@ -168,12 +173,15 @@ async fn review(
     Ok(Json(json!({ "id": id, "fsrs": new_state })))
 }
 
-// SECURITY: relies on ResolvedDb shard isolation (Phase 5+) to scope to the caller's tenant. Do not add state.db calls here without re-binding auth.
+// SECURITY: ResolvedDb scopes to the caller's shard, but on the shared-monolith path all
+// tenants share one DB, so the id-addressed query below is additionally scoped by user_id.
+// Do not add state.db calls here without re-binding auth.
 async fn get_state(
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<StateQuery>,
 ) -> Result<Json<Value>, AppError> {
+    let user_id = auth.effective_user_id();
     let id = params
         .id
         .ok_or_else(|| AppError(kleos_lib::EngError::InvalidInput("id required".into())))?;
@@ -181,8 +189,8 @@ async fn get_state(
     let row_data = db
         .read(move |conn| {
             Ok(conn.query_row(
-                "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
-                params![id],
+                "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, fsrs_last_review_at, created_at FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![id, user_id],
                 |row| {
                     Ok((
                         row.get::<_, Option<f64>>(0)?,
@@ -235,6 +243,8 @@ async fn get_state(
     })))
 }
 
+/// Admin-only: initialize FSRS scheduling state for the caller's memories that
+/// still lack it.
 async fn init_backfill(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -249,12 +259,15 @@ async fn init_backfill(
     }
 
     // Find memories without FSRS state. ResolvedDb scopes us to the caller's
-    // tenant shard (Phase 5+), so the SELECT/UPDATE only touches that user's
-    // rows.
+    // tenant shard (Phase 5+); the user_id predicate additionally scopes the
+    // scan on the shared-monolith path so one admin cannot initialize every
+    // tenant's schedule. The UPDATE below only touches the ids collected here.
+    let user_id = auth.effective_user_id();
     let ids: Vec<i64> = db
         .read(move |conn| {
-            let mut stmt = conn.prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL")?;
-            let mut rows = stmt.query(params![])?;
+            let mut stmt = conn
+                .prepare("SELECT id FROM memories WHERE fsrs_stability IS NULL AND user_id = ?1")?;
+            let mut rows = stmt.query(params![user_id])?;
             let mut results = Vec::new();
             while let Some(row) = rows.next()? {
                 let id: i64 = row.get(0)?;
@@ -294,6 +307,8 @@ async fn init_backfill(
     Ok(Json(json!({ "initialized": count })))
 }
 
+/// Return the caller's memories most due for review, ranked by retrievability
+/// for the requested topic.
 async fn recall_due(
     State(state): State<AppState>,
     Auth(auth): Auth,
@@ -351,16 +366,17 @@ async fn recall_due(
 
 /// Fire-and-forget FSRS update called after a successful recall.
 /// Grades the memory as `Good` (3) — "retrieved, no effort".
+/// user_id scopes the read/write to the caller's tenant on the shared-monolith path.
 /// Errors are logged as warnings and never propagate to the caller.
-pub async fn record_recall_good(db: &kleos_lib::db::Database, memory_id: i64) {
+pub async fn record_recall_good(db: &kleos_lib::db::Database, memory_id: i64, user_id: i64) {
     let row = db
         .read(move |conn| {
             Ok(conn
                 .query_row(
                     "SELECT fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
                      fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, \
-                     fsrs_last_review_at, created_at FROM memories WHERE id = ?1",
-                    params![memory_id],
+                     fsrs_last_review_at, created_at FROM memories WHERE id = ?1 AND user_id = ?2",
+                    params![memory_id, user_id],
                     |row| {
                         Ok((
                             row.get::<_, Option<f64>>(0)?,
@@ -434,9 +450,10 @@ pub async fn record_recall_good(db: &kleos_lib::db::Database, memory_id: i64) {
                  fsrs_learning_state = ?5, fsrs_reps = ?6, fsrs_lapses = ?7, \
                  fsrs_last_review_at = ?8, \
                  access_count = access_count + 1, last_accessed_at = datetime('now') \
-                 WHERE id = ?9",
+                 WHERE id = ?9 AND user_id = ?10",
                 params![
-                    s_new, d_new, ss_new, rs_new, ls_new, reps_new, lapses_new, last_new, memory_id
+                    s_new, d_new, ss_new, rs_new, ls_new, reps_new, lapses_new, last_new,
+                    memory_id, user_id
                 ],
             )?;
             Ok(())
@@ -447,6 +464,8 @@ pub async fn record_recall_good(db: &kleos_lib::db::Database, memory_id: i64) {
     }
 }
 
+/// Days elapsed between `date_str` and now, tolerating either a space or `T`
+/// date/time separator and a missing `Z` suffix.
 fn calculate_elapsed_days(date_str: &str) -> f32 {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let normalized = if date_str.contains('Z') {

@@ -821,7 +821,7 @@ async fn recall(
         let db_clone = db.clone();
         tokio::spawn(async move {
             for id in recalled_ids {
-                record_recall_good(&db_clone, id).await;
+                record_recall_good(&db_clone, id, user_id).await;
             }
         });
     }
