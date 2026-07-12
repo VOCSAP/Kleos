@@ -884,6 +884,15 @@ pub async fn auth_middleware(
         let is_write = requires_write_scope(&method);
         if let Some(session) = crate::routes::gui::get_gui_session(&state, request.headers()).await
         {
+            // M5 parity with the session lane (Path 1): a GUI cookie is a
+            // delegated credential, so a user who opted into mandatory signing
+            // (KLEOS_REQUIRE_SIGNATURE_FOR_USER) must not bypass it via the
+            // cookie. Reject rather than fall through.
+            if signature_required_for_user(session.user_id) {
+                tracing::warn!(user_id = session.user_id, path = %path,
+                    "gui-cookie auth rejected: signature required for this user");
+                return unauthorized("signature required for this user");
+            }
             let required_scope = if is_write { Scope::Write } else { Scope::Read };
             let csrf_ok =
                 !is_write || crate::routes::gui::verify_gui_csrf(&state, request.headers()).await;
