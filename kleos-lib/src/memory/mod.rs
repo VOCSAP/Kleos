@@ -1457,7 +1457,24 @@ pub async fn update(
     let new_category = req.category.as_deref().unwrap_or(&old.category).to_string();
     let new_importance = clamp_importance(req.importance.unwrap_or(old.importance));
     let new_is_static = req.is_static.unwrap_or(old.is_static) as i32;
-    let new_status = req.status.as_deref().unwrap_or(&old.status).to_string();
+    // SEC-gate: the review gate assumes the storing agent cannot approve its
+    // own pending memory. Honoring a client-supplied status here was an
+    // unguarded self-approval: `POST /memory/{id}/update {"status":"approved"}`
+    // flipped a pending row to approved with only ownership auth, bypassing the
+    // dedicated review surface. Status transitions are permitted solely through
+    // the authorized inbox endpoints (inbox::approve_memory / reject_memory).
+    // Reject any attempt to change status through this generic edit path; a
+    // no-op status equal to the stored value is allowed so idempotent clients
+    // that echo the current status do not break.
+    let new_status = match req.status.as_deref() {
+        Some(requested) if requested != old.status => {
+            return Err(EngError::InvalidInput(
+                "status cannot be changed through update; use the approve/reject endpoints"
+                    .to_string(),
+            ));
+        }
+        _ => old.status.clone(),
+    };
     let new_tags_json = if req.tags.is_some() {
         normalize_tags(&req.tags)
     } else {
@@ -1988,6 +2005,8 @@ pub async fn search_by_tags(
              WHERE m.user_id = ?{}
                AND m.is_forgotten = 0
                AND m.is_latest = 1
+               AND m.is_archived = 0
+               AND m.status != 'pending'
                AND m.tags IS NOT NULL
                AND (SELECT COUNT(DISTINCT je.value)
                     FROM json_each(m.tags) je
@@ -2007,6 +2026,8 @@ pub async fn search_by_tags(
              WHERE m.user_id = ?{}
                AND m.is_forgotten = 0
                AND m.is_latest = 1
+               AND m.is_archived = 0
+               AND m.status != 'pending'
                AND m.tags IS NOT NULL
                AND EXISTS (
                    SELECT 1 FROM json_each(m.tags) je

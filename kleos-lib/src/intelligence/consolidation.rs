@@ -46,9 +46,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
+            // status != 'pending' is the review-gate predicate: a pending memory
+            // must not be folded into a consolidated summary, which would
+            // launder unreviewed content into an approved parent.
             let sql = format!(
                 "SELECT id, content, category, importance \
-                 FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0",
+                 FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0 \
+                 AND status != 'pending'",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
