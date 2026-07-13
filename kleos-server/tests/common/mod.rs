@@ -58,6 +58,7 @@ pub async fn test_app() -> (Router, AppState) {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),
@@ -121,6 +122,7 @@ pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),

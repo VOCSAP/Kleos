@@ -82,6 +82,7 @@ impl TestApp {
         let credd = Arc::new(CreddClient::from_config(&config));
         let state = AppState {
             db: Arc::clone(&db),
+            encryption_key: None,
             config: Arc::new(config),
             credd,
             embedder: Arc::new(RwLock::new(None)),
@@ -386,6 +387,7 @@ async fn bootstrap_returns_api_key() {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db: Arc::new(db),
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),

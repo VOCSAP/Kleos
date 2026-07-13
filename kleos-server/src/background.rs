@@ -546,6 +546,7 @@ pub fn start_auto_backup_task(
     interval_secs: u64,
     retention: usize,
     retention_daily: usize,
+    encryption_key: Option<[u8; 32]>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
@@ -579,7 +580,7 @@ pub fn start_auto_backup_task(
                     let dest = dir.join(backup_filename(now));
                     match kleos_lib::db::backup::vacuum_into(&db, &dest).await {
                         Ok(()) => {
-                            match verify_backup(&dest).await {
+                            match verify_backup(&dest, encryption_key).await {
                                 Ok(report) => {
                                     let pruned_hourly = prune_backups(&dir, retention);
                                     let (promoted, pruned_daily) =
@@ -627,14 +628,17 @@ pub fn start_auto_backup_task(
 
 /// Run integrity_check + restore_test on a freshly-written backup.
 /// Returns the restore report on success, or a descriptive error string.
-async fn verify_backup(dest: &Path) -> Result<kleos_lib::db::backup::RestoreReport, String> {
-    let errors = kleos_lib::db::backup::integrity_check(dest)
+async fn verify_backup(
+    dest: &Path,
+    encryption_key: Option<[u8; 32]>,
+) -> Result<kleos_lib::db::backup::RestoreReport, String> {
+    let errors = kleos_lib::db::backup::integrity_check(dest, encryption_key)
         .await
         .map_err(|e| format!("integrity_check errored: {e}"))?;
     if !errors.is_empty() {
         return Err(format!("integrity_check reported issues: {errors:?}"));
     }
-    kleos_lib::db::backup::restore_test(dest)
+    kleos_lib::db::backup::restore_test(dest, encryption_key)
         .await
         .map_err(|e| format!("restore_test failed: {e}"))
 }
