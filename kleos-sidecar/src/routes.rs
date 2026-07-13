@@ -1006,13 +1006,16 @@ async fn compress(
                 "compress: summarized"
             );
 
+            // Truncate to at most 200 bytes on a UTF-8 char boundary. Slicing at
+            // a fixed byte offset panics when byte 200 lands mid-multibyte-char,
+            // which any LLM summary containing non-ASCII can trigger.
+            let mut end = summary.len().min(200);
+            while end > 0 && !summary.is_char_boundary(end) {
+                end -= 1;
+            }
             let obs = Observation {
                 tool_name: body.tool_name.clone(),
-                content: format!(
-                    "[compressed {}] {}",
-                    file_path,
-                    &summary[..summary.len().min(200)]
-                ),
+                content: format!("[compressed {}] {}", file_path, &summary[..end]),
                 role: "tool".to_string(),
                 importance: 2,
                 category: "discovery".to_string(),
