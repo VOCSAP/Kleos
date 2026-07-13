@@ -673,6 +673,18 @@ static REVIEW_GATE_SOURCES: std::sync::LazyLock<Vec<String>> = std::sync::LazyLo
     parse_gate_sources(std::env::var("KLEOS_REVIEW_GATE_SOURCES").ok().as_deref())
 });
 
+/// Optional importance threshold for the review gate. When set (via
+/// `KLEOS_REVIEW_GATE_IMPORTANCE_THRESHOLD`) and the master switch is on, memories
+/// whose importance is strictly greater than this value are routed to `pending`.
+/// Unset (the default) means importance never triggers the gate, preserving the
+/// source-only behavior.
+static REVIEW_GATE_IMPORTANCE_THRESHOLD: std::sync::LazyLock<Option<i32>> =
+    std::sync::LazyLock::new(|| {
+        std::env::var("KLEOS_REVIEW_GATE_IMPORTANCE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.trim().parse::<i32>().ok())
+    });
+
 /// Parse a comma-separated source allowlist into trimmed, lower-cased entries,
 /// dropping blanks. Pure helper so the parsing is unit-testable without env.
 fn parse_gate_sources(raw: Option<&str>) -> Vec<String> {
@@ -683,12 +695,24 @@ fn parse_gate_sources(raw: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// Decide the initial `status` for a newly stored memory. Returns `"pending"`
-/// only when the gate is enabled and `source` is in the allowlist; otherwise
-/// `"approved"`, preserving historical behavior. Pure so it can be tested
-/// against explicit `enabled`/`sources` inputs without touching process env.
-fn resolve_initial_status(source: &str, enabled: bool, sources: &[String]) -> &'static str {
-    if enabled && sources.iter().any(|s| s == &source.to_ascii_lowercase()) {
+/// Decide the initial `status` for a newly stored memory. Returns `"pending"` when
+/// the gate is enabled AND either the `source` is in the allowlist or the `importance`
+/// is strictly greater than `importance_threshold`; otherwise `"approved"`, preserving
+/// historical behavior. Pure so it can be tested against explicit inputs without
+/// touching process env.
+fn resolve_initial_status(
+    source: &str,
+    importance: i32,
+    enabled: bool,
+    sources: &[String],
+    importance_threshold: Option<i32>,
+) -> &'static str {
+    if !enabled {
+        return "approved";
+    }
+    let source_gated = sources.iter().any(|s| s == &source.to_ascii_lowercase());
+    let importance_gated = importance_threshold.is_some_and(|t| importance > t);
+    if source_gated || importance_gated {
         "pending"
     } else {
         "approved"
@@ -785,9 +809,16 @@ fn store_transactional_rusqlite(
             // Best-effort content-language detection at ingest; never fails a write.
             crate::lang::detect_lang(content),
             created_at_override,
-            // ?17: initial status. 'approved' unless the review gate is enabled
-            // and this memory's source is in the configured allowlist.
-            resolve_initial_status(&req.source, *REVIEW_GATE_ENABLED, &REVIEW_GATE_SOURCES)
+            // ?17: initial status. 'approved' unless the review gate is enabled and
+            // this memory's source is allowlisted or its importance exceeds the
+            // configured threshold.
+            resolve_initial_status(
+                &req.source,
+                importance,
+                *REVIEW_GATE_ENABLED,
+                &REVIEW_GATE_SOURCES,
+                *REVIEW_GATE_IMPORTANCE_THRESHOLD,
+            )
         ],
     )?;
 
@@ -2306,25 +2337,74 @@ mod tests {
         );
     }
 
-    /// The review gate only rewrites status to 'pending' when it is enabled AND
-    /// the source is in the allowlist; everything else stays 'approved'.
+    /// The review gate rewrites status to 'pending' only when enabled AND either the
+    /// source is in the allowlist or the importance exceeds the threshold.
     #[test]
     fn resolve_initial_status_only_gates_enabled_listed_sources() {
         let sources = vec!["activity".to_string(), "extraction".to_string()];
-        // Disabled -> always approved, regardless of source.
+        // Disabled -> always approved, regardless of source or importance.
         assert_eq!(
-            resolve_initial_status("activity", false, &sources),
+            resolve_initial_status("activity", 9, false, &sources, Some(7)),
             "approved"
         );
-        // Enabled + listed (case-insensitive) -> pending.
+        // Enabled + listed (case-insensitive), no importance threshold -> pending.
         assert_eq!(
-            resolve_initial_status("Activity", true, &sources),
+            resolve_initial_status("Activity", 5, true, &sources, None),
             "pending"
         );
-        // Enabled + unlisted (e.g. an explicit user store) -> approved.
-        assert_eq!(resolve_initial_status("user", true, &sources), "approved");
-        // Enabled + empty allowlist -> approved (safe no-op).
-        assert_eq!(resolve_initial_status("activity", true, &[]), "approved");
+        // Enabled + unlisted (e.g. an explicit user store), no threshold -> approved.
+        assert_eq!(
+            resolve_initial_status("user", 5, true, &sources, None),
+            "approved"
+        );
+        // Enabled + empty allowlist, no threshold -> approved (safe no-op).
+        assert_eq!(
+            resolve_initial_status("activity", 5, true, &[], None),
+            "approved"
+        );
+    }
+
+    /// The importance trigger routes high-importance memories to 'pending' when a
+    /// threshold is configured, independent of the source allowlist. It is strictly
+    /// greater-than, gated by the master switch, and a no-op when unset.
+    #[test]
+    fn resolve_initial_status_gates_high_importance() {
+        let no_sources: Vec<String> = vec![];
+        // Enabled + importance above threshold -> pending, even with empty source list.
+        assert_eq!(
+            resolve_initial_status("user", 9, true, &no_sources, Some(7)),
+            "pending"
+        );
+        assert_eq!(
+            resolve_initial_status("user", 8, true, &no_sources, Some(7)),
+            "pending"
+        );
+        // Boundary: importance == threshold is NOT gated (strictly greater than).
+        assert_eq!(
+            resolve_initial_status("user", 7, true, &no_sources, Some(7)),
+            "approved"
+        );
+        // Below threshold -> approved.
+        assert_eq!(
+            resolve_initial_status("user", 5, true, &no_sources, Some(7)),
+            "approved"
+        );
+        // Backward compat: no threshold means importance never gates.
+        assert_eq!(
+            resolve_initial_status("user", 10, true, &no_sources, None),
+            "approved"
+        );
+        // Disabled overrides everything.
+        assert_eq!(
+            resolve_initial_status("user", 10, false, &no_sources, Some(7)),
+            "approved"
+        );
+        // Either trigger suffices: a listed source with low importance still gates.
+        let sources = vec!["activity".to_string()];
+        assert_eq!(
+            resolve_initial_status("activity", 3, true, &sources, Some(7)),
+            "pending"
+        );
     }
 
     /// Guard: MEMORY_COLUMNS and row_to_memory must stay aligned. If this test

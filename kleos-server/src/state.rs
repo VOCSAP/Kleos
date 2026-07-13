@@ -107,6 +107,10 @@ pub struct AppState {
     /// Optional AES-256-GCM encryption for artifact data blobs.
     /// Initialized from KLEOS_ARTIFACT_KEY env var (empty = disabled).
     pub artifact_encryption: Arc<ArtifactEncryption>,
+    /// The database SQLCipher key (None when encryption is disabled). Needed by
+    /// the backup/PITR routes to open encrypted snapshot files for verification
+    /// and restore; the main DB pool already holds its own copy.
+    pub encryption_key: Option<[u8; 32]>,
 }
 
 /// Accessor methods that clone `Arc`'d providers without holding locks across awaits.

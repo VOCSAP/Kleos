@@ -1003,7 +1003,7 @@ async fn backup_handler(
     // operators could save a corrupted file and only discover it at restore
     // time. integrity_check runs SQLite's `PRAGMA integrity_check` against
     // the snapshot and returns early on any reported issue.
-    match kleos_lib::db::backup::integrity_check(&tmp_path).await {
+    match kleos_lib::db::backup::integrity_check(&tmp_path, state.encryption_key).await {
         Ok(messages) if !messages.is_empty() => {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(AppError(kleos_lib::EngError::Internal(format!(
@@ -1168,7 +1168,8 @@ async fn admin_pitr_prepare(
     // Previously any absolute path was accepted, letting an admin token write
     // DB snapshots anywhere the process could reach.
     let dest = sanitize_pitr_dest(&state.config.data_dir, &body.dest_path)?;
-    let prepared = kleos_lib::db::pitr::prepare_restore(&dir, target, &dest).await?;
+    let prepared =
+        kleos_lib::db::pitr::prepare_restore(&dir, target, &dest, state.encryption_key).await?;
     Ok(Json(json!(prepared)))
 }
 
@@ -1831,6 +1832,14 @@ async fn admin_monolith_status(
     })))
 }
 
+/// Columns copied from the monolith into a tenant shard during drain.
+///
+/// `user_id` MUST be included: without it the INSERT leaves shard rows at the
+/// schema default (user_id = 0), and since shard reads still filter
+/// `WHERE user_id = ?` the drained memories become invisible to their owner.
+/// Ordering is load-bearing: the row-copy reads `content` at index 0 and
+/// `created_at` at `col_count - 2`, so `content` must stay first and
+/// `created_at`/`updated_at` must stay the last two columns.
 const MONOLITH_DRAIN_COLUMNS: &str = "\
     content, category, source, session_id, importance, \
     embedding, embedding_vec_1024, version, is_latest, \
@@ -1839,7 +1848,7 @@ const MONOLITH_DRAIN_COLUMNS: &str = "\
     forget_after, forget_reason, model, recall_hits, recall_misses, \
     adaptive_score, pagerank_score, last_accessed_at, access_count, \
     tags, episode_id, decay_score, confidence, sync_id, status, \
-    space_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
+    space_id, user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
     fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, \
     fsrs_last_review_at, is_superseded, is_consolidated, \
     valence, arousal, dominant_emotion, created_at, updated_at";
@@ -1897,6 +1906,7 @@ async fn admin_monolith_drain(
     let mut total_drained = 0usize;
     let mut total_skipped = 0usize;
     let mut total_errors = 0usize;
+    let mut total_failed = 0usize;
 
     for uid in &user_ids {
         let uid_val = *uid;
@@ -1954,6 +1964,7 @@ async fn admin_monolith_drain(
         let row_count = rows.len();
         let mut inserted = 0usize;
         let mut skipped = 0usize;
+        let mut failed = 0usize;
 
         let col_insert_owned = col_insert.clone();
         let insert_result = tenant_db
@@ -1980,21 +1991,25 @@ async fn admin_monolith_drain(
                         .collect();
                     match tx.execute(&col_insert_owned, params.as_slice()) {
                         Ok(_) => inserted += 1,
+                        // Count insert failures separately from dedup skips: a
+                        // failed row did NOT reach the shard and must not be
+                        // forgotten in the monolith below.
                         Err(e) => {
                             tracing::warn!(error = %e, "drain: insert failed");
-                            skipped += 1;
+                            failed += 1;
                         }
                     }
                 }
                 tx.commit()?;
-                Ok((inserted, skipped))
+                Ok((inserted, skipped, failed))
             })
             .await;
 
         match insert_result {
-            Ok((ins, skip)) => {
+            Ok((ins, skip, fail)) => {
                 inserted = ins;
                 skipped = skip;
+                failed = fail;
             }
             Err(e) => {
                 tracing::error!(user_id = uid_val, error = %e, "drain: batch insert failed");
@@ -2007,7 +2022,11 @@ async fn admin_monolith_drain(
             }
         }
 
-        if inserted > 0 {
+        // Reclaim the source rows only when every non-duplicate row is safely in
+        // the shard. If any insert failed, leave the monolith rows intact so a
+        // re-run can migrate them; blanket-forgetting on partial success would
+        // permanently lose the rows that never landed.
+        if inserted > 0 && failed == 0 {
             let mark_result = state
                 .db
                 .write(move |conn| {
@@ -2024,6 +2043,12 @@ async fn admin_monolith_drain(
             if let Err(e) = mark_result {
                 tracing::error!(user_id = uid_val, error = %e, "drain: failed to mark monolith rows forgotten");
             }
+        } else if failed > 0 {
+            tracing::warn!(
+                user_id = uid_val,
+                failed,
+                "drain: leaving monolith rows intact after partial insert failure"
+            );
         }
 
         per_user.push(json!({
@@ -2031,16 +2056,23 @@ async fn admin_monolith_drain(
             "monolith_rows": row_count,
             "inserted": inserted,
             "skipped_duplicate": skipped,
+            "failed": failed,
+            // When rows failed to insert their monolith copies are retained for retry.
+            "source_retained": failed > 0,
         }));
 
         total_drained += inserted;
         total_skipped += skipped;
+        total_failed += failed;
     }
 
     Ok(Json(json!({
-        "status": "drained",
+        // "drained" only when nothing failed; "partial" flags that some source
+        // rows were retained and a re-run is needed.
+        "status": if total_failed > 0 { "partial" } else { "drained" },
         "total_inserted": total_drained,
         "total_skipped_duplicate": total_skipped,
+        "total_failed_rows": total_failed,
         "total_errors": total_errors,
         "per_user": per_user,
     })))

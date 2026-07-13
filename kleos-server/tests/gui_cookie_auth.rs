@@ -48,6 +48,7 @@ async fn gui_app() -> axum::Router {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),

@@ -94,8 +94,16 @@ async fn main() {
         let embedder = Arc::clone(&embedder);
         let config = config.clone();
         tokio::spawn(async move {
+            // Bound the embedding HTTP client: a hung endpoint must not block
+            // embed() (and therefore every vector operation) forever. Fall back
+            // to a default client only if the builder somehow fails.
+            let embed_http_client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let provider: Option<Arc<dyn EmbeddingProvider>> = if let Some(p) =
-                OpenAiProvider::from_env(reqwest::Client::new(), config.embedding_dim)
+                OpenAiProvider::from_env(embed_http_client, config.embedding_dim)
             {
                 tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
                 match p.embed("warmup").await {
@@ -334,6 +342,7 @@ async fn main() {
 
     let state = AppState {
         db: db_arc,
+        encryption_key,
         credd: Arc::new(CreddClient::from_config(&config)),
         config: Arc::new(config),
         embedder,
@@ -493,6 +502,7 @@ async fn main() {
         let interval = state.config.backup_interval_secs;
         let retention = state.config.backup_retention;
         let retention_daily = state.config.backup_retention_daily;
+        let backup_key = state.encryption_key;
         supervised.push(Supervised::spawn("auto-backup", move || {
             start_auto_backup_task(
                 Arc::clone(&db),
@@ -501,6 +511,7 @@ async fn main() {
                 interval,
                 retention,
                 retention_daily,
+                backup_key,
             )
         }));
         tracing::info!(

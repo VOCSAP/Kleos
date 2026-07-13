@@ -343,18 +343,57 @@ pub async fn delete_monolith_rows(
         ));
     }
     db.write(move |conn| {
+        // Dynamically sweep every table that carries a user_id column. A hardcoded
+        // list drifts: only a handful of monolith tables cascade from the users
+        // row via ON DELETE CASCADE, so a fixed list left dozens of tables
+        // (memories, episodes, skills, artifacts, brain_*, ...) orphaned on
+        // deprovision, and a recycled user_id would then inherit them.
+        // defer_foreign_keys lets us delete in any order within one transaction;
+        // FK consistency is checked once at commit, by which point every one of
+        // this user's rows (children and parents) is gone.
+        let tx = conn.transaction()?;
+        tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
+
+        let tables: Vec<String> = {
+            let mut stmt = tx.prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )?;
+            let names = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            names
+        };
+
         let mut counts = HashMap::new();
-        for (table, col) in &[
-            ("audit_log", "user_id"),
-            ("api_keys", "user_id"),
-            ("spaces", "user_id"),
-            ("identity_keys", "user_id"),
-            ("users", "id"),
-        ] {
-            let sql = format!("DELETE FROM {table} WHERE {col} = ?1");
-            let n = conn.execute(&sql, rusqlite::params![user_id]).unwrap_or(0);
-            counts.insert(table.to_string(), n);
+        for table in &tables {
+            let has_user_id = {
+                let mut info = tx.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+                let cols = info
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                cols.iter().any(|c| c == "user_id")
+            };
+            if has_user_id {
+                let n = tx.execute(
+                    &format!("DELETE FROM \"{table}\" WHERE user_id = ?1"),
+                    rusqlite::params![user_id],
+                )?;
+                if n > 0 {
+                    counts.insert(table.clone(), n);
+                }
+            }
         }
+
+        // Remove the users row itself (keyed by id, not user_id); any ON DELETE
+        // CASCADE children not already swept above resolve at commit.
+        let n = tx.execute(
+            "DELETE FROM users WHERE id = ?1",
+            rusqlite::params![user_id],
+        )?;
+        counts.insert("users".to_string(), n);
+
+        tx.commit()?;
         Ok(counts)
     })
     .await

@@ -687,10 +687,12 @@ impl HandoffsDb {
                 }
             }
 
-            // VACUUM is global; safe because all rows are still scoped per
-            // user; we only ever delete this user's rows above.
-            conn.execute("VACUUM", [])?;
-
+            // Intentionally NOT running VACUUM here. VACUUM takes a whole-DB
+            // write lock and rewrites the entire file, so triggering it from a
+            // per-user GC call is a DoS lever (any user's GC stalls every other
+            // tenant) and this module has a prior single-writer deadlock history.
+            // The deleted pages are returned to SQLite's freelist and reused;
+            // reclaiming file bytes is a separate admin/maintenance concern.
             let after: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM handoffs WHERE user_id = ?1",
                 rusqlite::params![user_id],
