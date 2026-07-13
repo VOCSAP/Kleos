@@ -274,9 +274,13 @@ pub async fn get_community_members(
     limit: usize,
 ) -> Result<Vec<CommunityMember>> {
     db.read(move |conn| {
+        // Review-gate + liveness: is_latest = 1 drops superseded versions and
+        // status != 'pending' withholds unreviewed content from the community
+        // members endpoint.
         let mut stmt = conn.prepare(
             "SELECT id, content, category, importance, created_at FROM memories \
                  WHERE community_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+                   AND is_latest = 1 AND status != 'pending' \
                    AND user_id = ?3 \
                  ORDER BY importance DESC, created_at DESC LIMIT ?2",
         )?;

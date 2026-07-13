@@ -325,7 +325,8 @@ pub async fn search_entity_memories(
                  FROM memories m \
                  JOIN memory_entities me ON me.memory_id = m.id \
                  WHERE me.entity_id = ?1 AND m.is_forgotten = 0 \
-                   AND m.is_archived = 0 AND m.is_latest = 1 AND m.user_id = ?4 \
+                   AND m.is_archived = 0 AND m.is_latest = 1 \
+                   AND m.status != 'pending' AND m.user_id = ?4 \
                    AND EXISTS (SELECT 1 FROM entities WHERE id = ?1 AND user_id = ?4) \
                    AND m.id IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?2) \
                  ORDER BY m.importance DESC, m.created_at DESC \

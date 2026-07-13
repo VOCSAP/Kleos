@@ -44,10 +44,15 @@ pub async fn generate_prompt(
 
             // Static facts
             {
+                // Review-gate + liveness: is_archived = 0 and is_latest = 1 drop
+                // rejected and superseded rows; status != 'pending' withholds
+                // memories still awaiting review from the generated prompt.
                 let mut stmt = conn.prepare(
                     "SELECT id, content, category, importance \
                          FROM memories \
                          WHERE is_static = 1 AND is_forgotten = 0 \
+                           AND is_archived = 0 AND is_latest = 1 \
+                           AND status != 'pending' \
                            AND is_consolidated = 0 AND user_id = ?1",
                 )?;
                 let rows = stmt.query_map(params![prompt_user_id], |row| {
@@ -67,12 +72,15 @@ pub async fn generate_prompt(
 
             // Important memories
             {
+                // status != 'pending' is the review-gate predicate: pending
+                // memories must not surface in the generated prompt.
                 let mut stmt = conn.prepare(
                     "SELECT id, content, category, importance, \
                                 COALESCE(decay_score, importance) AS ds \
                          FROM memories \
                          WHERE is_forgotten = 0 AND is_archived = 0 \
                            AND is_latest = 1 AND is_consolidated = 0 \
+                           AND status != 'pending' \
                            AND user_id = ?1 \
                          ORDER BY ds DESC LIMIT 1000",
                 )?;
