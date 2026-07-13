@@ -315,47 +315,70 @@ async fn bootstrap(
         ));
     }
 
-    // Belt-and-suspenders: if any prior build already minted keys without the
-    // sentinel being set, keep refusing so we don't produce a second admin.
-    let existing_count =
-        count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
-    if existing_count > 0 {
-        return Ok((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "bootstrap already complete" })),
-        ));
+    // The sentinel is now claimed. Everything below can fail (DB errors, key
+    // minting), and a failure AFTER the claim would permanently brick bootstrap
+    // with zero admin keys unless we release the claim. Run the remaining work
+    // in a block and, on any error, delete the sentinel so bootstrap is
+    // retryable. The legitimate "already complete" branch keeps the sentinel.
+    let outcome: Result<(StatusCode, Json<Value>), AppError> = async {
+        // Belt-and-suspenders: if any prior build already minted keys without the
+        // sentinel being set, keep refusing so we don't produce a second admin.
+        let existing_count =
+            count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
+        if existing_count > 0 {
+            return Ok((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "bootstrap already complete" })),
+            ));
+        }
+
+        // SECURITY (MT-F15): user_id=1 is the reserved operator sentinel.
+        // Insert the row explicitly so later AUTOINCREMENT-driven user
+        // creation never collides with it and so every tenant-scoped query
+        // has a real FK target. INSERT OR IGNORE is idempotent.
+        state
+            .db
+            .write(|conn| {
+                Ok(conn.execute(
+                    "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
+                     VALUES (1, 'operator', 'admin', 1)",
+                    [],
+                )?)
+            })
+            .await
+            .map_err(AppError)?;
+
+        let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
+        let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;
+
+        Ok((
+            StatusCode::CREATED,
+            Json(json!({
+                "key": raw_key.clone(),
+                "api_key": raw_key,
+                "name": key.name,
+                "scopes": key.scopes,
+                "user_id": key.user_id,
+                "message": "Bootstrap complete. Store this key -- it will not be shown again."
+            })),
+        ))
     }
+    .await;
 
-    // SECURITY (MT-F15): user_id=1 is the reserved operator sentinel.
-    // Insert the row explicitly so later AUTOINCREMENT-driven user
-    // creation never collides with it and so every tenant-scoped query
-    // has a real FK target. INSERT OR IGNORE is idempotent.
-    state
-        .db
-        .write(|conn| {
-            Ok(conn.execute(
-                "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
-                 VALUES (1, 'operator', 'admin', 1)",
-                [],
-            )?)
-        })
-        .await
-        .map_err(AppError)?;
-
-    let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
-    let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "key": raw_key.clone(),
-            "api_key": raw_key,
-            "name": key.name,
-            "scopes": key.scopes,
-            "user_id": key.user_id,
-            "message": "Bootstrap complete. Store this key -- it will not be shown again."
-        })),
-    ))
+    if outcome.is_err() {
+        // Release the claim so a subsequent bootstrap can retry. Best-effort:
+        // if this delete also fails there is nothing more we can do, and the
+        // original error is the one worth surfacing.
+        let _ = state
+            .db
+            .write(|conn| {
+                Ok::<_, kleos_lib::EngError>(
+                    conn.execute("DELETE FROM app_state WHERE key = 'bootstrap_claimed'", [])?,
+                )
+            })
+            .await;
+    }
+    outcome
 }
 
 // --- Stats ---
@@ -532,13 +555,13 @@ async fn backfill_entities(
     let mut entities_created: i64 = 0;
     let mut links_created: i64 = 0;
 
-    for (memory_id, content) in memories {
-        // Use user_id = 1 as the tenant-shard owner for backfill; the field is
-        // ignored internally (post migration v35) but must be supplied for the
-        // function signature. If we ever need per-memory user_id we can add it
-        // to the backfill query.
+    for (memory_id, content, user_id) in memories {
+        // Attribute extracted entities to the memory's real owner. The tenancy
+        // repair (v55/v64) restored user_id to the entity tables, so a
+        // hardcoded user_id=1 misattributes every tenant's entities to the
+        // operator account in shared-monolith mode.
         match kleos_lib::graph::entities::extract_and_link_entities(
-            &state.db, memory_id, &content, 1,
+            &state.db, memory_id, &content, user_id,
         )
         .await
         {

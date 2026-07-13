@@ -1004,6 +1004,70 @@ async fn brain_edges_isolated_between_users_single_db() {
     assert_eq!(count_20, 1, "user 20 must see exactly their own edge");
 }
 
+/// The admin backfill helpers must return each memory's real owner user_id, not
+/// a hardcoded 1. Attributing derived facts/entities to user 1 in shared mode
+/// mislabels every other tenant's data.
+#[tokio::test]
+async fn backfill_helpers_return_real_user_id() {
+    let db = monolith().await;
+    let alice = memory::store(
+        &db,
+        store_req("alice rocket propulsion notes", 10),
+        None,
+        false,
+    )
+    .await
+    .expect("store alice")
+    .id;
+    let bob = memory::store(
+        &db,
+        store_req("bob heirloom tomato journal", 20),
+        None,
+        false,
+    )
+    .await
+    .expect("store bob")
+    .id;
+
+    let facts = kleos_lib::admin::get_memories_without_facts(&db, 500)
+        .await
+        .expect("facts backfill list");
+    assert_eq!(
+        facts
+            .iter()
+            .find(|(id, _, _)| *id == alice)
+            .map(|(_, _, u)| *u),
+        Some(10),
+        "fact backfill must carry alice's real user_id"
+    );
+    assert_eq!(
+        facts
+            .iter()
+            .find(|(id, _, _)| *id == bob)
+            .map(|(_, _, u)| *u),
+        Some(20),
+        "fact backfill must carry bob's real user_id"
+    );
+
+    let ents = kleos_lib::admin::get_memories_without_entity_links(&db, 500)
+        .await
+        .expect("entity backfill list");
+    assert_eq!(
+        ents.iter()
+            .find(|(id, _, _)| *id == alice)
+            .map(|(_, _, u)| *u),
+        Some(10),
+        "entity backfill must carry alice's real user_id"
+    );
+    assert_eq!(
+        ents.iter()
+            .find(|(id, _, _)| *id == bob)
+            .map(|(_, _, u)| *u),
+        Some(20),
+        "entity backfill must carry bob's real user_id"
+    );
+}
+
 /// A "delete" sync change replayed by another tenant must not forget the
 /// owner's memory. Before the fix, receive_sync soft-deleted by sync_id with no
 /// user_id predicate, so any tenant could forget another tenant's memory by
