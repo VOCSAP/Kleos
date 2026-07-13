@@ -91,11 +91,14 @@ pub async fn create_skill(db: &Database, req: CreateSkillRequest) -> Result<Skil
     let (version, root_skill_id) = if let Some(parent_id) = req.parent_skill_id {
         let result = db
             .read(move |conn| {
+                // Scope the parent lookup to this tenant. Without the user_id predicate a
+                // caller could name another tenant's skill as parent, leaking its
+                // version/root metadata and forging a cross-tenant lineage link.
                 let mut stmt = conn.prepare(
                     "SELECT version, root_skill_id FROM skill_records \
-                     WHERE id = ?1",
+                     WHERE id = ?1 AND user_id = ?2",
                 )?;
-                let mut rows = stmt.query(params![parent_id])?;
+                let mut rows = stmt.query(params![parent_id, user_id])?;
                 if let Some(row) = rows.next()? {
                     let pv: i32 = row.get(0)?;
                     let pr: Option<i64> = row.get(1)?;
