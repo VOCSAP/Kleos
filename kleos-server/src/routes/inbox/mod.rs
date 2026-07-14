@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, State},
     routing::{get, post},
     Json, Router,
 };
@@ -11,6 +11,39 @@ use crate::state::AppState;
 
 mod types;
 use types::{BulkBody, EditBody, PagingQuery, RejectBody};
+
+/// Run the post-store derivation for a memory that has just cleared review, so an
+/// approved memory finally seeds facts, entity links, and brain associations --
+/// the derivation the store route deliberately defers while the memory is pending.
+/// Best-effort: a fetch failure is logged, not propagated, because the approval it
+/// follows has already committed.
+async fn derive_after_approve(
+    state: &AppState,
+    db: &std::sync::Arc<kleos_lib::db::Database>,
+    id: i64,
+    user_id: i64,
+) {
+    match kleos_lib::memory::get(db, id, user_id).await {
+        Ok(m) => {
+            crate::routes::memory::spawn_post_store_derivation(
+                state,
+                db,
+                id,
+                user_id,
+                m.content,
+                m.category,
+                m.source,
+                m.importance as f64,
+            )
+            .await;
+        }
+        Err(e) => tracing::warn!(
+            memory_id = id,
+            error = %e,
+            "post-approve derivation skipped: memory fetch failed"
+        ),
+    }
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -38,11 +71,16 @@ async fn list_inbox(
 }
 
 async fn approve(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    kleos_lib::inbox::approve_memory(&db, id, auth.effective_user_id()).await?;
+    let user_id = auth.effective_user_id();
+    kleos_lib::inbox::approve_memory(&db, id, user_id).await?;
+    // The memory has cleared review: run the fact/entity/brain derivation the
+    // store route defers for gated memories.
+    derive_after_approve(&state, &db, id, user_id).await;
     Ok(Json(json!({ "approved": true, "id": id })))
 }
 
@@ -71,38 +109,46 @@ async fn reject(
 // edit another tenant's pending memory by id. The predicate is a no-op in a
 // single-owner shard.
 async fn edit(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(body): Json<EditBody>,
 ) -> Result<Json<Value>, AppError> {
+    let user_id = auth.effective_user_id();
     kleos_lib::inbox::edit_and_approve(
         &db,
         id,
-        auth.effective_user_id(),
+        user_id,
         body.content.as_deref(),
         body.category.as_deref(),
         body.importance,
         body.tags.as_deref(),
     )
     .await?;
+    // edit_and_approve also approves, so derive from the edited (approved) content.
+    derive_after_approve(&state, &db, id, user_id).await;
     Ok(Json(json!({ "approved": true, "edited": true, "id": id })))
 }
 
 async fn bulk_action(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<BulkBody>,
 ) -> Result<Json<Value>, AppError> {
+    let user_id = auth.effective_user_id();
     let mut count = 0;
     for id in &body.ids {
         match body.action.as_str() {
             "approve" => {
-                kleos_lib::inbox::approve_memory(&db, *id, auth.effective_user_id()).await?;
+                kleos_lib::inbox::approve_memory(&db, *id, user_id).await?;
+                // Same deferred derivation the single-approve path runs.
+                derive_after_approve(&state, &db, *id, user_id).await;
                 count += 1;
             }
             "reject" => {
-                kleos_lib::inbox::reject_memory(&db, *id, auth.effective_user_id()).await?;
+                kleos_lib::inbox::reject_memory(&db, *id, user_id).await?;
                 count += 1;
             }
             _ => {

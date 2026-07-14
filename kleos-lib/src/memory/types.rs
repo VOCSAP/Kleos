@@ -431,6 +431,13 @@ pub struct StoreResult {
     pub id: i64,
     pub created: bool,
     pub duplicate_of: Option<i64>,
+    /// True when the review gate held this newly created memory for review
+    /// (status = 'pending'). Callers use it to skip deriving facts, entity
+    /// links, and brain associations from content that has not cleared review;
+    /// that derivation is (re)run when the memory is approved. Always false for a
+    /// duplicate boost, which creates no new derivable content.
+    #[serde(default)]
+    pub pending: bool,
 }
 
 /// Request parameters for the hybrid memory search endpoint.

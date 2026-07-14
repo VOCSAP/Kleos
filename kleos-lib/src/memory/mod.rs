@@ -518,6 +518,9 @@ pub async fn store(
             id: existing_id,
             created: false,
             duplicate_of: Some(existing_id),
+            // A duplicate boost creates no new content to derive from, so it is
+            // never gated; the existing row's own derivation state is unchanged.
+            pending: false,
         });
     }
 
@@ -545,6 +548,18 @@ pub async fn store(
         req.category.clone()
     };
 
+    // Resolve the review-gate status once, before the write, so the INSERT and
+    // the returned StoreResult.pending cannot disagree. resolve_initial_status is
+    // pure over (source, importance, gate config); computing it here and passing
+    // it into the insert keeps a single source of truth for the gate decision.
+    let initial_status = resolve_initial_status(
+        &req.source,
+        importance,
+        *REVIEW_GATE_ENABLED,
+        &REVIEW_GATE_SOURCES,
+        *REVIEW_GATE_IMPORTANCE_THRESHOLD,
+    );
+
     let content_for_tx = content.clone();
     let req_for_tx = req.clone();
     let tags_json_for_tx = tags_json.clone();
@@ -566,6 +581,7 @@ pub async fn store(
                 importance,
                 tags_json_for_tx,
                 &category_for_tx,
+                initial_status,
             )?;
             // E2: increment counters atomically in the same transaction.
             if quota_for_tx.is_some() {
@@ -621,6 +637,9 @@ pub async fn store(
         id: new_id,
         created: true,
         duplicate_of: None,
+        // Surfaces the gate decision so the route can withhold fact/entity/brain
+        // derivation until this memory is approved (see resolve_initial_status).
+        pending: initial_status == "pending",
     })
 }
 
@@ -725,6 +744,11 @@ fn resolve_initial_status(
 }
 
 /// Insert one memory row inside an open transaction, returning its new id.
+// Each argument maps to a distinct memory column or the resolved gate status;
+// bundling them into a struct would only rename the same fields. The status arg
+// is passed (not recomputed here) so it stays the single source of truth shared
+// with StoreResult.pending.
+#[allow(clippy::too_many_arguments)]
 fn store_transactional_rusqlite(
     tx: &rusqlite::Transaction<'_>,
     content: &str,
@@ -733,6 +757,9 @@ fn store_transactional_rusqlite(
     importance: i32,
     tags_json: Option<String>,
     category: &str,
+    // Review-gate status resolved once in `store` and passed in so the INSERT and
+    // the returned StoreResult.pending share one decision. 'approved' or 'pending'.
+    status: &str,
 ) -> Result<i64> {
     let (version, root_memory_id) = if let Some(parent_id) = req.parent_memory_id {
         let mut stmt = tx.prepare("SELECT version, root_memory_id FROM memories WHERE id = ?1")?;
@@ -814,16 +841,10 @@ fn store_transactional_rusqlite(
             // Best-effort content-language detection at ingest; never fails a write.
             crate::lang::detect_lang(content),
             created_at_override,
-            // ?17: initial status. 'approved' unless the review gate is enabled and
-            // this memory's source is allowlisted or its importance exceeds the
-            // configured threshold.
-            resolve_initial_status(
-                &req.source,
-                importance,
-                *REVIEW_GATE_ENABLED,
-                &REVIEW_GATE_SOURCES,
-                *REVIEW_GATE_IMPORTANCE_THRESHOLD,
-            )
+            // ?17: initial review-gate status, resolved once by the caller
+            // (`store`). 'approved' unless the gate is enabled and this memory's
+            // source is allowlisted or its importance exceeds the threshold.
+            status
         ],
     )?;
 

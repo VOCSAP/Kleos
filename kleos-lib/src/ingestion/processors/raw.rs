@@ -58,6 +58,13 @@ pub async fn process(
                     continue;
                 }
                 memories_created += 1;
+                // A memory held for review (pending) must not seed derived facts
+                // or entity links until it is approved; the inbox approve route
+                // runs that derivation once it clears review. The memory is still
+                // created and counted -- only the derivation jobs are deferred.
+                if result.pending {
+                    continue;
+                }
                 let payload = serde_json::json!({
                     "memory_id": result.id,
                     "content": content,

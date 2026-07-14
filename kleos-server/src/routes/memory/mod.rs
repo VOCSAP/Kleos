@@ -206,145 +206,23 @@ async fn store_memory(
         }
     }
 
-    // Background: extract facts, preferences, and state from the new memory.
-    // Bounded by fact_extract_sem (H-005); shutdown-propagated via shutdown_token (M-008).
-    {
-        let db = db.clone();
-        let memory_id = result.id;
-        let user_id = auth.effective_user_id();
-        // Clone content before consuming it in the spawn so the entity_extract
-        // block below can use the same value without a borrow conflict.
-        let content_for_extract = content.clone();
-        let permit = match state.fact_extract_sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::warn!("fact_extract semaphore closed; skipping background work");
-                let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(json!({
-                        "stored": true, "id": result.id, "created_at": mem.created_at,
-                        "importance": mem.importance, "embedded": embedded,
-                        "tags": parse_tags(&mem.tags),
-                        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-                    })),
-                ));
-            }
-        };
-        let shutdown = state.shutdown_token.clone();
-        let mut bg = state.background_tasks.lock().await;
-        bg.spawn(async move {
-            let _permit = permit;
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    tracing::debug!("background fact_extract drained on shutdown");
-                }
-                _ = async {
-                    match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
-                        Ok(stats) => {
-                            let total = stats.facts + stats.preferences + stats.state_updates;
-                            if total > 0 {
-                                tracing::debug!(
-                                    memory_id,
-                                    facts = stats.facts,
-                                    prefs = stats.preferences,
-                                    states = stats.state_updates,
-                                    "auto-extraction completed"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
-                    }
-                } => {}
-            }
-        });
-    }
-
-    let content_for_brain = content.clone();
-
-    // Background: extract and link named entities from the new memory.
-    // Uses the same fact_extract_sem semaphore (H-005) and shutdown token (M-008).
-    // Runs in a separate spawn from fact_extract so a failure in one does not
-    // affect the other -- independent error blast radius.
-    {
-        let db = db.clone();
-        let memory_id = result.id;
-        let user_id = auth.effective_user_id();
-        // Move content into this closure; it is no longer needed after this block.
-        let content_for_entities = content;
-        let permit = match state.fact_extract_sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::warn!("fact_extract semaphore closed; skipping entity extraction");
-                // Semaphore closed means server is shutting down; skip extraction
-                // and fall through to return the stored memory as normal.
-                let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(json!({
-                        "stored": true, "id": result.id, "created_at": mem.created_at,
-                        "importance": mem.importance, "embedded": embedded,
-                        "tags": parse_tags(&mem.tags),
-                        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-                    })),
-                ));
-            }
-        };
-        let shutdown = state.shutdown_token.clone();
-        let mut bg = state.background_tasks.lock().await;
-        bg.spawn(async move {
-            let _permit = permit;
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    tracing::debug!("background entity_extract drained on shutdown");
-                }
-                _ = async {
-                    match extract_and_link_entities(&db, memory_id, &content_for_entities, user_id).await {
-                        Ok(entities) => {
-                            if !entities.is_empty() {
-                                tracing::debug!(
-                                    memory_id,
-                                    entity_count = entities.len(),
-                                    "auto entity extraction completed"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!(memory_id, "auto entity extraction failed: {}", e),
-                    }
-                } => {}
-            }
-        });
-    }
-
-    // Background: absorb new memory into the Hopfield brain.
-    // Fire-and-forget, best-effort — never fails the store response.
-    // Bounded by brain_absorb_sem (H-005); shutdown-propagated via shutdown_token (M-008).
-    if let Some(brain) = state.brain.clone() {
-        let embedder = state.embedder.clone();
-        let memory_id = result.id;
-        // Act-as aware: absorb under the effective (delegated) user -- the same
-        // owner the memory was stored under (req.user_id) -- not the real caller,
-        // matching the sibling brain blocks and the brain's per-user partitioning.
-        let user_id = auth.effective_user_id();
-        match state.brain_absorb_sem.clone().acquire_owned().await {
-            Ok(permit) => {
-                let shutdown = state.shutdown_token.clone();
-                let mut bg = state.background_tasks.lock().await;
-                bg.spawn(async move {
-                    let _permit = permit;
-                    tokio::select! {
-                        _ = shutdown.cancelled() => {
-                            tracing::debug!("background brain_absorb drained on shutdown");
-                        }
-                        _ = absorb_activity_to_brain(
-                            brain, embedder, user_id, memory_id, content_for_brain,
-                            brain_category, brain_importance, brain_source,
-                        ) => {}
-                    }
-                });
-            }
-            Err(_) => tracing::warn!("brain_absorb semaphore closed; skipping brain absorption"),
-        }
+    // Derive facts, entity links, and brain associations from the new memory --
+    // but only once it clears the review gate. A pending (unreviewed) memory must
+    // not seed derived knowledge (the "importance-9 guess becomes a fact" loop the
+    // gate exists to stop); the inbox approve route re-runs this derivation when
+    // the memory is approved, so derivation is deferred, never lost.
+    if !result.pending {
+        spawn_post_store_derivation(
+            &state,
+            &db,
+            result.id,
+            auth.effective_user_id(),
+            content,
+            brain_category,
+            brain_source,
+            brain_importance,
+        )
+        .await;
     }
 
     let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
@@ -358,6 +236,126 @@ async fn store_memory(
         response["artifacts"] = json!(artifact_summaries);
     }
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+/// Spawn the best-effort post-store derivation for a memory that is now visible to
+/// the agent: fact/preference/state extraction, entity linking, and Hopfield-brain
+/// absorption. Shared by the store route (for memories that clear the review gate)
+/// and the inbox approve route (once a pending memory is approved), so unreviewed
+/// content never seeds derived knowledge yet approved content always does. Each
+/// derivation is bounded by its semaphore (H-005) and drained on shutdown (M-008);
+/// a closed semaphore skips that one derivation and logs, rather than failing the
+/// caller, because the store/approval it follows has already succeeded.
+// Each argument is a distinct input the derivations need (identity, owner, and
+// the four content facets brain absorption records); grouping them would only
+// move the same fields behind a struct name for the two call sites.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_post_store_derivation(
+    state: &AppState,
+    db: &std::sync::Arc<kleos_lib::db::Database>,
+    memory_id: i64,
+    user_id: i64,
+    content: String,
+    category: String,
+    source: String,
+    importance: f64,
+) {
+    // Fact, preference, and state extraction.
+    match state.fact_extract_sem.clone().acquire_owned().await {
+        Ok(permit) => {
+            let db = db.clone();
+            let content_for_extract = content.clone();
+            let shutdown = state.shutdown_token.clone();
+            let mut bg = state.background_tasks.lock().await;
+            bg.spawn(async move {
+                let _permit = permit;
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::debug!("background fact_extract drained on shutdown");
+                    }
+                    _ = async {
+                        match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
+                            Ok(stats) => {
+                                let total = stats.facts + stats.preferences + stats.state_updates;
+                                if total > 0 {
+                                    tracing::debug!(
+                                        memory_id,
+                                        facts = stats.facts,
+                                        prefs = stats.preferences,
+                                        states = stats.state_updates,
+                                        "auto-extraction completed"
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
+                        }
+                    } => {}
+                }
+            });
+        }
+        Err(_) => tracing::warn!("fact_extract semaphore closed; skipping fact extraction"),
+    }
+
+    // Entity extraction and linking. Shares the fact_extract semaphore but runs in
+    // its own spawn so a failure in one does not affect the other.
+    match state.fact_extract_sem.clone().acquire_owned().await {
+        Ok(permit) => {
+            let db = db.clone();
+            let content_for_entities = content.clone();
+            let shutdown = state.shutdown_token.clone();
+            let mut bg = state.background_tasks.lock().await;
+            bg.spawn(async move {
+                let _permit = permit;
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::debug!("background entity_extract drained on shutdown");
+                    }
+                    _ = async {
+                        match extract_and_link_entities(&db, memory_id, &content_for_entities, user_id).await {
+                            Ok(entities) => {
+                                if !entities.is_empty() {
+                                    tracing::debug!(
+                                        memory_id,
+                                        entity_count = entities.len(),
+                                        "auto entity extraction completed"
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(memory_id, "auto entity extraction failed: {}", e),
+                        }
+                    } => {}
+                }
+            });
+        }
+        Err(_) => tracing::warn!("fact_extract semaphore closed; skipping entity extraction"),
+    }
+
+    // Absorb the memory into the Hopfield brain. Best-effort; never fails the
+    // caller. Absorbs under the effective (delegated) owner, matching the brain's
+    // per-user partitioning.
+    if let Some(brain) = state.brain.clone() {
+        match state.brain_absorb_sem.clone().acquire_owned().await {
+            Ok(permit) => {
+                let embedder = state.embedder.clone();
+                let shutdown = state.shutdown_token.clone();
+                let content_for_brain = content;
+                let mut bg = state.background_tasks.lock().await;
+                bg.spawn(async move {
+                    let _permit = permit;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::debug!("background brain_absorb drained on shutdown");
+                        }
+                        _ = absorb_activity_to_brain(
+                            brain, embedder, user_id, memory_id, content_for_brain,
+                            category, importance, source,
+                        ) => {}
+                    }
+                });
+            }
+            Err(_) => tracing::warn!("brain_absorb semaphore closed; skipping brain absorption"),
+        }
+    }
 }
 
 /// POST /search -- hybrid keyword + semantic memory search.
