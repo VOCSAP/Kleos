@@ -85,16 +85,24 @@ pub async fn detect_communities(
 
     let edges: Vec<EdgeRow> = db
         .read(move |conn| {
+            // memory_links has no user_id column; isolation is via the JOIN to
+            // memories. Without the ms.user_id / mt.user_id predicate this loads
+            // every tenant's edges in shared-monolith mode (the mem_set filter
+            // below still keeps the result correct, but the load is O(all edges)
+            // repeated per owner). Scoping both endpoints keeps it to the
+            // caller's own edges. Both endpoints of an intra-user edge share the
+            // same owner, so binding user_id twice is correct.
             let mut stmt = conn.prepare(
                 "SELECT ml.source_id, ml.target_id, ml.similarity, ml.type \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
                      JOIN memories mt ON mt.id = ml.target_id \
                      WHERE ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
-                       AND ms.is_archived = 0 AND mt.is_archived = 0",
+                       AND ms.is_archived = 0 AND mt.is_archived = 0 \
+                       AND ms.user_id = ?1 AND mt.user_id = ?1",
             )?;
             let rows = stmt
-                .query_map([], |row| {
+                .query_map(rusqlite::params![user_id], |row| {
                     Ok(EdgeRow {
                         source_id: row.get(0)?,
                         target_id: row.get(1)?,

@@ -467,7 +467,7 @@ async fn storage_quota_allows_within_limit() {
     .expect("store artifact");
 
     // Adding another 5000 bytes should pass (well under 1 GiB).
-    let result = kleos_lib::quota::enforce_storage_quota(&db, 5000).await;
+    let result = kleos_lib::quota::enforce_storage_quota(&db, TEST_USER, 5000).await;
     assert!(result.is_ok(), "upload within limit should succeed");
 }
 
@@ -497,7 +497,7 @@ async fn storage_quota_rejects_over_limit() {
     .expect("insert large artifact row");
 
     // Attempting to upload 200 more bytes should exceed the limit.
-    let result = kleos_lib::quota::enforce_storage_quota(&db, 200).await;
+    let result = kleos_lib::quota::enforce_storage_quota(&db, TEST_USER, 200).await;
     assert!(result.is_err(), "upload exceeding limit should fail");
 
     let err = result.unwrap_err();

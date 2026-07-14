@@ -193,8 +193,9 @@ async fn upload_artifact(
     let display_name = name.unwrap_or_else(|| filename.clone());
     let size_bytes = data.len() as i64;
 
-    // Enforce per-tenant storage quota before writing.
-    kleos_lib::quota::enforce_storage_quota(&db, size_bytes).await?;
+    // Enforce per-tenant storage quota before writing. Pass the caller's id so
+    // the usage sum is scoped to this tenant in shared-monolith mode.
+    kleos_lib::quota::enforce_storage_quota(&db, auth.effective_user_id(), size_bytes).await?;
 
     // Compute hash and extract indexable text from plaintext BEFORE encryption.
     let sha256 = artifacts::sha256_hex(&data);

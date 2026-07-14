@@ -756,15 +756,18 @@ pub async fn list_recent_evolutions(
 #[tracing::instrument(skip(db))]
 pub async fn get_lineage(db: &Database, skill_id: i64, user_id: i64) -> Result<Vec<i64>> {
     get_skill(db, skill_id, user_id).await?;
-    // Only return parents that also belong to the caller; filter out any foreign-tenant ids
-    // even if the lineage table ever held one from a pre-patch row.
+    // Only return parents that also belong to the caller. skill_lineage_parents
+    // has no user_id column, so ownership is enforced by joining skill_records
+    // on parent_id and filtering by user_id -- this actually performs the
+    // foreign-tenant filtering the prior comment only claimed.
     db.read(move |conn| {
         let mut stmt = conn.prepare(
             "SELECT slp.parent_id FROM skill_lineage_parents slp \
-                 WHERE slp.skill_id = ?1",
+                 JOIN skill_records sr ON sr.id = slp.parent_id \
+                 WHERE slp.skill_id = ?1 AND sr.user_id = ?2",
         )?;
         let parents = stmt
-            .query_map(params![skill_id], |row| row.get(0))?
+            .query_map(params![skill_id, user_id], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<i64>>>()?;
         Ok(parents)
     })
