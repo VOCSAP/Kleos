@@ -604,6 +604,17 @@ pub fn start_auto_backup_task(
                                 }
                                 Err(e) => {
                                     consecutive_failures += 1;
+                                    // Remove the unverified backup: a file that failed
+                                    // integrity_check or the restore-test is not a usable
+                                    // backup, and leaving it lets bad files accumulate and
+                                    // masquerade as recovery points during pruning/restore.
+                                    if let Err(rm) = tokio::fs::remove_file(&dest).await {
+                                        warn!(
+                                            path = %dest.display(),
+                                            error = %rm,
+                                            "failed to remove unverified backup file"
+                                        );
+                                    }
                                     error!(
                                         path = %dest.display(),
                                         error = %e,

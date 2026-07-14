@@ -60,7 +60,9 @@ async fn list_inbox(
     ResolvedDb(db): ResolvedDb,
     Query(q): Query<PagingQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = q.limit.unwrap_or(50).min(200);
+    // Clamp to at least 1 so a client-supplied limit of 0 does not silently
+    // return an empty page, and at most 200 to bound the response size.
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0);
     let user_id = auth.effective_user_id();
     let pending = kleos_lib::inbox::list_pending(&db, user_id, limit, offset).await?;
@@ -168,7 +170,9 @@ async fn list_pending_legacy(
     ResolvedDb(db): ResolvedDb,
     Query(q): Query<PagingQuery>,
 ) -> Result<Json<Value>, AppError> {
-    let limit = q.limit.unwrap_or(50).min(200);
+    // Clamp to at least 1 so a client-supplied limit of 0 does not silently
+    // return an empty page, and at most 200 to bound the response size.
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0);
     let user_id = auth.effective_user_id();
     let pending = kleos_lib::inbox::list_pending(&db, user_id, limit, offset).await?;

@@ -142,6 +142,21 @@ fn run_valence(content: &str, lang: &str) -> ValenceResult {
         };
     }
     let total_weight: f64 = matches.iter().map(|m| m.valence.abs()).sum();
+    // Guard the weighted average: if every matched pattern has valence 0 the
+    // weight sums to 0 and the division below would produce NaN. Fall back to a
+    // neutral score while still reporting the matched emotions.
+    if total_weight == 0.0 {
+        let dominant_emotion = matches
+            .first()
+            .map(|m| m.emotion.clone())
+            .unwrap_or_else(|| "neutral".into());
+        return ValenceResult {
+            valence: 0.0,
+            arousal: 0.0,
+            dominant_emotion,
+            all_emotions: matches,
+        };
+    }
     let avg_valence = matches
         .iter()
         .map(|m| m.valence * m.valence.abs())

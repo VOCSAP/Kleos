@@ -232,7 +232,10 @@ pub async fn update_project(
     let metadata = metadata.map(|s| s.to_string());
 
     db.write(move |conn| {
-        conn.execute(
+        // Return NotFound when no row matched (wrong id or another owner's
+        // project) instead of a silent success, matching link_memory/unlink_memory
+        // so callers can tell a real update from a no-op.
+        let rows = conn.execute(
             "UPDATE projects SET \
              name = COALESCE(?1, name), \
              description = COALESCE(?2, description), \
@@ -242,6 +245,9 @@ pub async fn update_project(
              WHERE id = ?5 AND user_id = ?6",
             rusqlite::params![name, description, status, metadata, id, user_id],
         )?;
+        if rows == 0 {
+            return Err(EngError::NotFound(format!("project {} not found", id)));
+        }
         Ok(())
     })
     .await
@@ -251,10 +257,15 @@ pub async fn update_project(
 #[tracing::instrument(skip(db), fields(project_id = id, user_id))]
 pub async fn delete_project(db: &Database, id: i64, user_id: i64) -> Result<()> {
     db.write(move |conn| {
-        conn.execute(
+        // Return NotFound when no row matched so a delete of a missing or
+        // non-owned project is distinguishable from a real one.
+        let rows = conn.execute(
             "DELETE FROM projects WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![id, user_id],
         )?;
+        if rows == 0 {
+            return Err(EngError::NotFound(format!("project {} not found", id)));
+        }
         Ok(())
     })
     .await
@@ -424,6 +435,43 @@ mod tests {
         assert!(VALID_PROJECT_STATUSES.contains(&"active"));
         assert!(VALID_PROJECT_STATUSES.contains(&"archived"));
         assert!(!VALID_PROJECT_STATUSES.contains(&"deleted"));
+    }
+
+    /// update_project and delete_project must return NotFound for an id that
+    /// does not exist or is not owned by the caller, rather than a silent
+    /// success that hides the miss (and, for a wrong owner, cross-tenant writes).
+    #[tokio::test]
+    async fn update_and_delete_missing_project_return_not_found() {
+        let db = Database::connect_memory().await.expect("db");
+        let (project_id, _) = create_project(&db, "owned", None, "active", None, 1)
+            .await
+            .expect("create");
+
+        let miss = update_project(&db, 999_999, 1, Some("x"), None, None, None).await;
+        assert!(
+            matches!(miss, Err(EngError::NotFound(_))),
+            "updating a nonexistent project must be NotFound, got {miss:?}"
+        );
+        let del_miss = delete_project(&db, 999_999, 1).await;
+        assert!(
+            matches!(del_miss, Err(EngError::NotFound(_))),
+            "deleting a nonexistent project must be NotFound, got {del_miss:?}"
+        );
+
+        // Project exists but belongs to user 1; user 2 must not update or delete it.
+        let wrong_owner = update_project(&db, project_id, 2, Some("x"), None, None, None).await;
+        assert!(
+            matches!(wrong_owner, Err(EngError::NotFound(_))),
+            "updating another owner's project must be NotFound (no cross-tenant write)"
+        );
+
+        // The real owner still succeeds.
+        update_project(&db, project_id, 1, Some("renamed"), None, None, None)
+            .await
+            .expect("owner update succeeds");
+        delete_project(&db, project_id, 1)
+            .await
+            .expect("owner delete succeeds");
     }
 
     /// Insert a memory owned by `owner` and return its id.
