@@ -667,9 +667,14 @@ pub async fn get_memories_without_facts(
     limit: i64,
 ) -> Result<Vec<(i64, String, i64)>> {
     db.read(move |conn| {
+        // Review-gate predicate: facts must never be derived from a memory that
+        // has not cleared review. status != 'pending' excludes unreviewed rows;
+        // is_archived = 0 excludes rejected rows (reject sets is_archived = 1),
+        // which the user explicitly refused and must not become derived facts.
         let mut stmt = conn.prepare(
             "SELECT m.id, m.content, m.user_id FROM memories m \
                  WHERE m.is_forgotten = 0 \
+                 AND m.status != 'pending' AND m.is_archived = 0 \
                  AND NOT EXISTS (SELECT 1 FROM structured_facts f WHERE f.memory_id = m.id) \
                  LIMIT ?1",
         )?;
@@ -698,9 +703,14 @@ pub async fn get_memories_without_entity_links(
     limit: i64,
 ) -> Result<Vec<(i64, String, i64)>> {
     db.read(move |conn| {
+        // Review-gate predicate: entity links must never be derived from a memory
+        // that has not cleared review. status != 'pending' excludes unreviewed
+        // rows; is_archived = 0 excludes rejected rows (reject sets is_archived = 1),
+        // which the user explicitly refused and must not become derived links.
         let mut stmt = conn.prepare(
             "SELECT m.id, m.content, m.user_id FROM memories m \
                  WHERE m.is_forgotten = 0 \
+                 AND m.status != 'pending' AND m.is_archived = 0 \
                  AND NOT EXISTS (SELECT 1 FROM memory_entities me WHERE me.memory_id = m.id) \
                  ORDER BY m.id ASC \
                  LIMIT ?1",

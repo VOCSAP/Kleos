@@ -604,9 +604,12 @@ async fn recent_memory_contents(
         // store cross-tenant observations). Harmless in sharded mode (one tenant
         // per shard), correct in monolith.
         let mut stmt = conn.prepare(
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // memory must not feed the growth-reflection context.
             "SELECT content FROM memories \
                  WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
                  AND user_id = ?2 \
+                 AND status != 'pending' \
                  ORDER BY created_at DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit_i64, user_id], |row| {

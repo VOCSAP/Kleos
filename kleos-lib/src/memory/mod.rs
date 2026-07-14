@@ -488,8 +488,13 @@ pub async fn store(
         None
     } else {
         let dup_space_id = req.space_id;
+        // Exclude archived/rejected rows from the dedup source: a new store must
+        // not be treated as a duplicate of a rejected memory (which would boost
+        // the rejected row instead of storing the fresh content). Rejected rows
+        // carry is_archived = 1, so the is_archived guard is the load-bearing one.
         let dup_sql = "SELECT id, content FROM memories \
             WHERE user_id = ?1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
+              AND is_archived = 0 AND status != 'rejected' \
               AND space_id IS ?2 \
             ORDER BY id DESC";
         db.read(move |conn| {
@@ -1943,6 +1948,8 @@ pub async fn list_all_tags(db: &Database, user_id: i64) -> Result<Vec<TagCount>>
                  WHERE user_id = ?1
                    AND is_forgotten = 0
                    AND is_latest = 1
+                   AND is_archived = 0
+                   AND status != 'pending'
                    AND tags IS NOT NULL
                    AND tags != '[]'",
         )?;

@@ -574,11 +574,12 @@ async fn fetch_memories_batch(
     // fetch for hybrid_search output (assembly drops any id absent from the map),
     // so it also blocks pending memories pulled in by the graph/facts/community
     // channels, whose neighbor/member queries run after hydration and do not
-    // themselves filter status.
+    // themselves filter status. is_archived = 0 closes the same gap for rejected
+    // rows (which are archived rather than deleted) reaching hydration this way.
     let fetch_sql = format!(
         "SELECT {} FROM memories \
          WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
-         AND status != 'pending'",
+         AND status != 'pending' AND is_archived = 0",
         MEMORY_COLUMNS, placeholders
     );
 
@@ -620,16 +621,21 @@ async fn fetch_links_batch(
     // "owner" memory ID so we can group results into the right bucket. The
     // joined memory is scoped to the owner (one extra `?` per half) so single-DB
     // mode never returns a link into another user's memory; a no-op in a shard.
+    // m.status != 'pending' is the review-gate predicate: a link target/source
+    // that hasn't cleared review must not surface via the memory_links JOIN.
+    // m.status and m.is_archived are selected so the row loop can also drop
+    // rejected (archived) rows, which is_archived != 0 alone does not exclude
+    // via SQL here (kept in the loop to match the existing is_forgotten check).
     let link_sql = format!(
         "SELECT ml.source_id AS owner, ml.target_id, ml.similarity, ml.type, \
-             m.content, m.category, m.is_forgotten \
+             m.content, m.category, m.is_forgotten, m.status, m.is_archived \
          FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? \
+         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending' \
          UNION ALL \
          SELECT ml.target_id AS owner, ml.source_id, ml.similarity, ml.type, \
-             m.content, m.category, m.is_forgotten \
+             m.content, m.category, m.is_forgotten, m.status, m.is_archived \
          FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ?"
+         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending'"
     );
 
     db.read(move |conn| {
@@ -652,6 +658,11 @@ async fn fetch_links_batch(
         while let Some(row) = rows.next()? {
             // Skip forgotten memories
             if row.get::<_, i32>(6)? != 0 {
+                continue;
+            }
+            // Skip archived memories (rejected rows carry is_archived = 1); the
+            // review-gate predicate above already excludes pending rows in SQL.
+            if row.get::<_, i32>(8)? != 0 {
                 continue;
             }
             let owner: i64 = row.get(0)?;

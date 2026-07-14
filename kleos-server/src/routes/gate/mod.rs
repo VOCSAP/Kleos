@@ -650,10 +650,14 @@ async fn guard_handler(
     let user_id = auth.effective_user_id();
     let rules: Vec<Value> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // static rule must not be enforced as a conflict guard; is_archived = 0
+            // excludes rejected rules for the same reason.
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
                  WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
                  AND user_id = ?1
+                 AND status != 'pending' AND is_archived = 0
                  ORDER BY importance DESC LIMIT 20",
             )?;
             let rows = stmt.query_map(params![user_id], |row| {
@@ -848,10 +852,14 @@ async fn complete_latest_handler(
 async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> Option<String> {
     let rules: Vec<String> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // rule must not be injected into agent-model enrichment; is_archived = 0
+            // excludes rejected rules for the same reason.
             let mut stmt = conn.prepare(
                 "SELECT content FROM memories
                  WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
                  AND user_id = ?1
+                 AND status != 'pending' AND is_archived = 0
                  AND (content LIKE '%agent.model.preference%'
                       OR content LIKE '%force-agent-models%'
                       OR content LIKE '%delegate to opencode%'

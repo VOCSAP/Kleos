@@ -84,6 +84,22 @@ async fn mark_pending(db: &Database, id: i64) {
     .expect("mark pending");
 }
 
+/// Force a stored memory into the review-gate rejected state, matching
+/// `inbox::reject_memory` (status='rejected', is_archived=1). Rejected rows are
+/// archived rather than deleted, so derive/read paths must exclude them by the
+/// is_archived guard even though `status != 'pending'` alone would let them pass.
+async fn mark_rejected(db: &Database, id: i64) {
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE memories SET status = 'rejected', is_archived = 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("mark rejected");
+}
+
 /// Read a memory's current status directly.
 async fn status_of(db: &Database, id: i64) -> String {
     db.read(move |conn| {
@@ -333,5 +349,114 @@ async fn graph_search_withholds_pending() {
     assert!(
         !contents.iter().any(|c| c.contains("thornfield")),
         "pending memory node must be withheld from graph search"
+    );
+}
+
+/// `list_all_tags` powers tag-discovery surfaces. A tag that exists only on a
+/// pending (unreviewed) or rejected (archived) memory must not be listed, or the
+/// tag itself leaks the withheld memory's presence and lets it be tag-searched.
+#[tokio::test]
+async fn list_all_tags_withholds_pending_and_rejected() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let user_id = 1;
+
+    store_memory(
+        &db,
+        "approved tagged brightwater",
+        user_id,
+        false,
+        5,
+        Some(vec!["shown".to_string()]),
+    )
+    .await;
+    let pending = store_memory(
+        &db,
+        "pending tagged thornfield",
+        user_id,
+        false,
+        5,
+        Some(vec!["hidden-pending".to_string()]),
+    )
+    .await;
+    let rejected = store_memory(
+        &db,
+        "rejected tagged quarterdeck",
+        user_id,
+        false,
+        5,
+        Some(vec!["hidden-rejected".to_string()]),
+    )
+    .await;
+    mark_pending(&db, pending).await;
+    mark_rejected(&db, rejected).await;
+
+    let tags: Vec<String> = memory::list_all_tags(&db, user_id)
+        .await
+        .expect("list tags")
+        .into_iter()
+        .map(|t| t.tag)
+        .collect();
+    assert!(tags.iter().any(|t| t == "shown"), "approved tag is listed");
+    assert!(
+        !tags.iter().any(|t| t == "hidden-pending"),
+        "a tag present only on a pending memory must not be listed"
+    );
+    assert!(
+        !tags.iter().any(|t| t == "hidden-rejected"),
+        "a tag present only on a rejected memory must not be listed"
+    );
+}
+
+/// The admin fact/entity backfill sources feed structured derivation. Handing
+/// back a pending (unreviewed) or rejected (refused) memory would derive facts or
+/// entity links from content the gate withholds -- the same bypass as surfacing
+/// it in search. Both backfills must exclude pending and rejected rows.
+#[tokio::test]
+async fn fact_and_entity_backfill_exclude_pending_and_rejected() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let user_id = 1;
+
+    let approved = store_memory(&db, "approved backfill source", user_id, false, 5, None).await;
+    let pending = store_memory(&db, "pending backfill source", user_id, false, 5, None).await;
+    let rejected = store_memory(&db, "rejected backfill source", user_id, false, 5, None).await;
+    mark_pending(&db, pending).await;
+    mark_rejected(&db, rejected).await;
+
+    let fact_ids: Vec<i64> = kleos_lib::admin::get_memories_without_facts(&db, 500)
+        .await
+        .expect("fact backfill")
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    assert!(
+        fact_ids.contains(&approved),
+        "an approved memory is a valid fact-derivation source"
+    );
+    assert!(
+        !fact_ids.contains(&pending),
+        "a pending memory must not be a fact-derivation source"
+    );
+    assert!(
+        !fact_ids.contains(&rejected),
+        "a rejected memory must not be a fact-derivation source"
+    );
+
+    let entity_ids: Vec<i64> = kleos_lib::admin::get_memories_without_entity_links(&db, 500)
+        .await
+        .expect("entity backfill")
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    assert!(
+        entity_ids.contains(&approved),
+        "an approved memory is a valid entity-derivation source"
+    );
+    assert!(
+        !entity_ids.contains(&pending),
+        "a pending memory must not be an entity-derivation source"
+    );
+    assert!(
+        !entity_ids.contains(&rejected),
+        "a rejected memory must not be an entity-derivation source"
     );
 }

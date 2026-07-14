@@ -34,8 +34,12 @@ async fn refresh_decay(
     let updates: Vec<(i64, f64)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
+                // status != 'pending' is the review-gate predicate: an unreviewed
+                // memory must not get a decay score refresh; is_archived = 0 excludes
+                // rejected rows for the same reason.
                 "SELECT id, importance, created_at, access_count, last_accessed_at, is_static, source_count, fsrs_stability \
-                 FROM memories WHERE is_static = 0 AND is_forgotten = 0 AND user_id = ?1",
+                 FROM memories WHERE is_static = 0 AND is_forgotten = 0 AND user_id = ?1 \
+                 AND status != 'pending' AND is_archived = 0",
             )?;
             let rows = stmt.query_map(params![effective_user_id], |r| {
                 let id: i64 = r.get(0)?;
@@ -95,8 +99,12 @@ async fn get_decay_scores(
         .read(move |conn| {
             if let Some(mid) = filter_id {
                 let mut stmt = conn.prepare(
+                    // status != 'pending' is the review-gate predicate: an unreviewed
+                    // memory must not surface its decay score; is_archived = 0 excludes
+                    // rejected rows for the same reason.
                     "SELECT id, content, category, importance, decay_score, created_at \
-                     FROM memories WHERE id = ?1 AND is_forgotten = 0 AND user_id = ?2",
+                     FROM memories WHERE id = ?1 AND is_forgotten = 0 AND user_id = ?2 \
+                     AND status != 'pending' AND is_archived = 0",
                 )?;
                 let rows = stmt.query_map(params![mid, effective_user_id], |r| {
                     let id: i64 = r.get(0)?;
@@ -113,13 +121,18 @@ async fn get_decay_scores(
                 })?;
                 return rows.collect::<Result<Vec<_>, _>>().map_err(Into::into);
             }
+            // status != 'pending' is the review-gate predicate: unreviewed memories
+            // must not appear in the decay-score leaderboard; is_archived = 0
+            // excludes rejected rows for the same reason.
             let sql = if order_asc {
                 "SELECT id, content, category, importance, decay_score, created_at \
                  FROM memories WHERE is_forgotten = 0 AND user_id = ?2 \
+                 AND status != 'pending' AND is_archived = 0 \
                  ORDER BY decay_score ASC LIMIT ?1"
             } else {
                 "SELECT id, content, category, importance, decay_score, created_at \
                  FROM memories WHERE is_forgotten = 0 AND user_id = ?2 \
+                 AND status != 'pending' AND is_archived = 0 \
                  ORDER BY decay_score DESC LIMIT ?1"
             };
             let mut stmt = conn.prepare(sql)?;

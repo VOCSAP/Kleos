@@ -26,10 +26,13 @@ pub async fn list_observations(
     limit: usize,
 ) -> Result<Vec<GrowthObservation>> {
     db.read(move |conn| {
+        // Review-gate predicate: unreviewed (pending) or rejected (is_archived = 1)
+        // growth observations must not be listed as active observations.
         let mut stmt = conn.prepare(
             "SELECT id, content, source, importance, created_at \
                  FROM memories \
                  WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?2 \
+                 AND status != 'pending' AND is_archived = 0 \
                  ORDER BY created_at DESC LIMIT ?1",
         )?;
 
@@ -54,10 +57,13 @@ pub async fn list_observations(
 /// Converts one growth observation into an insight memory.
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     db.write(move |conn| {
+        // Review-gate predicate: an unreviewed (pending) or rejected
+        // (is_archived = 1) observation must not be materialized into an insight.
         let result: Option<(String, String)> = conn
             .query_row(
                 "SELECT content, source FROM memories \
-                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2",
+                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2 \
+                 AND status != 'pending' AND is_archived = 0",
                 rusqlite::params![observation_id, user_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -250,9 +256,16 @@ pub async fn reflect(
     let prefix_clone = prefix.clone();
     let is_dup: bool = db
         .read(move |conn| {
+            // Dedup guard (spam prevention), not a content-surfacing path: a
+            // recent pending or approved observation SHOULD suppress a duplicate,
+            // so status is deliberately not filtered here. Only rejected/archived
+            // rows are excluded (is_archived = 0), matching the store-dedup rule at
+            // memory/mod.rs so a genuinely recurring pattern can resurface after a
+            // reject rather than being silently suppressed forever.
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM memories WHERE category = 'growth' \
+                     AND is_archived = 0 \
                      AND substr(content, 1, 200) = ?1 \
                      AND user_id = ?2 \
                      AND created_at > datetime('now', '-24 hours')",
@@ -395,12 +408,15 @@ async fn match_observations(
         return Ok(Vec::new());
     }
     db.read(move |conn| {
+        // Review-gate predicate: unreviewed (pending) or rejected (is_archived = 1)
+        // growth observations must not surface via the FTS match channel.
         let mut stmt = conn.prepare(
             "SELECT m.id, m.content, m.source, m.importance, m.created_at \
                  FROM memories_fts \
                  JOIN memories m ON m.id = memories_fts.rowid \
                  WHERE memories_fts MATCH ?1 \
                    AND m.category = 'growth' AND m.is_forgotten = 0 AND m.user_id = ?2 \
+                   AND m.status != 'pending' AND m.is_archived = 0 \
                  ORDER BY memories_fts.rank LIMIT ?3",
         )?;
         let observations = stmt
