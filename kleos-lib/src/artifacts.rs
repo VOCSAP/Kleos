@@ -56,14 +56,27 @@ pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Compute the sharded blob path for a given SHA-256 hash.
+/// Compute the sharded, per-tenant blob path for a given SHA-256 hash.
 ///
-/// Format: `{blobs_dir}/{sha[0:2]}/{sha[2:4]}/{sha}.bin` (or `.enc` if
-/// encrypted). The two-level fan-out keeps per-directory inode counts
+/// Format: `{blobs_dir}/{user_id}/{sha[0:2]}/{sha[2:4]}/{sha}.bin` (or `.enc`
+/// if encrypted). The two-level sha fan-out keeps per-directory inode counts
 /// manageable even at scale (max 256 dirs per level).
-pub fn blob_path(blobs_dir: &std::path::Path, sha256: &str, encrypted: bool) -> std::path::PathBuf {
+///
+/// The `user_id` segment is essential in shared-monolith mode with artifact
+/// encryption: the sha256 is the PLAINTEXT hash, but the stored bytes are
+/// per-tenant ciphertext. Without the tenant segment two tenants uploading
+/// identical content would derive the same path, and the second upload would
+/// overwrite the first's blob with bytes only the second tenant can decrypt.
+/// In a per-tenant shard the segment is a harmless constant.
+pub fn blob_path(
+    blobs_dir: &std::path::Path,
+    user_id: i64,
+    sha256: &str,
+    encrypted: bool,
+) -> std::path::PathBuf {
     let ext = if encrypted { "enc" } else { "bin" };
     blobs_dir
+        .join(user_id.to_string())
         .join(&sha256[..2])
         .join(&sha256[2..4])
         .join(format!("{}.{}", sha256, ext))
@@ -368,9 +381,28 @@ pub async fn delete_artifact(
         )?;
 
         if rows_deleted == 0 {
-            Ok(None)
-        } else {
-            Ok(disk_path)
+            return Ok(None);
+        }
+
+        // Reference-count before signalling an unlink. Disk-tier blobs are
+        // content-addressed, so two artifacts with identical bytes share one
+        // blob file. Only hand the path back for unlinking when no surviving
+        // row still references it -- otherwise deleting one artifact would
+        // destroy the blob another still points to.
+        match disk_path {
+            Some(path) => {
+                let still_referenced: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM artifacts WHERE disk_path = ?1",
+                    params![path],
+                    |row| row.get(0),
+                )?;
+                if still_referenced == 0 {
+                    Ok(Some(path))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
         }
     })
     .await

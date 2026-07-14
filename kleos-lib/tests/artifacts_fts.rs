@@ -670,3 +670,87 @@ async fn artifacts_are_isolated_across_tenants_in_shared_db() {
     );
     let _ = intruder_mem; // referenced for clarity of the two-tenant setup
 }
+
+/// `blob_path` must place each tenant's blobs under a distinct directory so two
+/// tenants uploading identical (plaintext) content cannot collide on one path
+/// -- the collision that let one tenant's encrypted blob overwrite another's.
+#[test]
+fn blob_path_is_tenant_scoped() {
+    use std::path::Path;
+    let dir = Path::new("/blobs");
+    let sha = "abcd1234ef567890abcd1234ef567890abcd1234ef567890abcd1234ef567890";
+    let a = kleos_lib::artifacts::blob_path(dir, 10, sha, true);
+    let b = kleos_lib::artifacts::blob_path(dir, 20, sha, true);
+    assert_ne!(a, b, "different tenants must not share a blob path");
+    assert!(
+        a.starts_with("/blobs/10"),
+        "tenant id must be a path segment: {a:?}"
+    );
+    assert!(a.to_string_lossy().ends_with(".enc"));
+}
+
+/// `delete_artifact` must reference-count a shared disk blob: deleting one of
+/// two artifacts pointing at the same disk_path must NOT return the path for
+/// unlinking (the other still needs it); deleting the last one must.
+#[tokio::test]
+async fn delete_artifact_refcounts_shared_blob() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+    let memory_id = insert_memory(&db, "host for refcount test").await;
+    let shared = "/blobs/1/ab/cd/abcd1234.enc";
+    let opts = StoreArtifactOpts::default();
+
+    let id1 = store_artifact(
+        &db,
+        TEST_USER,
+        memory_id,
+        "a.bin",
+        "a.bin",
+        "application/octet-stream",
+        2_000_000,
+        "hash1",
+        "disk",
+        None,
+        Some(shared),
+        true,
+        &opts,
+    )
+    .await
+    .expect("store artifact 1");
+    let id2 = store_artifact(
+        &db,
+        TEST_USER,
+        memory_id,
+        "b.bin",
+        "b.bin",
+        "application/octet-stream",
+        2_000_000,
+        "hash1",
+        "disk",
+        None,
+        Some(shared),
+        true,
+        &opts,
+    )
+    .await
+    .expect("store artifact 2");
+
+    // Deleting the first must NOT release the shared blob.
+    let first = kleos_lib::artifacts::delete_artifact(&db, TEST_USER, id1)
+        .await
+        .expect("delete artifact 1");
+    assert_eq!(
+        first, None,
+        "a shared blob must not be unlinked while another artifact references it"
+    );
+
+    // Deleting the last reference must release the blob for unlinking.
+    let second = kleos_lib::artifacts::delete_artifact(&db, TEST_USER, id2)
+        .await
+        .expect("delete artifact 2");
+    assert_eq!(
+        second.as_deref(),
+        Some(shared),
+        "deleting the last reference releases the blob"
+    );
+}

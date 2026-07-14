@@ -229,7 +229,8 @@ async fn upload_artifact(
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("blobs");
-            let dest = artifacts::blob_path(&blobs_dir, &sha256, is_encrypted);
+            let dest =
+                artifacts::blob_path(&blobs_dir, auth.effective_user_id(), &sha256, is_encrypted);
 
             // Create sharded subdirectory.
             if let Some(parent) = dest.parent() {
