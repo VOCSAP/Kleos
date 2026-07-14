@@ -299,6 +299,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
             "service": &entry.service,
             "action": &entry.action,
         }),
+        user_id,
     )
     .await
     {

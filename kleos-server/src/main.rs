@@ -313,6 +313,20 @@ async fn main() {
         }
     }
 
+    // Resume Loom workflow runs left in-flight by a previous crash/restart on
+    // the primary DB. In shared-monolith mode this is the whole loom dataset; in
+    // sharded mode a tenant shard's runs resume when that shard is next advanced.
+    match kleos_lib::services::loom::recover_inflight_runs(&db_arc).await {
+        Ok(advanced) => {
+            if advanced > 0 {
+                tracing::info!(advanced, "loom in-flight run recovery complete");
+            }
+        }
+        Err(e) => {
+            tracing::error!("loom in-flight run recovery failed: {e}");
+        }
+    }
+
     // H-005: per-pattern semaphores cap concurrent fire-and-forget background tasks.
     // Each defaults to 64 permits; set KLEOS_BG_SEM_<NAME>=N to override.
     fn bg_sem(name: &str, default: usize) -> Arc<Semaphore> {

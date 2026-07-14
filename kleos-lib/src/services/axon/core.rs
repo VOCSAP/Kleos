@@ -519,13 +519,20 @@ pub async fn get_stats(db: &Database, user_id: i64) -> Result<AxonStats> {
 
 /// Publishes an event internally (no HTTP). Used by other services (Loom, Soma, etc.)
 /// to emit lifecycle events into the Axon bus.
-#[tracing::instrument(skip(db, payload), fields(%channel, %action))]
+///
+/// `user_id` is the owning tenant of the event. It must be threaded from the
+/// caller's context: in shared-monolith mode axon_events is one table across all
+/// tenants, so a hardcoded id (the previous behavior) filed every service's
+/// lifecycle events under user 1 and leaked one tenant's activity into another
+/// tenant's event feed.
+#[tracing::instrument(skip(db, payload), fields(%channel, %action, user_id))]
 pub async fn publish_internal(
     db: &Database,
     channel: &str,
     source: &str,
     action: &str,
     payload: serde_json::Value,
+    user_id: i64,
 ) -> Result<i64> {
     let req = PublishEventRequest {
         channel: channel.to_string(),
@@ -533,7 +540,7 @@ pub async fn publish_internal(
         payload: Some(payload),
         source: Some(source.to_string()),
         agent: None,
-        user_id: Some(1), // system user for internal events
+        user_id: Some(user_id),
     };
     let event = publish_event(db, req).await?;
     Ok(event.id)
