@@ -408,6 +408,23 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
     tenant_migration!(78, "add_memory_lang", apply_schema_v78_memory_lang),
     // v79: attention_notes table (mirror of global migration 96).
     tenant_migration!(79, "attention_notes", apply_schema_v79_attention_notes),
+    // v80: re-add user_id to axon_subscriptions with UNIQUE(agent, channel,
+    // user_id) (mirror of global migration 97). notx: the rebuild toggles
+    // PRAGMA foreign_keys. The runner backfills existing rows to the shard owner.
+    tenant_migration!(
+        80,
+        "axon_subscriptions_user_id_readd",
+        apply_schema_v80_axon_subscriptions_readd,
+        notx
+    ),
+    // v81: re-add user_id to axon_cursors with PRIMARY KEY(agent, channel,
+    // user_id) (mirror of global migration 98). notx. Runner backfills rows.
+    tenant_migration!(
+        81,
+        "axon_cursors_user_id_readd",
+        apply_schema_v81_axon_cursors_readd,
+        notx
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -491,6 +508,17 @@ const TENANT_MIGRATION_READD_USER_ID_SESSIONS: i64 = 72;
 /// scratchpad table (reverses v23). The runner backfills existing scratchpad
 /// rows to the shard owner after this runs.
 const TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD: i64 = 75;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// axon_subscriptions table with `UNIQUE(agent, channel, user_id)` (reverses
+/// v31). The runner backfills existing subscription rows to the shard owner
+/// after the rebuild copies them at the DEFAULT.
+const TENANT_MIGRATION_READD_USER_ID_AXON_SUBSCRIPTIONS: i64 = 80;
+
+/// Version of the tenant migration that re-adds `user_id` to the shard
+/// axon_cursors table with `PRIMARY KEY(agent, channel, user_id)` (reverses
+/// v31). The runner backfills existing cursor rows to the shard owner.
+const TENANT_MIGRATION_READD_USER_ID_AXON_CURSORS: i64 = 81;
 
 /// Generates a tenant migration function that loads SQL from an external file.
 macro_rules! tenant_migration_sql {
@@ -761,6 +789,103 @@ tenant_migration_sql!(
     "v57",
     "../tenant/schema_v57_approvals_readd.sql"
 );
+
+/// Tenant v80: re-add `user_id` to `axon_subscriptions` with
+/// `UNIQUE(agent, channel, user_id)` (reverses v31, mirror of global migration
+/// 97). Written as an inline rebuild rather than a `tenant_migration_sql!` file
+/// so it does NOT self-record its schema_migrations version: the runner records
+/// the version only after `up` succeeds, so a crash mid-rebuild is retried
+/// instead of being falsely marked complete. Idempotent: no-op if `user_id` is
+/// already present. Runs outside a SAVEPOINT (notx) because it toggles
+/// `PRAGMA foreign_keys`.
+fn apply_schema_v80_axon_subscriptions_readd(conn: &Connection) -> Result<()> {
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_subscriptions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_user_id > 0 {
+        info!("axon_subscriptions.user_id already present, tenant migration 80 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE axon_subscriptions RENAME TO _axon_subscriptions_old_v80;
+         DROP INDEX IF EXISTS idx_axon_subs_channel;
+
+         CREATE TABLE axon_subscriptions (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             agent TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             filter_type TEXT,
+             webhook_url TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             user_id INTEGER NOT NULL DEFAULT 1,
+             UNIQUE(agent, channel, user_id)
+         );
+
+         INSERT INTO axon_subscriptions
+             (id, agent, channel, filter_type, webhook_url, created_at, user_id)
+         SELECT id, agent, channel, filter_type, webhook_url, created_at, 1
+         FROM _axon_subscriptions_old_v80;
+
+         DROP TABLE _axon_subscriptions_old_v80;
+
+         CREATE INDEX idx_axon_subs_channel ON axon_subscriptions(channel);
+         CREATE INDEX idx_axon_subs_user ON axon_subscriptions(user_id, channel);
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )?;
+    info!("tenant migration 80 complete: user_id re-added to axon_subscriptions");
+    Ok(())
+}
+
+/// Tenant v81: re-add `user_id` to `axon_cursors` with
+/// `PRIMARY KEY(agent, channel, user_id)` (reverses v31, mirror of global
+/// migration 98). Inline rebuild (no self-recorded version); idempotent; notx.
+fn apply_schema_v81_axon_cursors_readd(conn: &Connection) -> Result<()> {
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_cursors') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_user_id > 0 {
+        info!("axon_cursors.user_id already present, tenant migration 81 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE axon_cursors RENAME TO _axon_cursors_old_v81;
+
+         CREATE TABLE axon_cursors (
+             agent TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             last_event_id INTEGER NOT NULL DEFAULT 0,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             user_id INTEGER NOT NULL DEFAULT 1,
+             PRIMARY KEY(agent, channel, user_id)
+         );
+
+         INSERT INTO axon_cursors
+             (agent, channel, last_event_id, updated_at, user_id)
+         SELECT agent, channel, last_event_id, updated_at, 1
+         FROM _axon_cursors_old_v81;
+
+         DROP TABLE _axon_cursors_old_v81;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )?;
+    info!("tenant migration 81 complete: user_id re-added to axon_cursors");
+    Ok(())
+}
 tenant_migration_sql!(
     apply_schema_v58_soma_agents_readd,
     "v58",
@@ -1420,6 +1545,8 @@ fn backfill_owner_tables_for_version(conn: &Connection, version: i64, owner: i64
         TENANT_MIGRATION_READD_USER_ID_SKILLS => &["skill_records"],
         TENANT_MIGRATION_READD_USER_ID_SESSIONS => &["sessions"],
         TENANT_MIGRATION_READD_USER_ID_SCRATCHPAD => &["scratchpad"],
+        TENANT_MIGRATION_READD_USER_ID_AXON_SUBSCRIPTIONS => &["axon_subscriptions"],
+        TENANT_MIGRATION_READD_USER_ID_AXON_CURSORS => &["axon_cursors"],
         _ => &[],
     };
     for table in tables {
@@ -5579,13 +5706,32 @@ mod tests {
         assert_eq!(col, 0, "webhooks still has user_id after v30");
     }
 
-    /// v31: axon_subscriptions and axon_cursors must NOT have a user_id column
-    /// after the full migration chain.
+    /// Axon user_id lifecycle: dropped at v31, re-added at v80/v81. Migration 31
+    /// removed the column under the per-shard-only isolation assumption; v80/v81
+    /// restore it (with a widened UNIQUE/PK) so shared-monolith mode isolates
+    /// subscriptions and cursors per tenant. Assert both ends of that lifecycle.
     #[test]
-    fn user_id_absent_from_axon_after_v31() {
+    fn axon_user_id_dropped_at_v31_then_readded_at_v80() {
+        // At v31 the column is gone on both tables.
+        let mid = Connection::open_in_memory().unwrap();
+        run_tenant_migrations_to(&mid, None, 31).unwrap();
+        for table in &["axon_subscriptions", "axon_cursors"] {
+            let count: i64 = mid
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM pragma_table_info('{}') WHERE name='user_id'",
+                        table
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(count, 0, "table '{}' should have no user_id at v31", table);
+        }
+
+        // After the full chain the column is back on both tables.
         let conn = Connection::open_in_memory().unwrap();
         run_tenant_migrations(&conn, None).unwrap();
-
         for table in &["axon_subscriptions", "axon_cursors"] {
             let count: i64 = conn
                 .query_row(
@@ -5598,13 +5744,13 @@ mod tests {
                 )
                 .unwrap_or(0);
             assert_eq!(
-                count, 0,
-                "table '{}' still has user_id column after v31",
+                count, 1,
+                "table '{}' should have user_id re-added by v80/v81",
                 table
             );
         }
 
-        // UNIQUE(agent, channel) and PRIMARY KEY(agent, channel) survive.
+        // idx_axon_subs_channel survives the v80 rebuild.
         let idx: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_axon_subs_channel'",
@@ -5612,11 +5758,26 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(idx, 1, "idx_axon_subs_channel must survive v31");
+        assert_eq!(idx, 1, "idx_axon_subs_channel must survive the v80 rebuild");
+
+        // The widened UNIQUE(agent, channel, user_id) lets two tenants subscribe
+        // the same (agent, channel); the old UNIQUE(agent, channel) would reject
+        // the second insert.
+        conn.execute(
+            "INSERT INTO axon_subscriptions (agent, channel, user_id) VALUES ('a', 'c', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO axon_subscriptions (agent, channel, user_id) VALUES ('a', 'c', 2)",
+            [],
+        )
+        .expect("widened UNIQUE must allow a second tenant on the same agent/channel");
     }
 
-    /// v31: axon_subscriptions and axon_cursors support the SQL shape
-    /// services/axon.rs now uses (no user_id on INSERT or SELECT).
+    /// After the full chain (user_id re-added at v80/v81), a columnless INSERT
+    /// that omits user_id still works via the DEFAULT 1, so the legacy axon SQL
+    /// shape stays backward-compatible.
     #[test]
     fn axon_tables_usable_after_v31() {
         let conn = Connection::open_in_memory().unwrap();

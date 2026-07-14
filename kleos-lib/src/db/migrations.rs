@@ -450,6 +450,21 @@ pub static MIGRATIONS: &[Migration] = &[
     // v96: attention_notes — persistent, tenant-scoped sticky reminders. No
     // decay, no expiry; agents delete explicitly when done.
     migration!(96, "attention_notes", run_migration_attention_notes, tx),
+    // v97: re-add user_id to axon_subscriptions with UNIQUE(agent, channel,
+    // user_id). Table rebuild (widens the UNIQUE key), so notx -- the rebuild
+    // toggles PRAGMA foreign_keys, which SQLite forbids inside a SAVEPOINT.
+    migration!(
+        97,
+        "readd_user_id_axon_subscriptions",
+        run_migration_readd_user_id_axon_subscriptions
+    ),
+    // v98: re-add user_id to axon_cursors with PRIMARY KEY(agent, channel,
+    // user_id). Table rebuild, so notx.
+    migration!(
+        98,
+        "readd_user_id_axon_cursors",
+        run_migration_readd_user_id_axon_cursors
+    ),
 ];
 
 // --- Version constants ---
@@ -1790,6 +1805,120 @@ fn run_migration_readd_user_id_axon_events(conn: &rusqlite::Connection) -> Resul
         "CREATE INDEX IF NOT EXISTS idx_axon_events_user ON axon_events(user_id, channel, id);",
     )?;
     info!("Migration 68 complete: user_id re-added to axon_events");
+    Ok(())
+}
+
+/// Migration 97: re-add `user_id` to `axon_subscriptions` with
+/// `UNIQUE(agent, channel, user_id)`. Migration 34 dropped user_id under the
+/// per-shard-only isolation assumption; in shared-monolith mode every tenant
+/// shares this table, so a channel-only webhook fan-out delivered one tenant's
+/// event payloads to another tenant's subscribed URL (cross-tenant
+/// exfiltration). The UNIQUE key must widen to include `user_id` so two tenants
+/// can subscribe the same (agent, channel); `ALTER` cannot change a UNIQUE
+/// constraint, so this uses the table rebuild (migration 67 pattern).
+///
+/// `axon_subscriptions` has no FK references; the rebuild preserves `id` values
+/// and runs with `PRAGMA foreign_keys = OFF`. Legacy rows backfill to
+/// `user_id = 1`. Idempotent: no-op if `user_id` is already present.
+fn run_migration_readd_user_id_axon_subscriptions(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_subscriptions') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_user_id > 0 {
+        info!("axon_subscriptions.user_id already present, migration 97 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE axon_subscriptions RENAME TO _axon_subscriptions_old_v97;
+
+         DROP INDEX IF EXISTS idx_axon_subs_channel;
+
+         CREATE TABLE axon_subscriptions (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             agent TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             filter_type TEXT,
+             webhook_url TEXT,
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
+             user_id INTEGER NOT NULL DEFAULT 1,
+             UNIQUE(agent, channel, user_id)
+         );
+
+         INSERT INTO axon_subscriptions
+             (id, agent, channel, filter_type, webhook_url, created_at, user_id)
+         SELECT id, agent, channel, filter_type, webhook_url, created_at, 1
+         FROM _axon_subscriptions_old_v97;
+
+         DROP TABLE _axon_subscriptions_old_v97;
+
+         CREATE INDEX idx_axon_subs_channel ON axon_subscriptions(channel);
+         CREATE INDEX idx_axon_subs_user ON axon_subscriptions(user_id, channel);
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )?;
+
+    info!(
+        "Migration 97 complete: user_id re-added to axon_subscriptions with UNIQUE(agent, channel, user_id)"
+    );
+    Ok(())
+}
+
+/// Migration 98: re-add `user_id` to `axon_cursors` with
+/// `PRIMARY KEY(agent, channel, user_id)`. Migration 34 dropped it; the cursor
+/// PK on (agent, channel) is shared across tenants in monolith mode, so one
+/// tenant's `consume` advanced a cursor another tenant then skipped past.
+/// Widening the PRIMARY KEY requires a table rebuild (migration 67 pattern).
+///
+/// `axon_cursors` has no FK references and no AUTOINCREMENT id; the rebuild runs
+/// with `PRAGMA foreign_keys = OFF`. Legacy rows backfill to `user_id = 1`.
+/// Idempotent: no-op if `user_id` is already present.
+fn run_migration_readd_user_id_axon_cursors(conn: &rusqlite::Connection) -> Result<()> {
+    let has_user_id: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('axon_cursors') WHERE name = 'user_id'",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_user_id > 0 {
+        info!("axon_cursors.user_id already present, migration 98 is a no-op");
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "PRAGMA foreign_keys = OFF;
+         PRAGMA legacy_alter_table = 1;
+
+         ALTER TABLE axon_cursors RENAME TO _axon_cursors_old_v98;
+
+         CREATE TABLE axon_cursors (
+             agent TEXT NOT NULL,
+             channel TEXT NOT NULL,
+             last_event_id INTEGER NOT NULL DEFAULT 0,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             user_id INTEGER NOT NULL DEFAULT 1,
+             PRIMARY KEY(agent, channel, user_id)
+         );
+
+         INSERT INTO axon_cursors
+             (agent, channel, last_event_id, updated_at, user_id)
+         SELECT agent, channel, last_event_id, updated_at, 1
+         FROM _axon_cursors_old_v98;
+
+         DROP TABLE _axon_cursors_old_v98;
+
+         PRAGMA legacy_alter_table = 0;
+         PRAGMA foreign_keys = ON;",
+    )?;
+
+    info!(
+        "Migration 98 complete: user_id re-added to axon_cursors with PRIMARY KEY(agent, channel, user_id)"
+    );
     Ok(())
 }
 

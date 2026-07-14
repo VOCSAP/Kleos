@@ -22,20 +22,25 @@ pub struct WebhookTarget {
 /// Returns all subscriptions for `channel` that have a non-NULL `webhook_url`.
 /// Subscriptions with a `filter_type` are only included when `filter_type` matches
 /// `event_type`. Subscriptions with no `filter_type` (NULL) match all event types.
-#[tracing::instrument(skip(db), fields(channel = %channel, event_type = %event_type))]
+#[tracing::instrument(skip(db), fields(channel = %channel, event_type = %event_type, user_id))]
 pub async fn get_webhook_targets(
     db: &Database,
     channel: &str,
     event_type: &str,
+    user_id: i64,
 ) -> Result<Vec<WebhookTarget>> {
     let channel_s = channel.to_string();
     let event_type_s = event_type.to_string();
 
     db.read(move |conn| {
+        // Scope by user_id: axon_subscriptions is shared across tenants in
+        // monolith mode, so a channel-only match would deliver this tenant's
+        // event payload to another tenant's subscribed webhook URL
+        // (cross-tenant exfiltration).
         let sql = "SELECT agent, webhook_url, filter_type FROM axon_subscriptions \
-                   WHERE channel = ?1 AND webhook_url IS NOT NULL";
+                   WHERE channel = ?1 AND user_id = ?2 AND webhook_url IS NOT NULL";
         let mut stmt = conn.prepare(sql)?;
-        let mut rows = stmt.query(rusqlite::params![channel_s])?;
+        let mut rows = stmt.query(rusqlite::params![channel_s, user_id])?;
 
         let mut targets = Vec::new();
         while let Some(row) = rows.next()? {
@@ -154,7 +159,8 @@ pub async fn publish_and_fanout(
     let event = super::core::publish_event(db, req).await?;
 
     let event_json = serde_json::to_value(&event)?;
-    let targets = get_webhook_targets(db, &event.channel, &event.action).await?;
+    // Scope target lookup to the event's owner so fan-out cannot cross tenants.
+    let targets = get_webhook_targets(db, &event.channel, &event.action, event.user_id).await?;
     let mut set = deliver_webhooks(&targets, &event_json);
 
     // Drain the JoinSet so deliveries complete before the caller drops the future.
@@ -212,7 +218,7 @@ mod tests {
         .expect("upsert logger");
 
         // Both subscriptions should match "task.completed"
-        let targets_completed = get_webhook_targets(&db, "tasks", "task.completed")
+        let targets_completed = get_webhook_targets(&db, "tasks", "task.completed", 1)
             .await
             .expect("get targets completed");
         assert_eq!(
@@ -226,7 +232,7 @@ mod tests {
         );
 
         // Only logger should match "task.started" (broca's filter doesn't match)
-        let targets_started = get_webhook_targets(&db, "tasks", "task.started")
+        let targets_started = get_webhook_targets(&db, "tasks", "task.started", 1)
             .await
             .expect("get targets started");
         assert_eq!(
@@ -236,5 +242,56 @@ mod tests {
             targets_started.iter().map(|t| &t.agent).collect::<Vec<_>>()
         );
         assert_eq!(targets_started[0].agent, "logger");
+    }
+
+    /// Webhook fan-out is scoped by user_id: a subscription owned by one tenant
+    /// must never be returned as a delivery target for another tenant's event on
+    /// the same channel. This is the cross-tenant exfiltration guard -- without
+    /// the user_id predicate, publishing on a shared channel would POST the
+    /// event payload to a foreign tenant's subscribed webhook URL.
+    #[tokio::test]
+    async fn get_targets_scoped_by_user() {
+        let db = setup().await;
+
+        // Two tenants subscribe the same channel with their own webhook URLs.
+        upsert_subscription(
+            &db,
+            SubscribeRequest {
+                agent: "w1".into(),
+                channel: "wh".into(),
+                filter_type: None,
+                webhook_url: Some("http://localhost:7001/a".into()),
+            },
+            1,
+        )
+        .await
+        .expect("upsert tenant 1");
+        upsert_subscription(
+            &db,
+            SubscribeRequest {
+                agent: "w2".into(),
+                channel: "wh".into(),
+                filter_type: None,
+                webhook_url: Some("http://localhost:7002/b".into()),
+            },
+            2,
+        )
+        .await
+        .expect("upsert tenant 2");
+
+        // Tenant 1's fan-out sees only tenant 1's target.
+        let t1 = get_webhook_targets(&db, "wh", "evt", 1)
+            .await
+            .expect("targets for tenant 1");
+        assert_eq!(t1.len(), 1, "tenant 1 must not see tenant 2's subscription");
+        assert_eq!(t1[0].agent, "w1");
+        assert_eq!(t1[0].webhook_url, "http://localhost:7001/a");
+
+        // Tenant 2's fan-out sees only tenant 2's target.
+        let t2 = get_webhook_targets(&db, "wh", "evt", 2)
+            .await
+            .expect("targets for tenant 2");
+        assert_eq!(t2.len(), 1, "tenant 2 must not see tenant 1's subscription");
+        assert_eq!(t2[0].agent, "w2");
     }
 }
