@@ -27,6 +27,7 @@ pub use types::*;
 // Durable job queue with retries (ported from TS jobs/index.ts + scheduler.ts)
 use crate::db::Database;
 use crate::Result;
+use futures::FutureExt;
 use rusqlite::params;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -123,9 +124,17 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
 
             match row {
                 Ok((id, jt, pl, att, ma, created_at, next_retry_at)) => {
-                    tx.execute(
-                        "UPDATE jobs SET status = 'running', claimed_at = datetime('now'), attempts = attempts + 1 WHERE id = ?1",
+                    // Read back the stored claimed_at via RETURNING instead of
+                    // taking a second clock reading in Rust. Job.claimed_at is
+                    // the lease token the finalizers compare against the row
+                    // (JOB-2); when the two clock reads straddled a second
+                    // boundary, every finalizer for this job silently no-oped
+                    // and the job hung at 'running' until recover_stuck_jobs.
+                    let claimed_at: String = tx.query_row(
+                        "UPDATE jobs SET status = 'running', claimed_at = datetime('now'), attempts = attempts + 1 \
+                         WHERE id = ?1 RETURNING claimed_at",
                         params![id],
+                        |row| row.get(0),
                     )?;
                     Some(Job {
                         id,
@@ -136,7 +145,7 @@ pub async fn claim_next_job(db: &Database) -> Result<Option<Job>> {
                         max_attempts: ma,
                         error: None,
                         created_at,
-                        claimed_at: Some(chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()),
+                        claimed_at: Some(claimed_at),
                         completed_at: None,
                         next_retry_at,
                     })
@@ -528,18 +537,44 @@ pub async fn process_next_job(db: &Database) -> Result<bool> {
     };
     let timeout = job_timeout_for(&job.job_type);
 
-    match tokio::time::timeout(timeout, handler(payload)).await {
-        Ok(Ok(())) => {
+    // Contain handler panics. An unwinding handler future would otherwise
+    // propagate through process_next_job and kill the whole worker loop, and
+    // because no finalizer runs, the row stays 'running' until
+    // recover_stuck_jobs requeues it -- a deterministically-panicking payload
+    // then loops forever, since the attempts >= max_attempts check lives in
+    // exactly the code the panic skips. catch_unwind keeps the future
+    // directly owned by tokio::time::timeout, preserving cancel-on-timeout
+    // semantics (a tokio::spawn-based variant would leave a timed-out
+    // handler running detached).
+    let handler_fut = std::panic::AssertUnwindSafe(handler(payload)).catch_unwind();
+    match tokio::time::timeout(timeout, handler_fut).await {
+        Ok(Ok(Ok(()))) => {
             complete_job(db, job.id, &claimed_at).await?;
             debug!(job_id = job.id, job_type = %job.job_type, attempt = job.attempts, "job completed");
         }
-        Ok(Err(err)) => {
+        Ok(Ok(Err(err))) => {
             let err_msg = err.to_string();
             if job.attempts >= job.max_attempts {
                 fail_job(db, job.id, &claimed_at, &err_msg).await?;
             } else {
                 let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
                 retry_job(db, job.id, &claimed_at, &err_msg, delay_sec).await?;
+            }
+        }
+        Ok(Err(panic_payload)) => {
+            let reason = panic_payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic_payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "opaque panic payload".to_string());
+            let err_msg = format!("job handler panicked: {reason}");
+            if job.attempts >= job.max_attempts {
+                fail_job(db, job.id, &claimed_at, &err_msg).await?;
+                error!(job_id = job.id, job_type = %job.job_type, "job handler panicked -- giving up after max attempts");
+            } else {
+                let delay_sec = 10_i64 * i64::from(job.attempts) * i64::from(job.attempts);
+                retry_job(db, job.id, &claimed_at, &err_msg, delay_sec).await?;
+                warn!(job_id = job.id, job_type = %job.job_type, "job handler panicked -- scheduled for retry");
             }
         }
         Err(_) => {
@@ -830,5 +865,111 @@ mod tests {
         assert_eq!(stats.failed, 1, "poison payload must fail permanently");
         assert_eq!(stats.pending, 0, "poison payload must not be requeued");
         assert_eq!(stats.running, 0);
+    }
+
+    /// The Job returned by claim_next_job must carry the exact claimed_at the
+    /// UPDATE stored. Pre-fix, the struct took a second clock reading in Rust;
+    /// when the two reads straddled a second boundary, every lease-gated
+    /// finalizer for that job silently no-oped (JOB-2) and the row hung at
+    /// 'running' until recover_stuck_jobs.
+    #[tokio::test]
+    async fn claimed_at_in_struct_matches_stored_row() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        let job_id = enqueue_job(&db, "test.lease_token", "{}", 3)
+            .await
+            .expect("enqueue");
+
+        let job = claim_next_job(&db)
+            .await
+            .expect("claim")
+            .expect("one pending job");
+        assert_eq!(job.id, job_id);
+
+        let stored: String = db
+            .read(move |conn| {
+                Ok(conn.query_row(
+                    "SELECT claimed_at FROM jobs WHERE id = ?1",
+                    params![job_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .expect("read claimed_at");
+        assert_eq!(
+            job.claimed_at.as_deref(),
+            Some(stored.as_str()),
+            "struct lease token must equal the stored value"
+        );
+    }
+
+    /// A panicking handler must feed the normal retry path instead of
+    /// unwinding through process_next_job: first attempt of a two-attempt job
+    /// lands back at pending.
+    #[tokio::test]
+    async fn panicking_handler_is_retried_not_stuck() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        register_job_handler("test.panics_retry", |_payload| async move {
+            panic!("boom");
+        })
+        .await;
+
+        enqueue_job(&db, "test.panics_retry", "{}", 2)
+            .await
+            .expect("enqueue");
+
+        let processed = process_next_job(&db)
+            .await
+            .expect("panic must not propagate out of process_next_job");
+        assert!(processed);
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.pending, 1, "first panic schedules a retry");
+        assert_eq!(stats.running, 0, "row must not hang at running");
+        assert_eq!(stats.failed, 0);
+    }
+
+    /// A panicking handler that has exhausted max_attempts must reach the
+    /// terminal failed state. Pre-fix this was impossible: the attempts check
+    /// lived in exactly the code the panic skipped, so a deterministically
+    /// panicking payload looped forever via recover_stuck_jobs.
+    #[tokio::test]
+    async fn panicking_handler_fails_after_max_attempts() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+
+        register_job_handler("test.panics_final", |_payload| async move {
+            panic!("boom");
+        })
+        .await;
+
+        enqueue_job(&db, "test.panics_final", "{}", 1)
+            .await
+            .expect("enqueue");
+
+        let processed = process_next_job(&db)
+            .await
+            .expect("panic must not propagate out of process_next_job");
+        assert!(processed);
+
+        let stats = get_job_stats(&db).await.expect("stats");
+        assert_eq!(stats.failed, 1, "exhausted attempts must fail terminally");
+        assert_eq!(stats.pending, 0);
+        assert_eq!(stats.running, 0);
+
+        let error: Option<String> = db
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT error FROM jobs WHERE type = 'test.panics_final'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .expect("read error");
+        assert!(
+            error.unwrap_or_default().contains("panicked: boom"),
+            "panic reason must be recorded on the row"
+        );
     }
 }

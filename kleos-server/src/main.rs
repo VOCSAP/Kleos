@@ -475,8 +475,9 @@ async fn main() {
 
     {
         let db = Arc::clone(&state.db);
+        let registry = state.tenant_registry.clone();
         supervised.push(Supervised::spawn("job-worker", move || {
-            start_job_worker_task(Arc::clone(&db))
+            start_job_worker_task(Arc::clone(&db), registry.clone())
         }));
         tracing::info!("job-worker background task started");
     }
@@ -673,10 +674,20 @@ async fn register_job_handlers(
     // ingestion.fact_extract -- durable fast_extract_facts invocation.
     // Payload: { "memory_id": i64, "content": string, "user_id": i64,
     //            "episode_id": i64|null }
+    //
+    // The memory row these jobs reference lives in whichever database the
+    // ingestion request wrote it to: the tenant's own shard in sharded mode,
+    // the monolith otherwise. The handler must resolve that same database
+    // from the payload's user_id at execution time -- the fixed monolith db
+    // it used to close over would look up the memory_id in the wrong file
+    // (per-file autoincrement ids collide across shards, so a collision
+    // derives facts against another tenant's memory rather than erroring).
     {
         let db = Arc::clone(&db);
+        let registry = tenant_registry.clone();
         kleos_lib::jobs::register_job_handler("ingestion.fact_extract", move |payload| {
             let db = Arc::clone(&db);
+            let registry = registry.clone();
             async move {
                 let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
                     kleos_lib::EngError::InvalidInput(
@@ -696,6 +707,10 @@ async fn register_job_handlers(
                     ),
                 )?;
                 let episode_id = payload.get("episode_id").and_then(|v| v.as_i64());
+                let db = match registry {
+                    Some(ref reg) => reg.get_or_create(&user_id.to_string()).await?.db.clone(),
+                    None => db,
+                };
                 kleos_lib::intelligence::extraction::fast_extract_facts(
                     db.as_ref(),
                     &content,
@@ -713,11 +728,14 @@ async fn register_job_handlers(
     // ingestion.entity_extract -- durable extract_and_link_entities invocation.
     // Payload: { "memory_id": i64, "content": string, "user_id": i64,
     //            "episode_id": i64|null }
-    // Shares the same payload shape as ingestion.fact_extract for symmetry.
+    // Shares the same payload shape as ingestion.fact_extract for symmetry,
+    // including the execution-time shard resolution (see the comment there).
     {
         let db = Arc::clone(&db);
+        let registry = tenant_registry.clone();
         kleos_lib::jobs::register_job_handler("ingestion.entity_extract", move |payload| {
             let db = Arc::clone(&db);
+            let registry = registry.clone();
             async move {
                 let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
                     kleos_lib::EngError::InvalidInput(
@@ -736,6 +754,10 @@ async fn register_job_handlers(
                         "ingestion.entity_extract payload missing user_id".into(),
                     ),
                 )?;
+                let db = match registry {
+                    Some(ref reg) => reg.get_or_create(&user_id.to_string()).await?.db.clone(),
+                    None => db,
+                };
                 kleos_lib::graph::entities::extract_and_link_entities(
                     db.as_ref(),
                     memory_id,

@@ -68,11 +68,17 @@ pub fn start_auto_checkpoint_task(
 /// row, runs the registered handler, and records success/failure/retry.
 ///
 /// The worker polls the queue every 200ms when empty and spins tight when
-/// work is available. Every 5 minutes it calls
-/// [`kleos_lib::jobs::recover_stuck_jobs`] to unstick rows abandoned by a
-/// crashed worker so they return to `pending` and get retried.
+/// work is available. In tenant-sharding mode each shard has its own private
+/// `jobs` table that nothing else polls, so every tick also drains the
+/// RESIDENT active shards (`snapshot_all_handles` -- no loads, no touches, so
+/// polling cannot pin tenants resident or thrash eviction). Every 5 minutes
+/// it calls [`kleos_lib::jobs::recover_stuck_jobs`] to unstick rows abandoned
+/// by a crashed worker, and in sharded mode sequentially sweeps ALL active
+/// tenants (loading them one at a time) to recover and drain backlogs on
+/// shards that were evicted with jobs still pending.
 pub fn start_job_worker_task(
     db: Arc<Database>,
+    registry: Option<Arc<TenantRegistry>>,
 ) -> (CancellationToken, tokio::task::JoinHandle<()>) {
     let token = CancellationToken::new();
     let cancel = token.clone();
@@ -97,20 +103,18 @@ pub fn start_job_worker_task(
                     Ok(_) => {}
                     Err(e) => warn!(error = %e, "job-worker recover_stuck_jobs failed"),
                 }
+                if let Some(ref reg) = registry {
+                    sweep_tenant_job_backlogs(reg, &cancel).await;
+                }
                 last_stuck_recovery = tokio::time::Instant::now();
             }
 
+            // One drain pass: the monolith queue, then every resident shard.
+            let mut worked = false;
             match kleos_lib::jobs::process_next_job(&db).await {
-                Ok(true) => {
-                    // Work happened; loop immediately to drain the queue.
+                Ok(did_work) => {
                     consecutive_errors = 0;
-                }
-                Ok(false) => {
-                    consecutive_errors = 0;
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        _ = tokio::time::sleep(poll_interval) => {}
-                    }
+                    worked |= did_work;
                 }
                 Err(e) => {
                     consecutive_errors = consecutive_errors.saturating_add(1);
@@ -128,12 +132,91 @@ pub fn start_job_worker_task(
                         _ = cancel.cancelled() => break,
                         _ = tokio::time::sleep(backoff) => {}
                     }
+                    continue;
+                }
+            }
+            if let Some(ref reg) = registry {
+                for handle in reg.snapshot_all_handles().await {
+                    if cancel.is_cancelled() {
+                        break;
+                    }
+                    match kleos_lib::jobs::process_next_job(&handle.db).await {
+                        Ok(did_work) => worked |= did_work,
+                        // One broken shard must not stall the others or the
+                        // monolith: log and move on.
+                        Err(e) => warn!(
+                            tenant = %handle.tenant_id,
+                            error = %e,
+                            "job-worker shard process_next_job error"
+                        ),
+                    }
+                }
+            }
+
+            if !worked {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(poll_interval) => {}
                 }
             }
         }
     });
 
     (token, handle)
+}
+
+/// Slow-cadence backlog sweep for tenant shards (sharded mode only).
+///
+/// Loads each active tenant one at a time (bounded residency churn: at most
+/// one extra shard is materialized at any moment, and LRU eviction reclaims
+/// it), re-queues rows abandoned at 'running', and drains any pending jobs
+/// the fast path missed because the shard was not resident when they were
+/// enqueued.
+async fn sweep_tenant_job_backlogs(reg: &Arc<TenantRegistry>, cancel: &CancellationToken) {
+    let tenants = match reg.list() {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, "job-worker sweep: failed to list tenants");
+            return;
+        }
+    };
+    for row in tenants {
+        if cancel.is_cancelled() {
+            return;
+        }
+        if row.status != kleos_lib::tenant::TenantStatus::Active {
+            continue;
+        }
+        let handle = match reg.get(&row.user_id).await {
+            Ok(Some(h)) => h,
+            Ok(None) => continue,
+            Err(e) => {
+                warn!(tenant = %row.tenant_id, error = %e, "job-worker sweep: shard load failed");
+                continue;
+            }
+        };
+        match kleos_lib::jobs::recover_stuck_jobs(&handle.db).await {
+            Ok(n) if n > 0 => {
+                warn!(tenant = %handle.tenant_id, recovered = n, "job-worker re-queued stuck shard jobs");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(tenant = %handle.tenant_id, error = %e, "job-worker sweep: recover_stuck_jobs failed");
+            }
+        }
+        // Drain this shard's backlog before moving on so a shard that gets
+        // evicted right after the sweep still had its queue emptied.
+        loop {
+            match kleos_lib::jobs::process_next_job(&handle.db).await {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(e) => {
+                    warn!(tenant = %handle.tenant_id, error = %e, "job-worker sweep: process_next_job failed");
+                    break;
+                }
+            }
+        }
+    }
 }
 
 /// Deletes completed jobs older than 1 hour on an hourly interval.
@@ -1036,5 +1119,58 @@ mod tests {
         // Keep the subscriber alive past the reaper scan so its presence is
         // actually reflected in tx.receiver_count().
         drop(subscriber);
+    }
+
+    /// Sharded mode: jobs enqueued into a tenant shard's private jobs table
+    /// must be drained by the worker. Pre-fix, only the monolith queue was
+    /// polled and shard jobs (e.g. ingestion.fact_extract enqueued via the
+    /// per-request ResolvedDb) sat pending forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worker_drains_resident_tenant_shard_jobs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let registry = Arc::new(
+            kleos_lib::tenant::TenantRegistry::new(
+                dir.path(),
+                kleos_lib::tenant::TenantConfig::default(),
+                128,
+                false,
+                None,
+            )
+            .expect("registry"),
+        );
+        let tenant = registry.get_or_create("4242").await.expect("tenant");
+
+        kleos_lib::jobs::register_job_handler("test.shard_drain", |_payload| async move { Ok(()) })
+            .await;
+        kleos_lib::jobs::enqueue_job(&tenant.db, "test.shard_drain", "{}", 3)
+            .await
+            .expect("enqueue into shard");
+
+        let monolith = Arc::new(
+            kleos_lib::db::Database::connect_memory()
+                .await
+                .expect("monolith db"),
+        );
+        let (cancel, handle) = start_job_worker_task(monolith, Some(Arc::clone(&registry)));
+
+        // The resident-shard drain runs on the 200ms poll cycle; allow a
+        // generous deadline for slow CI machines.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let stats = kleos_lib::jobs::get_job_stats(&tenant.db)
+                .await
+                .expect("shard job stats");
+            if stats.completed >= 1 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shard job was never drained: {stats:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        cancel.cancel();
+        let _ = handle.await;
     }
 }
