@@ -1,4 +1,4 @@
-use super::cooccurrence::record_cooccurrence;
+use super::cooccurrence::record_cooccurrences_batch;
 use super::types::{CreateEntityRequest, Entity, EntityMemorySearchResult};
 use crate::db::Database;
 use crate::memory::fts::sanitize_fts_query;
@@ -564,12 +564,24 @@ pub async fn extract_and_link_entities(
         entities.push(entity);
     }
 
-    // Record pairwise co-occurrences for all entity pairs found in this memory.
+    // Record pairwise co-occurrences for entity pairs found in this memory.
+    // Pairing is capped (DoS bound: O(n^2) writes from a single store) and the
+    // whole pair set lands in one transaction. Entities beyond the cap are
+    // still created and linked above -- only co-occurrence pairing is bounded.
     // Pass user_id so single-DB installs can filter co-occurrences per user.
-    for a in 0..entities.len() {
-        for b in (a + 1)..entities.len() {
-            let _ = record_cooccurrence(db, entities[a].id, entities[b].id, user_id).await;
+    let capped = &entities[..entities
+        .len()
+        .min(crate::validation::MAX_COOCCURRENCE_ENTITIES)];
+    let mut pairs: Vec<(i64, i64)> =
+        Vec::with_capacity(capped.len() * capped.len().saturating_sub(1) / 2);
+    for a in 0..capped.len() {
+        for b in (a + 1)..capped.len() {
+            pairs.push((capped[a].id, capped[b].id));
         }
+    }
+    // Best-effort like the previous per-pair recording, but observable.
+    if let Err(e) = record_cooccurrences_batch(db, pairs, user_id).await {
+        tracing::warn!(memory_id, "co-occurrence batch record failed: {e}");
     }
 
     Ok(entities)

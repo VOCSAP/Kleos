@@ -79,8 +79,13 @@ fn rank_candidates(
         }
         // LanceDB cosine distance -> similarity. When the index reports no
         // distance, approximate from rank so we still produce some links.
+        // Clamp like search.rs::semantic_score_from_distance: PQ-quantized
+        // distances can come back marginally negative for near-identical
+        // vectors, and an unclamped sim > 1.0 would be rejected by
+        // insert_link's (0.0, 1.0] guard -- silently dropping exactly the
+        // strongest (near-duplicate) candidate in both directions.
         let sim = match hit.distance {
-            Some(d) => 1.0 - d as f64,
+            Some(d) => (1.0 - d as f64).clamp(0.0, 1.0),
             None => 1.0 - (hit.rank as f64 / ANN_K as f64),
         };
         if sim >= threshold {
@@ -262,6 +267,26 @@ mod tests {
             distance,
             rank,
         }
+    }
+
+    /// A marginally negative PQ-quantized distance (near-duplicate noise)
+    /// must clamp to similarity 1.0 and stay linkable, not overflow past 1.0
+    /// into insert_link's rejection range -- that would silently drop exactly
+    /// the strongest candidate in both directions.
+    #[test]
+    fn rank_candidates_clamps_negative_distance_to_valid_similarity() {
+        let hits = vec![
+            hit(2, Some(-0.02), 0), // PQ noise: raw sim would be 1.02
+            hit(3, Some(0.10), 1),  // ordinary neighbour, sim 0.9
+        ];
+        let out = rank_candidates(&hits, 1, AUTO_LINK_THRESHOLD, AUTO_LINK_MAX);
+        assert_eq!(out.len(), 2, "the near-duplicate must survive ranking");
+        assert_eq!(out[0].0, 2, "near-duplicate ranks first");
+        assert!(
+            out[0].1 <= 1.0 && out[0].1 > 0.0,
+            "similarity must land in insert_link's accepted (0.0, 1.0], got {}",
+            out[0].1
+        );
     }
 
     /// The self-hit is removed and neighbours below the threshold are dropped.

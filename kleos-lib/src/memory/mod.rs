@@ -1944,6 +1944,15 @@ pub async fn insert_link(
     link_type: &str,
     user_id: i64,
 ) -> Result<()> {
+    // Reject out-of-range similarity before touching the DB. NaN must be
+    // caught explicitly: every range comparison on NaN is false, so a bare
+    // range check would let NaN through and poison downstream PageRank
+    // (edge weights are similarity-derived and divided by per-node totals).
+    if !similarity.is_finite() || similarity <= 0.0 || similarity > 1.0 {
+        return Err(EngError::InvalidInput(format!(
+            "similarity must be in (0.0, 1.0], got {similarity}"
+        )));
+    }
     // Validate both memories exist and are not forgotten
     let count_sql =
         "SELECT COUNT(*) FROM memories WHERE id IN (?1, ?2) AND user_id = ?3 AND is_forgotten = 0";

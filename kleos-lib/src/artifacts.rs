@@ -432,7 +432,24 @@ pub async fn search_artifacts(
         ));
     }
 
-    let query = query.to_string();
+    // Reject oversized queries before sanitization to avoid CPU-intensive
+    // tokenization on pathologically large input (same bound as fts_search
+    // and search_episodes_fts).
+    if query.len() > crate::validation::MAX_FTS_QUERY_LEN {
+        return Err(crate::EngError::InvalidInput(format!(
+            "query exceeds maximum length of {} bytes",
+            crate::validation::MAX_FTS_QUERY_LEN
+        )));
+    }
+
+    // Sanitize into a quoted OR-of-tokens MATCH expression so FTS5 operators
+    // in user input (AND/OR/NOT/NEAR, quotes, parens, column filters) cannot
+    // be reinterpreted or raise syntax errors. Mirrors fts_search /
+    // search_episodes_fts, which bind the sanitized form, never the raw query.
+    let query = crate::memory::fts::fts_or_match_query(query);
+    if query.is_empty() {
+        return Ok(vec![]);
+    }
     let limit = limit as i64;
 
     db.read(move |conn| {

@@ -92,6 +92,14 @@ pub async fn compute_pagerank(
             continue;
         }
         let w = edge_weight(&link_type, similarity);
+        // Drop degenerate edges. insert_link enforces similarity in
+        // (0.0, 1.0] going forward, but rows written before that guard (or
+        // through legacy direct-SQL paths) can carry zero, negative, or NaN
+        // similarity; one such edge would poison out_w for its source node
+        // and turn every downstream rank into NaN/Inf.
+        if !w.is_finite() || w <= 0.0 {
+            continue;
+        }
         *out_w.entry(source_id).or_insert(0.0) += w;
         in_links.entry(target_id).or_default().push((source_id, w));
     }
@@ -109,7 +117,12 @@ pub async fn compute_pagerank(
             for (from_id, weight) in incoming {
                 let from_rank = pr.get(from_id).copied().unwrap_or(0.0);
                 let from_out = out_w.get(from_id).copied().unwrap_or(1.0);
-                sum += (from_rank * weight) / from_out;
+                // Defense in depth: the edge filter above keeps out_w sums
+                // positive for every node that appears as a source, but guard
+                // the division anyway so no data shape can yield NaN/Inf.
+                if from_out > 0.0 {
+                    sum += (from_rank * weight) / from_out;
+                }
             }
             let rank = (1.0 - damping) / n as f64 + damping * sum;
             new_pr.insert(id, rank);
@@ -709,6 +722,14 @@ pub async fn compute_pagerank_for_community(
             continue;
         }
         let w = edge_weight(&link_type, similarity);
+        // Drop degenerate edges. insert_link enforces similarity in
+        // (0.0, 1.0] going forward, but rows written before that guard (or
+        // through legacy direct-SQL paths) can carry zero, negative, or NaN
+        // similarity; one such edge would poison out_w for its source node
+        // and turn every downstream rank into NaN/Inf.
+        if !w.is_finite() || w <= 0.0 {
+            continue;
+        }
         *out_w.entry(source_id).or_insert(0.0) += w;
         in_links.entry(target_id).or_default().push((source_id, w));
     }
@@ -728,7 +749,12 @@ pub async fn compute_pagerank_for_community(
             for (from_id, weight) in incoming {
                 let from_rank = pr.get(from_id).copied().unwrap_or(0.0);
                 let from_out = out_w.get(from_id).copied().unwrap_or(1.0);
-                sum += (from_rank * weight) / from_out;
+                // Defense in depth: the edge filter above keeps out_w sums
+                // positive for every node that appears as a source, but guard
+                // the division anyway so no data shape can yield NaN/Inf.
+                if from_out > 0.0 {
+                    sum += (from_rank * weight) / from_out;
+                }
             }
             let rank = (1.0 - damping) / n as f64 + damping * sum;
             new_pr.insert(id, rank);
@@ -1157,5 +1183,76 @@ mod tests {
             "cached search took {:?}, expected under 100ms",
             elapsed
         );
+    }
+
+    /// Legacy rows with degenerate similarity (0 or negative, written before
+    /// insert_link enforced the (0.0, 1.0] range) must not poison the ranks:
+    /// the edge filter drops them, so every computed score stays finite.
+    #[tokio::test]
+    async fn degenerate_similarity_edges_keep_ranks_finite() {
+        let db = Database::connect_memory().await.expect("in-memory db");
+        let user_id = 1;
+
+        let a = memory::store(
+            &db,
+            store_request("degenerate edge alpha", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store a")
+        .id;
+        let b = memory::store(
+            &db,
+            store_request("degenerate edge beta", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store b")
+        .id;
+        let c = memory::store(
+            &db,
+            store_request("degenerate edge gamma", user_id),
+            None,
+            false,
+        )
+        .await
+        .expect("store c")
+        .id;
+
+        // Simulate pre-guard rows via raw SQL (insert_link now rejects these).
+        // Node a's out-weights sum to EXACTLY 0.0: pre-fix this makes b's rank
+        // (rank_a * 0.0) / 0.0 = NaN, which then propagates -- the decisive
+        // seed this test must fail on without the edge filter. (A negative
+        // co-seed like -0.7 would make the sum nonzero and the division
+        // finite, silently passing pre-fix.) The c->a edge covers the
+        // negative-weight filter arm without disturbing a's zero sum.
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memory_links (source_id, target_id, similarity, type) \
+                 VALUES (?1, ?2, 0.0, 'related'), (?1, ?3, 0.0, 'related'), \
+                        (?3, ?1, -0.7, 'related')",
+                rusqlite::params![a, b, c],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed degenerate links");
+        // One healthy edge so the graph is not empty.
+        memory::insert_link(&db, b, c, 0.9, "related", user_id)
+            .await
+            .expect("healthy link");
+
+        let result = compute_pagerank(&db, user_id, 0.85, 25)
+            .await
+            .expect("compute pagerank");
+        assert_eq!(result.scores.len(), 3, "every memory gets a score");
+        for (id, score) in &result.scores {
+            assert!(
+                score.is_finite(),
+                "rank for memory {id} must be finite, got {score}"
+            );
+        }
     }
 }

@@ -754,3 +754,82 @@ async fn delete_artifact_refcounts_shared_blob() {
         "deleting the last reference releases the blob"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Query sanitization: FTS5 operators, oversized input, stopword-only queries
+// ---------------------------------------------------------------------------
+
+/// FTS5 operators and unbalanced quotes in the query are sanitized rather
+/// than interpreted: the search matches on the surviving tokens instead of
+/// raising an FTS5 syntax error (pre-fix, the raw string was bound directly
+/// into `MATCH` and this query errored out).
+#[tokio::test]
+async fn search_artifacts_sanitizes_fts_operators() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let memory_id = insert_memory(&db, "host for sanitize test").await;
+    let content = "entanglement protocol notes";
+    let data = content.as_bytes().to_vec();
+    let opts = StoreArtifactOpts {
+        artifact_type: Some("file".into()),
+        content: Some(content.to_string()),
+        ..StoreArtifactOpts::default()
+    };
+    let artifact_id = store_artifact(
+        &db,
+        TEST_USER,
+        memory_id,
+        "sanitize.txt",
+        "sanitize.txt",
+        "text/plain",
+        data.len() as i64,
+        "3333cccc",
+        "inline",
+        Some(data),
+        None,
+        false,
+        &opts,
+    )
+    .await
+    .expect("store artifact");
+
+    // Unbalanced quote + boolean keyword + parens: raw FTS5 would reject this.
+    let results =
+        kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "entanglement AND (\"", 10, None)
+            .await
+            .expect("operator-laden query must be sanitized, not an FTS5 error");
+    assert_eq!(results.len(), 1, "expected the surviving token to match");
+    assert_eq!(results[0].id, artifact_id);
+}
+
+/// Queries longer than MAX_FTS_QUERY_LEN are rejected with InvalidInput
+/// before any tokenization or DB work.
+#[tokio::test]
+async fn search_artifacts_rejects_oversized_query() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let long_query = "a".repeat(kleos_lib::validation::MAX_FTS_QUERY_LEN + 1);
+    let err = kleos_lib::artifacts::search_artifacts(&db, TEST_USER, &long_query, 10, None)
+        .await
+        .expect_err("oversized query must be rejected");
+    assert!(
+        matches!(err, kleos_lib::EngError::InvalidInput(_)),
+        "expected InvalidInput, got {err:?}"
+    );
+}
+
+/// A query that sanitizes to nothing (stopwords / single-char tokens only)
+/// returns an empty result set instead of hitting the FTS table, matching
+/// the fts_search / search_episodes_fts contract.
+#[tokio::test]
+async fn search_artifacts_empty_after_sanitization_returns_no_hits() {
+    let handle = one_tenant().await;
+    let db = handle.database();
+
+    let results = kleos_lib::artifacts::search_artifacts(&db, TEST_USER, "a ! ?", 10, None)
+        .await
+        .expect("stopword-only query must not error");
+    assert!(results.is_empty(), "nothing usable to match on");
+}

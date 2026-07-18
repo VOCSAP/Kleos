@@ -61,6 +61,12 @@ pub const MAX_GRAPH_NEIGHBORHOOD_DEPTH: u32 = 5;
 /// DoS bound: caps entity fan-out per memory (i64 for direct rusqlite binding).
 pub const MAX_MEMORY_ENTITY_FANOUT: i64 = 1_000;
 
+/// Maximum entities per memory considered for pairwise co-occurrence recording.
+/// DoS bound: co-occurrence pairing is O(n^2) in entity count; a single 100KB
+/// memory stuffed with quoted tokens or acronyms could otherwise force hundreds
+/// of thousands of row upserts from one store call.
+pub const MAX_COOCCURRENCE_ENTITIES: usize = 50;
+
 // --- Pagination ---
 
 /// Maximum accepted pagination offset across list endpoints.
