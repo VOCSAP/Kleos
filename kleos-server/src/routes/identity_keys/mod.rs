@@ -388,9 +388,12 @@ async fn create_invite_handler(
 
             // 24-hour expiry window gives the admin time to hand the
             // token to the coworker without being too permissive.
+            // datetime('now') is already UTC; adding a 'utc' modifier here
+            // would re-interpret it as localtime and skew the expiry by the
+            // host's UTC offset (the migration-99 bug class).
             conn.execute(
                 "INSERT INTO enrollment_invites (user_id, token_hash, method, expires_at)
-                 VALUES (?1, ?2, ?3, datetime('now', 'utc', '+24 hours'))",
+                 VALUES (?1, ?2, ?3, datetime('now', '+24 hours'))",
                 params![user_id, hash_clone, method_clone],
             )?;
 

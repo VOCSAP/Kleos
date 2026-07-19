@@ -526,6 +526,19 @@ pub static MIGRATIONS: &[Migration] = &[
         run_migration_readd_user_id_axon_cursors,
         fkrebuild
     ),
+    // v99: correct the datetime('now', 'utc') double-UTC-conversion defaults on
+    // handoffs, handoff_atoms, atom_entity_links, enrollment_invites, and
+    // frameshift_growth. SQLite's 'utc' modifier treats its input as localtime,
+    // so applying it to the already-UTC 'now' skews the stored value by the
+    // host's UTC offset (-2h under CEST). Rebuilds each affected table with a
+    // plain datetime('now') default and backfills skewed rows via the exact
+    // per-row inverse datetime(col, 'localtime'). Table rebuilds, so fkrebuild.
+    migration!(
+        99,
+        "tz_default_rebuild",
+        run_migration_tz_default_rebuild,
+        fkrebuild
+    ),
 ];
 
 // --- Version constants ---
@@ -2053,6 +2066,321 @@ fn run_migration_readd_user_id_axon_cursors(conn: &rusqlite::Connection) -> Resu
     info!(
         "Migration 98 complete: user_id re-added to axon_cursors with PRIMARY KEY(agent, channel, user_id)"
     );
+    Ok(())
+}
+
+/// Returns true when `table`'s live CREATE TABLE text still carries the buggy
+/// `datetime('now', 'utc')` default expression. SQLite's 'utc' modifier treats
+/// its input as localtime and converts it to UTC, so applying it to the
+/// already-UTC 'now' double-converts and skews the stored value by the host's
+/// UTC offset. The check is whitespace-insensitive so formatting differences
+/// between historical schema sources cannot mask a hit, and it returns false
+/// for a missing table so guarded rebuilds are safe no-ops on partial schemas.
+pub(crate) fn table_has_utc_default(conn: &rusqlite::Connection, table: &str) -> Result<bool> {
+    use rusqlite::OptionalExtension;
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(sql.is_some_and(|s| {
+        let compact: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        compact.contains("datetime('now','utc')")
+    }))
+}
+
+/// Migration 99: rebuild the five tables whose `created_at`-family columns
+/// defaulted to `datetime('now', 'utc')` -- handoffs, handoff_atoms,
+/// atom_entity_links, enrollment_invites, and frameshift_growth -- replacing
+/// the default with plain `datetime('now')` and backfilling the skewed rows.
+///
+/// The backfill maps each stored value through `datetime(col, 'localtime')`,
+/// which is the exact inverse of the buggy write under the same host timezone:
+/// the bad default subtracted the host's UTC offset in effect at write time,
+/// and 'localtime' adds the offset in effect at the stored instant (DST-aware
+/// via the host tzdata, so summer rows shift by the summer offset and winter
+/// rows by the winter offset). Rows written within the offset window of a DST
+/// transition can land 1h off; that ambiguity is inherent to inverting a
+/// local-time round-trip. Hosts running on UTC wrote no skew and the inversion
+/// is the identity there.
+///
+/// Every rebuild is guarded on the buggy default still being present in the
+/// live schema (`table_has_utc_default`), so fresh databases -- whose creation
+/// migrations now carry the corrected default -- skip both the rebuild and the
+/// data transform. `handoff_atoms.last_seen_at` needs a carve-out: the re-seen
+/// UPDATE path always wrote it correctly with `datetime('now')`, so only rows
+/// still on their insert default (`seen_count <= 1`) are transformed.
+///
+/// Runs under `apply_fk_rebuild` (foreign keys OFF outside the transaction,
+/// one BEGIN..COMMIT around the whole rebuild) per the migration 67/97/98
+/// house pattern; the in-SQL PRAGMA statements document the requirement.
+fn run_migration_tz_default_rebuild(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA legacy_alter_table = 1;")?;
+
+    if table_has_utc_default(conn, "handoffs")? {
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM handoffs", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE handoffs RENAME TO _handoffs_old_v99;
+
+             DROP TRIGGER IF EXISTS handoffs_fts_ai;
+             DROP TRIGGER IF EXISTS handoffs_fts_ad;
+             DROP TRIGGER IF EXISTS handoffs_fts_au;
+             DROP INDEX IF EXISTS idx_handoffs_project;
+             DROP INDEX IF EXISTS idx_handoffs_created;
+             DROP INDEX IF EXISTS idx_handoffs_hash;
+             DROP INDEX IF EXISTS idx_handoffs_agent;
+             DROP INDEX IF EXISTS idx_handoffs_type;
+             DROP INDEX IF EXISTS idx_handoffs_session;
+             DROP INDEX IF EXISTS idx_handoffs_model;
+             DROP INDEX IF EXISTS idx_handoffs_restore;
+             DROP INDEX IF EXISTS idx_handoffs_user_created;
+
+             CREATE TABLE handoffs (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 project TEXT NOT NULL,
+                 branch TEXT,
+                 directory TEXT,
+                 agent TEXT DEFAULT 'unknown',
+                 type TEXT DEFAULT 'manual',
+                 content TEXT NOT NULL,
+                 metadata TEXT,
+                 session_id TEXT,
+                 model TEXT,
+                 host TEXT,
+                 content_hash TEXT
+             );
+
+             INSERT INTO handoffs
+                 (id, user_id, created_at, project, branch, directory, agent, type,
+                  content, metadata, session_id, model, host, content_hash)
+             SELECT id, user_id,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    project, branch, directory, agent, type,
+                    content, metadata, session_id, model, host, content_hash
+             FROM _handoffs_old_v99;
+
+             DROP TABLE _handoffs_old_v99;
+
+             CREATE INDEX idx_handoffs_project ON handoffs(project, created_at DESC);
+             CREATE INDEX idx_handoffs_created ON handoffs(created_at DESC);
+             CREATE INDEX idx_handoffs_hash ON handoffs(content_hash);
+             CREATE INDEX idx_handoffs_agent ON handoffs(agent, created_at DESC);
+             CREATE INDEX idx_handoffs_type ON handoffs(type, created_at DESC);
+             CREATE INDEX idx_handoffs_session ON handoffs(session_id);
+             CREATE INDEX idx_handoffs_model ON handoffs(model, created_at DESC);
+             CREATE INDEX idx_handoffs_restore ON handoffs(project, type, agent, created_at DESC);
+             CREATE INDEX idx_handoffs_user_created ON handoffs(user_id, created_at DESC);
+
+             CREATE TRIGGER handoffs_fts_ai AFTER INSERT ON handoffs BEGIN
+                 INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
+             END;
+             CREATE TRIGGER handoffs_fts_ad AFTER DELETE ON handoffs BEGIN
+                 INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
+             END;
+             CREATE TRIGGER handoffs_fts_au AFTER UPDATE OF content ON handoffs BEGIN
+                 INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
+                 INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
+             END;",
+        )?;
+        info!(
+            rows,
+            "Migration 99: handoffs rebuilt, created_at backfilled to true UTC"
+        );
+    } else {
+        info!("Migration 99: handoffs default already correct, skipping rebuild");
+    }
+
+    if table_has_utc_default(conn, "handoff_atoms")? {
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM handoff_atoms", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE handoff_atoms RENAME TO _handoff_atoms_old_v99;
+
+             DROP INDEX IF EXISTS idx_atoms_project_type;
+             DROP INDEX IF EXISTS idx_atoms_salience;
+             DROP INDEX IF EXISTS idx_atoms_atom_id;
+             DROP INDEX IF EXISTS idx_atoms_handoff;
+             DROP INDEX IF EXISTS idx_atoms_last_seen;
+             DROP INDEX IF EXISTS idx_atoms_user_project;
+             DROP INDEX IF EXISTS idx_atoms_status;
+
+             CREATE TABLE handoff_atoms (
+                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                 atom_id         TEXT NOT NULL,
+                 handoff_id      INTEGER NOT NULL,
+                 user_id         INTEGER NOT NULL DEFAULT 1,
+                 project         TEXT NOT NULL,
+                 atom_type       TEXT NOT NULL,
+                 content         TEXT NOT NULL,
+                 canonical_form  TEXT NOT NULL,
+                 salience        REAL NOT NULL DEFAULT 0.5,
+                 confidence      REAL NOT NULL DEFAULT 0.5,
+                 status          TEXT NOT NULL DEFAULT 'active',
+                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                 last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                 seen_count      INTEGER NOT NULL DEFAULT 1,
+                 decay_immune    INTEGER NOT NULL DEFAULT 0,
+                 superseded_by   TEXT,
+                 metadata        TEXT
+             );
+
+             INSERT INTO handoff_atoms
+                 (id, atom_id, handoff_id, user_id, project, atom_type, content,
+                  canonical_form, salience, confidence, status, created_at,
+                  last_seen_at, seen_count, decay_immune, superseded_by, metadata)
+             SELECT id, atom_id, handoff_id, user_id, project, atom_type, content,
+                    canonical_form, salience, confidence, status,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    CASE WHEN seen_count <= 1
+                         THEN COALESCE(datetime(last_seen_at, 'localtime'), last_seen_at)
+                         ELSE last_seen_at END,
+                    seen_count, decay_immune, superseded_by, metadata
+             FROM _handoff_atoms_old_v99;
+
+             DROP TABLE _handoff_atoms_old_v99;
+
+             CREATE INDEX idx_atoms_project_type ON handoff_atoms(project, atom_type, status);
+             CREATE INDEX idx_atoms_salience ON handoff_atoms(project, salience DESC);
+             CREATE INDEX idx_atoms_atom_id ON handoff_atoms(atom_id);
+             CREATE INDEX idx_atoms_handoff ON handoff_atoms(handoff_id);
+             CREATE INDEX idx_atoms_last_seen ON handoff_atoms(last_seen_at DESC);
+             CREATE INDEX idx_atoms_user_project ON handoff_atoms(user_id, project, status);
+             CREATE INDEX idx_atoms_status ON handoff_atoms(status, atom_type);",
+        )?;
+        info!(rows, "Migration 99: handoff_atoms rebuilt, timestamps backfilled (last_seen_at only where seen_count <= 1)");
+    } else {
+        info!("Migration 99: handoff_atoms default already correct, skipping rebuild");
+    }
+
+    if table_has_utc_default(conn, "atom_entity_links")? {
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM atom_entity_links", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE atom_entity_links RENAME TO _atom_entity_links_old_v99;
+
+             DROP INDEX IF EXISTS idx_ael_atom;
+             DROP INDEX IF EXISTS idx_ael_entity;
+
+             CREATE TABLE atom_entity_links (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 atom_id     TEXT NOT NULL,
+                 entity_id   INTEGER NOT NULL,
+                 user_id     INTEGER NOT NULL,
+                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                 UNIQUE(atom_id, entity_id)
+             );
+
+             INSERT INTO atom_entity_links (id, atom_id, entity_id, user_id, created_at)
+             SELECT id, atom_id, entity_id, user_id,
+                    COALESCE(datetime(created_at, 'localtime'), created_at)
+             FROM _atom_entity_links_old_v99;
+
+             DROP TABLE _atom_entity_links_old_v99;
+
+             CREATE INDEX idx_ael_atom ON atom_entity_links(atom_id);
+             CREATE INDEX idx_ael_entity ON atom_entity_links(entity_id);",
+        )?;
+        info!(
+            rows,
+            "Migration 99: atom_entity_links rebuilt, created_at backfilled"
+        );
+    } else {
+        info!("Migration 99: atom_entity_links default already correct, skipping rebuild");
+    }
+
+    if table_has_utc_default(conn, "enrollment_invites")? {
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM enrollment_invites", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE enrollment_invites RENAME TO _enrollment_invites_old_v99;
+
+             DROP INDEX IF EXISTS idx_enrollment_invites_token;
+             DROP INDEX IF EXISTS idx_enrollment_invites_user;
+
+             CREATE TABLE enrollment_invites (
+                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                 token_hash TEXT    NOT NULL UNIQUE,
+                 method     TEXT    NOT NULL DEFAULT 'fido2',
+                 created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+                 expires_at TEXT    NOT NULL,
+                 consumed_at TEXT
+             );
+
+             INSERT INTO enrollment_invites
+                 (id, user_id, token_hash, method, created_at, expires_at, consumed_at)
+             SELECT id, user_id, token_hash, method,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    COALESCE(datetime(expires_at, 'localtime'), expires_at),
+                    consumed_at
+             FROM _enrollment_invites_old_v99;
+
+             DROP TABLE _enrollment_invites_old_v99;
+
+             CREATE INDEX idx_enrollment_invites_token ON enrollment_invites(token_hash);
+             CREATE INDEX idx_enrollment_invites_user ON enrollment_invites(user_id, created_at DESC);",
+        )?;
+        info!(
+            rows,
+            "Migration 99: enrollment_invites rebuilt, created_at/expires_at backfilled"
+        );
+    } else {
+        info!("Migration 99: enrollment_invites default already correct, skipping rebuild");
+    }
+
+    if table_has_utc_default(conn, "frameshift_growth")? {
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM frameshift_growth", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE frameshift_growth RENAME TO _frameshift_growth_old_v99;
+
+             DROP INDEX IF EXISTS idx_fsgrowth_user_cursor;
+             DROP INDEX IF EXISTS idx_fsgrowth_persona;
+             DROP INDEX IF EXISTS idx_fsgrowth_project;
+             DROP INDEX IF EXISTS idx_fsgrowth_scope;
+
+             CREATE TABLE frameshift_growth (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 persona TEXT,
+                 project_id TEXT,
+                 scope TEXT,
+                 content TEXT NOT NULL,
+                 metadata TEXT,
+                 host TEXT,
+                 content_hash TEXT NOT NULL,
+                 UNIQUE(user_id, content_hash)
+             );
+
+             INSERT INTO frameshift_growth
+                 (id, user_id, created_at, persona, project_id, scope, content,
+                  metadata, host, content_hash)
+             SELECT id, user_id,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    persona, project_id, scope, content, metadata, host, content_hash
+             FROM _frameshift_growth_old_v99;
+
+             DROP TABLE _frameshift_growth_old_v99;
+
+             CREATE INDEX idx_fsgrowth_user_cursor ON frameshift_growth(user_id, id);
+             CREATE INDEX idx_fsgrowth_persona ON frameshift_growth(user_id, persona, created_at DESC);
+             CREATE INDEX idx_fsgrowth_project ON frameshift_growth(user_id, project_id, created_at DESC);
+             CREATE INDEX idx_fsgrowth_scope ON frameshift_growth(user_id, scope, created_at DESC);",
+        )?;
+        info!(
+            rows,
+            "Migration 99: frameshift_growth rebuilt, created_at backfilled"
+        );
+    } else {
+        info!("Migration 99: frameshift_growth default already correct, skipping rebuild");
+    }
+
+    conn.execute_batch("PRAGMA legacy_alter_table = 0;")?;
+    info!("Migration 99 complete: tz defaults corrected and skewed timestamps backfilled");
     Ok(())
 }
 
@@ -4113,7 +4441,7 @@ fn run_migration_frameshift_growth(conn: &rusqlite::Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS frameshift_growth (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
             persona TEXT,
             project_id TEXT,
             scope TEXT,
@@ -4794,7 +5122,7 @@ fn run_migration_handoffs_global(conn: &rusqlite::Connection) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS handoffs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
             project TEXT NOT NULL,
             branch TEXT,
             directory TEXT,
@@ -4862,7 +5190,7 @@ fn run_migration_user_active_and_invites(conn: &rusqlite::Connection) -> Result<
              user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
              token_hash TEXT    NOT NULL UNIQUE,
              method     TEXT    NOT NULL DEFAULT 'fido2',
-             created_at TEXT    NOT NULL DEFAULT (datetime('now', 'utc')),
+             created_at TEXT    NOT NULL DEFAULT (datetime('now')),
              expires_at TEXT    NOT NULL,
              consumed_at TEXT
          );
@@ -5141,8 +5469,8 @@ fn run_migration_handoff_atoms(conn: &rusqlite::Connection) -> Result<()> {
             salience        REAL NOT NULL DEFAULT 0.5,
             confidence      REAL NOT NULL DEFAULT 0.5,
             status          TEXT NOT NULL DEFAULT 'active',
-            created_at      TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
-            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
             seen_count      INTEGER NOT NULL DEFAULT 1,
             decay_immune    INTEGER NOT NULL DEFAULT 0,
             superseded_by   TEXT,
@@ -5160,7 +5488,7 @@ fn run_migration_handoff_atoms(conn: &rusqlite::Connection) -> Result<()> {
             atom_id     TEXT NOT NULL,
             entity_id   INTEGER NOT NULL,
             user_id     INTEGER NOT NULL,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(atom_id, entity_id)
         );
         CREATE INDEX IF NOT EXISTS idx_ael_atom ON atom_entity_links(atom_id);

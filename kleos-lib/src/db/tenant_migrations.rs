@@ -430,6 +430,18 @@ pub static TENANT_MIGRATIONS: &[TenantMigration] = &[
         apply_schema_v81_axon_cursors_readd,
         notx
     ),
+    // v82: correct the datetime('now', 'utc') double-UTC-conversion defaults on
+    // handoffs, handoff_atoms, atom_entity_links, and frameshift_growth (mirror
+    // of global migration 99) and backfill skewed rows via the per-row inverse
+    // datetime(col, 'localtime'). notx: the shard handoffs table is an FK
+    // parent (handoff_atoms.handoff_id ON DELETE CASCADE), so the rebuild must
+    // run with PRAGMA foreign_keys OFF or DROP TABLE would cascade into atoms.
+    tenant_migration!(
+        82,
+        "tz_default_rebuild",
+        apply_schema_v82_tz_default_rebuild,
+        notx
+    ),
 ];
 
 /// Version of the tenant migration that re-adds `user_id` to the shard memory
@@ -889,6 +901,256 @@ fn apply_schema_v81_axon_cursors_readd(conn: &Connection) -> Result<()> {
          PRAGMA foreign_keys = ON;",
     )?;
     info!("tenant migration 81 complete: user_id re-added to axon_cursors");
+    Ok(())
+}
+
+/// Tenant v82: rebuild the shard tables whose timestamp columns defaulted to
+/// the buggy `datetime('now', 'utc')` expression -- handoffs, handoff_atoms,
+/// atom_entity_links, and frameshift_growth -- replacing the default with plain
+/// `datetime('now')` and backfilling skewed rows (mirror of global migration
+/// 99; see `run_migration_tz_default_rebuild` there for the full rationale).
+///
+/// The backfill maps stored values through `datetime(col, 'localtime')`, the
+/// exact DST-aware inverse of the buggy write under an unchanged host
+/// timezone. `handoff_atoms.last_seen_at` is only transformed while
+/// `seen_count <= 1`: the re-seen UPDATE path always wrote it correctly.
+/// Every rebuild is guarded on the buggy default still being present in the
+/// live shard schema, so fresh shards (whose v43/v54/v73 sources now carry the
+/// corrected default) skip both the rebuild and the transform.
+///
+/// notx: the shard handoffs table is an FK parent (handoff_atoms.handoff_id
+/// REFERENCES handoffs(id) ON DELETE CASCADE), so with foreign keys ON the
+/// DROP TABLE step would cascade-delete every atom. The runner's apply_notx
+/// disables foreign keys outside any transaction and wraps the whole rebuild
+/// in one BEGIN..COMMIT; the in-SQL PRAGMAs document the requirement.
+fn apply_schema_v82_tz_default_rebuild(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys = OFF; PRAGMA legacy_alter_table = 1;")?;
+
+    if crate::db::migrations::table_has_utc_default(conn, "handoffs")? {
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM handoffs", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE handoffs RENAME TO _handoffs_old_v82;
+
+             DROP TRIGGER IF EXISTS handoffs_fts_ai;
+             DROP TRIGGER IF EXISTS handoffs_fts_ad;
+             DROP TRIGGER IF EXISTS handoffs_fts_au;
+             DROP INDEX IF EXISTS idx_handoffs_project;
+             DROP INDEX IF EXISTS idx_handoffs_created;
+             DROP INDEX IF EXISTS idx_handoffs_hash;
+             DROP INDEX IF EXISTS idx_handoffs_agent;
+             DROP INDEX IF EXISTS idx_handoffs_type;
+             DROP INDEX IF EXISTS idx_handoffs_session;
+             DROP INDEX IF EXISTS idx_handoffs_model;
+             DROP INDEX IF EXISTS idx_handoffs_restore;
+             DROP INDEX IF EXISTS idx_handoffs_user_created;
+
+             CREATE TABLE handoffs (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 project TEXT NOT NULL,
+                 branch TEXT,
+                 directory TEXT,
+                 agent TEXT DEFAULT 'unknown',
+                 type TEXT DEFAULT 'manual',
+                 content TEXT NOT NULL,
+                 metadata TEXT,
+                 session_id TEXT,
+                 model TEXT,
+                 host TEXT,
+                 content_hash TEXT
+             );
+
+             INSERT INTO handoffs
+                 (id, user_id, created_at, project, branch, directory, agent, type,
+                  content, metadata, session_id, model, host, content_hash)
+             SELECT id, user_id,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    project, branch, directory, agent, type,
+                    content, metadata, session_id, model, host, content_hash
+             FROM _handoffs_old_v82;
+
+             DROP TABLE _handoffs_old_v82;
+
+             CREATE INDEX idx_handoffs_project ON handoffs(project, created_at DESC);
+             CREATE INDEX idx_handoffs_created ON handoffs(created_at DESC);
+             CREATE INDEX idx_handoffs_hash ON handoffs(content_hash);
+             CREATE INDEX idx_handoffs_agent ON handoffs(agent, created_at DESC);
+             CREATE INDEX idx_handoffs_type ON handoffs(type, created_at DESC);
+             CREATE INDEX idx_handoffs_session ON handoffs(session_id);
+             CREATE INDEX idx_handoffs_model ON handoffs(model, created_at DESC);
+             CREATE INDEX idx_handoffs_restore ON handoffs(project, type, agent, created_at DESC);
+             CREATE INDEX idx_handoffs_user_created ON handoffs(user_id, created_at DESC);
+
+             CREATE TRIGGER handoffs_fts_ai AFTER INSERT ON handoffs BEGIN
+                 INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
+             END;
+             CREATE TRIGGER handoffs_fts_ad AFTER DELETE ON handoffs BEGIN
+                 INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
+             END;
+             CREATE TRIGGER handoffs_fts_au AFTER UPDATE OF content ON handoffs BEGIN
+                 INSERT INTO handoffs_fts(handoffs_fts, rowid, content) VALUES('delete', old.id, old.content);
+                 INSERT INTO handoffs_fts(rowid, content) VALUES (new.id, new.content);
+             END;",
+        )?;
+        info!(
+            rows,
+            "tenant migration 82: handoffs rebuilt, created_at backfilled to true UTC"
+        );
+    } else {
+        info!("tenant migration 82: handoffs default already correct, skipping rebuild");
+    }
+
+    if crate::db::migrations::table_has_utc_default(conn, "handoff_atoms")? {
+        let rows: i64 = conn.query_row("SELECT COUNT(*) FROM handoff_atoms", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE handoff_atoms RENAME TO _handoff_atoms_old_v82;
+
+             DROP INDEX IF EXISTS idx_atoms_project_type;
+             DROP INDEX IF EXISTS idx_atoms_salience;
+             DROP INDEX IF EXISTS idx_atoms_atom_id;
+             DROP INDEX IF EXISTS idx_atoms_handoff;
+             DROP INDEX IF EXISTS idx_atoms_last_seen;
+             DROP INDEX IF EXISTS idx_atoms_user_project;
+             DROP INDEX IF EXISTS idx_atoms_status;
+
+             CREATE TABLE handoff_atoms (
+                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                 atom_id         TEXT NOT NULL,
+                 handoff_id      INTEGER NOT NULL REFERENCES handoffs(id) ON DELETE CASCADE,
+                 user_id         INTEGER NOT NULL,
+                 project         TEXT NOT NULL,
+                 atom_type       TEXT NOT NULL,
+                 content         TEXT NOT NULL,
+                 canonical_form  TEXT NOT NULL,
+                 salience        REAL NOT NULL DEFAULT 1.0,
+                 confidence      REAL NOT NULL DEFAULT 0.5,
+                 status          TEXT NOT NULL DEFAULT 'active',
+                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                 last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                 seen_count      INTEGER NOT NULL DEFAULT 1,
+                 decay_immune    INTEGER NOT NULL DEFAULT 0,
+                 superseded_by   TEXT,
+                 metadata        TEXT
+             );
+
+             INSERT INTO handoff_atoms
+                 (id, atom_id, handoff_id, user_id, project, atom_type, content,
+                  canonical_form, salience, confidence, status, created_at,
+                  last_seen_at, seen_count, decay_immune, superseded_by, metadata)
+             SELECT id, atom_id, handoff_id, user_id, project, atom_type, content,
+                    canonical_form, salience, confidence, status,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    CASE WHEN seen_count <= 1
+                         THEN COALESCE(datetime(last_seen_at, 'localtime'), last_seen_at)
+                         ELSE last_seen_at END,
+                    seen_count, decay_immune, superseded_by, metadata
+             FROM _handoff_atoms_old_v82;
+
+             DROP TABLE _handoff_atoms_old_v82;
+
+             CREATE INDEX idx_atoms_project_type ON handoff_atoms(project, atom_type, status);
+             CREATE INDEX idx_atoms_salience ON handoff_atoms(project, salience DESC);
+             CREATE INDEX idx_atoms_atom_id ON handoff_atoms(atom_id);
+             CREATE INDEX idx_atoms_handoff ON handoff_atoms(handoff_id);
+             CREATE INDEX idx_atoms_last_seen ON handoff_atoms(last_seen_at DESC);
+             CREATE INDEX idx_atoms_user_project ON handoff_atoms(user_id, project, status);
+             CREATE INDEX idx_atoms_status ON handoff_atoms(status, atom_type);",
+        )?;
+        info!(
+            rows,
+            "tenant migration 82: handoff_atoms rebuilt, timestamps backfilled (last_seen_at only where seen_count <= 1)"
+        );
+    } else {
+        info!("tenant migration 82: handoff_atoms default already correct, skipping rebuild");
+    }
+
+    if crate::db::migrations::table_has_utc_default(conn, "atom_entity_links")? {
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM atom_entity_links", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE atom_entity_links RENAME TO _atom_entity_links_old_v82;
+
+             DROP INDEX IF EXISTS idx_ael_atom;
+             DROP INDEX IF EXISTS idx_ael_entity;
+
+             CREATE TABLE atom_entity_links (
+                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                 atom_id     TEXT NOT NULL,
+                 entity_id   INTEGER NOT NULL,
+                 user_id     INTEGER NOT NULL,
+                 linked_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                 UNIQUE(atom_id, entity_id, user_id)
+             );
+
+             INSERT INTO atom_entity_links (id, atom_id, entity_id, user_id, linked_at)
+             SELECT id, atom_id, entity_id, user_id,
+                    COALESCE(datetime(linked_at, 'localtime'), linked_at)
+             FROM _atom_entity_links_old_v82;
+
+             DROP TABLE _atom_entity_links_old_v82;
+
+             CREATE INDEX idx_ael_atom ON atom_entity_links(atom_id);
+             CREATE INDEX idx_ael_entity ON atom_entity_links(entity_id);",
+        )?;
+        info!(
+            rows,
+            "tenant migration 82: atom_entity_links rebuilt, linked_at backfilled"
+        );
+    } else {
+        info!("tenant migration 82: atom_entity_links default already correct, skipping rebuild");
+    }
+
+    if crate::db::migrations::table_has_utc_default(conn, "frameshift_growth")? {
+        let rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM frameshift_growth", [], |r| r.get(0))?;
+        conn.execute_batch(
+            "ALTER TABLE frameshift_growth RENAME TO _frameshift_growth_old_v82;
+
+             DROP INDEX IF EXISTS idx_fsgrowth_user_cursor;
+             DROP INDEX IF EXISTS idx_fsgrowth_persona;
+             DROP INDEX IF EXISTS idx_fsgrowth_project;
+             DROP INDEX IF EXISTS idx_fsgrowth_scope;
+
+             CREATE TABLE frameshift_growth (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 user_id INTEGER NOT NULL DEFAULT 1,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 persona TEXT,
+                 project_id TEXT,
+                 scope TEXT,
+                 content TEXT NOT NULL,
+                 metadata TEXT,
+                 host TEXT,
+                 content_hash TEXT NOT NULL,
+                 UNIQUE(user_id, content_hash)
+             );
+
+             INSERT INTO frameshift_growth
+                 (id, user_id, created_at, persona, project_id, scope, content,
+                  metadata, host, content_hash)
+             SELECT id, user_id,
+                    COALESCE(datetime(created_at, 'localtime'), created_at),
+                    persona, project_id, scope, content, metadata, host, content_hash
+             FROM _frameshift_growth_old_v82;
+
+             DROP TABLE _frameshift_growth_old_v82;
+
+             CREATE INDEX idx_fsgrowth_user_cursor ON frameshift_growth(user_id, id);
+             CREATE INDEX idx_fsgrowth_persona ON frameshift_growth(user_id, persona, created_at DESC);
+             CREATE INDEX idx_fsgrowth_project ON frameshift_growth(user_id, project_id, created_at DESC);
+             CREATE INDEX idx_fsgrowth_scope ON frameshift_growth(user_id, scope, created_at DESC);",
+        )?;
+        info!(
+            rows,
+            "tenant migration 82: frameshift_growth rebuilt, created_at backfilled"
+        );
+    } else {
+        info!("tenant migration 82: frameshift_growth default already correct, skipping rebuild");
+    }
+
+    conn.execute_batch("PRAGMA legacy_alter_table = 0; PRAGMA foreign_keys = ON;")?;
+    info!("tenant migration 82 complete: tz defaults corrected and skewed timestamps backfilled");
     Ok(())
 }
 tenant_migration_sql!(
@@ -1551,8 +1813,8 @@ fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
             salience        REAL NOT NULL DEFAULT 1.0,
             confidence      REAL NOT NULL DEFAULT 0.5,
             status          TEXT NOT NULL DEFAULT 'active',
-            created_at      TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
-            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
             seen_count      INTEGER NOT NULL DEFAULT 1,
             decay_immune    INTEGER NOT NULL DEFAULT 0,
             superseded_by   TEXT,
@@ -1571,7 +1833,7 @@ fn apply_schema_v54_handoff_atoms(conn: &Connection) -> Result<()> {
             atom_id     TEXT NOT NULL,
             entity_id   INTEGER NOT NULL,
             user_id     INTEGER NOT NULL,
-            linked_at   TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+            linked_at   TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(atom_id, entity_id, user_id)
         );
         CREATE INDEX IF NOT EXISTS idx_ael_atom ON atom_entity_links(atom_id);
