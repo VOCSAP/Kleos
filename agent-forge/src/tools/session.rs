@@ -11,18 +11,49 @@ use serde::Deserialize;
 use std::process::Command;
 use uuid::Uuid;
 
-/// Input for `checkpoint`: a required human-readable name and an optional description.
+/// Input for `checkpoint`. `name` and `description` drive the git snapshot. The
+/// remaining fields drive slice emission: supplying `spec_id` turns this
+/// checkpoint into a documentation boundary, and `components` and `conditions`
+/// carry the knowledge-transfer prose only a model can write.
 #[derive(Deserialize)]
 pub struct CheckpointInput {
+    /// Unique checkpoint name.
     pub name: Option<String>,
+    /// Optional human description of the checkpoint.
     pub description: Option<String>,
+    /// Spec this checkpoint documents. Absent means snapshot only, no emission.
+    pub spec_id: Option<String>,
+    /// One-line statement of what this slice did.
+    pub intent: Option<String>,
+    /// One entry per component touched: what it does and under what conditions.
+    pub components: Option<Vec<String>>,
+    /// Non-obvious conditions: root causes, gotchas, documented limitations.
+    pub conditions: Option<Vec<String>>,
+    /// Set false to snapshot without emitting even when `spec_id` is present.
+    pub emit: Option<bool>,
+    /// Repository root to emit into. Defaults to the current directory.
+    pub repo_root: Option<String>,
 }
 
-/// Record the current `git rev-parse HEAD` value under `name` so the agent
-/// can return to this point if subsequent edits go wrong.
+/// Record the current `git rev-parse HEAD` value under `name` so the agent can
+/// return to this point if subsequent edits go wrong, and -- when a `spec_id` is
+/// supplied -- render this slice of the work into a committed document.
+///
+/// The snapshot is committed to the database BEFORE the emission steps run, and
+/// that ordering is deliberate. The snapshot is the rollback safety net, so it
+/// must survive a failure to render or screen the document; losing the ability
+/// to roll back because a leak scan refused some prose would be the worse
+/// outcome by far. A caller therefore cannot read `Err` as "nothing happened":
+/// the checkpoint row may exist with `spec_id` and `slice_index` left NULL. That
+/// state is benign. A NULL `slice_index` is ignored by the `MAX` used for slice
+/// numbering, so it cannot consume a number a later slice needs, and the
+/// checkpoint remains rollback-able by name exactly like a snapshot-only one.
 pub fn checkpoint(db: &Database, input: CheckpointInput) -> ToolResult {
+    // Cloned rather than moved out: `input` is passed whole to `emit_slice`
+    // below, so it has to stay intact.
     let name = input
         .name
+        .clone()
         .ok_or_else(|| ToolError::MissingField("name".into()))?;
 
     let id = format!("ckpt_{}", &Uuid::new_v4().to_string()[..8]);
@@ -46,10 +77,130 @@ pub fn checkpoint(db: &Database, input: CheckpointInput) -> ToolResult {
         )
         .map_err(|e| ToolError::DatabaseError(e.to_string()))?;
 
-    Ok(Output::ok_with_id(
-        id,
-        format!("Checkpoint '{}' created", name),
-    ))
+    let Some(spec_id) = input.spec_id.clone() else {
+        return Ok(Output::ok_with_id(
+            id,
+            format!("Checkpoint '{}' created", name),
+        ));
+    };
+    if input.emit == Some(false) {
+        return Ok(Output::ok_with_id(
+            id,
+            format!("Checkpoint '{}' created (emission suppressed)", name),
+        ));
+    }
+
+    emit_slice(db, &input, &id, &name, &spec_id)
+}
+
+/// Render this checkpoint's slice document, refuse it if the leak scan trips,
+/// write it beside the code, and record the slice number on the checkpoint row.
+/// Compiled only under the `fluency` feature.
+#[cfg(feature = "fluency")]
+fn emit_slice(
+    db: &Database,
+    input: &CheckpointInput,
+    id: &str,
+    name: &str,
+    spec_id: &str,
+) -> ToolResult {
+    use crate::emit::gatekeeper::{guard_no_leaks, is_public_repo};
+    use crate::emit::model::load_spec_record;
+    use crate::emit::paths::{slice_path, slices_dir, slugify};
+    use crate::emit::render::{render_slice, SliceContent};
+    use crate::emit::trust::derive_trust;
+    use std::path::PathBuf;
+
+    let repo_root: PathBuf = input
+        .repo_root
+        .clone()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let record = load_spec_record(db, spec_id)?;
+    let trust = derive_trust(&record.verifications);
+    let spec_slug = slugify(&record.task_description);
+
+    // Slice numbering is per spec and one-based, so 001 is the first slice.
+    let next_index: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COALESCE(MAX(slice_index), 0) + 1 FROM checkpoints WHERE spec_id = ?1",
+            rusqlite::params![spec_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| ToolError::DatabaseError(e.to_string()))?;
+
+    let content = SliceContent {
+        intent: input.intent.clone().unwrap_or_else(|| name.to_string()),
+        components: input.components.clone().unwrap_or_default(),
+        conditions: input.conditions.clone().unwrap_or_default(),
+    };
+    let body = render_slice(next_index, &content, &record, trust);
+
+    guard_no_leaks(&body)?;
+
+    let dir = slices_dir(&repo_root, &spec_slug);
+    std::fs::create_dir_all(&dir).map_err(|e| ToolError::IoError(e.to_string()))?;
+    let path = slice_path(
+        &repo_root,
+        &spec_slug,
+        next_index,
+        &slugify(&content.intent),
+    );
+    std::fs::write(&path, &body).map_err(|e| ToolError::IoError(e.to_string()))?;
+
+    db.conn()
+        .execute(
+            "UPDATE checkpoints SET spec_id = ?1, slice_index = ?2 WHERE id = ?3",
+            rusqlite::params![spec_id, next_index, id],
+        )
+        .map_err(|e| ToolError::DatabaseError(e.to_string()))?;
+
+    let mut output = Output::ok_with_id(
+        id.to_string(),
+        format!(
+            "Checkpoint '{}' created, slice {:03} emitted",
+            name, next_index
+        ),
+    );
+    output.data = Some(serde_json::json!({
+        "slice_path": path.to_string_lossy(),
+        "slice_index": next_index,
+        "requires_screening": is_public_repo(&repo_root),
+    }));
+    Ok(output)
+}
+
+/// Stand-in for `emit_slice` in builds without the `fluency` feature.
+///
+/// The snapshot has already been committed by the time this runs, so refusing
+/// with an error would misreport what happened. Reporting success while
+/// silently discarding the request would be worse still: the caller asked for a
+/// document and would have no way to learn it was never written. This reports
+/// the snapshot honestly and names the feature that would satisfy the request.
+#[cfg(not(feature = "fluency"))]
+fn emit_slice(
+    _db: &Database,
+    _input: &CheckpointInput,
+    id: &str,
+    name: &str,
+    _spec_id: &str,
+) -> ToolResult {
+    let mut output = Output::ok_with_id(
+        id.to_string(),
+        format!(
+            "Checkpoint '{}' created. Slice emission was requested but this build \
+             does not include the emission layer; rebuild agent-forge with \
+             `--features fluency` to write slice documents.",
+            name
+        ),
+    );
+    output.data = Some(serde_json::json!({
+        "emitted": false,
+        "reason": "the fluency feature is not enabled in this build",
+    }));
+    Ok(output)
 }
 
 /// Input for `rollback`: the name of a previously created checkpoint to restore.
@@ -223,4 +374,159 @@ pub fn session_recall(db: &Database, input: SessionRecallInput) -> ToolResult {
     let mut output = Output::ok(format!("Found {} learnings", results.len()));
     output.data = Some(serde_json::json!({ "results": results }));
     Ok(output)
+}
+
+#[cfg(test)]
+/// Tests for checkpoint slice emission.
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    /// Create a database holding one spec with a chosen approach.
+    fn db_with_spec(dir: &Path) -> Database {
+        let db = Database::open(&dir.join("forge.db")).unwrap();
+        db.conn()
+            .execute_batch(
+                r#"
+                INSERT INTO specs (id, created_at, task_description, task_type,
+                                   acceptance_criteria, status)
+                VALUES ('spec_1', 1, 'Add a thing', 'feature', '["it works"]', 'active');
+
+                INSERT INTO approaches (id, spec_id, created_at, name, description,
+                                        pros, cons, score, chosen)
+                VALUES ('appr_1', 'spec_1', 1, 'Direct', 'Do it directly',
+                        '[]', '[]', 8.0, 1);
+                "#,
+            )
+            .unwrap();
+        db
+    }
+
+    /// Build a checkpoint input that requests emission for `spec_1`.
+    fn emitting_input(repo: &Path, name: &str) -> CheckpointInput {
+        CheckpointInput {
+            name: Some(name.into()),
+            description: None,
+            spec_id: Some("spec_1".into()),
+            intent: Some("wire it up".into()),
+            components: Some(vec!["Renderer -- builds markdown".into()]),
+            conditions: Some(vec!["Empty specs still render".into()]),
+            emit: Some(true),
+            repo_root: Some(repo.to_string_lossy().to_string()),
+        }
+    }
+
+    /// A checkpoint without a spec_id stays a plain git snapshot and writes no files.
+    #[test]
+    fn checkpoint_without_spec_id_emits_nothing() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        let out = checkpoint(
+            &db,
+            CheckpointInput {
+                name: Some("plain".into()),
+                description: None,
+                spec_id: None,
+                intent: None,
+                components: None,
+                conditions: None,
+                emit: None,
+                repo_root: Some(dir.path().to_string_lossy().to_string()),
+            },
+        )
+        .unwrap();
+        assert!(out.success);
+        assert!(out.data.is_none());
+        assert!(!dir.path().join("docs/agent-forge").exists());
+    }
+
+    /// A checkpoint carrying a spec_id writes a numbered slice document.
+    #[cfg(feature = "fluency")]
+    #[test]
+    fn checkpoint_with_spec_id_writes_a_slice() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        let out = checkpoint(&db, emitting_input(dir.path(), "first")).unwrap();
+        assert!(out.success);
+
+        let data = out.data.expect("emission data");
+        let path = data["slice_path"].as_str().unwrap();
+        assert_eq!(data["slice_index"].as_i64().unwrap(), 1);
+
+        let body = std::fs::read_to_string(path).unwrap();
+        assert!(body.contains("# Slice 001: wire it up"));
+        assert!(body.contains("Renderer -- builds markdown"));
+        assert!(body.contains("## Decision: Direct"));
+    }
+
+    /// Slice indices increment per spec across successive checkpoints.
+    #[cfg(feature = "fluency")]
+    #[test]
+    fn slice_indices_increment() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        checkpoint(&db, emitting_input(dir.path(), "first")).unwrap();
+        let out = checkpoint(&db, emitting_input(dir.path(), "second")).unwrap();
+        assert_eq!(out.data.unwrap()["slice_index"].as_i64().unwrap(), 2);
+    }
+
+    /// Content that trips the leak scan is refused and no file is written.
+    /// The error message is asserted, not merely the fact of an error, so this
+    /// test pins the leak guard specifically rather than passing on any failure
+    /// that happens to occur earlier in the function.
+    #[cfg(feature = "fluency")]
+    #[test]
+    fn leaking_content_is_refused() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        let mut input = emitting_input(dir.path(), "leaky");
+        input.components = Some(vec!["Talks to 10.0.0.1 directly".into()]);
+
+        let err = checkpoint(&db, input).err().unwrap();
+        assert!(err.to_string().contains("refusing to emit"));
+        assert!(!dir.path().join("docs/agent-forge/work").exists());
+    }
+
+    /// Without the `fluency` feature a checkpoint that requests emission still
+    /// snapshots, writes no files, and says so rather than reporting a silent
+    /// success that would leave the caller believing a document exists.
+    #[cfg(not(feature = "fluency"))]
+    #[test]
+    fn checkpoint_reports_emission_not_compiled_in() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        let out = checkpoint(&db, emitting_input(dir.path(), "first")).unwrap();
+
+        assert!(out.success);
+        assert!(out.message.contains("--features fluency"));
+        assert_eq!(out.data.unwrap()["emitted"], serde_json::json!(false));
+        assert!(!dir.path().join("docs/agent-forge").exists());
+    }
+
+    /// `emit: false` suppresses the document while still taking the snapshot.
+    /// The checkpoint row keeps a NULL `slice_index`, so a suppressed checkpoint
+    /// cannot consume a slice number that a later real slice would need.
+    #[test]
+    fn emit_false_suppresses_the_document() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        let mut input = emitting_input(dir.path(), "suppressed");
+        input.emit = Some(false);
+
+        let out = checkpoint(&db, input).unwrap();
+        assert!(out.success);
+        assert!(out.data.is_none());
+        assert!(!dir.path().join("docs/agent-forge/work").exists());
+
+        let indexed: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE slice_index IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 0);
+    }
 }

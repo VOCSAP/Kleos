@@ -9,6 +9,11 @@
 /// Database access: SQLite forge DB open/migrate/query.
 pub mod db;
 
+/// Emission layer: renders the captured audit trail into committed markdown.
+/// Compiled only under the `fluency` feature, which is off by default.
+#[cfg(feature = "fluency")]
+pub mod emit;
+
 /// JSON file I/O and the canonical `Output` envelope used by every tool.
 pub mod json_io;
 

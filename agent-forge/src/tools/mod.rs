@@ -4,6 +4,9 @@
 pub mod approaches;
 pub mod ast;
 pub mod comments;
+/// The `review` tool. Compiled only under the `fluency` feature.
+#[cfg(feature = "fluency")]
+pub mod emit;
 pub mod hypothesis;
 pub mod session;
 pub mod skills;

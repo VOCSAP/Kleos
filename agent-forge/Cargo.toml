@@ -6,6 +6,15 @@ rust-version.workspace = true
 license = "Elastic-2.0"
 description = "Protocol CLI that gates agent coding work behind spec + hypothesis + verification steps"
 
+[features]
+# Off by default. Enabling `fluency` compiles in the emission layer: the
+# `review` subcommand and the slice documents `checkpoint` writes into
+# docs/agent-forge/. A default build gates the protocol without ever writing
+# documentation into the caller's repository, so cloning Kleos does not opt
+# anyone into committed markdown they did not ask for.
+default = []
+fluency = []
+
 [lib]
 name = "agent_forge"
 path = "src/lib.rs"

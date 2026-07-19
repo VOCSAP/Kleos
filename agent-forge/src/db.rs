@@ -64,7 +64,9 @@ impl Database {
                 created_at INTEGER NOT NULL,
                 git_ref TEXT,
                 files_snapshot TEXT,
-                description TEXT
+                description TEXT,
+                spec_id TEXT REFERENCES specs(id),
+                slice_index INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS session_learns (
@@ -134,6 +136,15 @@ impl Database {
             self.conn
                 .execute_batch("ALTER TABLE specs ADD COLUMN status_note TEXT;")?;
         }
+        if !has_column("checkpoints", "spec_id") {
+            self.conn.execute_batch(
+                "ALTER TABLE checkpoints ADD COLUMN spec_id TEXT REFERENCES specs(id);",
+            )?;
+        }
+        if !has_column("checkpoints", "slice_index") {
+            self.conn
+                .execute_batch("ALTER TABLE checkpoints ADD COLUMN slice_index INTEGER;")?;
+        }
         Ok(())
     }
 
@@ -141,5 +152,49 @@ impl Database {
     /// direct query execution by callers.
     pub fn conn(&self) -> &Connection {
         &self.conn
+    }
+}
+
+#[cfg(test)]
+/// Schema and migration tests for the forge database.
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// A freshly created database must carry the checkpoint slice-linkage columns.
+    #[test]
+    fn fresh_db_has_checkpoint_slice_columns() {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        assert!(db
+            .conn()
+            .prepare("SELECT spec_id, slice_index FROM checkpoints LIMIT 0")
+            .is_ok());
+    }
+
+    /// A database created before these columns existed must gain them when reopened.
+    #[test]
+    fn legacy_db_gains_checkpoint_slice_columns() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("forge.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE checkpoints (
+                     id TEXT PRIMARY KEY,
+                     name TEXT NOT NULL UNIQUE,
+                     created_at INTEGER NOT NULL,
+                     git_ref TEXT,
+                     files_snapshot TEXT,
+                     description TEXT
+                 );",
+            )
+            .unwrap();
+        }
+        let db = Database::open(&path).unwrap();
+        assert!(db
+            .conn()
+            .prepare("SELECT spec_id, slice_index FROM checkpoints LIMIT 0")
+            .is_ok());
     }
 }
