@@ -14,6 +14,12 @@ import {
   type MemoryDetail
 } from '$lib/api/graph';
 import { selectRenderEdges } from '$lib/graph/selectRenderEdges';
+import {
+  buildGalaxyTargets,
+  seedGalaxyPositions,
+  // GalaxyTarget carries the stable guide position consumed by the live force.
+  type GalaxyTarget
+} from '$lib/graph/galaxyLayout';
 import './graph.css';
 
 // ── Working types ──────────────────────────────────────────
@@ -64,8 +70,21 @@ const COMMUNITY_COLORS = [
 const CATEGORY_FALLBACK: Record<string, string> = {
   general: '#00d7ff', decision: '#b46cff', task: '#22e87a',
   state: '#ff7a1a', discovery: '#1463ff', reference: '#ff5e9f',
-  issue: '#ff5e7a', preference: '#ffd166', credential: '#7aa2ff'
+  issue: '#ff5e7a', preference: '#ffd166', credential: '#7aa2ff',
+  infrastructure: '#1463ff', incident: '#ff7a1a', directive: '#22e87a'
 };
+
+// Resolve the group identity used to distinguish dense local links from orbital bridges.
+function galaxyGroupId(node: GNode): string {
+  if (node.community_id != null) return `community:${node.community_id}`;
+  return `category:${node.category || 'general'}`;
+}
+
+// Report whether a simulated link joins nodes inside the same semantic cluster.
+function linkStaysWithinGroup(link: GLink): boolean {
+  if (typeof link.source !== 'object' || typeof link.target !== 'object') return false;
+  return galaxyGroupId(link.source as GNode) === galaxyGroupId(link.target as GNode);
+}
 
 // ── Textures (verbatim from the old graph) ─────────────────
 
@@ -172,38 +191,18 @@ function createRingTexture(THREE: any) {
   return new THREE.CanvasTexture(c);
 }
 
-// ── Emergent cluster force ─────────────────────────────────
-// The old graph pulled nodes toward PREDETERMINED Fibonacci-sphere positions,
-// which forced communities into fixed scattered blobs and had to be re-tuned as
-// the graph grew. This instead recomputes each community's centroid from the
-// LIVE node positions every tick and applies a gentle pull toward it -- so
-// grouping EMERGES from where the graph naturally settles rather than being
-// imposed. Strength is a constant (no dependence on node count), so it holds at
-// any scale without code changes.
-function makeEmergentClusterForce(strength: number) {
+// ── Galactic guide force ──────────────────────────────────
+
+// Pull live nodes toward stable spiral targets without pinning or replacing force physics.
+function makeGalaxyGuideForce(targets: ReadonlyMap<string, GalaxyTarget>, strength: number) {
   let nodes: GNode[] = [];
   const force: any = (alpha: number) => {
-    // Per-community running centroid from current positions.
-    const sums = new Map<string, { x: number; y: number; z: number; n: number }>();
     for (const node of nodes) {
-      const cid = String(node.community_id ?? node.category ?? 'default');
-      let s = sums.get(cid);
-      if (!s) {
-        s = { x: 0, y: 0, z: 0, n: 0 };
-        sums.set(cid, s);
-      }
-      s.x += node.x ?? 0;
-      s.y += node.y ?? 0;
-      s.z += node.z ?? 0;
-      s.n += 1;
-    }
-    for (const node of nodes) {
-      const cid = String(node.community_id ?? node.category ?? 'default');
-      const s = sums.get(cid);
-      if (!s || s.n === 0) continue;
-      node.vx = (node.vx ?? 0) + (s.x / s.n - (node.x ?? 0)) * strength * alpha;
-      node.vy = (node.vy ?? 0) + (s.y / s.n - (node.y ?? 0)) * strength * alpha;
-      node.vz = (node.vz ?? 0) + (s.z / s.n - (node.z ?? 0)) * strength * alpha;
+      const target = targets.get(node.id);
+      if (!target) continue;
+      node.vx = (node.vx ?? 0) + (target.x - (node.x ?? 0)) * strength * alpha;
+      node.vy = (node.vy ?? 0) + (target.y - (node.y ?? 0)) * strength * alpha;
+      node.vz = (node.vz ?? 0) + (target.z - (node.z ?? 0)) * strength * alpha;
     }
   };
   force.initialize = (n: GNode[]) => {
@@ -212,13 +211,47 @@ function makeEmergentClusterForce(strength: number) {
   return force;
 }
 
-// Gentle same-community cohesion strength (emergent, not positional).
-const CLUSTER_STRENGTH = 0.06;
+// The guide is strong enough to preserve arms but weak enough for links and drag to deform them.
+const GALAXY_GUIDE_STRENGTH = 0.16;
 
 // ── Cosmic scene ───────────────────────────────────────────
 
-// addStarField builds deterministic distant stars and a spiral nebula behind the live graph.
-function addStarField(THREE: any, scene: any) {
+// Create the soft circular point texture shared by both fixed-cost backdrop clouds.
+function createGalaxyPointTexture(THREE: any) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext('2d')!;
+  const glow = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+  glow.addColorStop(0, 'rgba(255,255,255,1)');
+  glow.addColorStop(0.16, 'rgba(255,255,255,0.92)');
+  glow.addColorStop(0.48, 'rgba(255,255,255,0.24)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  context.fillStyle = glow;
+  context.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// Create the luminous central core texture that anchors the visual hierarchy.
+function createGalaxyCoreTexture(THREE: any) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const context = canvas.getContext('2d')!;
+  const glow = context.createRadialGradient(128, 128, 0, 128, 128, 128);
+  glow.addColorStop(0, 'rgba(240,255,255,1)');
+  glow.addColorStop(0.08, 'rgba(120,245,255,0.98)');
+  glow.addColorStop(0.22, 'rgba(0,215,255,0.72)');
+  glow.addColorStop(0.46, 'rgba(20,99,255,0.26)');
+  glow.addColorStop(0.72, 'rgba(124,77,255,0.08)');
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  context.fillStyle = glow;
+  context.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// Build one star cloud, one spiral cloud, and one core sprite behind the live graph.
+function addGalaxyBackdrop(THREE: any, scene: any) {
   let seed = 0x4b4c454f;
   // nextRandom advances a stable linear congruential generator for repeatable frames.
   const nextRandom = () => {
@@ -226,33 +259,39 @@ function addStarField(THREE: any, scene: any) {
     return seed / 0x100000000;
   };
 
-  const starCount = 520;
+  const pointTexture = createGalaxyPointTexture(THREE);
+  const coreTexture = createGalaxyCoreTexture(THREE);
+  const starCount = 720;
   const starPositions = new Float32Array(starCount * 3);
   const starColors = new Float32Array(starCount * 3);
   for (let i = 0; i < starCount; i++) {
-    starPositions[i * 3] = (nextRandom() - 0.5) * 5200;
-    starPositions[i * 3 + 1] = (nextRandom() - 0.5) * 5200;
-    starPositions[i * 3 + 2] = (nextRandom() - 0.5) * 5200;
-    const brightness = 0.28 + nextRandom() * 0.72;
-    starColors[i * 3] = brightness * 0.78;
-    starColors[i * 3 + 1] = brightness * 0.92;
+    starPositions[i * 3] = (nextRandom() - 0.5) * 2400;
+    starPositions[i * 3 + 1] = (nextRandom() - 0.5) * 1500;
+    starPositions[i * 3 + 2] = -240 - nextRandom() * 1250;
+    const brightness = 0.24 + nextRandom() * 0.76;
+    starColors[i * 3] = brightness * 0.72;
+    starColors[i * 3 + 1] = brightness * 0.9;
     starColors[i * 3 + 2] = brightness;
   }
   const starGeometry = new THREE.BufferGeometry();
   starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
   starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
   const starMaterial = new THREE.PointsMaterial({
-    size: 1.1,
+    size: 4.2,
+    map: pointTexture,
     vertexColors: true,
     transparent: true,
-    opacity: 0.72,
+    opacity: 0.66,
     sizeAttenuation: true,
-    depthWrite: false
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending
   });
   const starPoints = new THREE.Points(starGeometry, starMaterial);
+  starPoints.renderOrder = -30;
   scene.add(starPoints);
 
-  const nebulaCount = 2200;
+  const nebulaCount = 4800;
   const nebulaPositions = new Float32Array(nebulaCount * 3);
   const nebulaColors = new Float32Array(nebulaCount * 3);
   const palette = [
@@ -262,17 +301,17 @@ function addStarField(THREE: any, scene: any) {
     new THREE.Color('#ff7a1a')
   ];
   for (let i = 0; i < nebulaCount; i++) {
-    const progress = i / nebulaCount;
+    const progress = Math.pow(nextRandom(), 0.68);
     const arm = i % 2;
-    const radius = 70 + Math.pow(progress, 0.62) * 1750;
-    const angle = progress * Math.PI * 9.5 + arm * Math.PI + (nextRandom() - 0.5) * 0.7;
-    const scatter = (nextRandom() - 0.5) * (70 + radius * 0.11);
+    const radius = 24 + progress * 365;
+    const angle = 0.55 + progress * Math.PI * 4.72 + arm * Math.PI + (nextRandom() - 0.5) * (0.3 + progress * 0.48);
+    const scatter = (nextRandom() - 0.5) * (24 + radius * 0.18);
     nebulaPositions[i * 3] = Math.cos(angle) * radius + Math.cos(angle + Math.PI / 2) * scatter;
-    nebulaPositions[i * 3 + 1] = Math.sin(angle) * radius * 0.58 + Math.sin(angle + Math.PI / 2) * scatter;
-    nebulaPositions[i * 3 + 2] = -820 + (nextRandom() - 0.5) * (110 + radius * 0.08);
-    const colorIndex = i % 29 === 0 ? 3 : (arm + Math.floor(progress * 2)) % 3;
+    nebulaPositions[i * 3 + 1] = Math.sin(angle) * radius * 0.64 + Math.sin(angle + Math.PI / 2) * scatter * 0.7;
+    nebulaPositions[i * 3 + 2] = -175 + (nextRandom() - 0.5) * (24 + radius * 0.16);
+    const colorIndex = i % 43 === 0 ? 3 : (arm + Math.floor(progress * 2)) % 3;
     const color = palette[colorIndex];
-    const intensity = 0.35 + nextRandom() * 0.65;
+    const intensity = (0.48 + nextRandom() * 0.72) * (1.12 - progress * 0.24);
     nebulaColors[i * 3] = color.r * intensity;
     nebulaColors[i * 3 + 1] = color.g * intensity;
     nebulaColors[i * 3 + 2] = color.b * intensity;
@@ -281,24 +320,45 @@ function addStarField(THREE: any, scene: any) {
   nebulaGeometry.setAttribute('position', new THREE.BufferAttribute(nebulaPositions, 3));
   nebulaGeometry.setAttribute('color', new THREE.BufferAttribute(nebulaColors, 3));
   const nebulaMaterial = new THREE.PointsMaterial({
-    size: 8.5,
+    size: 8.8,
+    map: pointTexture,
     vertexColors: true,
     transparent: true,
-    opacity: 0.34,
+    opacity: 0.76,
     sizeAttenuation: true,
     depthWrite: false,
+    depthTest: false,
     blending: THREE.AdditiveBlending
   });
   const nebulaPoints = new THREE.Points(nebulaGeometry, nebulaMaterial);
+  nebulaPoints.renderOrder = -20;
   scene.add(nebulaPoints);
+
+  const coreMaterial = new THREE.SpriteMaterial({
+    map:coreTexture,
+    color:new THREE.Color('#c8fbff'),
+    transparent:true,
+    opacity:0.92,
+    depthWrite:false,
+    depthTest:false,
+    blending:THREE.AdditiveBlending
+  });
+  const core = new THREE.Sprite(coreMaterial);
+  core.position.set(0, 0, -155);
+  core.scale.set(132, 132, 1);
+  core.renderOrder = -10;
+  scene.add(core);
 
   // The returned disposer releases every GPU resource created for the backdrop.
   return () => {
-    scene.remove(starPoints, nebulaPoints);
+    scene.remove(starPoints, nebulaPoints, core);
     starGeometry.dispose();
     starMaterial.dispose();
     nebulaGeometry.dispose();
     nebulaMaterial.dispose();
+    coreMaterial.dispose();
+    pointTexture.dispose();
+    coreTexture.dispose();
   };
 }
 
@@ -394,9 +454,9 @@ export function Graph() {
       return `rgba(${r},${g},${b},${clamped})`;
     };
     const getLinkAlpha = (link: GLink): number => {
-      if (highlightLinks.has(link)) return Math.max(0.3, (link.weight ?? 0.5) * 0.8);
-      if (hoverNode && !highlightLinks.has(link)) return 0.04;
-      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.08 + (link.weight ?? 0) * 0.18;
+      if (highlightLinks.has(link)) return Math.max(0.56, (link.weight ?? 0.5) * 0.98);
+      if (hoverNode && !highlightLinks.has(link)) return 0.07;
+      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.16 + (link.weight ?? 0) * 0.3;
       return 0;
     };
     const getVisibleLinkColor = (link: GLink): string => {
@@ -410,7 +470,7 @@ export function Graph() {
         .linkOpacity(1)
         .linkWidth((link: any) => {
           if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-          if ((link.weight ?? 0) >= weightThresholdLocal) return 0.15;
+          if ((link.weight ?? 0) >= weightThresholdLocal) return 0.32;
           return 0;
         })
         .linkColor((link: any) => getVisibleLinkColor(link as GLink))
@@ -609,8 +669,10 @@ export function Graph() {
           }
         });
 
-        // Clustering is emergent (see makeEmergentClusterForce) -- no
-        // predetermined centroids are computed.
+        // Seed the first visible frame in the final semantic shape. The guide
+        // force can still deform this structure through links, drag, and charge.
+        const galaxyTargets = buildGalaxyTargets(nodes);
+        seedGalaxyPositions(nodes, galaxyTargets);
 
         const ringTexture = createRingTexture(THREE);
         // Pool of 8 organism textures, reused across nodes
@@ -692,7 +754,7 @@ export function Graph() {
             // empty object so it tracks position for the sim without a draw call.
             if (big) return new THREE.Object3D();
             const n = node as GNode;
-            const baseSize = Math.max(4, (n.importance || 5) * 1.8 + (n.size || 0) * 0.4);
+            const baseSize = Math.max(10, (n.importance || 5) * 3.1 + (n.size || 0) * 0.65);
             const idNum = Number.parseInt(n.id.replace(/\D/g, '') || '0', 10);
             const tex = organismTextures[idNum % organismTextures.length];
             breathPhases.set(n.id, (idNum * 0.7) % (Math.PI * 2));
@@ -702,7 +764,8 @@ export function Graph() {
               color: new THREE.Color(getNodeColor(n)),
               transparent: true,
               opacity: getNodeOpacity(n),
-              depthWrite: false
+              depthWrite: false,
+              blending: THREE.AdditiveBlending
             });
             const sprite = new THREE.Sprite(material);
             sprite.scale.set(baseSize, baseSize, baseSize);
@@ -715,7 +778,8 @@ export function Graph() {
                 map: ringTexture,
                 transparent: true,
                 opacity: 0.15,
-                depthWrite: false
+                depthWrite: false,
+                blending: THREE.AdditiveBlending
               });
               const ring = new THREE.Sprite(ringMat);
               ring.scale.set(baseSize * 1.15, baseSize * 1.15, baseSize * 1.15);
@@ -774,7 +838,7 @@ export function Graph() {
           // Layer 1: faint static edges
           .linkWidth((link: any) => {
             if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-            if ((link.weight ?? 0) >= weightThresholdLocal) return 0.15;
+            if ((link.weight ?? 0) >= weightThresholdLocal) return 0.32;
             return 0;
           })
           .linkOpacity(1)
@@ -789,14 +853,12 @@ export function Graph() {
           .onBackgroundClick(() => {
             if (!showSearchResultsRef.current) closePanel();
           })
-          // Big graphs paint immediately and settle live (no pre-warm freeze that
-          // would block the main thread and hang on "Loading"); smaller graphs
-          // pre-warm for a tidy first frame. Big graphs also cool faster (higher
-          // alpha/velocity decay + fewer ticks) so the brief settle lag is short.
-          .warmupTicks(big ? 0 : 150)
-          .cooldownTicks(big ? 45 : 400)
-          .d3AlphaDecay(big ? 0.06 : 0.0228)
-          .d3VelocityDecay(big ? 0.55 : 0.4);
+          // Seeded positions make blocking pre-warm unnecessary. Both paths
+          // paint immediately and settle within a bounded amount of work.
+          .warmupTicks(0)
+          .cooldownTicks(big ? 36 : 120)
+          .d3AlphaDecay(big ? 0.075 : 0.036)
+          .d3VelocityDecay(big ? 0.58 : 0.48);
 
         graphInstance = graph;
 
@@ -804,7 +866,7 @@ export function Graph() {
         const canvas = graph.renderer().domElement;
         canvas.style.backgroundColor = '#05060d';
 
-        disposeCosmicScene = addStarField(THREE, graph.scene());
+        disposeCosmicScene = addGalaxyBackdrop(THREE, graph.scene());
 
         // Add the big-graph node point cloud to the live scene, and drive its
         // breathing pulse from a lightweight rAF (just advances a time uniform;
@@ -820,14 +882,10 @@ export function Graph() {
           if (!motionReduced) cloudRaf = requestAnimationFrame(animateCloud);
         }
 
-        // ── Organic, scale-invariant force model ──────────────
-        // Every constant below is independent of node count, so the layout
-        // holds its local character (edge length, node spacing, cohesion) from
-        // dozens to thousands of memories without re-tuning. The graph simply
-        // grows in extent; zoomToFit handles the camera.
-
-        // Emergent same-community cohesion (centroid from live positions).
-        graph.d3Force('cluster', makeEmergentClusterForce(CLUSTER_STRENGTH));
+        // ── Guided, scale-invariant force model ───────────────
+        // The O(n) guide keeps semantic groups on two spiral arms while link,
+        // charge, drag, and orbit preserve the graph's live three-dimensional behavior.
+        graph.d3Force('galaxy', makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH));
 
         // Repulsion: bigger (more important) memories push a little harder, so
         // hubs get room while leaves pack in. distanceMax keeps it O(n) friendly
@@ -843,8 +901,14 @@ export function Graph() {
         // edge; weak bridges -> longer, softer -- structure emerges from this.
         graph
           .d3Force('link')
-          ?.distance((link: any) => 14 + (1 - Math.min(1, link.weight ?? 0.3)) * 46)
-          .strength((link: any) => 0.12 + Math.min(1, link.weight ?? 0.3) * 0.5);
+          ?.distance((link: any) => {
+            const weight = Math.min(1, link.weight ?? 0.3);
+            return linkStaysWithinGroup(link as GLink) ? 18 + (1 - weight) * 42 : 118 + (1 - weight) * 96;
+          })
+          .strength((link: any) => {
+            const weight = Math.min(1, link.weight ?? 0.3);
+            return linkStaysWithinGroup(link as GLink) ? 0.16 + weight * 0.32 : 0.025 + weight * 0.075;
+          });
 
         // Light centering so the whole organism stays framed, not drifting.
         graph.d3Force('center')?.strength(0.02);
@@ -864,7 +928,7 @@ export function Graph() {
         // Fit after settling
         setTimeout(() => {
           if (!destroyed) graph.zoomToFit(800, 50);
-        }, 3000);
+        }, 900);
 
         // Publish the imperative handle for the UI controls.
         apiRef.current = {
@@ -879,7 +943,7 @@ export function Graph() {
           },
           setClusters: (v: boolean) => {
             if (!graphInstance) return;
-            graphInstance.d3Force('cluster', v ? makeEmergentClusterForce(CLUSTER_STRENGTH) : null);
+            graphInstance.d3Force('galaxy', v ? makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH) : null);
             graphInstance.d3ReheatSimulation();
           },
           fitView: () => graphInstance?.zoomToFit(800, 50),
