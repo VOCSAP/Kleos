@@ -1,3 +1,4 @@
+// Memory Galaxy renders the live Kleos knowledge graph as an interactive cosmic instrument.
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   getCommunities,
@@ -5,8 +6,11 @@ import {
   getMemoryGraph,
   getStats,
   searchGraph,
+  // CategoryCount describes the category ledger returned by graph statistics.
   type CategoryCount,
+  // GraphSearchResult describes a memory returned by galaxy search.
   type GraphSearchResult,
+  // MemoryDetail describes the selected memory inspector payload.
   type MemoryDetail
 } from '$lib/api/graph';
 import { selectRenderEdges } from '$lib/graph/selectRenderEdges';
@@ -41,6 +45,7 @@ interface GNode {
   links?: GLink[];
 }
 
+// GLink carries the mutable source and target references used by the force simulation.
 interface GLink {
   source: string | GNode;
   target: string | GNode;
@@ -51,15 +56,15 @@ interface GLink {
 // ── Constants ──────────────────────────────────────────────
 
 const COMMUNITY_COLORS = [
-  '#4fc3f7', '#ba68c8', '#81c784', '#ff8a65',
-  '#64b5f6', '#f06292', '#fff176', '#4db6ac',
-  '#e57373', '#7986cb', '#aed581', '#ffb74d'
+  '#00d7ff', '#6d7cff', '#22e87a', '#ff7a1a',
+  '#1463ff', '#b46cff', '#ffd166', '#00f0c8',
+  '#ff5e7a', '#7aa2ff', '#a6ff6a', '#ff9f43'
 ];
 
 const CATEGORY_FALLBACK: Record<string, string> = {
-  general: '#4fc3f7', decision: '#ba68c8', task: '#81c784',
-  state: '#ff8a65', discovery: '#64b5f6', reference: '#f06292',
-  issue: '#e57373', preference: '#fff176', credential: '#7986cb'
+  general: '#00d7ff', decision: '#b46cff', task: '#22e87a',
+  state: '#ff7a1a', discovery: '#1463ff', reference: '#ff5e9f',
+  issue: '#ff5e7a', preference: '#ffd166', credential: '#7aa2ff'
 };
 
 // ── Textures (verbatim from the old graph) ─────────────────
@@ -150,6 +155,7 @@ function createOrganismTexture(THREE: any, seed: number) {
   return new THREE.CanvasTexture(c);
 }
 
+// createRingTexture builds the halo used to mark static memories.
 function createRingTexture(THREE: any) {
   const c = document.createElement('canvas');
   c.width = 64;
@@ -209,36 +215,91 @@ function makeEmergentClusterForce(strength: number) {
 // Gentle same-community cohesion strength (emergent, not positional).
 const CLUSTER_STRENGTH = 0.06;
 
-// ── Star field (verbatim) ──────────────────────────────────
+// ── Cosmic scene ───────────────────────────────────────────
 
+// addStarField builds deterministic distant stars and a spiral nebula behind the live graph.
 function addStarField(THREE: any, scene: any) {
-  const count = 400;
-  const positions = new Float32Array(count * 3);
-  const colors = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) {
-    positions[i * 3] = (Math.random() - 0.5) * 5000;
-    positions[i * 3 + 1] = (Math.random() - 0.5) * 5000;
-    positions[i * 3 + 2] = (Math.random() - 0.5) * 5000;
-    const b = 0.3 + Math.random() * 0.7;
-    colors[i * 3] = b;
-    colors[i * 3 + 1] = b;
-    colors[i * 3 + 2] = b + Math.random() * 0.15;
+  let seed = 0x4b4c454f;
+  // nextRandom advances a stable linear congruential generator for repeatable frames.
+  const nextRandom = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+
+  const starCount = 520;
+  const starPositions = new Float32Array(starCount * 3);
+  const starColors = new Float32Array(starCount * 3);
+  for (let i = 0; i < starCount; i++) {
+    starPositions[i * 3] = (nextRandom() - 0.5) * 5200;
+    starPositions[i * 3 + 1] = (nextRandom() - 0.5) * 5200;
+    starPositions[i * 3 + 2] = (nextRandom() - 0.5) * 5200;
+    const brightness = 0.28 + nextRandom() * 0.72;
+    starColors[i * 3] = brightness * 0.78;
+    starColors[i * 3 + 1] = brightness * 0.92;
+    starColors[i * 3 + 2] = brightness;
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  scene.add(
-    new THREE.Points(
-      geo,
-      new THREE.PointsMaterial({
-        size: 0.8,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.7,
-        sizeAttenuation: true
-      })
-    )
-  );
+  const starGeometry = new THREE.BufferGeometry();
+  starGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+  starGeometry.setAttribute('color', new THREE.BufferAttribute(starColors, 3));
+  const starMaterial = new THREE.PointsMaterial({
+    size: 1.1,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.72,
+    sizeAttenuation: true,
+    depthWrite: false
+  });
+  const starPoints = new THREE.Points(starGeometry, starMaterial);
+  scene.add(starPoints);
+
+  const nebulaCount = 2200;
+  const nebulaPositions = new Float32Array(nebulaCount * 3);
+  const nebulaColors = new Float32Array(nebulaCount * 3);
+  const palette = [
+    new THREE.Color('#00d7ff'),
+    new THREE.Color('#1463ff'),
+    new THREE.Color('#7c4dff'),
+    new THREE.Color('#ff7a1a')
+  ];
+  for (let i = 0; i < nebulaCount; i++) {
+    const progress = i / nebulaCount;
+    const arm = i % 2;
+    const radius = 70 + Math.pow(progress, 0.62) * 1750;
+    const angle = progress * Math.PI * 9.5 + arm * Math.PI + (nextRandom() - 0.5) * 0.7;
+    const scatter = (nextRandom() - 0.5) * (70 + radius * 0.11);
+    nebulaPositions[i * 3] = Math.cos(angle) * radius + Math.cos(angle + Math.PI / 2) * scatter;
+    nebulaPositions[i * 3 + 1] = Math.sin(angle) * radius * 0.58 + Math.sin(angle + Math.PI / 2) * scatter;
+    nebulaPositions[i * 3 + 2] = -820 + (nextRandom() - 0.5) * (110 + radius * 0.08);
+    const colorIndex = i % 29 === 0 ? 3 : (arm + Math.floor(progress * 2)) % 3;
+    const color = palette[colorIndex];
+    const intensity = 0.35 + nextRandom() * 0.65;
+    nebulaColors[i * 3] = color.r * intensity;
+    nebulaColors[i * 3 + 1] = color.g * intensity;
+    nebulaColors[i * 3 + 2] = color.b * intensity;
+  }
+  const nebulaGeometry = new THREE.BufferGeometry();
+  nebulaGeometry.setAttribute('position', new THREE.BufferAttribute(nebulaPositions, 3));
+  nebulaGeometry.setAttribute('color', new THREE.BufferAttribute(nebulaColors, 3));
+  const nebulaMaterial = new THREE.PointsMaterial({
+    size: 8.5,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.34,
+    sizeAttenuation: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  });
+  const nebulaPoints = new THREE.Points(nebulaGeometry, nebulaMaterial);
+  scene.add(nebulaPoints);
+
+  // The returned disposer releases every GPU resource created for the backdrop.
+  return () => {
+    scene.remove(starPoints, nebulaPoints);
+    starGeometry.dispose();
+    starMaterial.dispose();
+    nebulaGeometry.dispose();
+    nebulaMaterial.dispose();
+  };
 }
 
 // ── Component ──────────────────────────────────────────────
@@ -291,6 +352,8 @@ export function Graph() {
     let threeRef: any = null;
     let resizeHandler: (() => void) | null = null;
     let cloudRaf: number | undefined;
+    let disposeCosmicScene: (() => void) | null = null;
+    const motionReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     // Effect-local mutable graph state (mirrors the old component scope).
     const highlightNodes = new Set<GNode>();
@@ -308,7 +371,7 @@ export function Graph() {
       if (searchHighlights.has(node.id)) return '#ffd700';
       if (node.category && CATEGORY_FALLBACK[node.category]) return CATEGORY_FALLBACK[node.category];
       if (node.community_id != null) return COMMUNITY_COLORS[node.community_id % COMMUNITY_COLORS.length];
-      return '#4fc3f7';
+      return '#00d7ff';
     };
     const getNodeOpacity = (node: GNode): number => {
       if (highlightNodes.has(node) || searchHighlights.has(node.id)) return 1.0;
@@ -317,7 +380,7 @@ export function Graph() {
     };
     const getLinkColor = (link: GLink): string => {
       const src = typeof link.source === 'object' ? (link.source as GNode) : null;
-      return src ? getNodeColor(src) : '#4fc3f7';
+      return src ? getNodeColor(src) : '#00d7ff';
     };
     const withAlpha = (color: string, alpha: number): string => {
       const clamped = Math.max(0, Math.min(1, alpha));
@@ -333,7 +396,7 @@ export function Graph() {
     const getLinkAlpha = (link: GLink): number => {
       if (highlightLinks.has(link)) return Math.max(0.3, (link.weight ?? 0.5) * 0.8);
       if (hoverNode && !highlightLinks.has(link)) return 0.04;
-      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.05 + (link.weight ?? 0) * 0.12;
+      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.08 + (link.weight ?? 0) * 0.18;
       return 0;
     };
     const getVisibleLinkColor = (link: GLink): string => {
@@ -458,6 +521,7 @@ export function Graph() {
       }
     };
 
+    // init loads graph data, creates the WebGL scene, and publishes control hooks to the interface.
     async function init() {
       try {
         const [FG3D, THREE] = await Promise.all([
@@ -616,7 +680,7 @@ export function Graph() {
 
         const graph = new ForceGraph3D(container)
           .graphData({ nodes, links: edges })
-          .backgroundColor('#0a0a0a')
+          .backgroundColor('#05060d')
           .showNavInfo(false)
           .nodeLabel(() => '')
           .nodeVal((n: any) => (n as GNode).importance || 5)
@@ -697,10 +761,10 @@ export function Graph() {
               }
               return;
             }
-            const t = performance.now() * 0.001;
+            const t = motionReduced ? 0 : performance.now() * 0.001;
             nodeSprites.forEach((entry, id) => {
               const phase = breathPhases.get(id) ?? 0;
-              const breathScale = 1 + Math.sin(t * 0.8 + phase) * 0.08;
+              const breathScale = motionReduced ? 1 : 1 + Math.sin(t * 0.8 + phase) * 0.08;
               const sizeVal = entry.baseSize * breathScale;
               const isHovered = highlightNodes.has(nodeMap.get(id)!);
               const scale = isHovered ? sizeVal * 1.3 : sizeVal;
@@ -736,23 +800,24 @@ export function Graph() {
 
         graphInstance = graph;
 
-        // Force canvas background to near-black
+        // Force canvas background to the same deep-space black as the interface shell.
         const canvas = graph.renderer().domElement;
-        canvas.style.backgroundColor = '#0a0a0a';
+        canvas.style.backgroundColor = '#05060d';
 
-        addStarField(THREE, graph.scene());
+        disposeCosmicScene = addStarField(THREE, graph.scene());
 
         // Add the big-graph node point cloud to the live scene, and drive its
         // breathing pulse from a lightweight rAF (just advances a time uniform;
         // the GPU does the per-point work, so it stays alive even after settle).
         if (nodeCloud) {
           graph.scene().add(nodeCloud);
+          // animateCloud advances one shader uniform while the GPU handles every point.
           const animateCloud = () => {
             if (destroyed) return;
             if (pointMat) pointMat.uniforms.uTime.value = performance.now() * 0.001;
             cloudRaf = requestAnimationFrame(animateCloud);
           };
-          cloudRaf = requestAnimationFrame(animateCloud);
+          if (!motionReduced) cloudRaf = requestAnimationFrame(animateCloud);
         }
 
         // ── Organic, scale-invariant force model ──────────────
@@ -836,6 +901,7 @@ export function Graph() {
       destroyed = true;
       if (cloudRaf !== undefined) cancelAnimationFrame(cloudRaf);
       if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+      disposeCosmicScene?.();
       graphInstance?._destructor?.();
       apiRef.current = null;
       // Allow a genuine remount (incl. StrictMode's dev double-mount) to rebuild.
@@ -883,28 +949,34 @@ export function Graph() {
     setSelectedMemory(null);
   };
 
-  // ── Template (ported verbatim from the old graph) ────────
+  // ── Interface shell ─────────────────────────────────────
   return (
-    <div className="fixed inset-0 z-40 bg-[#0a0a0a] overflow-hidden">
-      <div ref={containerRef} className="w-full h-full" />
+    <div className="memgraph-root fixed inset-0 z-40 overflow-hidden">
+      <div
+        ref={containerRef}
+        className="memgraph-canvas w-full h-full"
+        role="img"
+        aria-label={`Interactive memory galaxy with ${nodeCount.toLocaleString()} memories and ${edgeCount.toLocaleString()} links. Use search to select a memory without a pointer.`}
+      />
 
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center z-50 bg-[#0a0a0a]">
-          <div className="text-center">
-            <div className="w-12 h-12 border-2 border-teal-500/30 border-t-teal-400 rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-gray-500 text-sm">Loading memory graph...</p>
+        <div className="memgraph-state absolute inset-0 flex items-center justify-center z-50">
+          <div className="memgraph-state__card text-center">
+            <div className="memgraph-loader w-12 h-12 rounded-full mx-auto mb-4" />
+            <p className="memgraph-kicker">KLEOS // MEMORY GALAXY</p>
+            <p className="text-gray-500 text-sm">Mapping live memory topology...</p>
           </div>
         </div>
       )}
 
       {loadError && (
-        <div className="absolute inset-0 flex items-center justify-center z-50 bg-[#0a0a0a]">
-          <div className="bg-red-900/20 border border-red-800/50 rounded-xl p-6 max-w-md text-center">
+        <div className="memgraph-state absolute inset-0 flex items-center justify-center z-50">
+          <div className="memgraph-state__card memgraph-state__card--error p-6 max-w-md text-center">
             <p className="text-red-400 text-sm mb-2">Failed to load graph</p>
             <p className="text-red-300/60 text-xs font-mono">{loadError}</p>
             <a
               href="/"
-              className="inline-block mt-4 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm text-gray-300 transition-colors"
+              className="memgraph-return inline-block mt-4 px-4 py-2 text-sm transition-colors"
             >
               Back to Dashboard
             </a>
@@ -914,30 +986,33 @@ export function Graph() {
 
       {!loading && !loadError && (
         <>
-          {/* Top Bar */}
-          <div className="absolute top-0 left-0 right-0 z-50 flex items-center gap-4 px-5 py-3 memgraph-topbar-gradient">
-            <a href="/" className="flex items-center gap-2 text-gray-500 hover:text-gray-300 transition-colors shrink-0">
+          {/* Top instrument bar */}
+          <header className="memgraph-topbar absolute top-0 left-0 right-0 z-50 flex items-center gap-4">
+            <a href="/" className="memgraph-back flex items-center gap-2 transition-colors shrink-0" aria-label="Back to dashboard">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
-              <span className="text-xs">Back</span>
             </a>
 
-            <span className="text-sm font-bold tracking-widest bg-gradient-to-r from-teal-300 to-cyan-400 bg-clip-text text-transparent shrink-0">
-              KLEOS
-            </span>
+            <div className="memgraph-brand shrink-0">
+              <span className="memgraph-brand__name">KLEOS</span>
+              <span className="memgraph-brand__mode">MEMORY GALAXY</span>
+            </div>
 
-            <form className="flex-1 max-w-md" onSubmit={onSearchSubmit}>
+            <span className="memgraph-live shrink-0"><i /> LIVE</span>
+
+            <form className="memgraph-search flex-1 max-w-md" onSubmit={onSearchSubmit} role="search">
               <div className="relative">
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search memories..."
-                  className="w-full px-4 py-2 pl-9 bg-white/5 border border-white/10 rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-teal-500/50 transition-all"
+                  aria-label="Search memories"
+                  className="memgraph-search__input w-full px-4 py-2 pl-9 text-sm focus:outline-none transition-all"
                 />
                 <svg
-                  className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-600"
+                  className="memgraph-search__icon absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5"
                   fill="none"
                   stroke="currentColor"
                   viewBox="0 0 24 24"
@@ -947,21 +1022,22 @@ export function Graph() {
               </div>
             </form>
 
-            <div className="flex items-center gap-4 text-[11px] text-gray-500 shrink-0">
+            <div className="memgraph-metrics flex items-center gap-4 shrink-0" aria-label="Graph statistics">
               <span>
-                <span className="text-gray-400 font-medium">{nodeCount}</span> nodes
+                <strong>{nodeCount.toLocaleString()}</strong> memories
               </span>
               <span>
-                <span className="text-gray-400 font-medium">{edgeCount}</span> edges
+                <strong>{edgeCount.toLocaleString()}</strong> links
               </span>
-              {dbSizeMb != null && <span>{dbSizeMb.toFixed(1)} MB</span>}
+              {dbSizeMb != null && <span><strong>{dbSizeMb.toFixed(1)}</strong> MB</span>}
             </div>
-          </div>
+          </header>
 
-          {/* Controls (bottom-left) */}
-          <div className="absolute bottom-5 left-5 z-50 flex flex-col gap-3 p-4 rounded-xl memgraph-glass-panel">
+          {/* Graph controls */}
+          <section className="memgraph-instruments absolute z-50 flex flex-col gap-3 p-4 memgraph-glass-panel" aria-label="Galaxy controls">
+            <div className="memgraph-panel-heading">SIGNAL CONTROLS</div>
             <div>
-              <div className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Edge Floor</div>
+              <div className="memgraph-control-label text-[10px] uppercase tracking-wider mb-1.5">Edge floor</div>
               <div className="flex items-center gap-2">
                 <input
                   type="range"
@@ -970,37 +1046,38 @@ export function Graph() {
                   step={0.05}
                   value={weightThreshold}
                   onChange={(e) => setWeightThreshold(Number.parseFloat(e.target.value))}
+                  aria-label="Minimum edge weight"
                   className="memgraph-range-slider w-28"
                 />
-                <span className="text-[10px] text-gray-600 w-7 text-right">{weightThreshold.toFixed(2)}</span>
+                <span className="memgraph-control-value text-[10px] w-7 text-right">{weightThreshold.toFixed(2)}</span>
               </div>
             </div>
 
-            <button onClick={() => setShowLabels((v) => !v)} className="flex items-center gap-2 group">
-              <div className={`w-7 h-4 rounded-full relative transition-colors ${showLabels ? 'bg-teal-500/60' : 'bg-gray-700'}`}>
-                <div className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-all ${showLabels ? 'translate-x-3 bg-teal-300' : 'bg-gray-400'}`} />
+            <button onClick={() => setShowLabels((v) => !v)} aria-pressed={showLabels} className="memgraph-toggle flex items-center gap-2 group">
+              <div className={`memgraph-switch w-7 h-4 rounded-full relative transition-colors ${showLabels ? 'is-on' : ''}`}>
+                <div className="memgraph-switch__thumb absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-all" />
               </div>
-              <span className="text-[10px] text-gray-500 group-hover:text-gray-400 transition-colors">Labels</span>
+              <span className="text-[10px] transition-colors">Labels</span>
             </button>
 
-            <button onClick={() => setClusterEnabled((v) => !v)} className="flex items-center gap-2 group">
-              <div className={`w-7 h-4 rounded-full relative transition-colors ${clusterEnabled ? 'bg-teal-500/60' : 'bg-gray-700'}`}>
-                <div className={`absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-all ${clusterEnabled ? 'translate-x-3 bg-teal-300' : 'bg-gray-400'}`} />
+            <button onClick={() => setClusterEnabled((v) => !v)} aria-pressed={clusterEnabled} className="memgraph-toggle flex items-center gap-2 group">
+              <div className={`memgraph-switch w-7 h-4 rounded-full relative transition-colors ${clusterEnabled ? 'is-on' : ''}`}>
+                <div className="memgraph-switch__thumb absolute left-0.5 top-0.5 w-3 h-3 rounded-full transition-all" />
               </div>
-              <span className="text-[10px] text-gray-500 group-hover:text-gray-400 transition-colors">Clusters</span>
+              <span className="text-[10px] transition-colors">Clusters</span>
             </button>
 
             <button
               onClick={() => apiRef.current?.fitView()}
-              className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/[0.08] rounded-lg text-[10px] text-gray-400 hover:text-gray-300 transition-all"
+              className="memgraph-fit px-3 py-1.5 text-[10px] transition-all"
             >
-              Fit View
+              FIT GALAXY
             </button>
-          </div>
+          </section>
 
           {/* Side Panel */}
           {sidePanelOpen && (
-            <div className="absolute top-0 right-0 bottom-0 w-[380px] z-50 overflow-y-auto memgraph-side-panel memgraph-glass-panel-solid">
+            <aside className="memgraph-inspector absolute top-0 right-0 bottom-0 w-[380px] z-50 overflow-y-auto memgraph-side-panel memgraph-glass-panel-solid">
               <button
                 onClick={() => apiRef.current?.closePanel()}
                 aria-label="Close panel"
@@ -1030,8 +1107,8 @@ export function Graph() {
                               <span
                                 className="px-1.5 py-0.5 rounded text-[9px] font-medium"
                                 style={{
-                                  background: `${CATEGORY_FALLBACK[result.category] || '#4fc3f7'}20`,
-                                  color: CATEGORY_FALLBACK[result.category] || '#4fc3f7'
+                                  background: `${CATEGORY_FALLBACK[result.category] || '#00d7ff'}20`,
+                                  color: CATEGORY_FALLBACK[result.category] || '#00d7ff'
                                 }}
                               >
                                 {result.category}
@@ -1054,8 +1131,8 @@ export function Graph() {
                       <span
                         className="px-2 py-0.5 rounded-full text-[10px] font-medium"
                         style={{
-                          background: `${CATEGORY_FALLBACK[selectedMemory.category] || '#4fc3f7'}20`,
-                          color: CATEGORY_FALLBACK[selectedMemory.category] || '#4fc3f7'
+                          background: `${CATEGORY_FALLBACK[selectedMemory.category] || '#00d7ff'}20`,
+                          color: CATEGORY_FALLBACK[selectedMemory.category] || '#00d7ff'
                         }}
                       >
                         {selectedMemory.category}
@@ -1075,7 +1152,7 @@ export function Graph() {
                             className="h-full rounded-full transition-all"
                             style={{
                               width: `${selectedMemory.importance * 10}%`,
-                              background: CATEGORY_FALLBACK[selectedMemory.category] || '#4fc3f7'
+                              background: CATEGORY_FALLBACK[selectedMemory.category] || '#00d7ff'
                             }}
                           />
                         </div>
@@ -1180,24 +1257,28 @@ export function Graph() {
                   </div>
                 ) : null}
               </div>
-            </div>
+            </aside>
           )}
 
-          {/* Category Legend (bottom-right, hidden when panel open) */}
+          {/* Live category ledger */}
           {categories.length > 0 && !sidePanelOpen && (
-            <div className="absolute bottom-5 right-5 z-40 p-3 rounded-xl memgraph-glass-panel-light">
-              <div className="text-[9px] text-gray-600 uppercase tracking-wider mb-2">Categories</div>
+            <section className="memgraph-category-ledger absolute z-40 p-3 memgraph-glass-panel-light" aria-label="Memory categories">
+              <div className="memgraph-panel-heading mb-2">MEMORY LEDGER</div>
               <div className="space-y-1">
                 {categories.slice(0, 8).map((cat) => (
-                  <div key={cat.category} className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full" style={{ background: CATEGORY_FALLBACK[cat.category] || '#4fc3f7' }} />
-                    <span className="text-[10px] text-gray-500">{cat.category}</span>
-                    <span className="text-[10px] text-gray-700 ml-auto">{cat.count}</span>
+                  <div key={cat.category} className="memgraph-ledger-row flex items-center gap-2">
+                    <div className="memgraph-ledger-dot w-2 h-2 rounded-full" style={{ background: CATEGORY_FALLBACK[cat.category] || '#00d7ff' }} />
+                    <span className="text-[10px]">{cat.category}</span>
+                    <span className="text-[10px] ml-auto">{cat.count.toLocaleString()}</span>
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           )}
+
+          <div className="memgraph-gesture-hint absolute z-40" aria-hidden="true">
+            DRAG TO ORBIT <span>·</span> SCROLL TO ZOOM <span>·</span> SELECT A MEMORY
+          </div>
         </>
       )}
     </div>
