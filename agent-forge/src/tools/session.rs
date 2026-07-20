@@ -26,6 +26,7 @@ pub struct CheckpointInput {
     /// One-line statement of what this slice did.
     pub intent: Option<String>,
     /// One entry per component touched: what it does and under what conditions.
+    /// Required when emitting: a slice with no component prose is refused.
     pub components: Option<Vec<String>>,
     /// Non-obvious conditions: root causes, gotchas, documented limitations.
     pub conditions: Option<Vec<String>>,
@@ -116,6 +117,25 @@ fn emit_slice(
         .clone()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+
+    // Teaching is the point of a slice. An empty components list would render a
+    // document whose every section reads "None recorded" -- hollow prose that
+    // LOOKS like documentation, which is worse than none. Refuse it the same
+    // way a leaking slice is refused: the snapshot above survives, no file is
+    // written, and the error names exactly what a real slice needs. In a CLI
+    // invoked by an agent, a refusal that names the missing prose IS the ask.
+    let has_prose = input
+        .components
+        .as_ref()
+        .is_some_and(|c| c.iter().any(|s| !s.trim().is_empty()));
+    if !has_prose {
+        return Err(ToolError::InvalidValue(
+            "refusing to emit a hollow slice: `components` is empty. Describe each \
+             component this slice touched -- what it does and under what conditions. \
+             Pass `emit: false` to snapshot without a document."
+                .into(),
+        ));
+    }
 
     let record = load_spec_record(db, spec_id)?;
     let trust = derive_trust(&record.verifications);
@@ -469,6 +489,41 @@ mod tests {
         checkpoint(&db, emitting_input(dir.path(), "first")).unwrap();
         let out = checkpoint(&db, emitting_input(dir.path(), "second")).unwrap();
         assert_eq!(out.data.unwrap()["slice_index"].as_i64().unwrap(), 2);
+    }
+
+    /// A checkpoint that requests emission without component prose is refused:
+    /// no document is written, the error names the missing field, and the
+    /// snapshot half of the checkpoint survives so rollback still works. A
+    /// whitespace-only entry counts as empty, so the laziest possible caller
+    /// cannot satisfy the gate with `[""]`.
+    #[cfg(feature = "fluency")]
+    #[test]
+    fn hollow_slice_is_refused() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+
+        let mut input = emitting_input(dir.path(), "hollow");
+        input.components = Some(vec![]);
+        let err = checkpoint(&db, input).err().unwrap();
+        assert!(err.to_string().contains("components"));
+
+        let mut input = emitting_input(dir.path(), "hollow-blank");
+        input.components = Some(vec!["   ".into()]);
+        assert!(checkpoint(&db, input).is_err());
+
+        assert!(!dir.path().join("docs/agent-forge/work").exists());
+
+        // Both snapshots persisted despite the refusals, with no slice number
+        // consumed.
+        let snapshots: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE slice_index IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshots, 2);
     }
 
     /// Content that trips the leak scan is refused and no file is written.
