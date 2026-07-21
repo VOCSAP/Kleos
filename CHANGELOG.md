@@ -6,6 +6,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-21
+
+A hardening release. Multi-tenant isolation, review-gate correctness, and durability
+fixes dominate; there is little new functionality. Operators running a shared monolith
+or tenant shards should treat this as a priority upgrade.
+
+### Security
+- Multi-tenancy: closed shared-monolith isolation gaps across sync, skills, FSRS, drain, and teardown paths, where id-addressed queries were not scoped by `user_id` (#164)
+- Multi-tenancy: finished row-scoping for quota, sessions, lineage, and community edges (#169)
+- Signature bypass in the auth path, cross-tenant backfill attribution, wrong per-tenant counts, and a bootstrap lockout (#167)
+- GUI cookie lane now enforces the signature requirement instead of accepting unsigned requests (#167)
+- Artifacts: blob paths are tenant-scoped, and shared blobs are refcounted before unlink so one tenant could not delete another's data (#171)
+- Axon: subscriptions, cursors, and webhook fan-out are isolated per tenant (#172)
+- Brain: hopfield decay and prune are scoped to the calling user; also fixes retrieve dilution and a dimension panic (#170)
+- Review gate: closed bypasses that leaked pending memories into assembled context, derivations, and read tails (#163, #168, #174, #175)
+- Tenant loader rejects tombstoned and stuck tenants instead of serving them (#182)
+- Mode-independent hardening: exec-bypass, UTF-8 panic, VACUUM DoS, and an embed hang (#165)
+- Server input validation: reject malformed audit filters, sanitize registry errors, validate dispatch configs (#191)
+- Peripheral crates: SSH detection, socket permissions, cred migration key handling, lease scoping, and tiered sidecar auth (#193)
+- Graph: sanitize artifact FTS queries and validate link similarity (#183)
+- Dependency advisories: `crossbeam-epoch` 0.9.18 -> 0.9.20 (RUSTSEC-2026-0204)
+
+### Fixed
+- Backup: repaired PITR snapshot discovery (the reader did not match the `kleos-backup-` prefix the writer actually uses) and encrypted-backup verify/restore, which never opened snapshots with the SQLCipher key (#166)
+- Migrations: foreign-key rebuild migrations and tenant `notx` migrations now apply atomically, so an interrupted upgrade cannot leave a half-rebuilt table (#178, #179)
+- Timestamps: corrected a `datetime('now','utc')` double-UTC conversion in column defaults, which stored values offset by the server's own UTC offset (#185)
+- Vector: lance upserts are serialized and crash-atomic, and chunk vectors are purged on soft delete (#181)
+- Jobs: real lease tokens, panic containment, and tenant-shard job processing; the tenant PageRank job was previously compiled out of the shipped binary (#184)
+- Graph: bounded co-occurrence writes (#183)
+- Context assembly: failures are observable rather than silent, and truncation counts characters instead of bytes (#180)
+- Embeddings: reorder OpenAI responses by index and validate ONNX output shape (#176)
+- Ingestion: retryable failed ingests, RFC 4180 CSV quoting, docx `w:t` tag boundaries, document identity, and project/entity links (#189)
+- Loom: the engine is actually wired to run, and hardened against DoS and leaks (#173)
+- Degenerate-case handling across projects, inbox, backup, and valence (#177)
+- Tenant deletion logs record real usernames, and deprovision admin responses report honest results (#192)
+- Remaining library and server-route correctness fixes (#194, #195)
+
+### Added
+- Opt-in documentation emission layer for agent-forge (#186)
+- Emission refuses hollow slices: a slice must carry component prose to be emitted (#190)
+- High-importance memories are gated to inbox review before entering the corpus
+
+### Removed
+- **Breaking:** enrollment invites are removed end to end: the admin-scoped `POST /identity-keys/invite` endpoint, the `enrollment_invites` table, the `kleos-cli invite` subcommand, and its client route entry. The feature was never functional -- the table was write-only, with no code path that consumed a token to complete an enrollment. If invite-based onboarding returns, it needs its own design pass (#195, #196)
+- Dead code: scheduler-lease, tenant-pool, reranker-pool, lexicon, and PageRank remnants (~700 lines, 4 unsafe impls); dead-letter retention wired up in their place (#187)
+
+### Database
+- Monolith migration 100: `skill_records.duration_sample_count` with backfill
+- Monolith migration 101: drop `enrollment_invites` (accompanies the endpoint removal above)
+- Tenant migration 83: `duration_sample_count` on tenant shards
+- Upgrades are one-way. Snapshot before applying, as the removal migrations cannot be reversed.
+
+### Changed
+- `serde_with` 3.18.0 -> 3.21.0 (#188)
+- npm dependency group updates in `gui/` (#160)
+
 ## [1.9.0] - 2026-07-04
 
 ### Added

@@ -1,6 +1,6 @@
 [package]
 name = "kleos-install"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Interactive TUI installer for Kleos"
@@ -11,8 +11,8 @@ name = "kleos-install"
 path = "src/main.rs"
 
 [dependencies]
-kleos-install-core = { path = "../kleos-install-core", version = "1.9.0" }
-kleos-config = { path = "../kleos-config", version = "1.9.0" }
+kleos-install-core = { path = "../kleos-install-core", version = "1.10.0" }
+kleos-config = { path = "../kleos-config", version = "1.10.0" }
 clap = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
