@@ -1,6 +1,6 @@
 //! Shared-DB scoping regressions for per-user skill analysis (Batch I).
 //!
-//! Master's decision: skill evolution is per-user. These tests run two users
+//! The skill-evolution contract is per-user. These tests run two users
 //! against one monolith database and assert that the skill-analysis read paths
 //! never observe another user's skills when `ENGRAM_TENANT_SHARDING=0`.
 //! `skill_records` carries `user_id` (re-added in migration 78); related

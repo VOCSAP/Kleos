@@ -693,8 +693,8 @@ pub struct Config {
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
     /// Source networks exempt from BOTH the pre-auth per-IP limit and the
-    /// per-user limit. Entries are bare IPs ("10.50.0.1") or CIDRs
-    /// ("10.50.0.0/24", "127.0.0.0/8", "::1"). Empty (default) means no
+    /// per-user limit. Entries are bare IPs ("192.0.2.1") or CIDRs
+    /// ("192.0.2.0/24", "127.0.0.0/8", "::1"). Empty (default) means no
     /// exemption, so any public deployment behaves exactly as before.
     ///
     /// Intended for trusted local/mesh callers -- e.g. a VPN-only server where
@@ -1362,7 +1362,7 @@ impl Config {
     /// Returns true when `ip` (a resolved client-IP string) falls within any
     /// configured `rate_limit_exempt_cidrs` entry.
     ///
-    /// Entries may be bare IPs ("10.50.0.1") or CIDRs ("10.50.0.0/24").
+    /// Entries may be bare IPs ("192.0.2.1") or CIDRs ("192.0.2.0/24").
     /// Unparseable entries and unparseable inputs never match, so a
     /// misconfigured CIDR fails closed (no exemption granted) rather than
     /// silently exempting everything.
@@ -1431,7 +1431,7 @@ mod tests {
     fn rate_limit_exempt_empty_never_matches() {
         let cfg = Config::default();
         assert!(cfg.rate_limit_exempt_cidrs.is_empty());
-        assert!(!cfg.is_rate_limit_exempt("10.50.0.4"));
+        assert!(!cfg.is_rate_limit_exempt("192.0.2.4"));
         assert!(!cfg.is_rate_limit_exempt("127.0.0.1"));
     }
 
@@ -1441,18 +1441,18 @@ mod tests {
         let cfg = Config {
             rate_limit_exempt_cidrs: vec![
                 "127.0.0.0/8".to_string(),
-                "10.50.0.0/24".to_string(),
+                "192.0.2.0/24".to_string(),
                 "::1".to_string(), // bare IPv6 loopback (no prefix)
             ],
             ..Config::default()
         };
         // Loopback + mesh members are exempt.
         assert!(cfg.is_rate_limit_exempt("127.0.0.1"));
-        assert!(cfg.is_rate_limit_exempt("10.50.0.4"));
-        assert!(cfg.is_rate_limit_exempt("10.50.0.6"));
+        assert!(cfg.is_rate_limit_exempt("192.0.2.4"));
+        assert!(cfg.is_rate_limit_exempt("192.0.2.6"));
         assert!(cfg.is_rate_limit_exempt("::1"));
         // Outside the configured ranges -- not exempt.
-        assert!(!cfg.is_rate_limit_exempt("10.50.1.1"));
+        assert!(!cfg.is_rate_limit_exempt("198.51.100.1"));
         assert!(!cfg.is_rate_limit_exempt("203.0.113.9"));
     }
 
