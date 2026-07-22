@@ -105,7 +105,7 @@ describe('buildGalaxyTargets', () => {
   });
 
   it('keeps a community that is large enough to read as its own cluster', () => {
-    const nodes: GalaxyLayoutNode[] = Array.from({ length: 12 }, (_, index) => ({
+    const nodes: GalaxyLayoutNode[] = Array.from({ length: 24 }, (_, index) => ({
       id: `b${index}`,
       category: 'ops',
       community_id: 900

@@ -42,7 +42,7 @@ const DIFFUSE_GROUP_MIN_MEMBERS = 400;
 // Angular thickness of a dust arm, in radians. Wide enough that the arm looks
 // like a drift of material rather than a drawn line, narrow enough that the
 // two arms stay distinguishable from each other.
-const DUST_ARM_SCATTER = 1.1;
+const DUST_ARM_SCATTER = 0.42;
 
 // How many turns the dust arms make from the core to the rim.
 //
@@ -64,7 +64,7 @@ const DISC_HALF_THICKNESS = 28;
 // overlapping clusters that smeared the spiral into a featureless sphere. Small
 // communities fall back to their category so each arm position carries a group
 // a viewer can actually distinguish.
-const MIN_COMMUNITY_MEMBERS = 8;
+const MIN_COMMUNITY_MEMBERS = 20;
 
 // GalaxyLayoutNode is the immutable subset required to derive one guide target.
 export interface GalaxyLayoutNode {
@@ -272,6 +272,14 @@ export function buildGalaxyTargets(nodes: readonly GalaxyLayoutNode[]): Map<stri
     CORE_RADIUS * 2
   );
 
+  // Exponent shaping how dust thins out from core to rim.
+  //
+  // A square root would spread motes evenly by AREA, which sounds right but
+  // piles most of them into a hard ring at the rim, because that is where the
+  // area is. Real galaxies are brightest in the middle and fade outward, so a
+  // higher exponent pulls dust inward and softens the edge.
+  const DUST_RADIAL_FALLOFF = 1.6;
+
   // Members of a diffuse group scatter across the disc as dust, but along the
   // SAME spiral the clusters follow rather than uniformly.
   //
@@ -285,7 +293,7 @@ export function buildGalaxyTargets(nodes: readonly GalaxyLayoutNode[]): Map<stri
 
     members.forEach((node, localIndex) => {
       const radialUnit = stableUnit(`${node.id}:dust`);
-      const radius = CORE_RADIUS + Math.sqrt(radialUnit) * (discRadius - CORE_RADIUS);
+      const radius = CORE_RADIUS + Math.pow(radialUnit, DUST_RADIAL_FALLOFF) * (discRadius - CORE_RADIUS);
       // Map the mote's radius onto a fixed number of turns, so the arms stay
       // legible no matter how far the clusters pushed the disc out.
       const discSpan = Math.max(1, discRadius - CORE_RADIUS);

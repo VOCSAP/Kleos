@@ -469,6 +469,10 @@ export function Graph() {
     const nodeSprites = new Map<string, { material: any; baseSize: number; sprite: any }>();
     const nodeLabels = new Map<string, any>();
     const nodeMap = new Map<string, GNode>();
+    // Ids of nodes drawn as background dust, filled in once the galaxy layout
+    // is built. Link styling consults this to keep dust edges from hazing over
+    // the structure they pass through.
+    const dustNodeIds = new Set<string>();
 
     // ── Color helpers ──────────────────────────────────────
     const getNodeColor = (node: GNode): string => {
@@ -497,13 +501,28 @@ export function Graph() {
       const b = value & 255;
       return `rgba(${r},${g},${b},${clamped})`;
     };
+    // True when either endpoint is background dust. Such edges are the bulk of
+    // the graph and criss-cross the whole disc, so at equal weight they blur
+    // the arms and clusters into a uniform haze.
+    const linkTouchesDust = (link: GLink): boolean => {
+      const source = typeof link.source === 'object' ? (link.source as GNode).id : (link.source as string);
+      const target = typeof link.target === 'object' ? (link.target as GNode).id : (link.target as string);
+      return dustNodeIds.has(source) || dustNodeIds.has(target);
+    };
+
+    // How far dust edges are pushed back relative to structural ones.
+    const DUST_EDGE_DIM = 0.18;
+
     const getLinkAlpha = (link: GLink): number => {
       if (highlightLinks.has(link)) return Math.max(0.56, (link.weight ?? 0.5) * 0.98);
       if (hoverNode && !highlightLinks.has(link)) return 0.07;
       // Edges blend additively, so thousands of overlapping strands compound
       // into flat white-cyan and erase the node colours underneath. Resting
       // alpha stays low; highlighted edges above still get full presence.
-      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.09 + (link.weight ?? 0) * 0.2;
+      if ((link.weight ?? 0) >= weightThresholdLocal) {
+        const base = 0.09 + (link.weight ?? 0) * 0.2;
+        return linkTouchesDust(link) ? base * DUST_EDGE_DIM : base;
+      }
       return 0;
     };
     const getVisibleLinkColor = (link: GLink): string => {
@@ -517,7 +536,9 @@ export function Graph() {
         .linkOpacity(1)
         .linkWidth((link: any) => {
           if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-          if ((link.weight ?? 0) >= weightThresholdLocal) return 0.32;
+          if ((link.weight ?? 0) >= weightThresholdLocal) {
+            return linkTouchesDust(link as GLink) ? 0.16 : 0.42;
+          }
           return 0;
         })
         .linkColor((link: any) => getVisibleLinkColor(link as GLink))
@@ -729,6 +750,36 @@ export function Graph() {
         const galaxyTargets = buildGalaxyTargets(nodes);
         seedGalaxyPositions(nodes, galaxyTargets);
 
+        // Pin the dust exactly on the spiral.
+        //
+        // Dust is the overwhelming majority of nodes and carries no structure of
+        // its own, so letting the simulation drag it around only blurs the arms
+        // it is supposed to draw. Fixing it in place makes the spiral crisp,
+        // while the far smaller set of real clusters stays force-driven so the
+        // meaningful part of the graph still behaves like a graph. The Clusters
+        // toggle releases these pins for a pure force-directed view.
+        const pinDust = (pinned: boolean) => {
+          for (const node of nodes) {
+            const target = galaxyTargets.get(node.id);
+            if (!target?.diffuse) continue;
+            if (pinned) {
+              (node as any).fx = target.x;
+              (node as any).fy = target.y;
+              (node as any).fz = target.z;
+            } else {
+              (node as any).fx = undefined;
+              (node as any).fy = undefined;
+              (node as any).fz = undefined;
+            }
+          }
+        };
+        pinDust(true);
+
+        // Record which nodes are dust so their edges can be pushed back.
+        for (const node of nodes) {
+          if (galaxyTargets.get(node.id)?.diffuse) dustNodeIds.add(node.id);
+        }
+
         const ringTexture = createRingTexture(THREE);
         // Pool of 8 organism textures, reused across nodes
         const organismTextures = Array.from({ length: 8 }, (_, i) => createOrganismTexture(THREE, i * 137));
@@ -752,8 +803,11 @@ export function Graph() {
           // Bookkeeping categories are the majority of any real instance, so at
           // equal weight they wash out the communities that carry the meaning;
           // pushing them back is what lets the clusters read as clusters.
-          const DUST_BRIGHTNESS = 0.42;
-          const DUST_SIZE = 0.55;
+          // Dust points carry the spiral arms, so they stay bright enough to
+          // draw them. It is the dust EDGES that had to recede, not the motes:
+          // dimming the points instead simply erased the galaxy's shape.
+          const DUST_BRIGHTNESS = 0.95;
+          const DUST_SIZE = 0.9;
           nodes.forEach((node, i) => {
             col.set(getNodeColor(node));
             const isDust = galaxyTargets.get(node.id)?.diffuse === true;
@@ -1083,6 +1137,7 @@ export function Graph() {
           },
           setClusters: (v: boolean) => {
             if (!graphInstance) return;
+            pinDust(v);
             graphInstance.d3Force('galaxy', v ? makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH) : null);
             graphInstance.d3ReheatSimulation();
           },
