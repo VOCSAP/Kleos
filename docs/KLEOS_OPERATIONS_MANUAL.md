@@ -330,7 +330,7 @@ Use for:
 ### Attention notes
 
 Think Post-its on a monitor, not memories. Attention notes are not ingested,
-ranked, embedded, or decayed — they just sit there and stare at you until you
+ranked, embedded, or decayed -- they just sit there and stare at you until you
 explicitly delete them. Use them for short "don't forget to …" items that need
 to survive session boundaries without getting buried in recall noise.
 
@@ -380,9 +380,9 @@ tenant.
 
 **Typical agent workflow**
 
-1. On session start: `GET /attention` — review open reminders.
-2. During work: `POST /attention` — pin a new reminder for next time.
-3. When a task is done: `DELETE /attention/{id}` — remove the note.
+1. On session start: `GET /attention` -- review open reminders.
+2. During work: `POST /attention` -- pin a new reminder for next time.
+3. When a task is done: `DELETE /attention/{id}` -- remove the note.
 
 ### Handoffs
 
@@ -772,6 +772,25 @@ Purpose:
 
 - Structured reasoning, code review, and workflow enforcement tool.
 - All commands read JSON input and write JSON output.
+
+### Local MCP and Fluency
+
+Build the local MCP server with Fluency enabled:
+
+```bash
+cargo build -p agent-forge --features fluency --bin agent-forge-mcp
+```
+
+Register `agent-forge-mcp --db ~/.agent-forge/forge.db` as a stdio MCP server.
+It exposes the core spec, hypothesis, approach, verification, review, and
+completion gates against one local database. `checkpoint` and `review` remain
+local because they inspect the active Git checkout and write
+`docs/agent-forge/` inside that checkout; the remote Kleos MCP continues to own
+shared memory, activity, and coordination.
+
+The MCP binary requires the `fluency` feature. This keeps documentation
+emission opt-in for normal `agent-forge` builds while ensuring a configured
+local MCP server cannot silently advertise a workflow that lacks `review`.
 
 Output contract:
 

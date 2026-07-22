@@ -23,6 +23,11 @@ path = "src/lib.rs"
 name = "agent-forge"
 path = "src/main.rs"
 
+[[bin]]
+name = "agent-forge-mcp"
+path = "src/bin/agent-forge-mcp.rs"
+required-features = ["fluency"]
+
 [dependencies]
 kleos-token-client = { path = "../kleos-token-client", version = "1.10.0" }
 clap = { version = "4", features = ["derive"] }
