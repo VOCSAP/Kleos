@@ -473,6 +473,7 @@ export function Graph() {
     // is built. Link styling consults this to keep dust edges from hazing over
     // the structure they pass through.
     const dustNodeIds = new Set<string>();
+    let galaxyTargets = new Map<string, GalaxyTarget>();
 
     // ── Color helpers ──────────────────────────────────────
     const getNodeColor = (node: GNode): string => {
@@ -510,21 +511,50 @@ export function Graph() {
       return dustNodeIds.has(source) || dustNodeIds.has(target);
     };
 
-    // How far dust edges are pushed back relative to structural ones.
-    const DUST_EDGE_DIM = 0.18;
+    // How far diffuse-thread edges recede relative to compact-cluster edges.
+    // Topology placement has made these local rather than cross-disc noise, so
+    // they can remain visible enough to reveal the filaments they now encode.
+    const DUST_EDGE_DIM = 0.48;
 
+    // Resolve one mutable force-edge endpoint back to its stable node id.
+    const linkEndpointId = (endpoint: GLink['source']): string =>
+      typeof endpoint === 'object' ? endpoint.id : endpoint;
+
+    // Attenuate long resting bridges because their screen coverage compounds
+    // far faster than local links. Selection still restores full emphasis.
+    const linkSpanAttenuation = (link: GLink): number => {
+      const source = galaxyTargets.get(linkEndpointId(link.source));
+      const target = galaxyTargets.get(linkEndpointId(link.target));
+      if (!source || !target) return 1;
+      const span = Math.hypot(source.x - target.x, source.y - target.y, source.z - target.z);
+      const fullStrengthSpan = 96;
+      const falloff = Math.pow(fullStrengthSpan / Math.max(fullStrengthSpan, span), 1.7);
+      return Math.max(0.018, Math.min(1, falloff));
+    };
+
+    // Return resting or highlighted alpha for one visible semantic relationship.
     const getLinkAlpha = (link: GLink): number => {
       if (highlightLinks.has(link)) return Math.max(0.56, (link.weight ?? 0.5) * 0.98);
-      if (hoverNode && !highlightLinks.has(link)) return 0.07;
+      if (hoverNode && !highlightLinks.has(link)) return 0.04 * linkSpanAttenuation(link);
       // Edges blend additively, so thousands of overlapping strands compound
       // into flat white-cyan and erase the node colours underneath. Resting
       // alpha stays low; highlighted edges above still get full presence.
       if ((link.weight ?? 0) >= weightThresholdLocal) {
         const base = 0.09 + (link.weight ?? 0) * 0.2;
-        return linkTouchesDust(link) ? base * DUST_EDGE_DIM : base;
+        const dustDim = linkTouchesDust(link) ? DUST_EDGE_DIM : 1;
+        return base * dustDim * linkSpanAttenuation(link);
       }
       return 0;
     };
+    // Return a width that preserves local threads and de-emphasizes long bridges.
+    const getLinkWidth = (link: GLink): number => {
+      if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
+      if ((link.weight ?? 0) < weightThresholdLocal) return 0;
+      const base = linkTouchesDust(link) ? 0.16 : 0.42;
+      return base * Math.max(0.08, Math.sqrt(linkSpanAttenuation(link)));
+    };
+
+    // Return one edge color with the current interaction alpha applied.
     const getVisibleLinkColor = (link: GLink): string => {
       const alpha = getLinkAlpha(link);
       if (alpha <= 0) return 'rgba(0,0,0,0)';
@@ -534,13 +564,7 @@ export function Graph() {
       if (!graphInstance) return;
       graphInstance
         .linkOpacity(1)
-        .linkWidth((link: any) => {
-          if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-          if ((link.weight ?? 0) >= weightThresholdLocal) {
-            return linkTouchesDust(link as GLink) ? 0.16 : 0.42;
-          }
-          return 0;
-        })
+        .linkWidth((link: any) => getLinkWidth(link as GLink))
         .linkColor((link: any) => getVisibleLinkColor(link as GLink))
         .linkVisibility((link: any) => {
           if (highlightLinks.has(link)) return true;
@@ -747,21 +771,21 @@ export function Graph() {
 
         // Seed the first visible frame in the final semantic shape. The guide
         // force can still deform this structure through links, drag, and charge.
-        const galaxyTargets = buildGalaxyTargets(nodes);
+        galaxyTargets = buildGalaxyTargets(nodes, edges);
         seedGalaxyPositions(nodes, galaxyTargets);
 
-        // Pin the dust exactly on the spiral.
+        // Pin the topology-driven layout within the spiral.
         //
-        // Dust is the overwhelming majority of nodes and carries no structure of
-        // its own, so letting the simulation drag it around only blurs the arms
-        // it is supposed to draw. Fixing it in place makes the spiral crisp,
-        // while the far smaller set of real clusters stays force-driven so the
-        // meaningful part of the graph still behaves like a graph. The Clusters
-        // toggle releases these pins for a pure force-directed view.
-        const pinDust = (pinned: boolean) => {
+        // Dust is the overwhelming majority of nodes, but its links still carry
+        // structure. The layout grows those motes from compact semantic anchors
+        // along a maximum-affinity forest, so every endpoint must share the same
+        // fixed coordinate model. Moving only the anchors tears the forest into
+        // long edge beams. The Clusters toggle releases every pin for users who
+        // prefer a pure force-directed view.
+        const pinGalaxyLayout = (pinned: boolean) => {
           for (const node of nodes) {
             const target = galaxyTargets.get(node.id);
-            if (!target?.diffuse) continue;
+            if (!target) continue;
             if (pinned) {
               (node as any).fx = target.x;
               (node as any).fy = target.y;
@@ -773,7 +797,7 @@ export function Graph() {
             }
           }
         };
-        pinDust(true);
+        pinGalaxyLayout(true);
 
         // Record which nodes are dust so their edges can be pushed back.
         for (const node of nodes) {
@@ -954,11 +978,7 @@ export function Graph() {
             });
           })
           // Layer 1: faint static edges
-          .linkWidth((link: any) => {
-            if (highlightLinks.has(link)) return Math.max(0.5, (link.weight ?? 0.5) * 2);
-            if ((link.weight ?? 0) >= weightThresholdLocal) return 0.32;
-            return 0;
-          })
+          .linkWidth((link: any) => getLinkWidth(link as GLink))
           .linkOpacity(1)
           .linkColor((link: any) => getVisibleLinkColor(link as GLink))
           // Flow-trail particles were removed: they only ever rendered on the
@@ -1137,7 +1157,7 @@ export function Graph() {
           },
           setClusters: (v: boolean) => {
             if (!graphInstance) return;
-            pinDust(v);
+            pinGalaxyLayout(v);
             graphInstance.d3Force('galaxy', v ? makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH) : null);
             graphInstance.d3ReheatSimulation();
           },

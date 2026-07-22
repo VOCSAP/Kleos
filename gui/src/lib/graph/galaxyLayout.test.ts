@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildGalaxyTargets, seedGalaxyPositions, type GalaxyLayoutNode } from './galaxyLayout';
+import { buildGalaxyTargets, seedGalaxyPositions } from './galaxyLayout';
+
+// Describe link fixtures accepted by the topology-aware galaxy target builder.
+import type { GalaxyLayoutLink } from './galaxyLayout';
+
+// Describe node fixtures accepted by the galaxy layout helpers.
+import type { GalaxyLayoutNode } from './galaxyLayout';
 
 // Return one compact fixture spanning community and category fallback groups.
 function fixtureNodes(): GalaxyLayoutNode[] {
@@ -17,6 +23,29 @@ function fixtureNodes(): GalaxyLayoutNode[] {
 // Calculate the distance between two three-dimensional guide positions.
 function distance(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+// Return a production-shaped graph with one oversized diffuse group and one compact anchor.
+function threadedFixture(): { nodes: GalaxyLayoutNode[]; links: GalaxyLayoutLink[] } {
+  const anchorNodes: GalaxyLayoutNode[] = Array.from({ length: 20 }, (_, index) => ({
+    id: `anchor-${index}`,
+    category: 'decision',
+    importance: 8
+  }));
+  const dustNodes: GalaxyLayoutNode[] = Array.from({ length: 420 }, (_, index) => ({
+    id: `dust-${index}`,
+    category: 'session',
+    importance: 3
+  }));
+  const links: GalaxyLayoutLink[] = [
+    { source: 'anchor-0', target: 'dust-0', weight: 1 },
+    ...dustNodes.slice(1).map((node, index) => ({
+      source: `dust-${index}`,
+      target: node.id,
+      weight: 0.99 - index / 10000
+    }))
+  ];
+  return { nodes: [...anchorNodes, ...dustNodes], links };
 }
 
 describe('buildGalaxyTargets', () => {
@@ -154,5 +183,54 @@ describe('buildGalaxyTargets', () => {
 
     expect(nodes[0]).toMatchObject({ x: 1, y: 2, z: 3 });
     expect([nodes[1].x, nodes[1].y, nodes[1].z].every(Number.isFinite)).toBe(true);
+  });
+
+  it('grows diffuse nodes into short threads from real graph links', () => {
+    const { nodes, links } = threadedFixture();
+    const targets = buildGalaxyTargets(nodes, links);
+    const lengths = links.map((link) => distance(
+      targets.get(typeof link.source === 'string' ? link.source : link.source.id)!,
+      targets.get(typeof link.target === 'string' ? link.target : link.target.id)!
+    ));
+    const sorted = [...lengths].sort((left, right) => left - right);
+
+    expect(sorted[Math.floor(sorted.length / 2)]).toBeLessThan(40);
+    expect(Math.max(...lengths)).toBeLessThan(80);
+  });
+
+  it('keeps topology placement deterministic across node, edge, and endpoint forms', () => {
+    const { nodes, links } = threadedFixture();
+    const forward = buildGalaxyTargets(nodes, links);
+    const reversed = buildGalaxyTargets(
+      [...nodes].reverse(),
+      [...links].reverse().map((link) => ({
+        source: { id: typeof link.target === 'string' ? link.target : link.target.id },
+        target: { id: typeof link.source === 'string' ? link.source : link.source.id },
+        weight: link.weight
+      }))
+    );
+
+    nodes.forEach((node) => expect(reversed.get(node.id)).toEqual(forward.get(node.id)));
+  });
+
+  it('bounds disconnected cycles and ignores invalid links', () => {
+    const nodes: GalaxyLayoutNode[] = Array.from({ length: 420 }, (_, index) => ({
+      id: `orphan-${index}`,
+      category: 'session'
+    }));
+    const links: GalaxyLayoutLink[] = nodes.map((node, index) => ({
+      source: node.id,
+      target: nodes[(index + 1) % nodes.length].id,
+      weight: index % 9 === 0 ? Number.NaN : 0.8
+    }));
+    links.push({ source: 'missing', target: 'orphan-0', weight: 1 });
+    links.push({ source: 'orphan-0', target: 'orphan-0', weight: 1 });
+
+    const targets = buildGalaxyTargets(nodes, links);
+    expect(targets.size).toBe(nodes.length);
+    targets.forEach((target) => {
+      expect([target.x, target.y, target.z].every(Number.isFinite)).toBe(true);
+      expect(Math.hypot(target.x, target.y)).toBeLessThan(500);
+    });
   });
 });

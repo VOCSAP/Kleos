@@ -77,6 +77,13 @@ export interface GalaxyLayoutNode {
   z?: number;
 }
 
+// GalaxyLayoutLink is the edge subset whose visible topology guides diffuse threads.
+export interface GalaxyLayoutLink {
+  source: string | { id: string };
+  target: string | { id: string };
+  weight?: number;
+}
+
 // GalaxyTarget stores a node position plus its community anchor for diagnostics and tests.
 export interface GalaxyTarget {
   x: number;
@@ -160,6 +167,12 @@ interface PlacedCluster {
   arm: number;
 }
 
+// ForestNeighbour records one deterministic maximum-affinity forest connection.
+interface ForestNeighbour {
+  id: string;
+  weight: number;
+}
+
 // Walk the compact groups outward along two spiral arms, giving each one exactly
 // the arc it needs before the next begins.
 //
@@ -205,8 +218,171 @@ function placeClustersAlongArms(orderedSpreads: readonly number[]): PlacedCluste
   });
 }
 
+// Resolve an edge endpoint before or after the force engine replaces ids with objects.
+function endpointId(endpoint: GalaxyLayoutLink['source']): string | null {
+  if (typeof endpoint === 'string') return endpoint;
+  return typeof endpoint?.id === 'string' ? endpoint.id : null;
+}
+
+// Build a deterministic maximum spanning forest from the edges actually drawn.
+function buildMaximumAffinityForest(
+  nodes: readonly GalaxyLayoutNode[],
+  links: readonly GalaxyLayoutLink[]
+): Map<string, ForestNeighbour[]> {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const forest = new Map<string, ForestNeighbour[]>();
+  const parents = new Map<string, string>();
+  for (const id of nodeIds) {
+    forest.set(id, []);
+    parents.set(id, id);
+  }
+
+  // Find the current disjoint-set root while compressing the traversed path.
+  const findRoot = (id: string): string => {
+    let root = id;
+    while (parents.get(root) !== root) root = parents.get(root)!;
+    let cursor = id;
+    while (cursor !== root) {
+      const next = parents.get(cursor)!;
+      parents.set(cursor, root);
+      cursor = next;
+    }
+    return root;
+  };
+
+  const ranked = links
+    .map((link) => {
+      const source = endpointId(link.source);
+      const target = endpointId(link.target);
+      const weight = Number.isFinite(link.weight) ? Number(link.weight) : 0;
+      if (!source || !target || source === target || !nodeIds.has(source) || !nodeIds.has(target)) return null;
+      return source < target ? { source, target, weight } : { source: target, target: source, weight };
+    })
+    .filter((link): link is { source: string; target: string; weight: number } => link !== null)
+    .sort((left, right) =>
+      right.weight - left.weight
+      || left.source.localeCompare(right.source)
+      || left.target.localeCompare(right.target)
+    );
+
+  for (const link of ranked) {
+    const sourceRoot = findRoot(link.source);
+    const targetRoot = findRoot(link.target);
+    if (sourceRoot === targetRoot) continue;
+    parents.set(targetRoot, sourceRoot);
+    forest.get(link.source)!.push({ id: link.target, weight: link.weight });
+    forest.get(link.target)!.push({ id: link.source, weight: link.weight });
+  }
+
+  forest.forEach((neighbours) => {
+    neighbours.sort((left, right) => right.weight - left.weight || left.id.localeCompare(right.id));
+  });
+  return forest;
+}
+
+// Place one diffuse child beside its forest parent while keeping the galactic disc bounded.
+function placeThreadChild(
+  parent: GalaxyTarget,
+  fallback: GalaxyTarget,
+  parentId: string,
+  childId: string,
+  discRadius: number
+): GalaxyTarget {
+  const radialAngle = Math.atan2(parent.y / DISC_FLATTENING, parent.x);
+  const windingDirection = parent.arm === 0 ? 1 : -1;
+  const tangentAngle = radialAngle + windingDirection * Math.PI / 2;
+  const branchScatter = (stableUnit(`${parentId}:${childId}:branch`) - 0.5) * 1.3;
+  const angle = tangentAngle + branchScatter;
+  const step = 14 + stableUnit(`${parentId}:${childId}:step`) * 20;
+  let x = parent.x + Math.cos(angle) * step;
+  let y = parent.y + Math.sin(angle) * step * DISC_FLATTENING;
+  const zStep = (stableUnit(`${parentId}:${childId}:depth`) - 0.5) * 12;
+  const z = Math.max(-DISC_HALF_THICKNESS * 2, Math.min(DISC_HALF_THICKNESS * 2, parent.z + zStep));
+
+  // Preserve the luminous core and prevent long forest chains from escaping
+  // beyond the decorative fallback disc that established the view bounds.
+  const maxRadius = Math.max(CORE_RADIUS, discRadius * 1.08);
+  const radius = Math.hypot(x, y / DISC_FLATTENING);
+  if (radius < CORE_RADIUS || radius > maxRadius) {
+    const boundedRadius = Math.max(CORE_RADIUS, Math.min(maxRadius, radius));
+    const scale = boundedRadius / Math.max(radius, 1);
+    x *= scale;
+    y *= scale;
+  }
+
+  return {
+    x,
+    y,
+    z,
+    clusterX: parent.clusterX,
+    clusterY: parent.clusterY,
+    clusterZ: parent.clusterZ,
+    groupKey: fallback.groupKey,
+    arm: parent.arm,
+    diffuse: true
+  };
+}
+
+// Grow diffuse threads through the affinity forest from every compact cluster seed.
+function placeDiffuseThreads(
+  nodes: readonly GalaxyLayoutNode[],
+  links: readonly GalaxyLayoutLink[],
+  targets: Map<string, GalaxyTarget>,
+  discRadius: number
+): void {
+  if (!links.length) return;
+  const forest = buildMaximumAffinityForest(nodes, links);
+  const visited = new Set<string>();
+  const queue: string[] = [];
+  const sortedIds = nodes.map((node) => node.id).sort((left, right) => left.localeCompare(right));
+
+  // Every compact cluster is a fixed semantic seed. Multi-source traversal lets
+  // a component grow from whichever real cluster reaches each branch first.
+  for (const id of sortedIds) {
+    if (targets.get(id)?.diffuse) continue;
+    visited.add(id);
+    queue.push(id);
+  }
+
+  // Traverse one queued forest root and place only diffuse descendants.
+  const drainQueue = (): void => {
+    let cursor = 0;
+    while (cursor < queue.length) {
+      const parentId = queue[cursor++];
+      const parent = targets.get(parentId);
+      if (!parent) continue;
+      for (const neighbour of forest.get(parentId) ?? []) {
+        if (visited.has(neighbour.id)) continue;
+        const fallback = targets.get(neighbour.id);
+        if (!fallback) continue;
+        visited.add(neighbour.id);
+        if (fallback.diffuse) {
+          targets.set(neighbour.id, placeThreadChild(parent, fallback, parentId, neighbour.id, discRadius));
+        }
+        queue.push(neighbour.id);
+      }
+    }
+  };
+
+  drainQueue();
+
+  // Components that never reach a compact cluster still represent real linked
+  // memories. Keep one stable spiral fallback as their root, then grow the rest
+  // locally so their edges retain meaning without inventing a semantic anchor.
+  for (const id of sortedIds) {
+    if (visited.has(id) || !targets.get(id)?.diffuse) continue;
+    visited.add(id);
+    queue.length = 0;
+    queue.push(id);
+    drainQueue();
+  }
+}
+
 // Build stable spiral targets without mutating the supplied graph nodes.
-export function buildGalaxyTargets(nodes: readonly GalaxyLayoutNode[]): Map<string, GalaxyTarget> {
+export function buildGalaxyTargets(
+  nodes: readonly GalaxyLayoutNode[],
+  links: readonly GalaxyLayoutLink[] = []
+): Map<string, GalaxyTarget> {
   const targets = new Map<string, GalaxyTarget>();
   if (!nodes.length) return targets;
 
@@ -319,6 +495,11 @@ export function buildGalaxyTargets(nodes: readonly GalaxyLayoutNode[]): Map<stri
       });
     });
   });
+
+  // Replace hash-only dust positions with short, topology-bearing filaments.
+  // The original spiral scatter remains as the deterministic root and fallback
+  // for isolated nodes; linked descendants are placed from real relationships.
+  placeDiffuseThreads(nodes, links, targets, discRadius);
 
   return targets;
 }
