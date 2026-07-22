@@ -26,6 +26,7 @@ import './graph.css';
 // The graph mutates nodes in place (neighbors/links/positions), so these are
 // looser than the API GraphNode/GraphEdge and own the runtime-only fields.
 
+// One memory as the force simulation sees it, including runtime-only fields.
 interface GNode {
   id: string;
   label: string;
@@ -61,12 +62,14 @@ interface GLink {
 
 // ── Constants ──────────────────────────────────────────────
 
+// Palette cycled by community id so neighbouring clusters get distinct hues.
 const COMMUNITY_COLORS = [
   '#00d7ff', '#6d7cff', '#22e87a', '#ff7a1a',
   '#1463ff', '#b46cff', '#ffd166', '#00f0c8',
   '#ff5e7a', '#7aa2ff', '#a6ff6a', '#ff9f43'
 ];
 
+// Fixed colour per known category, used before falling back to community hue.
 const CATEGORY_FALLBACK: Record<string, string> = {
   general: '#00d7ff', decision: '#b46cff', task: '#22e87a',
   state: '#ff7a1a', discovery: '#1463ff', reference: '#ff5e9f',
@@ -88,6 +91,7 @@ function linkStaysWithinGroup(link: GLink): boolean {
 
 // ── Textures (verbatim from the old graph) ─────────────────
 
+// Draw the soft cell-like glow sprite used for a node, varied by seed.
 function createOrganismTexture(THREE: any, seed: number) {
   const size = 128;
   const c = document.createElement('canvas');
@@ -211,8 +215,41 @@ function makeGalaxyGuideForce(targets: ReadonlyMap<string, GalaxyTarget>, streng
   return force;
 }
 
-// The guide is strong enough to preserve arms but weak enough for links and drag to deform them.
-const GALAXY_GUIDE_STRENGTH = 0.16;
+// The guide is strong enough to preserve arms but weak enough for links and drag
+// to deform them. At production scale the link forces overwhelmed the weaker
+// original value and pulled the disc back into a ball, erasing the layout, so
+// the guide has to hold its own against ~14k edges of contrary pull.
+const GALAXY_GUIDE_STRENGTH = 0.38;
+
+// Fraction of edges hidden by default. Every edge drawn at once additively
+// blends into a single saturated mass that hides node colour entirely, so the
+// default view shows the strongest connections and the slider reveals the rest.
+const DEFAULT_EDGE_FLOOR_QUANTILE = 0.2;
+
+// Extra room left around the graph when framing it, as a multiple of the
+// bounding radius, so the outermost nodes are not flush against the viewport.
+const FIT_PADDING_FACTOR = 1.06;
+
+// Describe the range of edge weights actually present, plus the default floor.
+// Weights sit in a narrow band near 1.0, so the slider is calibrated to the
+// observed spread instead of a nominal 0..1 that would be mostly inert.
+function describeEdgeWeights(edges: readonly GLink[]): { min: number; max: number; defaultFloor: number } {
+  const weights = edges
+    .map((edge) => edge.weight)
+    .filter((weight): weight is number => Number.isFinite(weight))
+    .sort((left, right) => left - right);
+
+  if (!weights.length) return { min: 0, max: 1, defaultFloor: 0 };
+
+  const min = weights[0];
+  const max = weights[weights.length - 1];
+  // A degenerate range (every edge sharing one weight) must not collapse the
+  // slider to zero width, which would make it impossible to grab.
+  if (!(max > min)) return { min, max: min + 1, defaultFloor: min };
+
+  const quantile = weights[Math.min(weights.length - 1, Math.floor(weights.length * DEFAULT_EDGE_FLOOR_QUANTILE))];
+  return { min, max, defaultFloor: quantile };
+}
 
 // ── Cosmic scene ───────────────────────────────────────────
 
@@ -364,6 +401,8 @@ function addGalaxyBackdrop(THREE: any, scene: any) {
 
 // ── Component ──────────────────────────────────────────────
 
+// Full-screen 3D memory galaxy: loads the graph, builds the WebGL scene, and
+// wires the search, inspector, and signal controls around it.
 export function Graph() {
   const containerRef = useRef<HTMLDivElement>(null);
   const startedRef = useRef(false);
@@ -393,6 +432,11 @@ export function Graph() {
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [showLabels, setShowLabels] = useState(false);
   const [weightThreshold, setWeightThreshold] = useState(0);
+  // Observed edge-weight range, used to calibrate the Edge Floor slider. Real
+  // similarity scores occupy a narrow band near the top of 0..1 (production
+  // spans roughly 0.68..1.00), so a fixed 0..1 slider leaves most of its travel
+  // filtering nothing at all. Defaults to the full range until data arrives.
+  const [weightBounds, setWeightBounds] = useState<{ min: number; max: number }>({ min: 0, max: 1 });
   const [clusterEnabled, setClusterEnabled] = useState(true);
 
   // ── Graph lifecycle (init once, imperative) ──────────────
@@ -456,7 +500,10 @@ export function Graph() {
     const getLinkAlpha = (link: GLink): number => {
       if (highlightLinks.has(link)) return Math.max(0.56, (link.weight ?? 0.5) * 0.98);
       if (hoverNode && !highlightLinks.has(link)) return 0.07;
-      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.16 + (link.weight ?? 0) * 0.3;
+      // Edges blend additively, so thousands of overlapping strands compound
+      // into flat white-cyan and erase the node colours underneath. Resting
+      // alpha stays low; highlighted edges above still get full presence.
+      if ((link.weight ?? 0) >= weightThresholdLocal) return 0.09 + (link.weight ?? 0) * 0.2;
       return 0;
     };
     const getVisibleLinkColor = (link: GLink): string => {
@@ -645,6 +692,14 @@ export function Graph() {
         // Report what's actually drawn so the header isn't misleading.
         setEdgeCount(edges.length);
 
+        // Calibrate the Edge Floor control to the weights this graph actually
+        // contains, and open on a floor that keeps the strongest connections
+        // legible instead of drawing every edge into one saturated wash.
+        const weightProfile = describeEdgeWeights(edges);
+        setWeightBounds({ min: weightProfile.min, max: weightProfile.max });
+        weightThresholdLocal = weightProfile.defaultFloor;
+        setWeightThreshold(weightProfile.defaultFloor);
+
         // Map community IDs onto nodes
         const commMap = new Map<string, number>();
         (commData.communities || []).forEach((c) => {
@@ -693,12 +748,21 @@ export function Graph() {
           const sizes = new Float32Array(count);
           const phases = new Float32Array(count);
           const col = new THREE.Color();
+          // Background dust is drawn smaller and dimmer than structural nodes.
+          // Bookkeeping categories are the majority of any real instance, so at
+          // equal weight they wash out the communities that carry the meaning;
+          // pushing them back is what lets the clusters read as clusters.
+          const DUST_BRIGHTNESS = 0.42;
+          const DUST_SIZE = 0.55;
           nodes.forEach((node, i) => {
             col.set(getNodeColor(node));
-            colors[i * 3] = col.r;
-            colors[i * 3 + 1] = col.g;
-            colors[i * 3 + 2] = col.b;
-            sizes[i] = Math.max(8, ((node.importance || 5) * 1.8 + (node.size || 0) * 0.4) * 2.4);
+            const isDust = galaxyTargets.get(node.id)?.diffuse === true;
+            const brightness = isDust ? DUST_BRIGHTNESS : 1;
+            colors[i * 3] = col.r * brightness;
+            colors[i * 3 + 1] = col.g * brightness;
+            colors[i * 3 + 2] = col.b * brightness;
+            const baseSize = Math.max(8, ((node.importance || 5) * 1.8 + (node.size || 0) * 0.4) * 2.4);
+            sizes[i] = isDust ? baseSize * DUST_SIZE : baseSize;
             phases[i] = (i * 0.7) % (Math.PI * 2);
           });
           pointGeom = new THREE.BufferGeometry();
@@ -925,9 +989,85 @@ export function Graph() {
         resizeHandler = sizeToContainer;
         window.addEventListener('resize', resizeHandler);
 
+        // Frame the whole galaxy from the live simulation coordinates.
+        //
+        // graph.zoomToFit() cannot be used here: the library derives its bounding
+        // box from node object GEOMETRY, and this view draws nodes as sprites or
+        // as a single GPU point cloud whose per-point positions are invisible to
+        // that walk, so getGraphBbox() returns null and the call silently does
+        // nothing. Measuring the node coordinates directly is both correct and
+        // independent of how the nodes happen to be rendered.
+        const fitGalaxyView = (durationMs = 800) => {
+          if (destroyed || !graphInstance) return;
+          const positioned = (graphInstance.graphData()?.nodes ?? []).filter(
+            (node: any) => Number.isFinite(node.x) && Number.isFinite(node.y) && Number.isFinite(node.z)
+          );
+          // Nothing to frame yet -- the simulation has not produced coordinates.
+          if (!positioned.length) return;
+
+          let minX = Infinity, minY = Infinity, minZ = Infinity;
+          let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+          for (const node of positioned) {
+            if (node.x < minX) minX = node.x;
+            if (node.y < minY) minY = node.y;
+            if (node.z < minZ) minZ = node.z;
+            if (node.x > maxX) maxX = node.x;
+            if (node.y > maxY) maxY = node.y;
+            if (node.z > maxZ) maxZ = node.z;
+          }
+          const centre = { x: (minX + maxX) / 2, y: (minY + maxY) / 2, z: (minZ + maxZ) / 2 };
+          // True bounding sphere: the furthest node from the centre. The box
+          // diagonal would badly overstate the radius of a wide flat disc --
+          // the galaxy's usual shape -- and leave it marooned in dead space.
+          let furthest = 0;
+          for (const node of positioned) {
+            const away = Math.hypot(node.x - centre.x, node.y - centre.y, node.z - centre.z);
+            if (away > furthest) furthest = away;
+          }
+          // Floored so a single node still yields a sane camera distance
+          // rather than collapsing the camera onto the node itself.
+          const radius = Math.max(40, furthest);
+
+          const camera = graphInstance.camera?.();
+          const verticalFov = ((camera?.fov ?? 50) * Math.PI) / 180;
+          const aspect = camera?.aspect || 1;
+          // Fit the bounding sphere on whichever axis is tighter: for a wide
+          // viewport that is the vertical one, for a tall one the horizontal.
+          const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * aspect);
+          const distance =
+            (radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * FIT_PADDING_FACTOR;
+
+          // Preserve the direction the viewer is already looking from, so
+          // fitting reframes the galaxy without also spinning it.
+          const position = camera?.position;
+          let dirX = (position?.x ?? 0) - centre.x;
+          let dirY = (position?.y ?? 0) - centre.y;
+          let dirZ = (position?.z ?? 0) - centre.z;
+          const length = Math.hypot(dirX, dirY, dirZ);
+          if (!(length > 1e-6)) {
+            dirX = 0;
+            dirY = 0;
+            dirZ = 1;
+          } else {
+            dirX /= length;
+            dirY /= length;
+            dirZ /= length;
+          }
+
+          graphInstance.cameraPosition(
+            {
+              x: centre.x + dirX * distance,
+              y: centre.y + dirY * distance,
+              z: centre.z + dirZ * distance
+            },
+            centre,
+            durationMs
+          );
+        };
+
         // Fit after settling
         setTimeout(() => {
-          if (!destroyed) graph.zoomToFit(800, 50);
+          fitGalaxyView();
         }, 900);
 
         // Publish the imperative handle for the UI controls.
@@ -946,7 +1086,7 @@ export function Graph() {
             graphInstance.d3Force('galaxy', v ? makeGalaxyGuideForce(galaxyTargets, GALAXY_GUIDE_STRENGTH) : null);
             graphInstance.d3ReheatSimulation();
           },
-          fitView: () => graphInstance?.zoomToFit(800, 50),
+          fitView: () => fitGalaxyView(),
           zoomToNode,
           runSearch,
           closePanel
@@ -1105,9 +1245,9 @@ export function Graph() {
               <div className="flex items-center gap-2">
                 <input
                   type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
+                  min={weightBounds.min}
+                  max={weightBounds.max}
+                  step={(weightBounds.max - weightBounds.min) / 100}
                   value={weightThreshold}
                   onChange={(e) => setWeightThreshold(Number.parseFloat(e.target.value))}
                   aria-label="Minimum edge weight"

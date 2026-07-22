@@ -59,7 +59,11 @@ describe('buildGalaxyTargets', () => {
     const targets = buildGalaxyTargets(fixtureNodes());
 
     targets.forEach((target) => {
-      expect(Math.hypot(target.clusterX, target.clusterY)).toBeGreaterThanOrEqual(92);
+      // The disc is an ellipse: y is flattened to 0.64 so the galaxy reads as
+      // wide and thin. Measuring a circular radius would therefore understate
+      // how far out a cluster sits, so the void is checked in the disc's own
+      // geometry -- undo the flattening, then compare against the core radius.
+      expect(Math.hypot(target.clusterX, target.clusterY / 0.64)).toBeGreaterThanOrEqual(92);
     });
   });
 
@@ -79,8 +83,63 @@ describe('buildGalaxyTargets', () => {
     expect(targets.size).toBe(large.length);
     targets.forEach((target) => {
       expect([target.x, target.y, target.z].every(Number.isFinite)).toBe(true);
-      expect(Math.hypot(target.x, target.y)).toBeLessThan(520);
+      // Arms widen with group count to keep clusters apart, but the derived
+      // scale is capped, so the galaxy stays within a bounded radius.
+      expect(Math.hypot(target.x, target.y)).toBeLessThan(2300);
       expect(Math.abs(target.z)).toBeLessThan(150);
+    });
+  });
+
+  it('folds undersized communities into their category instead of giving each an arm', () => {
+    // Two nodes sharing a tiny community must not claim their own cluster: at
+    // production scale that long tail produced hundreds of overlapping blobs.
+    const nodes: GalaxyLayoutNode[] = [
+      { id: 'a1', category: 'ops', community_id: 500 },
+      { id: 'a2', category: 'ops', community_id: 501 },
+      { id: 'a3', category: 'ops', community_id: 502 }
+    ];
+    const targets = buildGalaxyTargets(nodes);
+
+    const groupKeys = new Set([...targets.values()].map((target) => target.groupKey));
+    expect(groupKeys).toEqual(new Set(['category:ops']));
+  });
+
+  it('keeps a community that is large enough to read as its own cluster', () => {
+    const nodes: GalaxyLayoutNode[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `b${index}`,
+      category: 'ops',
+      community_id: 900
+    }));
+    const targets = buildGalaxyTargets(nodes);
+
+    const groupKeys = new Set([...targets.values()].map((target) => target.groupKey));
+    expect(groupKeys).toEqual(new Set(['community:900']));
+  });
+
+  it('keeps neighbouring clusters further apart than they are wide', () => {
+    // Mirrors the production shape that broke the original layout: many
+    // distinct groups competing for room along the same two arms.
+    const nodes: GalaxyLayoutNode[] = Array.from({ length: 900 }, (_, index) => ({
+      id: `c${index}`,
+      category: `category-${index % 90}`,
+      importance: 5
+    }));
+    const targets = buildGalaxyTargets(nodes);
+
+    const centres = new Map<string, { x: number; y: number; z: number }>();
+    targets.forEach((target) => {
+      centres.set(target.groupKey, { x: target.clusterX, y: target.clusterY, z: target.clusterZ });
+    });
+    const points = [...centres.values()];
+    expect(points.length).toBeGreaterThan(50);
+
+    // Every cluster must have breathing room: its nearest neighbour has to sit
+    // further away than a single cluster's own radius (68 is the hard cap).
+    points.forEach((point, index) => {
+      const nearest = Math.min(
+        ...points.filter((_, other) => other !== index).map((other) => distance(point, other))
+      );
+      expect(nearest).toBeGreaterThan(68);
     });
   });
 
