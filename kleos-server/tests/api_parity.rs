@@ -2422,3 +2422,85 @@ async fn gate_check_resolves_agent_via_tenant_shard() {
         "wrong agent name with bound key must be rejected 403, got {wrong_status}: {wrong_body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Route registry parity
+// ---------------------------------------------------------------------------
+
+/// Replaces every `{param}` segment in a route template with a dummy value so
+/// the template can be dispatched as a concrete path.
+fn concrete_path(template: &str) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut in_param = false;
+    for ch in template.chars() {
+        match ch {
+            '{' => {
+                in_param = true;
+                out.push('1');
+            }
+            '}' => in_param = false,
+            c if !in_param => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Maps a registry method to the corresponding axum HTTP method.
+fn axum_method(m: kleos_client::routes::Method) -> axum::http::Method {
+    use kleos_client::routes::Method as R;
+    match m {
+        R::Get => axum::http::Method::GET,
+        R::Post => axum::http::Method::POST,
+        R::Put => axum::http::Method::PUT,
+        R::Delete => axum::http::Method::DELETE,
+        R::Patch => axum::http::Method::PATCH,
+    }
+}
+
+/// Every route in the kleos-client registry must be registered on the server.
+///
+/// This guards a specific failure mode: deleting a server route while leaving
+/// its registry entry, and any CLI or MCP surface built on that entry, in place.
+/// The result is a command that is still advertised in `--help` and in the MCP
+/// tool list but fails with 404 at runtime. That shipped once, when the
+/// enrollment-invite route was removed but its callers were not.
+///
+/// Requests are sent unauthenticated on purpose. A registered but protected
+/// route rejects at the auth extractor with 401 or 403 without touching the
+/// database, while a path that was never registered falls through to the
+/// router's own 404. That makes "route missing" distinguishable from "resource
+/// missing" without seeding any fixtures.
+#[tokio::test]
+async fn every_client_route_is_registered_on_the_server() {
+    let app = TestApp::new().await;
+
+    let mut missing = Vec::new();
+    for route in kleos_client::routes::ROUTES {
+        let path = concrete_path(route.path);
+        let method = axum_method(route.method);
+        let req = Request::builder()
+            .method(method.clone())
+            .uri(&path)
+            .body(Body::empty())
+            .expect("request must build");
+        let res = app
+            .router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("router must respond");
+        if res.status() == StatusCode::NOT_FOUND {
+            missing.push(format!("{} {} (tool: {})", method, path, route.name));
+        }
+    }
+
+    assert!(
+        missing.is_empty(),
+        "{} route(s) in the kleos-client registry are not registered on the server. \
+         Either the server route was removed without removing its registry entry, or the \
+         registry path drifted from the router:\n  {}",
+        missing.len(),
+        missing.join("\n  ")
+    );
+}

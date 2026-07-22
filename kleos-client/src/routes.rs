@@ -1136,14 +1136,6 @@ pub static ROUTES: &[Route] = &[
         "Revoke an identity key.",
         r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
     ),
-    route!(
-        Post,
-        Admin,
-        "identity_keys.invite",
-        "/identity-keys/invite",
-        "Issue an invite for identity-key enrollment.",
-        r#"{"type":"object","properties":{"label":{"type":"string"},"ttl_seconds":{"type":"integer"}}}"#
-    ),
     // -- agents -----------------------------------------------------------
     route!(
         Post,

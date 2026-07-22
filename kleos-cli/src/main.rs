@@ -184,9 +184,6 @@ enum Commands {
     /// User account management (admin-only, multi-user instances)
     #[command(subcommand)]
     User(UserCommands),
-    /// Enrollment invite management (generate one-time tokens for FIDO2 key registration)
-    #[command(subcommand)]
-    Invite(InviteCommands),
     /// Artifact storage management
     #[command(subcommand)]
     Artifact(ArtifactCommands),
@@ -622,20 +619,6 @@ enum UserCommands {
         /// Include deactivated users in the output
         #[arg(long)]
         include_inactive: bool,
-    },
-}
-
-/// Subcommands for `kleos-cli invite` -- one-time enrollment tokens.
-#[derive(Subcommand)]
-enum InviteCommands {
-    /// Generate a one-time enrollment invite for a user
-    Create {
-        /// Target user ID who will consume this invite
-        #[arg(long)]
-        user_id: i64,
-        /// Auth method (defaults to "fido2")
-        #[arg(long, default_value = "fido2")]
-        method: String,
     },
 }
 
@@ -1909,10 +1892,6 @@ async fn main() {
 
         Commands::User(user_cmd) => {
             handle_user_command(&client, user_cmd).await;
-        }
-
-        Commands::Invite(invite_cmd) => {
-            handle_invite_command(&client, invite_cmd).await;
         }
 
         Commands::Artifact(artifact_cmd) => {
@@ -4200,30 +4179,6 @@ async fn handle_user_command(client: &Client, cmd: &UserCommands) {
                         }
                         _ => println!("No users found."),
                     }
-                }
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
-    }
-}
-
-/// Dispatches `kleos-cli invite` subcommands to the /identity-keys/invite API.
-async fn handle_invite_command(client: &Client, cmd: &InviteCommands) {
-    match cmd {
-        InviteCommands::Create { user_id, method } => {
-            let body = json!({ "user_id": user_id, "method": method });
-            match client.post("/identity-keys/invite", body).await {
-                Ok(v) => {
-                    let token = v.get("token").and_then(|s| s.as_str()).unwrap_or("?");
-                    let uid = v.get("user_id").and_then(|i| i.as_i64()).unwrap_or(0);
-                    let expires = v.get("expires_at").and_then(|s| s.as_str()).unwrap_or("?");
-                    // The raw token is displayed exactly once. Copy it now.
-                    println!("Enrollment invite created for user #{}:", uid);
-                    println!("  Token:   {}", token);
-                    println!("  Method:  {}", method);
-                    println!("  Expires: {}", expires);
-                    println!();
-                    println!("This token will not be shown again.");
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }

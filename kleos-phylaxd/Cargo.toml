@@ -1,6 +1,6 @@
 [package]
 name = "kleos-phylaxd"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Phylax credential authority daemon -- credd with agent security extensions"
@@ -11,10 +11,10 @@ name = "phylaxd"
 path = "src/main.rs"
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.9.0" }
-kleos-cred = { path = "../kleos-cred", version = "1.9.0" }
-kleos-credd = { path = "../kleos-credd", version = "1.9.0" }
-kleos-phylax = { path = "../kleos-phylax", version = "1.9.0" }
+kleos-lib = { path = "../kleos-lib", version = "1.10.0" }
+kleos-cred = { path = "../kleos-cred", version = "1.10.0" }
+kleos-credd = { path = "../kleos-credd", version = "1.10.0" }
+kleos-phylax = { path = "../kleos-phylax", version = "1.10.0" }
 
 axum.workspace = true
 tokio.workspace = true
