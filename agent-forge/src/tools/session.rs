@@ -295,6 +295,9 @@ pub struct SessionLearnInput {
     pub spec_id: Option<String>,
 }
 
+/// Largest recall page accepted from CLI or MCP callers.
+const MAX_SESSION_RECALL_LIMIT: usize = 100;
+
 /// Persist a mid-session discovery to the `session_learns` table. If
 /// `capture_as_skill` is true, also forward the discovery text to the Kleos
 /// skill capture endpoint (best-effort -- failures are logged but do not abort).
@@ -305,6 +308,11 @@ pub fn session_learn(db: &Database, input: SessionLearnInput) -> ToolResult {
     let discovery = input
         .discovery
         .ok_or_else(|| ToolError::MissingField("discovery".into()))?;
+    if discovery.trim().is_empty() {
+        return Err(ToolError::InvalidValue(
+            "discovery must contain non-whitespace text".into(),
+        ));
+    }
 
     let id = format!("learn_{}", &Uuid::new_v4().to_string()[..8]);
     let now = Utc::now().timestamp();
@@ -363,6 +371,11 @@ pub struct SessionRecallInput {
 pub fn session_recall(db: &Database, input: SessionRecallInput) -> ToolResult {
     let query = input.query.unwrap_or_default();
     let limit = input.limit.unwrap_or(10);
+    if !(1..=MAX_SESSION_RECALL_LIMIT).contains(&limit) {
+        return Err(ToolError::InvalidValue(format!(
+            "limit must be between 1 and {MAX_SESSION_RECALL_LIMIT}"
+        )));
+    }
 
     let mut stmt = db
         .conn()
@@ -421,6 +434,45 @@ mod tests {
             )
             .unwrap();
         db
+    }
+
+    /// Learning rejects hollow discoveries before writing a database row.
+    #[test]
+    fn session_learn_rejects_blank_discovery() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        let error = session_learn(
+            &db,
+            SessionLearnInput {
+                discovery: Some("   ".into()),
+                context: None,
+                tags: None,
+                capture_as_skill: Some(false),
+                spec_id: Some("spec_1".into()),
+            },
+        )
+        .err()
+        .expect("blank learning must fail");
+        assert!(error.to_string().contains("non-whitespace"));
+    }
+
+    /// Recall rejects empty and excessive page sizes at the shared typed boundary.
+    #[test]
+    fn session_recall_rejects_invalid_limits() {
+        let dir = tempdir().unwrap();
+        let db = db_with_spec(dir.path());
+        for limit in [0, MAX_SESSION_RECALL_LIMIT + 1] {
+            let error = session_recall(
+                &db,
+                SessionRecallInput {
+                    query: None,
+                    limit: Some(limit),
+                },
+            )
+            .err()
+            .expect("invalid recall limit must fail");
+            assert!(error.to_string().contains("limit must be between"));
+        }
     }
 
     /// Build a checkpoint input that requests emission for `spec_1`.

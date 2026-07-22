@@ -104,6 +104,22 @@ pub fn tool_list() -> Vec<Value> {
             &["name"],
         ),
         tool(
+            "session_learn",
+            "Record a reusable discovery in the local Forge database.",
+            json!({
+                "discovery":{"type":"string","minLength":1}, "context":{"type":"string"},
+                "tags":{"type":"array","items":{"type":"string"}}, "capture_as_skill":{"type":"boolean"},
+                "spec_id":{"type":"string"}
+            }),
+            &["discovery"],
+        ),
+        tool(
+            "session_recall",
+            "Recall local Forge discoveries by keyword.",
+            json!({"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}),
+            &[],
+        ),
+        tool(
             "session_diff",
             "Summarize the current git diff before completion.",
             json!({"base":{"type":"string"}}),
@@ -169,6 +185,8 @@ fn call_tool(db: &Database, name: &str, arguments: Value) -> Result<Output, Stri
         "challenge_code" => call_typed(db, arguments, tools::verify::challenge_code),
         "comment_check" => call_typed(db, arguments, tools::comments::comment_check),
         "checkpoint" => call_typed(db, arguments, tools::session::checkpoint),
+        "session_learn" => call_typed(db, arguments, tools::session::session_learn),
+        "session_recall" => call_typed(db, arguments, tools::session::session_recall),
         "session_diff" => call_typed(db, arguments, tools::verify::session_diff),
         "think" => call_typed(db, arguments, tools::think::think),
         "declare_unknowns" => call_typed(db, arguments, tools::think::declare_unknowns),
@@ -435,7 +453,40 @@ mod tests {
             .collect();
         assert!(names.contains(&"checkpoint"));
         assert!(names.contains(&"review"));
+        assert!(names.contains(&"session_learn"));
+        assert!(names.contains(&"session_recall"));
         assert!(names.contains(&"spec_task"));
+    }
+
+    /// Learning calls persist and recall discoveries through the shared database.
+    #[test]
+    fn learns_and_recalls_from_one_database() {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        let learned = structured(
+            handle_jsonrpc(
+                &db,
+                request(
+                    1,
+                    "session_learn",
+                    json!({"discovery":"MCP learning continuity marker","tags":["mcp"]}),
+                ),
+            )
+            .unwrap(),
+        );
+        assert_eq!(learned["success"], true);
+        let recalled = structured(
+            handle_jsonrpc(
+                &db,
+                request(2, "session_recall", json!({"query":"continuity"})),
+            )
+            .unwrap(),
+        );
+        assert_eq!(recalled["success"], true);
+        assert_eq!(
+            recalled["data"]["results"][0]["discovery"],
+            "MCP learning continuity marker"
+        );
     }
 
     /// Spec creation, checkpoint emission, and review share one local database.

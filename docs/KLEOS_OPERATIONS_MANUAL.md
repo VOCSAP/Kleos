@@ -782,11 +782,16 @@ cargo build -p agent-forge --features fluency --bin agent-forge-mcp
 ```
 
 Register `agent-forge-mcp --db ~/.agent-forge/forge.db` as a stdio MCP server.
-It exposes the core spec, hypothesis, approach, verification, review, and
-completion gates against one local database. `checkpoint` and `review` remain
-local because they inspect the active Git checkout and write
-`docs/agent-forge/` inside that checkout; the remote Kleos MCP continues to own
-shared memory, activity, and coordination.
+It exposes the core spec, hypothesis, approach, learning, verification, review,
+and completion gates against one local database. `session-learn` and
+`session-recall` keep reusable discoveries linked to that evidence.
+`checkpoint` and `review` remain local because they inspect the active Git
+checkout and write `docs/agent-forge/` inside that checkout; the remote Kleos
+MCP continues to own shared memory, activity, and coordination.
+
+Fluency emission fails closed when rendered evidence contains a concrete local
+user-home path. Verification commands intended for public records must use
+repository-relative paths.
 
 The MCP binary requires the `fluency` feature. This keeps documentation
 emission opt-in for normal `agent-forge` builds while ensuring a configured
@@ -863,7 +868,7 @@ What it does:
 Input:
 
 - optional `query`
-- optional `limit`
+- optional `limit`, from 1 to 100
 
 What it does:
 

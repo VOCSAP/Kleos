@@ -166,4 +166,37 @@ mod tests {
             .unwrap()
             .contains("# Record: Add a thing"));
     }
+
+    /// A review containing a concrete local home path is refused before the
+    /// public record directory or file can be created.
+    #[test]
+    fn write_refuses_local_home_paths_before_persistence() {
+        let dir = tempdir().unwrap();
+        let db = db_unverified(dir.path());
+        db.conn()
+            .execute(
+                "INSERT INTO verifications (id, spec_id, created_at, command, \
+                 exit_code, success, criteria_index) \
+                 VALUES ('ver_2', 'spec_1', 2, '/home/alice/private/check', 0, 1, 0)",
+                [],
+            )
+            .unwrap();
+
+        let error = review(
+            &db,
+            ReviewInput {
+                spec_id: Some("spec_1".into()),
+                repo_root: Some(dir.path().to_string_lossy().to_string()),
+                write: Some(true),
+            },
+        )
+        .err()
+        .expect("local home path must prevent review persistence");
+
+        assert!(error.to_string().contains("absolute home path"));
+        assert!(!dir
+            .path()
+            .join("docs/agent-forge/work/add-a-thing/record.md")
+            .exists());
+    }
 }

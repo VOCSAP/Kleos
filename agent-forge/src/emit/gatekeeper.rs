@@ -34,6 +34,35 @@ fn trim_token(token: &str) -> &str {
     token.trim_matches('.')
 }
 
+/// Whether a token begins with a concrete platform user-home path. Placeholder
+/// segments remain publishable so documentation can describe portable examples
+/// such as `/home/<user>/project` without embedding one machine's identity.
+fn is_concrete_home_path(token: &str) -> bool {
+    let normalized = token.replace('\\', "/");
+    let lowered = normalized.to_ascii_lowercase();
+    let remainder = if normalized.starts_with("/home/") {
+        &normalized[6..]
+    } else if normalized.starts_with("/Users/") {
+        &normalized[7..]
+    } else if normalized.starts_with("/root/") {
+        return true;
+    } else if lowered.len() >= 9
+        && lowered.as_bytes()[0].is_ascii_alphabetic()
+        && &lowered[1..9] == ":/users/"
+    {
+        &normalized[9..]
+    } else {
+        return false;
+    };
+
+    let user = remainder.split('/').next().unwrap_or_default();
+    !user.is_empty()
+        && !user.starts_with('<')
+        && !user.starts_with('$')
+        && !user.starts_with('{')
+        && !user.starts_with('%')
+}
+
 /// Scan emitted content for material that must never reach a public repository.
 /// Returns one human-readable finding per detection. An empty result means the
 /// mechanical checks passed; it does not mean the content is safe, which is why
@@ -61,6 +90,19 @@ pub fn scan_for_leaks(content: &str) -> Vec<String> {
         let token = trim_token(run);
         if is_private_ipv4(token) {
             findings.push(format!("private address: {}", token));
+        }
+    }
+
+    for token in content.split(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '=' | '(' | ')' | '[' | ']' | '"' | '\'' | '`' | ',' | ';'
+            )
+    }) {
+        if is_concrete_home_path(token) {
+            findings.push("absolute home path".to_string());
+            break;
         }
     }
 
@@ -204,6 +246,26 @@ mod tests {
     #[test]
     fn ignores_public_ipv4() {
         assert!(scan_for_leaks("resolved 8.8.8.8 fine").is_empty());
+    }
+
+    /// Concrete Linux, macOS, root, and Windows home paths are private machine
+    /// details and are flagged wherever a verification command contains them.
+    #[test]
+    fn flags_concrete_home_paths() {
+        assert!(!scan_for_leaks("test -f /home/alice/project/file").is_empty());
+        assert!(!scan_for_leaks("cat /Users/alice/project/file").is_empty());
+        assert!(!scan_for_leaks("cat /root/private/file").is_empty());
+        assert!(!scan_for_leaks(r"type C:\Users\Alice\project\file").is_empty());
+        assert!(!scan_for_leaks("path=/home/alice/project/file").is_empty());
+    }
+
+    /// Portable placeholders, repository-relative paths, and public URL routes
+    /// remain publishable because they do not identify a local machine account.
+    #[test]
+    fn ignores_portable_path_examples() {
+        assert!(scan_for_leaks("open docs/agent-forge/record.md").is_empty());
+        assert!(scan_for_leaks("see /home/<user>/project").is_empty());
+        assert!(scan_for_leaks("see https://example.com/users/alice").is_empty());
     }
 
     /// Private key material is flagged.
