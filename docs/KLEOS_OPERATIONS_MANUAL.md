@@ -782,12 +782,23 @@ cargo build -p agent-forge --features fluency --bin agent-forge-mcp
 ```
 
 Register `agent-forge-mcp --db ~/.agent-forge/forge.db` as a stdio MCP server.
-It exposes the core spec, hypothesis, approach, learning, verification, review,
-and completion gates against one local database. `session-learn` and
-`session-recall` keep reusable discoveries linked to that evidence.
+It exposes 19 mandatory code-work tools covering specs, approaches,
+hypotheses, learning, verification, review, checkpoint and rollback, and the
+completion gates against one local database. `recall_errors` and
+`session_recall` make prior failures and reusable discoveries available before
+the next implementation decision.
 `checkpoint` and `review` remain local because they inspect the active Git
 checkout and write `docs/agent-forge/` inside that checkout; the remote Kleos
 MCP continues to own shared memory, activity, and coordination.
+
+MCP calls that inspect or mutate a repository require an explicit `repo_root`.
+Git snapshots, rollback, emitted slices, reviews, and session diffs all use that
+same root even when a client launches the server from another directory. The
+database scopes checkpoint names by canonical Git root. Pre-upgrade checkpoint
+rows are retained as historical evidence but must be recreated before rollback.
+The stdio transport enforces initialization before tool calls, accepts JSON-RPC
+batches after initialization, and reports failed Agent-Forge outputs with MCP
+`isError: true`.
 
 Fluency emission fails closed when rendered evidence contains a concrete local
 user-home path. Verification commands intended for public records must use

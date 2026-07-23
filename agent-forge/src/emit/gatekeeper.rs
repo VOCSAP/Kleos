@@ -40,17 +40,33 @@ fn trim_token(token: &str) -> &str {
 fn is_concrete_home_path(token: &str) -> bool {
     let normalized = token.replace('\\', "/");
     let lowered = normalized.to_ascii_lowercase();
-    let remainder = if normalized.starts_with("/home/") {
-        &normalized[6..]
-    } else if normalized.starts_with("/Users/") {
-        &normalized[7..]
-    } else if normalized.starts_with("/root/") {
-        return true;
-    } else if lowered.len() >= 9
-        && lowered.as_bytes()[0].is_ascii_alphabetic()
-        && &lowered[1..9] == ":/users/"
+    let uri_path = if lowered.starts_with("file:") {
+        let raw_path = &normalized["file:".len()..];
+        let lowered_path = &lowered["file:".len()..];
+        let localhost_prefix = "//localhost/";
+        Some(if lowered_path.starts_with(localhost_prefix) {
+            &raw_path[localhost_prefix.len()..]
+        } else {
+            raw_path.trim_start_matches('/')
+        })
+    } else {
+        None
+    };
+    let is_absolute = uri_path.is_some() || normalized.starts_with('/');
+    let candidate = uri_path.unwrap_or_else(|| normalized.trim_start_matches('/'));
+    let lowered_candidate = candidate.to_ascii_lowercase();
+    let remainder = if is_absolute && lowered_candidate.starts_with("home/") {
+        &candidate[5..]
+    } else if is_absolute && lowered_candidate.starts_with("users/") {
+        &candidate[6..]
+    } else if is_absolute && (lowered_candidate == "root" || lowered_candidate.starts_with("root/"))
     {
-        &normalized[9..]
+        return true;
+    } else if lowered_candidate.len() >= 9
+        && lowered_candidate.as_bytes()[0].is_ascii_alphabetic()
+        && &lowered_candidate[1..9] == ":/users/"
+    {
+        &candidate[9..]
     } else {
         return false;
     };
@@ -257,6 +273,10 @@ mod tests {
         assert!(!scan_for_leaks("cat /root/private/file").is_empty());
         assert!(!scan_for_leaks(r"type C:\Users\Alice\project\file").is_empty());
         assert!(!scan_for_leaks("path=/home/alice/project/file").is_empty());
+        assert!(!scan_for_leaks("open file:///home/alice/project/file").is_empty());
+        assert!(!scan_for_leaks("open file:///Users/alice/project/file").is_empty());
+        assert!(!scan_for_leaks("open file:///C:/Users/Alice/project/file").is_empty());
+        assert!(!scan_for_leaks("[evidence](file:///home/alice/check)").is_empty());
     }
 
     /// Portable placeholders, repository-relative paths, and public URL routes

@@ -177,7 +177,7 @@ mod tests {
             .execute(
                 "INSERT INTO verifications (id, spec_id, created_at, command, \
                  exit_code, success, criteria_index) \
-                 VALUES ('ver_2', 'spec_1', 2, '/home/alice/private/check', 0, 1, 0)",
+                 VALUES ('ver_2', 'spec_1', 2, 'file:///home/alice/private/check', 0, 1, 0)",
                 [],
             )
             .unwrap();

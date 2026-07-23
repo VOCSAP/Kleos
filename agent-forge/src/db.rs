@@ -60,13 +60,15 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS checkpoints (
                 id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 git_ref TEXT,
                 files_snapshot TEXT,
                 description TEXT,
                 spec_id TEXT REFERENCES specs(id),
-                slice_index INTEGER
+                slice_index INTEGER,
+                repo_root TEXT,
+                UNIQUE(repo_root, name)
             );
 
             CREATE TABLE IF NOT EXISTS session_learns (
@@ -145,6 +147,38 @@ impl Database {
             self.conn
                 .execute_batch("ALTER TABLE checkpoints ADD COLUMN slice_index INTEGER;")?;
         }
+        if !has_column("checkpoints", "repo_root") {
+            // SQLite cannot drop the legacy UNIQUE(name) constraint in place.
+            // Rebuild atomically, retaining old rows without claiming they
+            // belong to a repository that was never recorded.
+            self.conn.execute_batch(
+                r#"
+                BEGIN IMMEDIATE;
+                ALTER TABLE checkpoints RENAME TO checkpoints_legacy;
+                CREATE TABLE checkpoints (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    git_ref TEXT,
+                    files_snapshot TEXT,
+                    description TEXT,
+                    spec_id TEXT REFERENCES specs(id),
+                    slice_index INTEGER,
+                    repo_root TEXT,
+                    UNIQUE(repo_root, name)
+                );
+                INSERT INTO checkpoints (
+                    id, name, created_at, git_ref, files_snapshot, description,
+                    spec_id, slice_index, repo_root
+                )
+                SELECT id, name, created_at, git_ref, files_snapshot, description,
+                       spec_id, slice_index, NULL
+                FROM checkpoints_legacy;
+                DROP TABLE checkpoints_legacy;
+                COMMIT;
+                "#,
+            )?;
+        }
         Ok(())
     }
 
@@ -161,20 +195,28 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// A freshly created database must carry the checkpoint slice-linkage columns.
+    /// A fresh database scopes duplicate checkpoint names by repository root.
     #[test]
-    fn fresh_db_has_checkpoint_slice_columns() {
+    fn fresh_db_has_repository_scoped_checkpoints() {
         let dir = tempdir().unwrap();
         let db = Database::open(&dir.path().join("forge.db")).unwrap();
         assert!(db
             .conn()
-            .prepare("SELECT spec_id, slice_index FROM checkpoints LIMIT 0")
+            .prepare("SELECT spec_id, slice_index, repo_root FROM checkpoints LIMIT 0")
             .is_ok());
+        db.conn()
+            .execute_batch(
+                "INSERT INTO checkpoints (id, name, created_at, repo_root) \
+                 VALUES ('one', 'shared', 1, '/repo/one'); \
+                 INSERT INTO checkpoints (id, name, created_at, repo_root) \
+                 VALUES ('two', 'shared', 2, '/repo/two');",
+            )
+            .unwrap();
     }
 
-    /// A database created before these columns existed must gain them when reopened.
+    /// A legacy database is rebuilt losslessly while its rows remain unscoped.
     #[test]
-    fn legacy_db_gains_checkpoint_slice_columns() {
+    fn legacy_db_gains_repository_scope_without_claiming_rows() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("forge.db");
         {
@@ -190,11 +232,43 @@ mod tests {
                  );",
             )
             .unwrap();
+            conn.execute(
+                "INSERT INTO checkpoints (id, name, created_at, git_ref, description) \
+                 VALUES ('legacy', 'shared', 1, 'abc123', 'preserve me')",
+                [],
+            )
+            .unwrap();
         }
         let db = Database::open(&path).unwrap();
         assert!(db
             .conn()
-            .prepare("SELECT spec_id, slice_index FROM checkpoints LIMIT 0")
+            .prepare("SELECT spec_id, slice_index, repo_root FROM checkpoints LIMIT 0")
             .is_ok());
+        let legacy: (String, Option<String>) = db
+            .conn()
+            .query_row(
+                "SELECT description, repo_root FROM checkpoints WHERE id = 'legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(legacy, ("preserve me".into(), None));
+        db.conn()
+            .execute_batch(
+                "INSERT INTO checkpoints (id, name, created_at, repo_root) \
+                 VALUES ('one', 'shared', 2, '/repo/one'); \
+                 INSERT INTO checkpoints (id, name, created_at, repo_root) \
+                 VALUES ('two', 'shared', 3, '/repo/two');",
+            )
+            .unwrap();
+        let count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM checkpoints WHERE name = 'shared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
     }
 }

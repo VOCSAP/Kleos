@@ -23,6 +23,14 @@ enum Framing {
     ContentLength,
 }
 
+/// One decoded transport item, preserving recoverable JSON parse failures.
+enum IncomingMessage {
+    /// A syntactically valid JSON value ready for JSON-RPC validation.
+    Parsed(Value),
+    /// Malformed JSON that receives a parse-error response without ending the session.
+    ParseError(String),
+}
+
 /// Describe one MCP tool with its complete object schema.
 fn tool(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
@@ -74,6 +82,12 @@ pub fn tool_list() -> Vec<Value> {
             &["hypothesis_id", "outcome"],
         ),
         tool(
+            "recall_errors",
+            "Recall prior debugging hypotheses before starting a bug fix.",
+            json!({"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}),
+            &[],
+        ),
+        tool(
             "verify",
             "Run verification commands and link evidence to a spec.",
             json!({
@@ -101,7 +115,13 @@ pub fn tool_list() -> Vec<Value> {
                 "name":{"type":"string"},"description":{"type":"string"},"spec_id":{"type":"string"},"intent":{"type":"string"},
                 "components":{"type":"array","items":{"type":"string"}},"conditions":{"type":"array","items":{"type":"string"}},"emit":{"type":"boolean"},"repo_root":{"type":"string"}
             }),
-            &["name"],
+            &["name", "repo_root"],
+        ),
+        tool(
+            "rollback",
+            "Restore a named checkpoint in its owning repository.",
+            json!({"checkpoint_name":{"type":"string"},"repo_root":{"type":"string"}}),
+            &["checkpoint_name", "repo_root"],
         ),
         tool(
             "session_learn",
@@ -122,8 +142,8 @@ pub fn tool_list() -> Vec<Value> {
         tool(
             "session_diff",
             "Summarize the current git diff before completion.",
-            json!({"base":{"type":"string"}}),
-            &[],
+            json!({"base":{"type":"string"},"repo_root":{"type":"string"}}),
+            &["repo_root"],
         ),
         tool(
             "think",
@@ -159,7 +179,7 @@ pub fn tool_list() -> Vec<Value> {
             "review",
             "Assemble and optionally write a Fluency review record.",
             json!({"spec_id":{"type":"string"},"repo_root":{"type":"string"},"write":{"type":"boolean"}}),
-            &["spec_id"],
+            &["spec_id", "repo_root"],
         ),
     ]
 }
@@ -174,17 +194,33 @@ where
     function(db, input).map_err(|error| error.to_string())
 }
 
+/// Enforce MCP-only repository context that remains optional for direct CLI calls.
+fn validate_mcp_arguments(name: &str, arguments: &Value) -> Result<(), String> {
+    if matches!(name, "checkpoint" | "rollback" | "session_diff" | "review")
+        && arguments
+            .get("repo_root")
+            .and_then(Value::as_str)
+            .is_none_or(|repo_root| repo_root.trim().is_empty())
+    {
+        return Err(format!("{name} requires a non-empty repo_root"));
+    }
+    Ok(())
+}
+
 /// Dispatch one advertised tool against the shared local database.
 fn call_tool(db: &Database, name: &str, arguments: Value) -> Result<Output, String> {
+    validate_mcp_arguments(name, &arguments)?;
     match name {
         "spec_task" => call_typed(db, arguments, tools::spec::spec_task),
         "consider_approaches" => call_typed(db, arguments, tools::approaches::consider_approaches),
         "log_hypothesis" => call_typed(db, arguments, tools::hypothesis::log_hypothesis),
         "log_outcome" => call_typed(db, arguments, tools::hypothesis::log_outcome),
+        "recall_errors" => call_typed(db, arguments, tools::hypothesis::recall_errors),
         "verify" => call_typed(db, arguments, tools::verify::verify),
         "challenge_code" => call_typed(db, arguments, tools::verify::challenge_code),
         "comment_check" => call_typed(db, arguments, tools::comments::comment_check),
         "checkpoint" => call_typed(db, arguments, tools::session::checkpoint),
+        "rollback" => call_typed(db, arguments, tools::session::rollback),
         "session_learn" => call_typed(db, arguments, tools::session::session_learn),
         "session_recall" => call_typed(db, arguments, tools::session::session_recall),
         "session_diff" => call_typed(db, arguments, tools::verify::session_diff),
@@ -205,11 +241,12 @@ fn rpc_error(id: Value, code: i64, message: impl Into<String>) -> Value {
 
 /// Convert an Agent-Forge output into the MCP content and structured-content contract.
 fn tool_result(output: Output) -> Value {
+    let is_error = !output.success;
     let structured = serde_json::to_value(&output).expect("Output serialization cannot fail");
     json!({
         "content": [{"type": "text", "text": structured.to_string()}],
         "structuredContent": structured,
-        "isError": false
+        "isError": is_error
     })
 }
 
@@ -218,17 +255,20 @@ fn tool_failure(message: String) -> Value {
     json!({"content": [{"type": "text", "text": message}], "isError": true})
 }
 
-/// Handle one MCP JSON-RPC request, returning no response for notifications.
-pub fn handle_jsonrpc(db: &Database, request: Value) -> Option<Value> {
-    let id = request.get("id").cloned();
+/// Handle one non-batch MCP JSON-RPC request, returning no response for valid
+/// notifications.
+fn handle_request(db: &Database, request: Value) -> Option<Value> {
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    if !request.is_object() || request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Some(rpc_error(id, -32600, "invalid JSON-RPC request"));
+    }
     let method = match request.get("method").and_then(Value::as_str) {
         Some(method) => method,
-        None => return id.map(|id| rpc_error(id, -32600, "missing JSON-RPC method")),
+        None => return Some(rpc_error(id, -32600, "missing JSON-RPC method")),
     };
-    if id.is_none() {
+    if request.get("id").is_none() {
         return None;
     }
-    let id = id.expect("request ID checked above");
     let result = match method {
         "initialize" => json!({
             "protocolVersion": "2025-03-26",
@@ -242,6 +282,12 @@ pub fn handle_jsonrpc(db: &Database, request: Value) -> Option<Value> {
             let Some(name) = params.get("name").and_then(Value::as_str) else {
                 return Some(rpc_error(id, -32602, "tools/call requires params.name"));
             };
+            if !tool_list()
+                .iter()
+                .any(|tool| tool["name"].as_str() == Some(name))
+            {
+                return Some(rpc_error(id, -32602, format!("unknown tool: {name}")));
+            }
             let arguments = params
                 .get("arguments")
                 .cloned()
@@ -254,6 +300,145 @@ pub fn handle_jsonrpc(db: &Database, request: Value) -> Option<Value> {
         _ => return Some(rpc_error(id, -32601, format!("method not found: {method}"))),
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+/// Collapse zero or more batch-member responses into the JSON-RPC batch shape.
+fn batch_response(responses: Vec<Value>) -> Option<Value> {
+    if responses.is_empty() {
+        None
+    } else {
+        Some(Value::Array(responses))
+    }
+}
+
+/// Handle one JSON-RPC message, including batches, without applying connection
+/// lifecycle rules. The stdio server wraps this dispatcher with session state.
+pub fn handle_jsonrpc(db: &Database, request: Value) -> Option<Value> {
+    match request {
+        Value::Array(requests) if requests.is_empty() => {
+            Some(rpc_error(Value::Null, -32600, "empty JSON-RPC batch"))
+        }
+        Value::Array(requests) => batch_response(
+            requests
+                .into_iter()
+                .filter_map(|request| handle_request(db, request))
+                .collect(),
+        ),
+        request => handle_request(db, request),
+    }
+}
+
+/// Initialization state for one stdio MCP connection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SessionState {
+    /// No initialize request has completed.
+    AwaitingInitialize,
+    /// Initialize has returned and the client notification is pending.
+    AwaitingInitializedNotification,
+    /// Capability negotiation is complete and tools may execute.
+    Ready,
+}
+
+/// Handle a single request while enforcing the MCP initialization lifecycle.
+fn handle_session_request(
+    db: &Database,
+    request: Value,
+    state: &mut SessionState,
+) -> Option<Value> {
+    if !request.is_object()
+        || request.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
+        || request.get("method").and_then(Value::as_str).is_none()
+    {
+        return handle_request(db, request);
+    }
+    let method = request.get("method").and_then(Value::as_str);
+    let id = request.get("id").cloned();
+
+    match *state {
+        SessionState::AwaitingInitialize => match method {
+            Some("initialize") => {
+                let Some(id) = id else {
+                    return Some(rpc_error(
+                        Value::Null,
+                        -32600,
+                        "initialize must be a request",
+                    ));
+                };
+                if request
+                    .get("params")
+                    .and_then(|params| params.get("protocolVersion"))
+                    .and_then(Value::as_str)
+                    .is_none()
+                {
+                    return Some(rpc_error(
+                        id,
+                        -32602,
+                        "initialize requires params.protocolVersion",
+                    ));
+                }
+                let response = handle_request(db, request);
+                *state = SessionState::AwaitingInitializedNotification;
+                response
+            }
+            Some("ping") => handle_request(db, request),
+            _ => id.map(|id| rpc_error(id, -32002, "server is not initialized")),
+        },
+        SessionState::AwaitingInitializedNotification => match method {
+            Some("notifications/initialized") if id.is_none() => {
+                *state = SessionState::Ready;
+                None
+            }
+            Some("ping") => handle_request(db, request),
+            _ => id.map(|id| {
+                rpc_error(
+                    id,
+                    -32002,
+                    "client initialized notification has not been received",
+                )
+            }),
+        },
+        SessionState::Ready => {
+            if method == Some("initialize") {
+                return id.map(|id| rpc_error(id, -32600, "server is already initialized"));
+            }
+            handle_request(db, request)
+        }
+    }
+}
+
+/// Handle one connection-scoped message and reject batches until initialization
+/// has completed as required by the negotiated MCP protocol version.
+fn handle_session_message(
+    db: &Database,
+    request: Value,
+    state: &mut SessionState,
+) -> Option<Value> {
+    match request {
+        Value::Array(requests) if requests.is_empty() => {
+            Some(rpc_error(Value::Null, -32600, "empty JSON-RPC batch"))
+        }
+        Value::Array(requests) if *state != SessionState::Ready => batch_response(
+            requests
+                .into_iter()
+                .filter_map(|request| {
+                    request.get("id").cloned().map(|id| {
+                        rpc_error(
+                            id,
+                            -32002,
+                            "initialize must complete before JSON-RPC batches",
+                        )
+                    })
+                })
+                .collect(),
+        ),
+        Value::Array(requests) => batch_response(
+            requests
+                .into_iter()
+                .filter_map(|request| handle_session_request(db, request, state))
+                .collect(),
+        ),
+        request => handle_session_request(db, request, state),
+    }
 }
 
 /// Read a capped line so malformed peers cannot grow memory without bound.
@@ -304,17 +489,25 @@ fn parse_content_length(header: &str) -> Result<usize, String> {
     Ok(length)
 }
 
+/// Decode one JSON byte sequence while retaining parse errors as recoverable input.
+fn decode_json(bytes: &[u8]) -> IncomingMessage {
+    match serde_json::from_slice(bytes) {
+        Ok(value) => IncomingMessage::Parsed(value),
+        Err(error) => IncomingMessage::ParseError(error.to_string()),
+    }
+}
+
 /// Read and decode an exact Content-Length body.
-fn read_body<R: Read>(reader: &mut R, length: usize) -> Result<Value, String> {
+fn read_body<R: Read>(reader: &mut R, length: usize) -> Result<IncomingMessage, String> {
     let mut body = vec![0; length];
     reader
         .read_exact(&mut body)
         .map_err(|error| error.to_string())?;
-    serde_json::from_slice(&body).map_err(|error| error.to_string())
+    Ok(decode_json(&body))
 }
 
 /// Read the first request and detect the peer's framing mode.
-fn read_first<R: BufRead>(reader: &mut R) -> Result<Option<(Value, Framing)>, String> {
+fn read_first<R: BufRead>(reader: &mut R) -> Result<Option<(IncomingMessage, Framing)>, String> {
     loop {
         let Some(line) = read_line_capped(reader)? else {
             return Ok(None);
@@ -323,31 +516,27 @@ fn read_first<R: BufRead>(reader: &mut R) -> Result<Option<(Value, Framing)>, St
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.starts_with('{') {
-            return serde_json::from_str(trimmed)
-                .map(|value| Some((value, Framing::Ndjson)))
-                .map_err(|error| error.to_string());
-        }
         if trimmed.starts_with("Content-Length:") {
             let length = parse_content_length(trimmed)?;
             while read_line_capped(reader)?.is_some_and(|header| !header.trim().is_empty()) {}
             return read_body(reader, length).map(|value| Some((value, Framing::ContentLength)));
         }
-        return Err(format!("unexpected first line: {trimmed}"));
+        return Ok(Some((decode_json(trimmed.as_bytes()), Framing::Ndjson)));
     }
 }
 
 /// Read the next request using the negotiated framing.
-fn read_next<R: BufRead>(reader: &mut R, framing: Framing) -> Result<Option<Value>, String> {
+fn read_next<R: BufRead>(
+    reader: &mut R,
+    framing: Framing,
+) -> Result<Option<IncomingMessage>, String> {
     match framing {
         Framing::Ndjson => loop {
             let Some(line) = read_line_capped(reader)? else {
                 return Ok(None);
             };
             if !line.trim().is_empty() {
-                return serde_json::from_str(line.trim())
-                    .map(Some)
-                    .map_err(|error| error.to_string());
+                return Ok(Some(decode_json(line.trim().as_bytes())));
             }
         },
         Framing::ContentLength => {
@@ -370,6 +559,28 @@ fn read_next<R: BufRead>(reader: &mut R, framing: Framing) -> Result<Option<Valu
             .map(Some)
         }
     }
+}
+
+/// Dispatch one decoded item or emit a JSON-RPC parse error for malformed JSON.
+fn process_incoming<W: Write>(
+    db: &Database,
+    incoming: IncomingMessage,
+    state: &mut SessionState,
+    writer: &mut W,
+    framing: Framing,
+) -> Result<(), String> {
+    let response = match incoming {
+        IncomingMessage::Parsed(request) => handle_session_message(db, request, state),
+        IncomingMessage::ParseError(error) => Some(rpc_error(
+            Value::Null,
+            -32700,
+            format!("parse error: {error}"),
+        )),
+    };
+    if let Some(response) = response {
+        write_response(writer, &response, framing)?;
+    }
+    Ok(())
 }
 
 /// Write one response using the session's negotiated framing.
@@ -395,20 +606,12 @@ pub fn serve<R: BufRead, W: Write>(
     let Some((first, framing)) = read_first(reader)? else {
         return Ok(());
     };
-    if let Some(response) = handle_jsonrpc(db, first) {
-        write_response(writer, &response, framing)?;
-    }
+    let mut state = SessionState::AwaitingInitialize;
+    process_incoming(db, first, &mut state, writer, framing)?;
     loop {
         match read_next(reader, framing) {
-            Ok(Some(request)) => {
-                if let Some(response) = handle_jsonrpc(db, request) {
-                    write_response(writer, &response, framing)?;
-                }
-            }
+            Ok(Some(request)) => process_incoming(db, request, &mut state, writer, framing)?,
             Ok(None) => break,
-            Err(error) if !error.contains("exceeds max") => {
-                write_response(writer, &rpc_error(Value::Null, -32700, error), framing)?;
-            }
             Err(error) => return Err(error),
         }
     }
@@ -426,7 +629,82 @@ pub fn serve_stdio(db: &Database) -> Result<(), String> {
 /// Protocol and shared-database tests for the local MCP surface.
 mod tests {
     use super::*;
+    use std::path::Path;
+    use std::process::Command;
     use tempfile::tempdir;
+
+    /// Initialize a one-commit repository and return its current object ID.
+    fn initialize_git_repo(repo: &Path) -> String {
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(repo.join("tracked.txt"), "initial").unwrap();
+        assert!(Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-c",
+                "user.name=Agent Forge Test",
+                "-c",
+                "user.email=agent-forge@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "initial",
+            ])
+            .current_dir(repo)
+            .status()
+            .unwrap()
+            .success());
+        String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(repo)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    }
+
+    /// Build a standards-compliant initialize request.
+    fn initialize_request(id: i64) -> Value {
+        json!({
+            "jsonrpc":"2.0",
+            "id":id,
+            "method":"initialize",
+            "params":{
+                "protocolVersion":"2025-03-26",
+                "capabilities":{},
+                "clientInfo":{"name":"agent-forge-test","version":"1"}
+            }
+        })
+    }
+
+    /// Prefix operation messages with the complete MCP initialization exchange.
+    fn initialized_ndjson(messages: Vec<Value>) -> Vec<u8> {
+        let mut all = vec![
+            initialize_request(1),
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        ];
+        all.extend(messages);
+        let mut body = all
+            .into_iter()
+            .map(|message| serde_json::to_string(&message).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        body.push('\n');
+        body.into_bytes()
+    }
 
     /// Build a JSON-RPC tools/call request.
     fn request(id: i64, name: &str, arguments: Value) -> Value {
@@ -455,7 +733,10 @@ mod tests {
         assert!(names.contains(&"review"));
         assert!(names.contains(&"session_learn"));
         assert!(names.contains(&"session_recall"));
+        assert!(names.contains(&"recall_errors"));
+        assert!(names.contains(&"rollback"));
         assert!(names.contains(&"spec_task"));
+        assert_eq!(names.len(), 19);
     }
 
     /// Learning calls persist and recall discoveries through the shared database.
@@ -493,6 +774,7 @@ mod tests {
     #[test]
     fn emits_and_reviews_from_one_database() {
         let dir = tempdir().unwrap();
+        let expected_ref = initialize_git_repo(dir.path());
         let db = Database::open(&dir.path().join("forge.db")).unwrap();
         let spec = structured(handle_jsonrpc(&db, request(1, "spec_task", json!({
             "task_description":"Teach a local MCP slice", "task_type":"feature",
@@ -506,6 +788,16 @@ mod tests {
             "conditions":["Fluency must be compiled in."], "repo_root":dir.path()
         }))).unwrap());
         assert_eq!(checkpoint["success"], true);
+        let checkpoint_id = checkpoint["id"].as_str().unwrap();
+        let stored_ref: Option<String> = db
+            .conn()
+            .query_row(
+                "SELECT git_ref FROM checkpoints WHERE id = ?1",
+                [checkpoint_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_ref.as_deref(), Some(expected_ref.as_str()));
         let slice_path = checkpoint["data"]["slice_path"].as_str().unwrap();
         let review = structured(
             handle_jsonrpc(
@@ -537,9 +829,125 @@ mod tests {
             handle_jsonrpc(&db, json!({"jsonrpc":"2.0","id":1,"method":"missing"})).unwrap();
         assert_eq!(method["error"]["code"], -32601);
         let tool = handle_jsonrpc(&db, request(2, "missing", json!({}))).unwrap();
-        assert_eq!(tool["result"]["isError"], true);
+        assert_eq!(tool["error"]["code"], -32602);
+        let invalid = handle_jsonrpc(&db, request(3, "session_learn", json!({}))).unwrap();
+        assert_eq!(invalid["result"]["isError"], true);
+        let missing_root =
+            handle_jsonrpc(&db, request(4, "session_diff", json!({"base":"HEAD"}))).unwrap();
+        assert_eq!(missing_root["result"]["isError"], true);
+        assert!(missing_root["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("non-empty repo_root"));
         let ping = handle_jsonrpc(&db, json!({"jsonrpc":"2.0","id":3,"method":"ping"})).unwrap();
         assert!(ping.get("result").is_some());
+    }
+
+    /// A failed verification is a failed MCP tool result, not a successful call
+    /// containing a private Agent-Forge failure bit.
+    #[test]
+    fn failed_verify_sets_mcp_error_flag() {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        let response =
+            handle_jsonrpc(&db, request(1, "verify", json!({"command":"false"}))).unwrap();
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(response["result"]["structuredContent"]["success"], false);
+    }
+
+    /// Completion tools return MCP failures when required Git evidence does
+    /// not exist, and recall enforces its typed result bound.
+    #[test]
+    fn completion_tools_fail_without_evidence() {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        let checkpoint = handle_jsonrpc(
+            &db,
+            request(
+                1,
+                "checkpoint",
+                json!({"name":"no-ref","repo_root":dir.path()}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(checkpoint["result"]["isError"], true);
+        let checkpoint_rows: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM checkpoints", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(checkpoint_rows, 0);
+
+        let rollback = handle_jsonrpc(
+            &db,
+            request(
+                2,
+                "rollback",
+                json!({"checkpoint_name":"no-ref","repo_root":dir.path()}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(rollback["result"]["isError"], true);
+
+        let session_diff = handle_jsonrpc(
+            &db,
+            request(
+                3,
+                "session_diff",
+                json!({"base":"HEAD","repo_root":dir.path()}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(session_diff["result"]["isError"], true);
+
+        let recall =
+            handle_jsonrpc(&db, request(4, "recall_errors", json!({"limit":101}))).unwrap();
+        assert_eq!(recall["result"]["isError"], true);
+    }
+
+    /// Session diff reads the explicitly requested repository instead of the
+    /// MCP server process directory.
+    #[test]
+    fn session_diff_uses_repo_root() {
+        let dir = tempdir().unwrap();
+        initialize_git_repo(dir.path());
+        std::fs::write(dir.path().join("tracked.txt"), "changed").unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        let response = handle_jsonrpc(
+            &db,
+            request(
+                1,
+                "session_diff",
+                json!({"base":"HEAD","repo_root":dir.path()}),
+            ),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["files"][0],
+            "tracked.txt"
+        );
+    }
+
+    /// Tool calls are refused until initialization and its completion
+    /// notification have both arrived.
+    #[test]
+    fn rejects_tools_before_initialization() {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        let input = initialized_ndjson(vec![json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})]);
+        let mut prefixed = b"{\"jsonrpc\":\"2.0\",\"id\":0,\"method\":\"tools/list\"}\n".to_vec();
+        prefixed.extend(input);
+        let mut reader = BufReader::new(prefixed.as_slice());
+        let mut output = Vec::new();
+        serve(&db, &mut reader, &mut output).unwrap();
+        let responses: Vec<Value> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(responses[0]["error"]["code"], -32002);
+        assert_eq!(responses[1]["result"]["protocolVersion"], "2025-03-26");
+        assert!(responses[2]["result"]["tools"].is_array());
     }
 
     /// NDJSON transport processes notifications and subsequent requests.
@@ -547,22 +955,25 @@ mod tests {
     fn serves_ndjson_until_eof() {
         let dir = tempdir().unwrap();
         let db = Database::open(&dir.path().join("forge.db")).unwrap();
-        let input = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
-        let mut reader = BufReader::new(&input[..]);
+        let input = initialized_ndjson(vec![json!({"jsonrpc":"2.0","id":2,"method":"ping"})]);
+        let mut reader = BufReader::new(input.as_slice());
         let mut output = Vec::new();
         serve(&db, &mut reader, &mut output).unwrap();
         let lines: Vec<&str> = std::str::from_utf8(&output).unwrap().lines().collect();
-        assert_eq!(lines.len(), 1);
-        assert_eq!(serde_json::from_str::<Value>(lines[0]).unwrap()["id"], 1);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(serde_json::from_str::<Value>(lines[1]).unwrap()["id"], 2);
     }
 
-    /// A malformed NDJSON request reports a parse error and the stream continues.
+    /// A malformed first NDJSON request reports a parse error and the stream continues.
     #[test]
     fn malformed_ndjson_does_not_terminate_stream() {
         let dir = tempdir().unwrap();
         let db = Database::open(&dir.path().join("forge.db")).unwrap();
-        let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{broken}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n";
-        let mut reader = BufReader::new(&input[..]);
+        let mut input = b"{broken}\n".to_vec();
+        input.extend(initialized_ndjson(vec![
+            json!({"jsonrpc":"2.0","id":2,"method":"ping"}),
+        ]));
+        let mut reader = BufReader::new(input.as_slice());
         let mut output = Vec::new();
         serve(&db, &mut reader, &mut output).unwrap();
         let responses: Vec<Value> = std::str::from_utf8(&output)
@@ -571,8 +982,33 @@ mod tests {
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
         assert_eq!(responses.len(), 3);
-        assert_eq!(responses[1]["error"]["code"], -32700);
+        assert_eq!(responses[0]["error"]["code"], -32700);
         assert_eq!(responses[2]["id"], 2);
+    }
+
+    /// Ready sessions execute JSON-RPC batches and omit notification entries
+    /// from the batch response.
+    #[test]
+    fn serves_jsonrpc_batches() {
+        let dir = tempdir().unwrap();
+        let db = Database::open(&dir.path().join("forge.db")).unwrap();
+        let input = initialized_ndjson(vec![json!([
+            {"jsonrpc":"2.0","id":2,"method":"ping"},
+            {"jsonrpc":"2.0","method":"notifications/cancelled"},
+            {"jsonrpc":"2.0","id":3,"method":"ping"}
+        ])]);
+        let mut reader = BufReader::new(input.as_slice());
+        let mut output = Vec::new();
+        serve(&db, &mut reader, &mut output).unwrap();
+        let responses: Vec<Value> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[1].as_array().unwrap().len(), 2);
+        assert_eq!(responses[1][0]["id"], 2);
+        assert_eq!(responses[1][1]["id"], 3);
     }
 
     /// Content-Length framing is detected and preserved in the response.
