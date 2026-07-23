@@ -20,6 +20,11 @@ pub mod json_io;
 /// Blocking HTTP client for the Kleos skills API.
 pub mod kleos_client;
 
+/// Local MCP transport and tool registry. Fluency is required because this
+/// surface exists to keep repository-local checkpoint and review in one DB.
+#[cfg(feature = "fluency")]
+pub mod mcp;
+
 /// All agent-forge tools: AST analysis, comment checking, hypothesis tracking,
 /// reasoning prompts, verification, and more.
 pub mod tools;
