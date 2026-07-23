@@ -112,11 +112,19 @@ pub struct RecallErrorsInput {
     pub limit: Option<usize>,
 }
 
+/// Largest hypothesis history page accepted from CLI or MCP callers.
+const MAX_RECALL_ERRORS_LIMIT: usize = 100;
+
 /// Full-text LIKE search over `bug_description` and `hypothesis` columns, returning
 /// the most-recent matches so the agent can avoid repeating known mistakes.
 pub fn recall_errors(db: &Database, input: RecallErrorsInput) -> ToolResult {
     let query = input.query.unwrap_or_default();
     let limit = input.limit.unwrap_or(10);
+    if !(1..=MAX_RECALL_ERRORS_LIMIT).contains(&limit) {
+        return Err(ToolError::InvalidValue(format!(
+            "limit must be between 1 and {MAX_RECALL_ERRORS_LIMIT}"
+        )));
+    }
 
     let mut stmt = db
         .conn()
