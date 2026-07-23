@@ -19,6 +19,7 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
+/// Request/query body types for the prompt routes.
 mod types;
 use types::{GeneratePromptRequest, HeaderBody, PromptQuery};
 
@@ -98,6 +99,28 @@ fn truncate_for_injection(content: &str, cap: usize) -> String {
         }
     }
     format!("{} ...", content[..end].trim_end())
+}
+
+/// Format one Broca action as an injected activity line: "- [<created_at>] <text>\n".
+///
+/// Prefers the narrated sentence; falls back to "<agent> <action>" so a row
+/// without a narrative still yields a readable line. Narratives can embed
+/// payload values, so the text is credential-scrubbed like every other
+/// injected surface before it reaches the agent's context.
+fn activity_line(act: &kleos_lib::services::broca::ActionEntry) -> String {
+    let line = match act.narrative.as_deref() {
+        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+        _ => format!("{} {}", act.agent, act.action),
+    };
+    let scrubbed = scrub_credentials(&line);
+    format!("- [{}] {}\n", act.created_at, scrubbed.trim())
+}
+
+/// Format one recalled memory as an imperative, citable line:
+/// "- [mem <id>] <content>\n". The id tag is what lets an agent cite, re-fetch,
+/// and be audited against the specific memory it relied on.
+fn memory_line(id: i64, capped: &str) -> String {
+    format!("- [mem {id}] {}\n", capped.trim())
 }
 
 /// Returns true for curated sources that are exempt from the category denylist.
@@ -198,6 +221,8 @@ async fn post_prompt_generate(
     let include_instincts = body.include_instincts.unwrap_or(false);
     let brain_limit = body.brain_limit.unwrap_or(5).clamp(1, 20);
     let growth_limit = body.growth_limit.unwrap_or(5).clamp(1, 20);
+    let include_activity = body.include_activity.unwrap_or(false);
+    let activity_limit = body.activity_limit.unwrap_or(10).clamp(1, 30);
 
     let mut sources: Vec<Value> = Vec::new();
     let mut sections: Vec<String> = Vec::new();
@@ -298,7 +323,16 @@ async fn post_prompt_generate(
             .filter(|r| !starts_midword(r.memory.content.trim()))
             .collect();
         if !relevant.is_empty() {
-            let mut buf = String::from("## Relevant Memories\n");
+            // Imperative framing (mem 28166 rec. d): a bare bullet list reads as
+            // advisory and gets skipped under context pressure. Open with a
+            // directive and tag every entry with its memory id so the agent can
+            // cite, re-fetch, and be audited against specific memories.
+            let mut buf = String::from(
+                "## Relevant Memories\n\
+                 These are retrieved facts from your memory store, not suggestions. \
+                 Treat them as ground truth unless directly contradicted by fresher \
+                 evidence, and cite the [mem <id>] tag when you rely on one.\n",
+            );
             for r in relevant {
                 // Scrub credentials before injection, matching the brain path
                 // (which scrubs each MemorySummary). Without this, raw stored
@@ -307,9 +341,7 @@ async fn post_prompt_generate(
                 let scrubbed = scrub_credentials(r.memory.content.trim());
                 // Cap each memory so a few large chunks cannot flood context.
                 let capped = truncate_for_injection(scrubbed.trim(), memory_chars);
-                buf.push_str("- ");
-                buf.push_str(capped.trim());
-                buf.push('\n');
+                buf.push_str(&memory_line(r.memory.id, &capped));
                 sources.push(json!({
                     "id": r.memory.id,
                     "kind": "memory",
@@ -484,6 +516,50 @@ async fn post_prompt_generate(
                     }));
                 }
                 sections.push(buf);
+            }
+        }
+    }
+
+    // Living prompt: Recent agent activity from the Broca action log. Injecting
+    // the feed makes coordination state arrive with the prompt instead of
+    // depending on the agent choosing to fetch it -- the documented failure
+    // mode of prose "read the feed" rules (they decay; injection does not).
+    if include_activity {
+        match kleos_lib::services::broca::query_actions(
+            &db,
+            None,
+            None,
+            None,
+            None,
+            activity_limit,
+            0,
+            auth.effective_user_id(),
+        )
+        .await
+        {
+            Ok(actions) if !actions.is_empty() => {
+                let mut buf = String::from(
+                    "## Recent Agent Activity\n\
+                     The latest actions other agents reported, newest first. Read \
+                     before acting: do not duplicate in-flight work, and build on \
+                     what just finished.\n",
+                );
+                for act in &actions {
+                    buf.push_str(&activity_line(act));
+                    sources.push(json!({
+                        "id": act.id,
+                        "kind": "activity",
+                        "agent": act.agent,
+                        "action": act.action,
+                    }));
+                }
+                sections.push(buf);
+            }
+            Ok(_) => {}
+            // The feed is an enhancement; a broken feed must never take prompt
+            // generation down with it.
+            Err(e) => {
+                tracing::warn!("prompt/generate broca activity fetch failed: {}", e);
             }
         }
     }
@@ -693,5 +769,63 @@ mod tests {
         );
         assert!(summary.contains("Instinct Domains"));
         assert!(summary.contains("infrastructure"));
+    }
+
+    /// Builds an [`ActionEntry`] fixture for activity-line tests.
+    fn action_fixture(narrative: Option<&str>) -> kleos_lib::services::broca::ActionEntry {
+        kleos_lib::services::broca::ActionEntry {
+            id: 7,
+            agent: "codex".into(),
+            service: "kleos".into(),
+            action: "task.completed".into(),
+            payload: serde_json::json!({}),
+            narrative: narrative.map(|n| n.to_string()),
+            axon_event_id: None,
+            user_id: 1,
+            created_at: "2026-07-23 01:00:00".into(),
+        }
+    }
+
+    /// Activity lines prefer the narrated sentence when one exists.
+    #[test]
+    fn activity_line_prefers_narrative() {
+        let act = action_fixture(Some("codex finished the galaxy merge"));
+        assert_eq!(
+            activity_line(&act),
+            "- [2026-07-23 01:00:00] codex finished the galaxy merge\n"
+        );
+    }
+
+    /// Rows with no narrative (or a blank one) fall back to "<agent> <action>"
+    /// so the injected line is never empty.
+    #[test]
+    fn activity_line_falls_back_to_agent_action() {
+        let expected = "- [2026-07-23 01:00:00] codex task.completed\n";
+        assert_eq!(activity_line(&action_fixture(None)), expected);
+        assert_eq!(activity_line(&action_fixture(Some("   "))), expected);
+    }
+
+    /// Memory lines carry the citable [mem <id>] tag and trim their content.
+    #[test]
+    fn memory_line_tags_id() {
+        assert_eq!(
+            memory_line(35712, " branch audit \n"),
+            "- [mem 35712] branch audit\n"
+        );
+    }
+
+    /// The new activity flags deserialize when present and default to None when
+    /// omitted, so the server-side defaults (off, limit 10) stay in control.
+    #[test]
+    fn generate_request_activity_flags() {
+        let json = r#"{"agent": "a", "task": "t", "include_activity": true, "activity_limit": 5}"#;
+        let req: GeneratePromptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.include_activity, Some(true));
+        assert_eq!(req.activity_limit, Some(5));
+
+        let bare: GeneratePromptRequest =
+            serde_json::from_str(r#"{"agent": "a", "task": "t"}"#).unwrap();
+        assert!(bare.include_activity.is_none());
+        assert!(bare.activity_limit.is_none());
     }
 }
