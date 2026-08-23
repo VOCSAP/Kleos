@@ -24,13 +24,23 @@
 //! re-queries `tools/list` within a session:
 //! 1. `KLEOS_MCP_TOOLS_CONFIG` (explicit path) -- wins alone if set.
 //! 2. `${KLEOS_DATA_DIR}/mcp-tools/<KLEOS_SPACE>.toml` if it exists -- unioned
-//!    with `default.toml` only when the project file sets `inherit = true`.
+//!    with `default.toml` unless the project file sets `inherit = false`.
 //! 3. `${KLEOS_DATA_DIR}/mcp-tools/default.toml` if it exists.
 //! 4. No filtering: the embedded `registry()` list passes through unchanged.
 //!
 //! `inherit` is only ever read from the project-scoped file. Setting
 //! `inherit = true` inside `default.toml` itself is inert: there is nothing
 //! above `default.toml` in the cascade for it to inherit from.
+//!
+//! `inherit` DEFAULTS TO TRUE. The common case is one restrictive global
+//! profile (a curated, search-only allowlist) that a handful of projects
+//! widen with a couple of extra tools -- not a fleet of per-project files
+//! each redeclaring the whole surface. Defaulting to substitution would turn
+//! "I want one more tool in this project" into "I silently lost my entire
+//! global profile", and that loss would be invisible: this module is
+//! fail-open and emits no warning when one filter legitimately replaces
+//! another. A project that genuinely wants to replace the global profile
+//! sets `inherit = false` explicitly.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -55,8 +65,14 @@ struct RawConfig {
     mode: FilterMode,
     #[serde(default)]
     tools: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_inherit")]
     inherit: bool,
+}
+
+/// `inherit`'s default when absent from a project TOML file. See the module
+/// doc comment for why this is `true` rather than `false`.
+fn default_inherit() -> bool {
+    true
 }
 
 /// One loaded and normalized override file.
@@ -395,7 +411,9 @@ mod tests {
         write(
             dir.path(),
             "myproj.toml",
-            "mode = \"allow\"\ntools = [\"forge_spec_task\"]\n",
+            // Explicit inherit = false: inherit now defaults to true, so this
+            // test exists specifically to prove the escape hatch still works.
+            "mode = \"allow\"\ninherit = false\ntools = [\"forge_spec_task\"]\n",
         );
         let (filter, _) = resolve_filter(Some(dir.path()), None, Some("myproj"));
         let filter = filter.expect("filter must resolve");
@@ -409,7 +427,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, vec!["forge_spec_task"], "project file must replace default, not intersect");
+        assert_eq!(names, vec!["forge_spec_task"], "explicit inherit = false must still fully replace default");
     }
 
     #[test]
@@ -510,6 +528,76 @@ mod tests {
             .collect();
         names.sort_unstable();
         assert_eq!(names, vec!["forge_spec_task", "memory_search"]);
+    }
+
+    /// The operator's single most important case: no project file exists at
+    /// all, so the restrictive global profile applies alone, unmodified.
+    #[test]
+    fn global_allow_profile_applies_when_no_project_file() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "default.toml",
+            "mode = \"allow\"\ntools = [\"memory_search\", \"handoffs_search\"]\n",
+        );
+        // No myproj.toml written at all.
+        let (filter, warnings) = resolve_filter(Some(dir.path()), None, Some("myproj"));
+        assert!(warnings.is_empty(), "an absent project file is not an error");
+        let filter = filter.expect("global filter must resolve alone");
+        let (resp, _) = apply(
+            tools_list_response(&["memory_search", "handoffs_search", "memory_store", "forge_spec_task"]),
+            &filter,
+        );
+        let mut names: Vec<&str> = resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, vec!["handoffs_search", "memory_search"]);
+    }
+
+    /// A project file that says nothing about `inherit` at all must still
+    /// union with the global profile -- inherit defaults to true.
+    #[test]
+    fn project_file_extends_global_by_default() {
+        let dir = tempdir().unwrap();
+        write(
+            dir.path(),
+            "default.toml",
+            "mode = \"allow\"\ntools = [\"memory_search\", \"handoffs_search\"]\n",
+        );
+        write(
+            dir.path(),
+            "myproj.toml",
+            // No `inherit` key at all.
+            "mode = \"allow\"\ntools = [\"memory_store\", \"forge_spec_task\"]\n",
+        );
+        let (filter, _) = resolve_filter(Some(dir.path()), None, Some("myproj"));
+        let filter = filter.expect("filter must resolve");
+        let (resp, _) = apply(
+            tools_list_response(&[
+                "memory_search",
+                "handoffs_search",
+                "memory_store",
+                "forge_spec_task",
+                "forge_verify",
+            ]),
+            &filter,
+        );
+        let mut names: Vec<&str> = resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["forge_spec_task", "handoffs_search", "memory_search", "memory_store"],
+            "project tools must be the exact union with the global profile, nothing more, nothing less"
+        );
     }
 
     #[test]
