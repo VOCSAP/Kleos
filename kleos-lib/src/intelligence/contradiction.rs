@@ -295,4 +295,206 @@ mod tests {
         assert!(c.description.contains("coffee"));
         assert!(c.description.contains("tea"));
     }
+
+    // -------------------------------------------------------------------
+    // Patch 37 / 37.1 regression: space_id partitioning must survive the
+    // 156-commit 2026-08 upstream merge. read_isolation_a1.rs already
+    // proves cross-USER isolation (two different user_id values); these
+    // tests prove the orthogonal cross-SPACE isolation for a SINGLE user
+    // (two different space_id values), which is the actual VOCSAP
+    // behaviour Patch 37/37.1 added and the merge could silently drop.
+    // -------------------------------------------------------------------
+
+    /// Store a memory for `user_id` in `space_id` and return its id.
+    async fn store_in_space(
+        db: &crate::db::Database,
+        user_id: i64,
+        space_id: Option<i64>,
+        content: &str,
+    ) -> i64 {
+        use crate::memory::types::StoreRequest;
+        let req = StoreRequest {
+            content: content.to_string(),
+            category: "general".to_string(),
+            source: "test".to_string(),
+            importance: 5,
+            tags: None,
+            embedding: None,
+            chunk_embeddings: None,
+            session_id: None,
+            is_static: Some(false),
+            user_id: Some(user_id),
+            space_id,
+            space: None,
+            parent_memory_id: None,
+            sync_id: None,
+            artifacts: None,
+            created_at: None,
+        };
+        crate::memory::store(db, req, None, false)
+            .await
+            .expect("store memory")
+            .id
+    }
+
+    /// Attach a subject/predicate/object fact to `memory_id`.
+    async fn fact(
+        db: &crate::db::Database,
+        memory_id: i64,
+        user_id: i64,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+    ) {
+        use crate::facts::{create_fact, CreateFactRequest};
+        create_fact(
+            db,
+            CreateFactRequest {
+                memory_id: Some(memory_id),
+                subject: subject.to_string(),
+                predicate: predicate.to_string(),
+                object: object.to_string(),
+                confidence: Some(0.9),
+            },
+            user_id,
+        )
+        .await
+        .expect("create fact");
+    }
+
+    /// Same user, same space, contradicting facts -> detect_contradictions
+    /// must fire. Positive control: proves the mechanism (and this test's
+    /// own wiring) actually works, so the cross-space negative test below
+    /// cannot be a false negative from unrelated breakage.
+    ///
+    /// Content for the two memories must be simhash-distinct: `memory::store`
+    /// dedups near-identical content scoped to (user_id, space_id) -- see
+    /// `same_space_near_duplicate_within_band_collapses` in
+    /// kleos-lib/tests/store_dedup.rs. Two near-identical strings here would
+    /// collapse to the SAME memory id, and detect_contradictions excludes a
+    /// candidate fact when its memory_id equals the new memory's id -- which
+    /// would silently zero out this positive control regardless of whether
+    /// the space_id predicate under test is even reached.
+    #[tokio::test]
+    async fn detect_contradictions_fires_within_same_space() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+        let a = store_in_space(
+            &db,
+            1,
+            Some(100),
+            "wireguard builds an encrypted tunnel using public key cryptography",
+        )
+        .await;
+        let b = store_in_space(
+            &db,
+            1,
+            Some(100),
+            "postgres uses a write ahead log for durability of committed transactions",
+        )
+        .await;
+        assert_ne!(a, b, "test fixture bug: the two memories deduped into one");
+        fact(&db, a, 1, "sky", "color", "blue").await;
+        fact(&db, b, 1, "sky", "color", "green").await;
+
+        let memory_a = crate::memory::get(&db, a, 1).await.expect("load memory a");
+        let contradictions = detect_contradictions(&db, &memory_a).await.unwrap();
+        assert_eq!(
+            contradictions.len(),
+            1,
+            "same-space contradicting facts must be detected"
+        );
+    }
+
+    /// Same user, DIFFERENT space, contradicting facts -> detect_contradictions
+    /// must NOT fire. Guards the Patch 37.1 `m_cand.space_id = m_new.space_id`
+    /// predicate (contradiction.rs online path).
+    #[tokio::test]
+    async fn detect_contradictions_does_not_cross_space() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+        let a = store_in_space(
+            &db,
+            1,
+            Some(100),
+            "wireguard builds an encrypted tunnel using public key cryptography",
+        )
+        .await;
+        let b = store_in_space(
+            &db,
+            1,
+            Some(200),
+            "postgres uses a write ahead log for durability of committed transactions",
+        )
+        .await;
+        assert_ne!(a, b, "test fixture bug: the two memories deduped into one");
+        fact(&db, a, 1, "sky", "color", "blue").await;
+        fact(&db, b, 1, "sky", "color", "green").await;
+
+        let memory_a = crate::memory::get(&db, a, 1).await.expect("load memory a");
+        let contradictions = detect_contradictions(&db, &memory_a).await.unwrap();
+        assert!(
+            contradictions.is_empty(),
+            "same-user cross-space facts must NOT be flagged as a contradiction, got {contradictions:?}"
+        );
+    }
+
+    /// Same user, same space -> scan_all_contradictions must fire.
+    /// Positive control for the batch path (its own separate SQL query).
+    #[tokio::test]
+    async fn scan_all_contradictions_fires_within_same_space() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+        let a = store_in_space(
+            &db,
+            1,
+            Some(100),
+            "wireguard builds an encrypted tunnel using public key cryptography",
+        )
+        .await;
+        let b = store_in_space(
+            &db,
+            1,
+            Some(100),
+            "postgres uses a write ahead log for durability of committed transactions",
+        )
+        .await;
+        assert_ne!(a, b, "test fixture bug: the two memories deduped into one");
+        fact(&db, a, 1, "sky", "color", "blue").await;
+        fact(&db, b, 1, "sky", "color", "green").await;
+
+        let contradictions = scan_all_contradictions(&db, 1).await.unwrap();
+        assert_eq!(
+            contradictions.len(),
+            1,
+            "same-space contradicting facts must be detected by the batch scan"
+        );
+    }
+
+    /// Same user, DIFFERENT space -> scan_all_contradictions must NOT fire.
+    /// Guards the Patch 37 `m1.space_id = m2.space_id` predicate (batch path).
+    #[tokio::test]
+    async fn scan_all_contradictions_does_not_cross_space() {
+        let db = crate::db::Database::open_tenant_memory().await.unwrap();
+        let a = store_in_space(
+            &db,
+            1,
+            Some(100),
+            "wireguard builds an encrypted tunnel using public key cryptography",
+        )
+        .await;
+        let b = store_in_space(
+            &db,
+            1,
+            Some(200),
+            "postgres uses a write ahead log for durability of committed transactions",
+        )
+        .await;
+        assert_ne!(a, b, "test fixture bug: the two memories deduped into one");
+        fact(&db, a, 1, "sky", "color", "blue").await;
+        fact(&db, b, 1, "sky", "color", "green").await;
+
+        let contradictions = scan_all_contradictions(&db, 1).await.unwrap();
+        assert!(
+            contradictions.is_empty(),
+            "same-user cross-space facts must NOT be flagged by the batch scan, got {contradictions:?}"
+        );
+    }
 }
