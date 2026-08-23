@@ -1,21 +1,26 @@
-# Example kleos-mcp tool-list filter -- "search only" profile.
+# Example kleos-mcp tool-list filter -- global "search only" profile plus a
+# per-project extension.
 #
-# Copy this file to one of the cascade locations the kleos-mcp bridge reads
-# (see kleos-mcp/src/tool_filter.rs for the full resolution order):
+# The kleos-mcp bridge reads these from a cascade (see
+# kleos-mcp/src/tool_filter.rs for the full resolution order):
 #   1. $KLEOS_MCP_TOOLS_CONFIG          -- explicit path, wins alone
 #   2. ${KLEOS_DATA_DIR}/mcp-tools/<KLEOS_SPACE>.toml  -- per-project override
 #   3. ${KLEOS_DATA_DIR}/mcp-tools/default.toml        -- global default
 #
-# This file is a template for (3): a global exclusion that keeps only the
-# read/search-oriented daily tools. A project can then override it with its
-# own <space>.toml, either replacing this list entirely (the default,
-# inherit = false) or adding to it (inherit = true).
+# Save THIS file as (2) below to get the intended usage: ONE global file that
+# every project shares, listing only the read/search-oriented daily tools;
+# individual projects that need a couple more tools drop a small companion
+# file next to it rather than each redeclaring the whole surface.
 #
 # This filter only controls what tools/list ADVERTISES to reduce the token
 # cost of injected tool definitions. It is NOT an authorization boundary: a
 # client that already knows a tool's name can still call it even if this file
 # hides it from discovery (kleos-server's dispatch_tool never consults this
 # filter). See docs/dev-notes/mcp-tool-filtering-design-todo.md section 5.5.
+
+# =============================================================================
+# File 1 of 2 -- save as ${KLEOS_DATA_DIR}/mcp-tools/default.toml
+# =============================================================================
 
 schema_version = 1
 
@@ -58,8 +63,21 @@ tools = [
   "forge_repo_map",        # POST /forge/repo-map,     scope=Read
 ]
 
-# Per-project override example (save as <space>.toml alongside this file):
+# =============================================================================
+# File 2 of 2 -- save as ${KLEOS_DATA_DIR}/mcp-tools/<your-project-space>.toml
+# (the space name is whatever KLEOS_SPACE resolves to for that project)
+# =============================================================================
 #
-#   inherit = true          # false (default) replaces this file entirely
-#   mode = "allow"
-#   tools = ["memory_store", "forge_spec_task"]   # added on top when inherit=true
+# `inherit` DEFAULTS TO TRUE: a project file like this one is UNIONED with
+# default.toml above, not substituted for it. This is deliberate -- the
+# common case is exactly this file: a project needs one or two extra tools
+# on top of the shared search-only baseline, not a full redeclaration of it.
+#
+# Set `inherit = false` explicitly if a project genuinely wants to replace
+# the global profile wholesale instead of extending it.
+#
+# schema_version = 1
+# mode = "allow"
+# tools = ["memory_store", "forge_spec_task"]   # added on top of default.toml
+#
+# # inherit = false   # uncomment to replace default.toml entirely instead
