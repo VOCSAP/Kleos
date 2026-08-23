@@ -35,6 +35,10 @@ pub struct CliConfig {
     pub cors: Option<String>,
     /// GUI password (enables the web GUI).
     pub gui_password: Option<String>,
+    /// Force regeneration of all secrets even on an upgrade, restoring the
+    /// pre-preservation always-regenerate behavior. Invalidates existing API
+    /// keys and sessions -- see the `--regenerate-secrets` help text.
+    pub regenerate_secrets: bool,
 }
 
 /// Split a `KEY=VALUE` CLI argument on the first `=`. Returns an error if no
@@ -84,14 +88,15 @@ pub async fn run(
     profile: &str,
     cli: CliConfig,
 ) -> anyhow::Result<()> {
-    let platform_info = PlatformInfo::detect();
+    let platform_info = PlatformInfo::detect()?;
     println!("Kleos Installer -- non-interactive mode");
     println!(
         "Platform: {} ({})",
         platform_info.os_name, platform_info.arch
     );
 
-    let selected_profile = parse_profile(profile);
+    let selected_profile =
+        parse_profile(profile).map_err(|e| anyhow::anyhow!("invalid --profile: {e}"))?;
     println!("Profile: {profile}");
 
     let install_dir = install_dir.unwrap_or_else(|| platform_info.default_install_dir.clone());
@@ -111,12 +116,49 @@ pub async fn run(
     // Assemble full-coverage overrides from the CLI before building the plan.
     let overrides = build_overrides(&cli)?;
 
-    // Generate security keys.
+    // Detect an existing install once -- reused both to decide whether the
+    // plan should back up the existing config (`is_upgrade`) and to preserve
+    // its secrets instead of silently regenerating them.
+    let existing_install = kleos_install_core::upgrade::detect_existing_install();
+    let is_upgrade = existing_install.is_some();
+
+    if is_upgrade {
+        println!(
+            "Existing install detected -- secrets will be preserved and the existing config backed up."
+        );
+    }
+    if cli.regenerate_secrets {
+        println!(
+            "--regenerate-secrets set: generating fresh secrets (this invalidates all existing API keys and sessions)."
+        );
+    }
+
+    // Generate or preserve security keys. `--regenerate-secrets` forces fresh
+    // secrets even on an upgrade, restoring the previous always-regenerate
+    // behavior explicitly; otherwise any secret found in the existing
+    // install's `.env` is reused, and only a field that comes back `None`
+    // (missing/partial `.env`, or no existing install at all) falls back to
+    // a freshly generated value.
+    let preserved_secrets = if cli.regenerate_secrets {
+        kleos_install_core::upgrade::PreservedSecrets::default()
+    } else {
+        existing_install
+            .as_ref()
+            .map(kleos_install_core::upgrade::read_preserved_secrets)
+            .unwrap_or_default()
+    };
+
     let security_config = SecurityConfig {
-        encryption_key: security::generate_encryption_key(),
-        api_key_pepper: security::generate_api_key_pepper(),
+        encryption_key: preserved_secrets
+            .encryption_key
+            .unwrap_or_else(security::generate_encryption_key),
+        api_key_pepper: preserved_secrets
+            .api_key_pepper
+            .unwrap_or_else(security::generate_api_key_pepper),
         initial_api_key: security::generate_api_key(),
-        hmac_secret: security::generate_hmac_secret(),
+        hmac_secret: preserved_secrets
+            .hmac_secret
+            .unwrap_or_else(security::generate_hmac_secret),
         open_access: cli.open_access,
     };
 
@@ -169,7 +211,7 @@ pub async fn run(
         version,
         config: installer_config,
         system_integration,
-        is_upgrade: kleos_install_core::upgrade::detect_existing_install().is_some(),
+        is_upgrade,
     };
 
     println!("\nStarting installation...\n");
@@ -192,15 +234,24 @@ pub async fn run(
     }
 }
 
-/// Parse a profile string into a `Profile` variant.
+/// Parse and validate a `--profile` value for non-interactive installs.
 ///
-/// Defaults to `Profile::Server` for unrecognised strings.
-fn parse_profile(s: &str) -> Profile {
+/// Accepts `server`, `agent-host` (also `agenthost`/`agent_host` for
+/// backward compatibility), and `full`. Any other value is rejected with an
+/// error naming the supported profiles instead of silently falling back to
+/// `server` -- this covers both a typo'd profile name and `custom`, which has
+/// no component selection outside the interactive wizard
+/// (`profile_components(Profile::Custom)` returns an empty list, so a
+/// non-interactive `--profile custom` install would otherwise select
+/// nothing).
+fn parse_profile(s: &str) -> Result<Profile, String> {
     match s {
-        "agent-host" | "agenthost" | "agent_host" => Profile::AgentHost,
-        "full" => Profile::Full,
-        "custom" => Profile::Custom,
-        _ => Profile::Server,
+        "server" => Ok(Profile::Server),
+        "agent-host" | "agenthost" | "agent_host" => Ok(Profile::AgentHost),
+        "full" => Ok(Profile::Full),
+        _ => Err(format!(
+            "unknown profile '{s}'; supported profiles for non-interactive installs are: server, agent-host, full"
+        )),
     }
 }
 
@@ -235,5 +286,41 @@ impl InstallProgress for PrintProgress {
     /// Print an error message to stderr.
     fn on_error(&self, error: &InstallError) {
         eprintln!("ERROR: {error}");
+    }
+}
+
+/// Tests for `parse_profile`'s validation behavior.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Recognised profile strings map to the correct `Profile` variant,
+    // including the legacy agent-host aliases kept for backward compatibility.
+    #[test]
+    fn parse_profile_accepts_known_values() {
+        assert_eq!(parse_profile("server"), Ok(Profile::Server));
+        assert_eq!(parse_profile("agent-host"), Ok(Profile::AgentHost));
+        assert_eq!(parse_profile("agenthost"), Ok(Profile::AgentHost));
+        assert_eq!(parse_profile("agent_host"), Ok(Profile::AgentHost));
+        assert_eq!(parse_profile("full"), Ok(Profile::Full));
+    }
+
+    // An unrecognised value must be rejected with an actionable message that
+    // names the supported profiles -- never silently fall back to `server`
+    // (the bug this replaces).
+    #[test]
+    fn parse_profile_rejects_unknown_value() {
+        let err = parse_profile("srever").expect_err("typo must be rejected");
+        assert!(err.contains("srever"));
+        assert!(err.contains("server"));
+    }
+
+    // `custom` has no component selection outside the interactive wizard
+    // (`profile_components(Profile::Custom)` is empty), so it must be
+    // rejected rather than silently installing nothing.
+    #[test]
+    fn parse_profile_rejects_custom() {
+        let err = parse_profile("custom").expect_err("custom must be rejected");
+        assert!(err.contains("server"));
     }
 }

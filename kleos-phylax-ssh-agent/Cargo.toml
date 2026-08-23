@@ -1,6 +1,6 @@
 [package]
 name = "kleos-phylax-ssh-agent"
-version = "1.8.0"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 description = "OpenSSH agent protocol server -- wire protocol and KeyProvider trait"
@@ -10,6 +10,8 @@ license = "Elastic-2.0"
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 ssh-key = { version = "0.6", features = ["ed25519", "rsa", "p256", "p384", "p521", "crypto"] }
+# umask(2) for race-free agent-socket permissions at bind time.
+libc = "0.2"
 log = "0.4"
 thiserror = { workspace = true }
 

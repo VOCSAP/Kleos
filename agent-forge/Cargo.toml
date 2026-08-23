@@ -1,10 +1,19 @@
 [package]
 name = "agent-forge"
-version = "1.8.0"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 license = "Elastic-2.0"
 description = "Protocol CLI that gates agent coding work behind spec + hypothesis + verification steps"
+
+[features]
+# Off by default. Enabling `fluency` compiles in the emission layer: the
+# `review` subcommand and the slice documents `checkpoint` writes into
+# docs/agent-forge/. A default build gates the protocol without ever writing
+# documentation into the caller's repository, so cloning Kleos does not opt
+# anyone into committed markdown they did not ask for.
+default = []
+fluency = []
 
 [lib]
 name = "agent_forge"
@@ -14,13 +23,19 @@ path = "src/lib.rs"
 name = "agent-forge"
 path = "src/main.rs"
 
+[[bin]]
+name = "agent-forge-mcp"
+path = "src/bin/agent-forge-mcp.rs"
+required-features = ["fluency"]
+
 [dependencies]
-kleos-token-client = { path = "../kleos-token-client", version = "1.8.0" }
+kleos-token-client = { path = "../kleos-token-client", version = "1.10.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"
 rusqlite = { workspace = true }
+sha2 = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 walkdir = "2"

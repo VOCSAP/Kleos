@@ -68,8 +68,16 @@ enum Commands {
     ListSpecs,
     GetSpec,
     Stats,
+    /// Assemble the review record for a spec. Present only in `fluency` builds.
+    #[cfg(feature = "fluency")]
+    Review,
+    /// Render requirements, design, and tasks. Present only in `fluency` builds.
+    #[cfg(feature = "fluency")]
+    SpecArtifacts,
     RepoMap,
     SearchCode,
+    CodeContext,
+    CodeRelations,
     SkillSearch,
     SkillCapture,
     SkillRecordExec,
@@ -391,6 +399,20 @@ fn main() {
                     tools::ast::search::search_code(&db, input).map_err(|e| e.to_string())
                 })
         }
+        Commands::CodeContext => {
+            read_input(&input_path)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::code_context::code_context(&db, input).map_err(|e| e.to_string())
+                })
+        }
+        Commands::CodeRelations => {
+            read_input(&input_path)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::code_context::code_relations(&db, input).map_err(|e| e.to_string())
+                })
+        }
         Commands::SkillSearch => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_search(input).map_err(|e| e.to_string())),
@@ -412,6 +434,14 @@ fn main() {
         Commands::Stats => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::stats::stats(&db, input).map_err(|e| e.to_string())),
+        #[cfg(feature = "fluency")]
+        Commands::Review => read_input(&input_path)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::emit::review(&db, input).map_err(|e| e.to_string())),
+        #[cfg(feature = "fluency")]
+        Commands::SpecArtifacts => read_input(&input_path)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::emit::spec_artifacts(&db, input).map_err(|e| e.to_string())),
     };
 
     let output = match result {

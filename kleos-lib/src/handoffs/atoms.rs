@@ -413,8 +413,9 @@ pub async fn extract_llm(text: &str, sidecar_url: &str) -> Vec<ExtractedAtom> {
         "response_format": {"type": "json_object"},
         "temperature": 0.1
     });
-    // Patch 14c -- mirror Patch 14b reasoning_effort injection so Qwen3 emits
-    // content on /v1/chat/completions when think=false.
+    // Optionally inject the operator-controlled thinking-mode flag (KLEOS_LLM_THINK)
+    // so Qwen3 emits content on /v1/chat/completions when think=false.
+    // No-op when the env var is unset, so the body is unchanged by default.
     crate::llm::inject_openai_compat_reasoning(&mut body);
 
     let client = reqwest::Client::new();

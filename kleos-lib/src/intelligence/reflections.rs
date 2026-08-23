@@ -124,6 +124,8 @@ pub async fn generate_reflections(
 
     let candidates: Vec<Candidate> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // memory must not become a reflection candidate.
             let mut stmt = conn.prepare(
                 "SELECT id, content, category, importance \
                      FROM memories \
@@ -134,6 +136,7 @@ pub async fn generate_reflections(
                        AND user_id = ?4 \
                        AND importance >= ?1 \
                        AND created_at <= datetime('now', ?2) \
+                       AND status != 'pending' \
                      ORDER BY importance DESC, created_at ASC \
                      LIMIT ?3",
             )?;
@@ -281,6 +284,8 @@ pub async fn generate_reflections_with_llm(
 
     let candidates: Vec<Candidate> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // memory must not become a reflection candidate.
             let mut stmt = conn.prepare(
                 "SELECT id, content, category, importance \
                      FROM memories \
@@ -291,6 +296,7 @@ pub async fn generate_reflections_with_llm(
                        AND user_id = ?4 \
                        AND importance >= ?1 \
                        AND created_at <= datetime('now', ?2) \
+                       AND status != 'pending' \
                      ORDER BY importance DESC, created_at ASC \
                      LIMIT ?3",
             )?;

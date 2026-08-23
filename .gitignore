@@ -82,3 +82,7 @@ repomix.config.json
 # Debug artifacts
 dbgmd-*
 candidat_upstream.md
+
+# Tool session artifacts (never project content)
+.playwright-mcp/
+.build-fleet/

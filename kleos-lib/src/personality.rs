@@ -1281,25 +1281,33 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
         .await?;
 
     // Gather static memories
-    let static_memories = db.read(move |conn| {
-        // The user_id predicate is a no-op in a single-owner shard and the
-        // tenant boundary in monolith mode; bind the caller's effective id.
-        let mut stmt = conn.prepare(
-            "SELECT content FROM memories WHERE is_static = 1 AND is_forgotten = 0 AND user_id = ?1 ORDER BY importance DESC LIMIT 20",
-        )?;
+    let static_memories = db
+        .read(move |conn| {
+            // The user_id predicate is a no-op in a single-owner shard and the
+            // tenant boundary in monolith mode; bind the caller's effective id.
+            // status != 'pending' is the review-gate predicate; is_archived = 0 drops
+            // rejected memories and is_latest = 1 drops superseded versions. Without
+            // these, pending/rejected/superseded content is baked into the cached
+            // personality profile that is injected into every context assembly.
+            let mut stmt = conn.prepare(
+                "SELECT content FROM memories WHERE is_static = 1 AND is_forgotten = 0 \
+             AND is_latest = 1 AND is_archived = 0 AND status != 'pending' \
+             AND user_id = ?1 ORDER BY importance DESC LIMIT 20",
+            )?;
 
-        let rows = stmt.query_map(rusqlite::params![user_id], |row| {
-            Ok(StaticMemoryRow {
-                content: row.get(0)?,
-            })
-        })?;
+            let rows = stmt.query_map(rusqlite::params![user_id], |row| {
+                Ok(StaticMemoryRow {
+                    content: row.get(0)?,
+                })
+            })?;
 
-        let mut static_memories = Vec::new();
-        for row in rows {
-            static_memories.push(row?);
-        }
-        Ok(static_memories)
-    }).await?;
+            let mut static_memories = Vec::new();
+            for row in rows {
+                static_memories.push(row?);
+            }
+            Ok(static_memories)
+        })
+        .await?;
 
     let input = SynthesisInput {
         signals,

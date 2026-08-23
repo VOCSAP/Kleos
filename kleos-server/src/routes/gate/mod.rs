@@ -9,12 +9,14 @@ use kleos_lib::gate::{
     approval_patterns, approval_timeout_secs, check_command_with_whitelist, check_ssh_dns_rebind,
     cleanup_expired_approvals, complete_gate, complete_latest_gate, mark_gate_timed_out,
     parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request, GateCheckRequest,
-    GateCheckResult, GateRequestInsert, PendingApproval, TOOLS_REQUIRING_APPROVAL,
+    GateCheckResult, GateRequestInsert, LatestGateCompletion, PendingApproval,
+    TOOLS_REQUIRING_APPROVAL,
 };
 
 mod types;
 use types::{CompleteBody, CompleteLatestBody, GuardBody, RespondBody};
 
+/// Builds the command-gate HTTP routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/gate/check", post(check_handler))
@@ -25,6 +27,7 @@ pub fn router() -> Router<AppState> {
         .route("/guard", post(guard_handler))
 }
 
+/// Evaluates and records a command under the authenticated user's gate policy.
 async fn check_handler(
     ResolvedDb(db): ResolvedDb,
     State(state): State<AppState>,
@@ -645,6 +648,7 @@ async fn check_handler(
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
+/// Records an approval decision and wakes the matching pending request.
 async fn respond_handler(
     ResolvedDb(db): ResolvedDb,
     State(state): State<AppState>,
@@ -710,6 +714,7 @@ async fn respond_handler(
     Ok(Json(result))
 }
 
+/// Completes a specific gate after verifying that its agent stored an outcome.
 async fn complete_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -805,10 +810,14 @@ async fn guard_handler(
     let user_id = auth.effective_user_id();
     let rules: Vec<Value> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // static rule must not be enforced as a conflict guard; is_archived = 0
+            // excludes rejected rules for the same reason.
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
                  WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
                  AND user_id = ?1
+                 AND status != 'pending' AND is_archived = 0
                  ORDER BY importance DESC LIMIT 20",
             )?;
             let rows = stmt.query_map(params![user_id], |row| {
@@ -972,6 +981,7 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
     None
 }
 
+/// Completes the newest eligible gate or reports its current lifecycle state.
 async fn complete_latest_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -986,27 +996,41 @@ async fn complete_latest_handler(
     )
     .await?
     {
-        Some((gate_id, count)) => Ok(Json(json!({
+        LatestGateCompletion::Completed {
+            gate_id,
+            stored_count,
+        } => Ok(Json(json!({
             "ok": true,
             "completed": true,
             "gate_id": gate_id,
-            "kleos_stores": count,
+            "kleos_stores": stored_count,
         }))),
-        None => Ok(Json(json!({
+        LatestGateCompletion::NoOpenGate => Ok(Json(json!({
             "ok": true,
             "completed": false,
             "reason": "no open gate for session",
         }))),
+        LatestGateCompletion::AwaitingMemory { gate_id } => Ok(Json(json!({
+            "ok": true,
+            "completed": false,
+            "gate_id": gate_id,
+            "reason": "awaiting memory store",
+        }))),
     }
 }
 
+/// Loads reviewed model-selection directives for gate response enrichment.
 async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> Option<String> {
     let rules: Vec<String> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // rule must not be injected into agent-model enrichment; is_archived = 0
+            // excludes rejected rules for the same reason.
             let mut stmt = conn.prepare(
                 "SELECT content FROM memories
                  WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
                  AND user_id = ?1
+                 AND status != 'pending' AND is_archived = 0
                  AND (content LIKE '%agent.model.preference%'
                       OR content LIKE '%force-agent-models%'
                       OR content LIKE '%delegate to opencode%'
@@ -1125,6 +1149,7 @@ pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
     EXEMPT_EXTS.iter().any(|ext| lower.ends_with(ext))
 }
 
+/// Truncates a string to a character limit and appends an ellipsis when needed.
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -1134,6 +1159,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Regression tests for Forge-gate path extraction and exemptions.
 #[cfg(test)]
 mod forge_gate_tests {
     use super::{extract_write_edit_path, is_forge_exempt};

@@ -39,6 +39,9 @@ struct Args {
     install_dir: Option<std::path::PathBuf>,
 
     /// Installation profile for non-interactive mode: server, agent-host, full.
+    /// Unrecognised values (including "custom", which has no non-interactive
+    /// component selection) are rejected with an error rather than silently
+    /// falling back to "server".
     #[arg(long, default_value = "server")]
     profile: String,
 
@@ -70,6 +73,15 @@ struct Args {
     /// Set the GUI password, which enables the web GUI (non-interactive).
     #[arg(long, value_name = "PASSWORD")]
     gui_password: Option<String>,
+
+    /// Force regeneration of all secrets (encryption key, API key pepper,
+    /// HMAC secret) even when upgrading over an existing install.
+    /// WARNING: this invalidates every previously issued API key and every
+    /// active session signed with the old HMAC secret. Default is to
+    /// preserve secrets found in the existing install and only generate the
+    /// ones that are missing (non-interactive).
+    #[arg(long)]
+    regenerate_secrets: bool,
 }
 
 /// Initialize the tracing subscriber for diagnostic output.
@@ -117,6 +129,7 @@ async fn main() -> anyhow::Result<()> {
             open_access: args.open_access,
             cors: args.cors,
             gui_password: args.gui_password,
+            regenerate_secrets: args.regenerate_secrets,
         };
         noninteractive::run(args.version, args.install_dir, &args.profile, cli).await
     } else {
@@ -138,15 +151,19 @@ async fn main() -> anyhow::Result<()> {
         terminal.show_cursor()?;
 
         match result? {
-            Some(result) => {
+            wizard::WizardOutcome::Installed(result) => {
                 println!("Installation complete.");
                 if let Some(url) = &result.server_url {
                     println!("Server URL: {url}");
                 }
                 println!("API key: {}", result.api_key);
             }
-            None => {
+            wizard::WizardOutcome::Cancelled => {
                 println!("Installation cancelled.");
+            }
+            wizard::WizardOutcome::Failed(err) => {
+                eprintln!("Installation failed: {err}");
+                std::process::exit(1);
             }
         }
 

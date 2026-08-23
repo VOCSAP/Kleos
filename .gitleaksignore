@@ -1,6 +1,28 @@
-# gitleaks allowlist -- false positives confirmed as test fixtures, not real secrets.
-# Format: one gitleaks fingerprint per line. See https://github.com/gitleaks/gitleaks#gitleaksignore
+# gitleaks allowlist -- verified false positives in UPSTREAM test code.
 #
-# upstream test fixture: parse_key_hex() unit test in artifacts_crypto.rs uses a
-# static hex key literal "0123...ef" to assert key parsing. Not a credential.
-kleos-lib/src/artifacts_crypto.rs:generic-api-key:190
+# DISCIPLINE: every entry below was read line by line before being listed.
+# None of them is a credential. Do NOT append a fingerprint without opening
+# the flagged line first, and do NOT reach for --no-verify instead of this
+# file. An unverified entry turns this allowlist into a blanket bypass.
+#
+# The line number is part of the fingerprint, so an upstream edit that
+# shifts these lines will make the entry stale and the scan will block
+# again. That is why each entry names its test function: re-verification
+# should take seconds, not archaeology.
+#
+# agent-forge/src/emit/gatekeeper.rs:346 and :351
+#   Fixtures of the unit test `ignores_marker_inside_an_identifier`, which
+#   asserts that the leak scanner IGNORES a marker embedded in a larger
+#   identifier. The fixture literal is a fake marker assignment followed by
+#   a hex-looking blob: it exists precisely because it must pass the shape
+#   check without being a secret. Read the test body, not this comment --
+#   quoting the literal here would trip the scanner on this very file.
+#
+# kleos-install-core/src/upgrade.rs:312
+#   Unit test writing a throwaway .env into a tempdir to exercise
+#   `read_preserved_secrets`. Values are visibly synthetic hex words
+#   (deadbeefcafe, feedface1234, 0123456789abcdef).
+#
+agent-forge/src/emit/gatekeeper.rs:generic-api-key:346
+agent-forge/src/emit/gatekeeper.rs:generic-api-key:351
+kleos-install-core/src/upgrade.rs:generic-api-key:312

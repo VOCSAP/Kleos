@@ -42,6 +42,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/kleos-sidecar /tmp/kleos-sidecar
 
 # =============================================================================
+# Stage 1b -- gui builder
+# Builds the web dashboard. gui/build is gitignored and was never shipped in
+# the image, so the advertised GUI 404'd in every published container.
+# =============================================================================
+FROM node:22-bookworm-slim AS gui-builder
+
+WORKDIR /gui
+COPY gui/package.json gui/package-lock.json ./
+RUN npm ci
+COPY gui/ .
+RUN npm run build
+
+# =============================================================================
 # Stage 2 -- runtime
 # Minimal Debian image with only the libraries the binaries actually dlopen.
 # =============================================================================
@@ -69,6 +82,11 @@ RUN mkdir -p /data && chown kleos:kleos /data
 
 COPY --from=builder /tmp/kleos-server /usr/local/bin/kleos-server
 COPY --from=builder /tmp/kleos-cli   /usr/local/bin/kleos-cli
+
+# Web dashboard assets; the server resolves them via KLEOS_GUI_BUILD_DIR
+# (fallback is a CWD-relative gui/build, which never exists in the image).
+COPY --from=gui-builder /gui/build /usr/local/share/kleos/gui-build
+ENV KLEOS_GUI_BUILD_DIR=/usr/local/share/kleos/gui-build
 
 RUN chmod 755 /usr/local/bin/kleos-server /usr/local/bin/kleos-cli
 

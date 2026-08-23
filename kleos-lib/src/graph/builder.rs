@@ -20,7 +20,12 @@ pub async fn build_graph(db: &Database) -> Result<(Vec<GraphNode>, Vec<GraphEdge
 /// Phase 4: Prune orphan memory nodes (no edges)
 #[tracing::instrument(skip(db, opts), fields(user_id = opts.user_id, limit = ?opts.limit))]
 pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result<GraphBuildResult> {
-    let limit = opts.limit.unwrap_or(500) as i64;
+    // `None` means the complete caller-scoped graph. Route-level APIs still
+    // supply conservative explicit limits unless the caller requests full mode.
+    let limit = opts
+        .limit
+        .and_then(|value| i64::try_from(value).ok())
+        .unwrap_or(i64::MAX);
     let user_id = opts.user_id;
 
     // -- Phase 1: Collect top-scored memory nodes ---------------------------------
@@ -32,6 +37,7 @@ pub async fn build_graph_data(db: &Database, opts: &GraphBuildOptions) -> Result
                             decay_score, community_id \
                      FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND status != 'pending' \
                        AND user_id = ?2 \
                      ORDER BY COALESCE(decay_score, importance) DESC \
                      LIMIT ?1",
@@ -351,6 +357,8 @@ mod tests {
     /// Verifies graph build options keep all components by default.
     #[test]
     fn graph_build_options_keep_all_components_by_default() {
-        assert_eq!(GraphBuildOptions::default().min_component, 1);
+        let options = GraphBuildOptions::default();
+        assert_eq!(options.min_component, 1);
+        assert_eq!(options.limit, None);
     }
 }

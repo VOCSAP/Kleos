@@ -28,6 +28,7 @@ async fn store_memory(db: &Database, content: &str, user_id: i64) -> i64 {
         parent_memory_id: None,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     };
     memory::store(db, req, None, false)
         .await
