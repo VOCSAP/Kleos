@@ -1,11 +1,59 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-06-26 (merge upstream f4e7eb3f -- absorption PR i18n + prompt-overlay)
+**Dernière mise à jour :** 2026-08-23 (merge upstream 7ce95482 -- 156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
 re-appliquer si perdus.
+
+---
+
+## Statut apres merge upstream 7ce95482 (2026-08-23)
+
+**Branche :** `merge/upstream-7ce95482`. Commit de merge `733a9466` (deja commite, working tree propre). Merge-base `d905d4e7` (2026-06-28), `upstream/main` `7ce95482` (2026-08-21), 156 commits upstream absorbes, 21 conflits resolus. **Build vert** sur `kleos-lib`, `kleos-mcp`, `kleos-server`, `kleos-cli` et `agent-forge`.
+
+### Perimetre upstream (rappel du message de merge)
+
+- **#217 `e5526e80`** : `kleos-sidecar` perd son `MemoryGate` LLM et son file watcher, devient un moteur de code-context deterministe adosse au nouveau `agent-forge` CodeIndex. `gate.rs` et `watcher.rs` supprimes upstream.
+- **#168** : review gate -- les memoires peuvent etre routees vers une inbox `pending`, filtrage de statut cable sur 12 surfaces de lecture.
+- **#206 `79b4efe5`** : le dispatch des migrations passe de `MAX(version)` a un applied-set, plus nouveaux `db/schema_manifest.rs` et `db/converge.rs` (**verifie presents** : `kleos-lib/src/db/schema_manifest.rs`, `kleos-lib/src/db/converge.rs`).
+- 6 migrations monolith (97..102) et 5 migrations tenant (80..84) -- chiffres repris tels quels du message de merge `733a9466`, non recomptes independamment dans ce statut.
+- GUI Memory Galaxy reecrite, durcissement isolation multi-tenant, travail backup/PITR, durcissement ingestion, workflow MCP agent-forge.
+
+### Patches abandonnes (absorbes upstream)
+
+| Patch | Preuve upstream | Verification |
+|---|---|---|
+| **14 / 14b / 14c** -- `KLEOS_LLM_THINK` | Absorbe via notre propre PR #135, commit upstream `f857f7cd` | Fonctions `think_setting()` et `inject_openai_compat_reasoning()` desormais dans `kleos-lib/src/llm/mod.rs` upstream (deja documente commit local `6a25f78c`, cf. section Patch 14 plus bas et `CLAUDE.md` projet) |
+| **48** -- `KLEOS_RERANKER_TIMEOUT_SECS` | Absorbe via notre PR #134, commit upstream `6886a6c9` | Vit desormais dans `kleos-lib/src/reranker/mod.rs`, plus dans `http.rs` |
+| **39** -- UTF-8 safety | Upstream livre `truncate_on_char_boundary` (`validation.rs`) et `floor_char_boundary` (`chunking.rs`) | `kleos-lib/src/str_safe.rs` **toujours present**, un seul appelant restant (`kleos-lib/src/intelligence/growth.rs:384` -- verifie via `aidex_query`, `lib.rs:59` n'est que la declaration `mod str_safe;`). Nettoyage a faire en suivi. |
+| **8 volet A** -- GUI 401 sous-routes SPA | Upstream porte notre fix exact | Couvre en plus `/gui/auth` et `/gui/logout` (non re-verifie ligne a ligne, repris du message de merge) |
+| **30, 31, 11, volet sidecar du 14** | Code hote disparu upstream (`gate.rs`, `watcher.rs`, route compress supprimes, commit `e5526e80`, PR #217) | Coherent avec la suppression `kleos-sidecar` documentee ci-dessus |
+
+### Patches re-accroches (nouveau site)
+
+- **Patch 42** -- reaccroche sur `vector/lance.rs` reecrit par upstream (fichier confirme present : `kleos-lib/src/vector/lance.rs`, aux cotes de `vector/mod.rs`).
+- **Patch 43** -- realigne sur `vector::MIN_ROWS_FOR_INDEX`. Verifie : la constante vit desormais dans `kleos-lib/src/vector/mod.rs:25` (`pub const MIN_ROWS_FOR_INDEX: usize = 256;`) et `lance.rs` la re-exporte via `pub use super::{..., MIN_ROWS_FOR_INDEX};` (`lance.rs:21`).
+- **Patch 35 / 35.1** -- unionne avec l'appel upstream `existing_growth_context` et le predicat SQL review-gate. Verifie dans `kleos-server/src/dreamer.rs` : nouvelle fonction `existing_growth_context()` (feed `existing_growth` a `GrowthReflectRequest` via `growth::list_observations`) integree dans la boucle per-(user, space) documentee comme Patch 35 (commentaire inline "Patch 35 -- iterate per space to fix Kleos #3028").
+- **Patch 19b / 21 / 25** -- unionne avec le guard anti self-approval upstream. Verifie : `kleos-lib/src/gate/mod.rs` porte `responder_agent: Option<String>` et un test `respond_rejects_agent_self_approval` (ligne ~1143).
+- **Patch 32** -- etendu : `#[derive(..., JsonSchema)]` pose sur les nouveaux types upstream `ImplementationTask` (`agent-forge/src/spec_types.rs:10`) et `TestProperty` (`agent-forge/src/spec_types.rs:19`). Verifie par lecture directe du fichier.
+- **Patch 38 residu** -- `validate_override_repo` et `reload_overrides` supprimes upstream comme dead code (commit `25ff58a9`, non re-diffe individuellement dans ce statut) alors que nos routes admin les appellent. Restaures dans un module lateral `kleos-lib/src/lexicon/vocsap.rs` (**fichier confirme present** aux cotes de `cache.rs`, `loader.rs`, `mod.rs`).
+- **Patch 7** (prefixe cles `engram_`) -- a survecu a l'auto-merge. Verifie : `kleos-lib/src/auth.rs:425` fait desormais `.split_once('_')` au lieu de supposer un prefixe fixe de 6 caracteres, donc les cles de l'ere pepper continuent de valider.
+- **Patch 41** -- motivation d'origine morte : upstream a remplace `MAX(version)` par un applied-set dans le dispatch des migrations (commit `79b4efe5`, PR #206, cf. ci-dessus). Decision : `kleos-lib/src/db/vocsap/mod.rs` **inchange**. Le canal overlay n'est plus une protection contre le skip de migration, c'est desormais un canal anti-conflit au sens de la table de delta (`CLAUDE.md` projet). Upstream introduit en parallele `db/schema_manifest.rs` et `db/converge.rs` (verifies presents ci-dessus), meme philosophie declarative, manifests vides a ce jour (non verifie en detail).
+
+### Pieges rencontres au merge
+
+- **`kleos-sidecar/Cargo.toml`** : pin `kleos-lib` fige a `1.2.1` dans le bloc `[target.'cfg(windows)'.dependencies]` alors que le workspace est en `1.10.0` -- cassait le build Windows du sidecar. Verifie par `git diff d905d4e7 733a9466 -- kleos-sidecar/Cargo.toml` : le pin passe a `1.10.0` (`features = ["sqlcipher"]` conserve), et une dependance `agent-forge` a ete ajoutee coherente avec la nouvelle description du crate ("Agent session proxy with batched memory writes and local code-context retrieval").
+- **Nouveau fichier `.gitleaksignore`** a la racine : trois faux positifs verifies dans du code de test upstream (`agent-forge/src/emit/gatekeeper.rs:346` et `:351` -- fixtures du test `ignores_marker_inside_an_identifier` ; `kleos-install-core/src/upgrade.rs:312` -- valeurs hex synthetiques dans un test de `read_preserved_secrets`). Le fichier documente lui-meme sa discipline : chaque entree a ete lue ligne par ligne avant listing, ne jamais ajouter une empreinte sans ouvrir la ligne signalee, ne jamais utiliser `--no-verify` a la place. Le numero de ligne fait partie de l'empreinte gitleaks -- un edit upstream qui deplace ces lignes rendra l'entree perimee et le scan re-bloquera, ce qui est voulu (re-verification attendue, pas contournement automatique).
+
+### Conditions de retrait
+
+Merge structurel, pas un patch retirable. Les statuts individuels evoluent au fil des absorptions upstream futures :
+
+- Patch 39 (`str_safe.rs`) est candidat a un retrait complet des que son unique appelant restant (`intelligence/growth.rs`) est migre vers les helpers upstream `truncate_on_char_boundary`/`floor_char_boundary`.
+- Patch 41 (canal overlay `vocsap/mod.rs`) reste utile tant qu'upstream n'a pas absorbe nos overlays VOCSAP dans `db/schema_manifest.rs`/`db/converge.rs` -- a reevaluer si ces deux modules upstream se remplissent.
+- Patch 38 residu (`lexicon/vocsap.rs`) retirable si upstream restaure `validate_override_repo`/`reload_overrides` ou si nos routes admin sont reecrites pour ne plus en dependre.
 
 ---
 
@@ -560,6 +608,8 @@ leur hash calculé sur la forme `kleos_<hex>`. La conversion produisait un misma
 
 ## Patch 7 -- Auth : préserver le préfixe original dans normalize_key
 
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, a survecu a l'auto-merge.** `kleos-lib/src/auth.rs:425` fait desormais `.split_once('_')` au lieu de supposer un prefixe fixe de 6 caracteres -- les cles `engram_` de l'ere pepper continuent de valider. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 **Fichier :** `kleos-lib/src/auth.rs`
 **Statut upstream :** Absent.
 **Symptôme si absent :** GUI retourne "Invalid API Key" pour toute clé à préfixe `kleos_`.
@@ -628,6 +678,8 @@ le préfixe textuel). Le lookup par `key_prefix` fonctionne donc pour les deux f
 ---
 
 ## Patch 8 -- GUI : activation et fix CSP SvelteKit
+
+**Statut au 2026-08-23 (merge 7ce95482) : volet A ABANDONNE, absorbe upstream.** Le fix 401 sur sous-routes SPA est desormais porte par upstream, qui couvre en plus `/gui/auth` et `/gui/logout`. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 **Concerne :** Déploiement sur LXC 121 (kleos-server Linux musl)
 **Statut upstream :** N/A -- problème de configuration déploiement + patch de fichier statique généré.
@@ -893,6 +945,8 @@ courant.
 
 ## Patch 11 -- kleos-sidecar : namespacer OLLAMA_URL/MODEL en KLEOS_SIDECAR_OLLAMA_*
 
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, code hote disparu.** Upstream #217 (commit `e5526e80`) a supprime `gate.rs`/`watcher.rs` et refondu `kleos-sidecar` en moteur de code-context deterministe ; le site que ce patch namespacait n'existe plus. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 **Fichier :** `kleos-sidecar/src/main.rs`
 **Statut upstream :** Absent. Specifique au poste Windows VOCSAP.
 **Date :** 2026-05-14
@@ -1094,6 +1148,8 @@ safe via le LIKE retro-compat).
 ---
 
 ## Patch 14 -- LLM thinking-mode toggle
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE (14/14b/14c), absorbe via notre propre PR #135 (upstream `f857f7cd`).** Fonctions `think_setting()` et `inject_openai_compat_reasoning()` desormais upstream dans `kleos-lib/src/llm/mod.rs`. Le volet sidecar de ce patch est en outre mort avec la suppression de `kleos-sidecar/src/gate.rs` (PR #217). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 **Fichiers :**
 - `kleos-lib/src/llm/mod.rs` (fonction helper `think_enabled()`)
@@ -2310,6 +2366,8 @@ Titre suggere pour la PR : `fix(kleos-mcp): use newline-delimited JSON framing p
 
 ## Patch 19b -- Cascade operator-first pour blocked + require_approval gate patterns
 
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`, champ `responder_agent: Option<String>` + test `respond_rejects_agent_self_approval`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 ### Symptome / motivation
 
 La GateConfig (`kleos-lib/src/config.rs::GateConfig`) charge les patterns de
@@ -2882,6 +2940,8 @@ steady state au lieu de ~120. agent-forge hyp_4b2e8103.
 
 ## Patch 21 -- bridge bidirectionnel `gate_requests` <-> `approvals` (2026-05-22)
 
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`, `responder_agent`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 ### Symptome
 
 Le pipeline `require_approval_patterns` du Patch 19b posait `gate_requests.status='pending_approval'` + insert dans le HashMap in-memory `state.pending_approvals` + notify `approval_notify`, mais **n'ecrivait rien dans la table `approvals`**. Or la TUI `engram-approval-tui` consomme `GET /approvals/pending` qui fait `SELECT FROM approvals WHERE status='pending'`. Resultat : tout match de pattern produisait un `gate_requests` invisible cote operateur, le caller `/gate/check` restait bloque 600s puis recevait `denied -- approval timed out or rejected`. Aucun consommateur alternatif des `gate_requests pending_approval` n'existait dans le repo (verifie via inspection live : TUI poll uniquement `/approvals/pending`, `eidolon-supervisor` push-only, GUI Svelte n'expose pas le flow).
@@ -3011,6 +3071,8 @@ agent-forge spec_id : `spec_0f75e1e0`.
 ---
 
 ## Patch 25 -- regex matcher + per-cascade whitelist + subcommand splitting shell-aware (2026-05-22)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 ### Symptome motivateur
 
@@ -3408,6 +3470,8 @@ agent-forge spec_id : `spec_2764b269`.
 
 ## Patch 30 -- overlay prompt sidecar gate (id `sidecar/gate/system`) (2026-05-23)
 
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, code hote disparu.** `kleos-sidecar/src/gate.rs` supprime upstream (#217, commit `e5526e80`) -- le site que cet overlay de prompt ciblait n'existe plus. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 ### Symptome
 
 `kleos-sidecar/src/gate.rs:6-22` definit `GATE_SYSTEM_PROMPT` comme une `const &str` hardcoded. Le gate LLM watcher consomme ce prompt pour classer chaque tour assistant de Claude Code en `store|skip`. Le prompt actuel produit beaucoup de faux positifs (FP) :
@@ -3476,6 +3540,8 @@ Biais reconnu : les 8 samples sont construits par l'agent (3 extraits jsonl + 5 
 
 ## Patch 31 -- overlay prompt sidecar compress (id `sidecar/compress/system`) (2026-05-24)
 
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, code hote disparu.** La route compress de `kleos-sidecar` a ete supprimee upstream (#217, commit `e5526e80`) avec la refonte en moteur de code-context deterministe. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 ### Symptome
 
 `kleos-sidecar/src/routes.rs:551-560` definit `COMPRESS_SYSTEM_PROMPT` comme une `const &str` hardcoded, consommee par le handler `/compress` (`routes.rs:562`). Ce handler resume un `tool_output` volumineux via Ollama avant stockage memoire. Le prompt n'est appele par AUCUN client actuel (`/compress` est dormant -- mnemonic-observe.sh appelle `/observe` direct, le watcher gate appelle `/store` direct). Mais le mecanisme overlay devrait couvrir TOUS les prompts hardcoded du sidecar, pas seulement le gate, pour preserver le principe "tout prompt hardcoded a un overlay overlayable" introduit par Patch 30.
@@ -3524,6 +3590,8 @@ Identique a Patch 30. Si upstream Ghost-Frame absorbe Patch 15 + Patch 16, ce Pa
 ---
 
 ## Patch 32 -- agent-forge gain `help` et `schema` sous-commandes (2026-05-24)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ETENDU.** `#[derive(..., JsonSchema)]` pose sur les nouveaux types upstream `ImplementationTask` (`agent-forge/src/spec_types.rs:10`) et `TestProperty` (`agent-forge/src/spec_types.rs:19`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 ### Symptome
 
@@ -4025,6 +4093,8 @@ agent-forge spec_id : `spec_e46b8918` + `hyp_5ed03a1e`.
 
 ## Patch 35 -- dreamer.rs growth::reflect outer loop par space (2026-05-26)
 
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE.** Unionne avec l'appel upstream `existing_growth_context()` (nouvelle fonction dans `kleos-server/src/dreamer.rs` qui feed `existing_growth` a `GrowthReflectRequest` via `growth::list_observations`) et le predicat SQL review-gate ; le commentaire inline "Patch 35 -- iterate per space to fix Kleos #3028" est conserve dans `run_cycle`. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 **Symptome** -- Patch 33 6/N a etendu `GrowthReflectRequest.space_id` et
 l'INSERT `growth_observations` cote `kleos-lib`, mais les deux call sites
 dans `kleos-server/src/dreamer.rs` (`run_cycle` lignes 339-390 et
@@ -4107,6 +4177,8 @@ agent-forge spec_id : `spec_3c68317c` + `hyp_e44b4354`.
 ---
 
 ## Patch 35.1 -- fix regression user_id schema mismatch (2026-05-26)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE**, meme site que Patch 35 (`kleos-server/src/dreamer.rs`, boucle per-(user, space) unionnee avec `existing_growth_context()` upstream). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 **Symptome** -- Apres deploy Patch 35 sur LXC 121 (04:47:54 BRT), les
 logs montrent un warn a chaque tick dreamer :
@@ -4427,6 +4499,8 @@ agent-forge spec_id : `spec_9be9c0f3`.
 
 ## Patch 38 -- i18n core lexicon + 16 sites refactores (2026-05-27)
 
+**Statut au 2026-08-23 (merge 7ce95482) : RESIDU.** `validate_override_repo` et `reload_overrides` ont ete supprimes upstream comme dead code (commit `25ff58a9`) alors que nos routes admin les appellent encore. Restaures dans un module lateral `kleos-lib/src/lexicon/vocsap.rs` (confirme present aux cotes de `cache.rs`, `loader.rs`, `mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 **Symptome / motivation** -- L'audit `docs/dev-notes/i18n-audit.md` (2026-05-26) a identifie 15 sites Kleos qui hardcodent du vocabulaire anglais (extraction, personality, valence, sentiment, decomposition, hopfield, services/brain, prompts, gate, handoffs). Empiriquement sur LXC 121 : ~2 structured_facts produits pour 2282 memoires, soit un taux <0.1% causé directement par le mismatch entre les regex EN et les memoires majoritairement FR/tech. Le pipeline d'intelligence (contradictions, valence, personality, sentiment) est de facto dead-end fonctionnel hors anglais.
 
 L'operateur a choisi **Option B** : module i18n core lexicon central + couche de normalisation au matching. Plan original dans `~/.claude/plans/je-pr-f-re-b-complet-robust-kazoo.md`.
@@ -4527,6 +4601,8 @@ agent-forge spec : `spec_01e9984f`.
 ---
 
 ## Patch 39 -- utf-8 safety helpers (2026-05-28)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, absorbe upstream.** Upstream livre `truncate_on_char_boundary` (`validation.rs`) et `floor_char_boundary` (`chunking.rs`). `kleos-lib/src/str_safe.rs` reste present avec un seul appelant restant (`intelligence/growth.rs:384`, verifie via `aidex_query`) -- nettoyage a faire en suivi (cf. "Conditions de retrait" du statut 7ce95482 en tete de fichier).
 
 **Symptome / motivation** -- Audit logs LXC 121 post-deploy Patch 38 L2.B revele 2 panics historiques `thread 'tokio-rt-worker' panicked at ...:74:26: start byte index N is not a char boundary; it is inside 'é'` sur `kleos-lib/src/embeddings/chunking.rs` (5x observe) et 2x sur `kleos-lib/src/memory/scoring.rs:480`. Audit elargi sur les modules consommateurs de user content (intelligence, personality, handoffs, lexicon, embeddings, memory, services, brain) identifie 4 sites qui slicent des `&str` par byte index sans verifier les char boundaries UTF-8. Avec l i18n FR Patch 38 plus actif, la frequence d apparition augmente (contenu FR riche en `é`, `è`, `à`, ainsi qu emojis dans les conversations).
 
@@ -4642,6 +4718,8 @@ agent-forge spec : `spec_ada22012`.
 ---
 
 ## Patch 41 -- canal schema overlay VOCSAP Post-only (2026-06-02)
+
+**Statut au 2026-08-23 (merge 7ce95482) : MOTIVATION D'ORIGINE MORTE, canal CONSERVE inchange.** Upstream a remplace `MAX(version)` par un applied-set dans le dispatch des migrations (commit `79b4efe5`, PR #206) : le canal overlay n'est plus une protection contre le skip de migration, c'est desormais un canal anti-conflit au sens de la table de delta upstream. `kleos-lib/src/db/vocsap/mod.rs` **inchange** par ce merge. Upstream introduit en parallele `db/schema_manifest.rs` et `db/converge.rs` (fichiers confirmes presents), meme philosophie declarative, manifests vides a ce jour (non re-audite en detail). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 agent-forge spec `spec_3fb428b3`.
 
@@ -4815,6 +4893,8 @@ Kleos cesse d'etre un fork actif.
 
 ## Patch 42 -- borne la croissance de l'index vectoriel lancedb (2026-06-03)
 
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE.** Reste sur `vector/lance.rs`, reecrit par upstream (fichier confirme present aux cotes de `vector/mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
 agent-forge spec `spec_b9023c21`. Commit `ae4c614e`. Decouvert pendant le
 deploy du merge 3ee0b0bf (1.5.0).
 
@@ -4888,6 +4968,8 @@ periodique native.
 ---
 
 ## Patch 43 -- admin vector-rebuild-index couvre chunk_vector_index (2026-06-03)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE.** Realigne sur `vector::MIN_ROWS_FOR_INDEX` -- la constante vit desormais dans `kleos-lib/src/vector/mod.rs:25` et `lance.rs` la re-exporte via `pub use super::{..., MIN_ROWS_FOR_INDEX};` (`lance.rs:21`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 agent-forge spec `spec_82266967`. Suite directe du Patch 42 (lacune
 documentee dans ses "Limites connues").
@@ -5238,6 +5320,8 @@ dans la voie nominale).
 ---
 
 ## Patch 48 -- timeout reranker HTTP/TEI surchargeable par env var (2026-06-29)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, absorbe via notre propre PR #134 (upstream `6886a6c9`).** Vit desormais dans `kleos-lib/src/reranker/mod.rs`, plus dans `http.rs`. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 **Symptome :** Le timeout de requete du reranker HTTP/TEI etait code en dur a
 10s dans `HttpReranker::new_with_db` (`kleos-lib/src/reranker/mod.rs`,
