@@ -8,6 +8,8 @@
 
 /// MCP tool registry, dispatcher, and curated tool list.
 pub mod tools;
+/// `tools/list` response filtering: global exclusion overridable per project.
+mod tool_filter;
 /// Transport layer (stdio and optional HTTP).
 pub mod transport;
 
@@ -83,7 +85,10 @@ pub async fn handle_jsonrpc(app: &App, req: Value) -> Option<Value> {
     let id = request_id(&req);
     let req = inject_space_for_tool_calls(req);
     match app.client.post_mcp(&req).await {
-        Ok(resp) => resp,
+        // Patch 47: post-process the tools/list response, the response-side
+        // counterpart to inject_space_for_tool_calls's request-side mutation.
+        // No-op for every other response shape (see filter_tools_list_response).
+        Ok(resp) => resp.map(tool_filter::filter_tools_list_response),
         Err(e) => id.map(|id| error_response(id, -32603, &e)),
     }
 }

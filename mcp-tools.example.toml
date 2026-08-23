@@ -1,0 +1,65 @@
+# Example kleos-mcp tool-list filter -- "search only" profile.
+#
+# Copy this file to one of the cascade locations the kleos-mcp bridge reads
+# (see kleos-mcp/src/tool_filter.rs for the full resolution order):
+#   1. $KLEOS_MCP_TOOLS_CONFIG          -- explicit path, wins alone
+#   2. ${KLEOS_DATA_DIR}/mcp-tools/<KLEOS_SPACE>.toml  -- per-project override
+#   3. ${KLEOS_DATA_DIR}/mcp-tools/default.toml        -- global default
+#
+# This file is a template for (3): a global exclusion that keeps only the
+# read/search-oriented daily tools. A project can then override it with its
+# own <space>.toml, either replacing this list entirely (the default,
+# inherit = false) or adding to it (inherit = true).
+#
+# This filter only controls what tools/list ADVERTISES to reduce the token
+# cost of injected tool definitions. It is NOT an authorization boundary: a
+# client that already knows a tool's name can still call it even if this file
+# hides it from discovery (kleos-server's dispatch_tool never consults this
+# filter). See docs/dev-notes/mcp-tool-filtering-design-todo.md section 5.5.
+
+schema_version = 1
+
+# "allow": `tools` below is the exhaustive list of what gets advertised.
+# "deny":  `tools` below is removed from the full embedded list instead.
+mode = "allow"
+
+# Tool names are matched after the same `.` -> `_` normalization kleos-mcp's
+# registry() applies (kleos-mcp/src/tools.rs:156), so "memory.search" and
+# "memory_search" are interchangeable here -- pick whichever form you prefer,
+# not both (a config listing both is redundant, not wrong).
+#
+# Every entry below was cross-checked against its backing kleos_client::ROUTES
+# entry's `scope` field (Read, not Write/Admin) rather than guessed from the
+# tool's name -- per the design doc's explicit warning that a name-based
+# heuristic is unreliable (docs/dev-notes/mcp-tool-filtering-design-todo.md
+# section 7, point 2).
+#
+# One nuance worth knowing if you extend this list: the HTTP *method* on a
+# route is NOT a reliable proxy for "read-only" here. `memory.search` and
+# `memory.recall` are POST routes (their query parameters don't fit a query
+# string cleanly) but are scope = Read like every GET route below. `scope`,
+# not `method`, is what you want to check when adding a tool to this list.
+tools = [
+  # Core semantic memory search/recall.
+  "memory_search",         # POST /search,  scope=Read (see nuance above)
+  "memory_search_preset",  # alias of memory.search, same route
+  "memory_recall",         # POST /recall,  scope=Read
+  "memory_get",            # GET /memory/{id}, scope=Read
+  "memory_list",           # GET /list,     scope=Read
+
+  # Session/handoff recap search.
+  "handoffs_search",       # GET /handoffs/search, scope=Read
+  "handoffs_latest",       # GET /handoffs/latest, scope=Read
+
+  # agent-forge: past-error recall and local code search, not agent-forge's
+  # stateful write operations (spec_task, log_hypothesis, etc. are excluded).
+  "forge_recall_errors",   # GET /forge/recall-errors, scope=Read
+  "forge_search_code",     # POST /forge/search-code,  scope=Read
+  "forge_repo_map",        # POST /forge/repo-map,     scope=Read
+]
+
+# Per-project override example (save as <space>.toml alongside this file):
+#
+#   inherit = true          # false (default) replaces this file entirely
+#   mode = "allow"
+#   tools = ["memory_store", "forge_spec_task"]   # added on top when inherit=true
