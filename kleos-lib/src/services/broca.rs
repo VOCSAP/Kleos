@@ -299,6 +299,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
             "service": &entry.service,
             "action": &entry.action,
         }),
+        user_id,
     )
     .await
     {
@@ -724,11 +725,10 @@ pub(crate) async fn call_llm_endpoint<B: serde::Serialize>(
     body: B,
     api_key: Option<String>,
 ) -> std::result::Result<String, String> {
-    // Patch 14: optionally inject the operator-controlled thinking-mode flag
-    // (KLEOS_LLM_THINK) so every Broca / Chiasm caller honours it without each
-    // call site remembering to add it. When unset, take the original path
-    // verbatim (no serde round-trip, JSON key order on the wire unchanged): the
-    // feature is a strict no-op (upstream-neutral).
+    // Optionally inject the operator-controlled thinking-mode flag (KLEOS_LLM_THINK)
+    // so every Broca / Chiasm caller honours it without each call site remembering
+    // to add it. When unset, take the original path verbatim (no serde round-trip,
+    // so the JSON key order on the wire is unchanged): the feature is a strict no-op.
     let mut req = match crate::llm::think_setting() {
         Some(setting) => {
             let mut v = serde_json::to_value(&body)

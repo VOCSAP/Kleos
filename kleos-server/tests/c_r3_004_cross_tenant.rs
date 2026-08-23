@@ -55,6 +55,7 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),
@@ -75,7 +76,8 @@ async fn test_app_with_sharding() -> (axum::Router, AppState, TempDir) {
         background_tasks: Arc::new(Mutex::new(JoinSet::new())),
         fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
-        audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        // Detached audit channel: no worker in tests, events are dropped.
+        audit_tx: tokio::sync::mpsc::channel(64).0,
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),

@@ -1,8 +1,12 @@
 //! Component selection wizard step.
 //!
-//! Renders profile quick-select buttons and a per-component checkbox list.
-//! Required components are rendered as disabled (pre-checked). A summary line
-//! at the bottom shows how many optional components are selected.
+//! Renders profile quick-select buttons and a per-component checkbox list. A
+//! required component is only rendered as disabled (locked, checked) while it
+//! is actually part of the current profile's selection -- e.g. the Agent
+//! Host profile does not include `kleos-server`, so `kleos-server`'s
+//! `required` flag must not force it to render checked in that case. A
+//! summary line at the bottom shows how many required/optional components
+//! are actually selected.
 
 use eframe::egui;
 use kleos_install_core::{all_components, profile_components, resolve_dependencies, Profile};
@@ -13,9 +17,10 @@ use crate::wizard::InstallerApp;
 /// Draw the component-selection step.
 ///
 /// Shows four profile buttons at the top for quick selection, followed by a
-/// scrollable list of individual component checkboxes. Required components are
-/// always checked and non-interactive. A count summary is displayed at the
-/// bottom.
+/// scrollable list of individual component checkboxes. A required component
+/// is checked and non-interactive only while it is actually part of the
+/// current selection; otherwise it renders like any other unselected
+/// component. A count summary is displayed at the bottom.
 pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
     ui.heading("Select Components");
     ui.add_space(4.0);
@@ -47,13 +52,18 @@ pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
         .collect();
 
     for component in &components {
-        let is_required = component.required;
         let id = component.id.to_string();
-        let mut selected = is_required || app.selected_components.contains(&id);
+        let is_member = app.selected_components.contains(&id);
+        // A required component is locked (cannot be unchecked) only while it
+        // is actually part of the current selection -- some profiles (e.g.
+        // Agent Host) deliberately omit components that are marked required
+        // for other profiles, so `component.required` alone must not force a
+        // checked/locked render here.
+        let is_locked = component.required && is_member;
+        let mut selected = is_member;
 
         ui.horizontal(|ui| {
-            // Required components cannot be deselected.
-            if is_required {
+            if is_locked {
                 ui.add_enabled(false, egui::Checkbox::new(&mut selected, ""));
                 ui.colored_label(theme::COLOR_TEXT_DIM, component.display_name);
                 ui.colored_label(theme::COLOR_WARN, "(required)");
@@ -92,6 +102,21 @@ pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
     ui.add_space(4.0);
 
     // -- Summary --
+    // Both counts reflect actual membership in `selected_components`, not
+    // just the registry's static `required` flag -- otherwise a profile like
+    // Agent Host (which omits `kleos-server`) would report it as selected
+    // when it is not.
+    let required_selected = app
+        .selected_components
+        .iter()
+        .filter(|id| {
+            components
+                .iter()
+                .find(|c| c.id == id.as_str())
+                .map(|c| c.required)
+                .unwrap_or(false)
+        })
+        .count();
     let optional_selected = app
         .selected_components
         .iter()
@@ -103,13 +128,12 @@ pub fn draw_components(ui: &mut egui::Ui, app: &mut InstallerApp) {
                 .unwrap_or(false)
         })
         .count();
-    let required_count = components.iter().filter(|c| c.required).count();
 
     ui.colored_label(
         theme::COLOR_ACCENT,
         format!(
             "{} required + {} optional component(s) selected",
-            required_count, optional_selected
+            required_selected, optional_selected
         ),
     );
 }

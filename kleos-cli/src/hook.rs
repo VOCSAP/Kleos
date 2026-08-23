@@ -7,7 +7,7 @@
 use clap::Subcommand;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::time::Duration;
 
 use crate::Client;
@@ -47,14 +47,24 @@ const POLICY_CACHE_TTL_SECS: u64 = 60;
 
 /// Timeout for /gate/check requests -- long because the gate may queue behind human review.
 const GATE_TIMEOUT: Duration = Duration::from_secs(130);
+/// Bounds the number of accumulated session gates closed during one stop hook.
+const MAX_GATE_COMPLETIONS_PER_STOP: usize = 64;
 /// Default timeout for best-effort server calls (activity, supervisor, coordination).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for sidecar /recall requests (memory retrieval before prompt processing).
 const SIDECAR_RECALL_TIMEOUT: Duration = Duration::from_secs(12);
+/// Timeout for best-effort sidecar session registration.
+const SIDECAR_SESSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for sidecar /observe requests (tool result observation storage).
 const SIDECAR_OBSERVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Timeout for sidecar /end requests (session teardown notification).
 const SIDECAR_END_TIMEOUT: Duration = Duration::from_secs(15);
+/// Maximum transcript tail read for per-prompt dialogue context.
+const RECALL_TRANSCRIPT_TAIL_BYTES: u64 = 1024 * 1024;
+/// Maximum number of prior user or assistant messages added to a recall query.
+const RECALL_DIALOGUE_MESSAGES: usize = 2;
+/// Maximum characters contributed by any one prior dialogue message.
+const RECALL_DIALOGUE_MESSAGE_CHARS: usize = 260;
 
 /// Patch 20 (2026-05-22): default HTTP timeout when long-polling
 /// `/supervisor/pending`. The matching server-side cap is
@@ -218,6 +228,129 @@ fn extract_session_id(input: &Value) -> String {
         .unwrap_or_else(|| std::env::var("PPID").unwrap_or_else(|_| "unknown".to_string()))
 }
 
+/// Extracts plain text from a Claude or Codex transcript message payload.
+fn transcript_message(value: &Value) -> Option<(&str, String)> {
+    let message = value.get("message").or_else(|| {
+        let payload = value.get("payload")?;
+        (payload.get("type").and_then(Value::as_str) == Some("message")).then_some(payload)
+    })?;
+    let role = message.get("role").and_then(Value::as_str)?;
+    if role != "user" && role != "assistant" {
+        return None;
+    }
+
+    let content = message.get("content")?;
+    let text = match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.as_str())
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    };
+    (!text.trim().is_empty()).then_some((role, text))
+}
+
+/// Reads a bounded transcript tail and returns recent dialogue before the current prompt.
+fn recent_dialogue(input: &Value, current_prompt: &str) -> Vec<(String, String)> {
+    let Some(path) = input.get("transcript_path").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return Vec::new();
+    };
+    let start = length.saturating_sub(RECALL_TRANSCRIPT_TAIL_BYTES);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut bytes = Vec::with_capacity((length - start) as usize);
+    if file.read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let tail = String::from_utf8_lossy(&bytes);
+    let complete_tail = if start == 0 {
+        tail.as_ref()
+    } else {
+        tail.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    };
+
+    let mut skipped_current = false;
+    let mut dialogue = Vec::new();
+    for line in complete_tail.lines().rev() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some((role, text)) = transcript_message(&value) else {
+            continue;
+        };
+        if !skipped_current && role == "user" && text.trim() == current_prompt.trim() {
+            skipped_current = true;
+            continue;
+        }
+        dialogue.push((role.to_string(), text));
+        if dialogue.len() == RECALL_DIALOGUE_MESSAGES {
+            break;
+        }
+    }
+    dialogue
+}
+
+/// Truncates recall text by Unicode scalar count without splitting UTF-8.
+fn truncate_recall_text(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+/// Builds a bounded recall query that preserves the current prompt and recent subject context.
+fn contextual_recall_message(input: &Value, current_prompt: &str, max_chars: usize) -> String {
+    if current_prompt.chars().count() >= max_chars / 2 {
+        return truncate_recall_text(current_prompt, max_chars);
+    }
+    let dialogue = recent_dialogue(input, current_prompt);
+    if dialogue.is_empty() {
+        return current_prompt.to_string();
+    }
+
+    let mut query = format!(
+        "Current prompt: {}\nRecent dialogue (newest first):",
+        current_prompt
+    );
+    for (role, text) in dialogue {
+        let remaining = max_chars.saturating_sub(query.chars().count());
+        if remaining <= role.len() + 5 {
+            break;
+        }
+        let prefix = format!("\n[{role}] ");
+        query.push_str(&prefix);
+        let remaining = max_chars.saturating_sub(query.chars().count());
+        query.push_str(&truncate_recall_text(
+            &text,
+            remaining.min(RECALL_DIALOGUE_MESSAGE_CHARS),
+        ));
+    }
+    query
+}
+
+/// Return the hook-provided working directory or the process working directory.
+fn hook_cwd(input: &Value) -> Option<String> {
+    input
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|path| path.to_string_lossy().to_string())
+        })
+}
+
 /// Legacy fixed bootstrap query, kept as the fallback when no cwd is available.
 const LEGACY_BOOTSTRAP_QUERY: &str =
     "session-bootstrap agent-rules infrastructure active-tasks recent-decisions";
@@ -266,15 +399,7 @@ fn bootstrap_task_query(input: &Value) -> String {
 /// the coordination read-back so Chiasm/Axon know which checkout this session
 /// is in (the record previously reported a useless "unknown").
 fn cwd_project(input: &Value) -> Option<String> {
-    let cwd = input
-        .get("cwd")
-        .and_then(|c| c.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|p| p.display().to_string())
-        })?;
+    let cwd = hook_cwd(input)?;
     std::path::Path::new(&cwd)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -403,17 +528,73 @@ async fn sidecar_post(path: &str, body: &Value, timeout: Duration) -> Option<Val
 }
 
 /// Converts hook tool output into bounded text for sidecar observation storage.
+///
+/// Claude Code's PostToolUse hook payload carries the output under
+/// `tool_response`; `tool_result` is kept as a legacy fallback for callers
+/// that ever supplied that key. Reading only the legacy key meant every real
+/// hook invocation stored an empty observation.
 fn extract_tool_result_text(input: &Value, max_chars: usize) -> String {
-    let raw = input
-        .get("tool_result")
+    let value = input
+        .get("tool_response")
+        .or_else(|| input.get("tool_result"));
+    let raw = value
         .and_then(|v| v.as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| {
-            input
-                .get("tool_result")
+            value
                 .map(|v| serde_json::to_string(v).unwrap_or_default())
                 .unwrap_or_default()
         });
     raw.chars().take(max_chars).collect()
+}
+
+/// Recursively collect path-shaped string fields from bounded tool input JSON.
+fn collect_touched_paths(value: &Value, depth: usize, paths: &mut Vec<String>) {
+    if depth > 8 || paths.len() >= 64 {
+        return;
+    }
+    match value {
+        Value::Object(fields) => {
+            for (key, value) in fields {
+                if matches!(
+                    key.as_str(),
+                    "file_path" | "filePath" | "path" | "notebook_path"
+                ) {
+                    if let Some(path) = value.as_str().filter(|path| !path.trim().is_empty()) {
+                        let normalized = path.replace('\\', "/");
+                        if !paths.contains(&normalized) {
+                            paths.push(normalized);
+                        }
+                    }
+                }
+                collect_touched_paths(value, depth + 1, paths);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_touched_paths(item, depth + 1, paths);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Extract repository path hints from the hook event's tool input.
+fn extract_touched_paths(input: &Value) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(tool_input) = input.get("tool_input") {
+        collect_touched_paths(tool_input, 0, &mut paths);
+    }
+    paths.sort();
+    paths
+}
+
+/// Return whether a successful tool event may have changed repository files.
+fn tool_may_modify_repository(tool_name: &str) -> bool {
+    let normalized = tool_name.to_ascii_lowercase().replace(['-', '_'], "");
+    matches!(
+        normalized.as_str(),
+        "bash" | "write" | "edit" | "multiedit" | "notebookedit" | "applypatch"
+    ) || normalized.ends_with("applypatch")
 }
 
 /// Whether a gate that cannot be reached should deny (fail closed) rather than
@@ -423,6 +604,151 @@ fn gate_fail_closed() -> bool {
     std::env::var("KLEOS_HOOK_GATE_FAIL_CLOSED")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+/// Maximum number of characters of upstream error text carried into a deny
+/// reason. Long bodies (HTML error pages, stack traces) add no diagnostic value
+/// at the point of denial and would flood the agent's context.
+const GATE_FAILURE_DETAIL_MAX: usize = 300;
+
+/// Extracts the leading HTTP status emitted by `kleos-client` errors.
+///
+/// Transport failures may contain status-like text later in their detail, so
+/// only the canonical `HTTP <code>` prefix is accepted.
+fn http_error_status(err: &str) -> Option<u16> {
+    err.strip_prefix("HTTP ")
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|code| code.parse::<u16>().ok())
+}
+
+/// Returns whether a failed gate request should receive its one permitted retry.
+fn should_retry_gate_check(err: &str) -> bool {
+    http_error_status(err) == Some(401)
+}
+
+/// Posts a gate check and retries once after an authentication rejection.
+///
+/// `Client::post_with_timeout` clears its cached signing session before
+/// returning HTTP 401, so the second call signs afresh. Other failures are
+/// returned immediately, and a failed retry becomes the final gate error.
+async fn request_gate_check(client: &Client, gate_body: Value) -> Result<Value, String> {
+    match client
+        .post_with_timeout("/gate/check", gate_body.clone(), GATE_TIMEOUT)
+        .await
+    {
+        Err(err) if should_retry_gate_check(&err) => {
+            client
+                .post_with_timeout("/gate/check", gate_body, GATE_TIMEOUT)
+                .await
+        }
+        result => result,
+    }
+}
+
+/// Turns a raw client error into an operator-actionable one-line explanation
+/// for a fail-closed deny.
+///
+/// The gate previously reported every failure class as "gate unreachable",
+/// which conflated three very different situations and made the denial
+/// impossible to diagnose from the agent side. `post_with_timeout` returns
+/// `Err` for any non-2xx status, so a rate-limited, unauthorised, or
+/// erroring-but-perfectly-reachable server looked identical to a severed
+/// network. This distinguishes them and names the likely remedy.
+///
+/// Note the caller is a *deny* path: every genuine gate decision comes back as
+/// HTTP 201 with its own reason, so anything reaching here is a transport or
+/// status fault rather than a policy block.
+fn describe_gate_failure(err: &str) -> String {
+    let detail = redact_secrets(err);
+    let detail = truncate_detail(&detail);
+
+    // The client formats status failures as "HTTP <code>: <body>"; anything
+    // else came from the transport layer (connect, DNS, TLS, timeout).
+    let status = http_error_status(err);
+
+    match status {
+        Some(429) => format!(
+            "server is reachable but rate-limited this request (HTTP 429); \
+             retry after the window resets. Detail: {detail}"
+        ),
+        Some(401) | Some(403) => format!(
+            "server is reachable but rejected this agent's credentials \
+             (HTTP {}); check the API key or signer identity. Detail: {detail}",
+            status.unwrap_or_default()
+        ),
+        Some(413) => format!(
+            "server is reachable but the gate payload exceeded its body limit \
+             (HTTP 413). Detail: {detail}"
+        ),
+        Some(code) if (500..=599).contains(&code) => format!(
+            "server is reachable but returned a server error (HTTP {code}); \
+             this is a Kleos-side fault, not a network outage. Detail: {detail}"
+        ),
+        Some(code) => format!(
+            "server is reachable but rejected the gate request (HTTP {code}). \
+             Detail: {detail}"
+        ),
+        None => format!(
+            "could not complete the gate request (transport failure or timeout); \
+             check KLEOS_URL reachability. Detail: {detail}"
+        ),
+    }
+}
+
+/// Truncates error detail on a character boundary so multibyte upstream text
+/// cannot panic the slice.
+fn truncate_detail(s: &str) -> String {
+    if s.chars().count() <= GATE_FAILURE_DETAIL_MAX {
+        return s.to_string();
+    }
+    let kept: String = s.chars().take(GATE_FAILURE_DETAIL_MAX).collect();
+    format!("{kept}... (truncated)")
+}
+
+/// Strips credential-shaped material from text that is about to be surfaced to
+/// the agent.
+///
+/// The deny reason is echoed straight into the model's context, so a bearer
+/// token or signed-URL query parameter that appeared in an upstream error
+/// string must not ride along. Kleos policy is to keep credentials and signed
+/// URLs out of logs, CLI output, and MCP output alike.
+fn redact_secrets(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    // A scheme keyword such as `Bearer` carries its secret in the *following*
+    // whitespace-separated token, so redacting the keyword alone would leave the
+    // credential in place. This flag consumes that trailing value too.
+    let mut redact_next_value = false;
+
+    for token in s.split_inclusive(char::is_whitespace) {
+        let trimmed = token.trim_end();
+        let had_trailing_space = token.len() > trimmed.len();
+        let lower = trimmed.to_ascii_lowercase();
+
+        // Keywords whose secret lives in the next token.
+        let is_scheme_keyword = lower == "bearer" || lower == "authorization:" || lower == "token";
+        // Tokens that embed the secret inline, typically `key=value` pairs.
+        let is_inline_secret = lower.starts_with("bearer")
+            || lower.contains("api_key=")
+            || lower.contains("apikey=")
+            || lower.contains("access_token=")
+            || lower.contains("token=")
+            || lower.contains("signature=")
+            || lower.contains("x-kleos-session");
+
+        if redact_next_value || is_scheme_keyword || is_inline_secret {
+            out.push_str("[redacted]");
+            if had_trailing_space {
+                out.push(' ');
+            }
+            // A scheme keyword defers to the next token; an inline `key=value`
+            // already swallowed its own secret and defers to nothing.
+            redact_next_value = is_scheme_keyword;
+        } else {
+            out.push_str(token);
+            redact_next_value = false;
+        }
+    }
+    out
 }
 
 /// Builds a hook response that denies the current tool use with a reason.
@@ -478,6 +804,8 @@ fn derive_command(tool_name: &str, tool_input: &Value) -> String {
 async fn handle_session_start(client: &Client, input: &Value) {
     let agent = resolve_agent();
     let project = cwd_project(input);
+    let session_id = extract_session_id(input);
+    let cwd = hook_cwd(input);
 
     // Read coordination state BEFORE registering this session, so the banner
     // reflects who was already working in this project, not our own arrival.
@@ -498,6 +826,17 @@ async fn handle_session_start(client: &Client, input: &Value) {
             DEFAULT_TIMEOUT,
         )
         .await;
+
+    let _ = sidecar_post(
+        "/session/start",
+        &json!({
+            "session_id": session_id,
+            "agent": agent.clone(),
+            "cwd": cwd,
+        }),
+        SIDECAR_SESSION_TIMEOUT,
+    )
+    .await;
 
     // Fetch growth context (best-effort)
     let growth_path = format!(
@@ -597,13 +936,16 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(800);
 
+            let recall_message = contextual_recall_message(input, user_message, max_query_chars);
             let recall_body = json!({
-                "message": user_message,
+                "message": recall_message,
                 "budget": budget,
                 "context_turns": context_turns,
                 "max_tokens": max_tokens,
                 "max_query_chars": max_query_chars,
                 "session_id": session_id,
+                "cwd": hook_cwd(input),
+                "may_modify_repo": false,
             });
 
             sidecar_post("/recall", &recall_body, SIDECAR_RECALL_TIMEOUT)
@@ -668,6 +1010,9 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
 
 /// Handles Stop by recording session end and notifying the optional sidecar.
 async fn handle_stop(client: &Client, input: &Value) {
+    let session_id = extract_session_id(input);
+    complete_session_gates(client, &session_id).await;
+
     let _ = client
         .post_with_timeout(
             "/activity",
@@ -680,13 +1025,45 @@ async fn handle_stop(client: &Client, input: &Value) {
         )
         .await;
 
-    let session_id = extract_session_id(input);
     let _ = sidecar_post(
         "/end",
         &json!({ "session_id": session_id }),
         SIDECAR_END_TIMEOUT,
     )
     .await;
+}
+
+/// Close every eligible open gate at session end without spinning on a gate
+/// whose memory-store precondition has not yet been satisfied.
+async fn complete_session_gates(client: &Client, session_id: &str) {
+    for _ in 0..MAX_GATE_COMPLETIONS_PER_STOP {
+        let response = match client
+            .post_with_timeout(
+                "/gate/complete-latest",
+                json!({
+                    "session_id": session_id,
+                    "output": "session completed",
+                    "known_secrets": [],
+                }),
+                DEFAULT_TIMEOUT,
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!("kleos hook stop: gate completion failed ({error})");
+                break;
+            }
+        };
+
+        if !response
+            .get("completed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            break;
+        }
+    }
 }
 
 /// Handles PreToolUse by asking the server gate whether the proposed tool use is allowed.
@@ -711,24 +1088,24 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
         "context": format!("tool_input: {}", serde_json::to_string(&tool_input).unwrap_or_default()),
     });
 
-    let result = match client
-        .post_with_timeout("/gate/check", gate_body, GATE_TIMEOUT)
-        .await
-    {
+    let result = match request_gate_check(client, gate_body).await {
         Ok(v) => v,
         Err(e) => {
-            // The gate is unreachable. By default this fails open (see module
-            // doc): the same hook bundle also drives context injection and
-            // activity reporting, so a Kleos outage must not hard-block every
-            // tool use. Operators who want a gate outage to deny instead set
-            // KLEOS_HOOK_GATE_FAIL_CLOSED=1.
+            // The gate check did not produce a decision. By default this fails
+            // open (see module doc): the same hook bundle also drives context
+            // injection and activity reporting, so a Kleos fault must not
+            // hard-block every tool use. Operators who want any gate-check
+            // failure to deny instead set KLEOS_HOOK_GATE_FAIL_CLOSED=1.
             if gate_fail_closed() {
                 emit(&build_deny_output(
                     "PreToolUse",
-                    "kleos gate unreachable and KLEOS_HOOK_GATE_FAIL_CLOSED is set",
+                    &format!(
+                        "kleos gate check failed and KLEOS_HOOK_GATE_FAIL_CLOSED is set: {}",
+                        describe_gate_failure(&e)
+                    ),
                 ));
             } else {
-                eprintln!("kleos hook pre-tool: gate unreachable ({}), allowing", e);
+                eprintln!("kleos hook pre-tool: gate check failed ({}), allowing", e);
             }
             return;
         }
@@ -755,13 +1132,15 @@ async fn handle_pre_tool(client: &Client, input: &Value) {
     // else: no output = implicit allow
 }
 
-/// Handles PostToolUse by reporting completion and forwarding an optional observation.
+/// Handles PostToolUse by reporting activity and forwarding an optional observation.
 async fn handle_post_tool(client: &Client, input: &Value) {
     let tool_name = input
         .get("tool_name")
         .and_then(|t| t.as_str())
         .unwrap_or("unknown");
     let session_id = extract_session_id(input);
+    let touched_paths = extract_touched_paths(input);
+    let may_modify_repo = tool_may_modify_repository(tool_name);
 
     // Report activity (best-effort)
     let _ = client
@@ -776,19 +1155,6 @@ async fn handle_post_tool(client: &Client, input: &Value) {
         )
         .await;
 
-    // Close latest open gate for this session (best-effort, idempotent)
-    let _ = client
-        .post_with_timeout(
-            "/gate/complete-latest",
-            json!({
-                "session_id": session_id,
-                "output": format!("{} completed", tool_name),
-                "known_secrets": [],
-            }),
-            DEFAULT_TIMEOUT,
-        )
-        .await;
-
     let observe_body = json!({
         "tool_name": tool_name,
         "content": extract_tool_result_text(input, 1500),
@@ -796,6 +1162,9 @@ async fn handle_post_tool(client: &Client, input: &Value) {
         "session_id": session_id,
         "importance": 3,
         "category": "discovery",
+        "cwd": hook_cwd(input),
+        "touched_paths": touched_paths,
+        "may_modify_repo": may_modify_repo,
     });
     let _ = sidecar_post("/observe", &observe_body, SIDECAR_OBSERVE_TIMEOUT).await;
 }
@@ -834,6 +1203,201 @@ pub async fn run_hook(cmd: &HookCommands, client: &Client) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Starts a minimal HTTP server that emits the supplied gate statuses and
+    /// returns how many requests it served.
+    async fn gate_status_server(statuses: &[&str]) -> (Client, tokio::task::JoinHandle<usize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gate test server");
+        let address = listener.local_addr().expect("read gate test address");
+        let statuses: Vec<String> = statuses.iter().map(|status| status.to_string()).collect();
+        let server = tokio::spawn(async move {
+            let mut requests = 0;
+            for status in statuses {
+                let (mut stream, _) = listener.accept().await.expect("accept gate request");
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request).await.expect("read gate request");
+                let body = if status.starts_with("201") {
+                    r#"{"allowed":true}"#
+                } else {
+                    r#"{"error":"gate test error"}"#
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write gate response");
+                requests += 1;
+            }
+            requests
+        });
+        (Client::new(format!("http://{address}"), None, None), server)
+    }
+
+    /// Starts a minimal completion endpoint that returns each supplied JSON body.
+    async fn gate_completion_server(bodies: &[&str]) -> (Client, tokio::task::JoinHandle<usize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind completion test server");
+        let address = listener.local_addr().expect("read completion address");
+        let bodies: Vec<String> = bodies.iter().map(|body| body.to_string()).collect();
+        let server = tokio::spawn(async move {
+            let mut requests = 0;
+            for body in bodies {
+                let (mut stream, _) = listener.accept().await.expect("accept completion request");
+                let mut request = [0_u8; 4096];
+                let _ = stream
+                    .read(&mut request)
+                    .await
+                    .expect("read completion request");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write completion response");
+                requests += 1;
+            }
+            requests
+        });
+        (Client::new(format!("http://{address}"), None, None), server)
+    }
+
+    /// A rate-limited server is reachable; saying "unreachable" sent operators
+    /// hunting a network fault that did not exist.
+    #[test]
+    fn gate_failure_names_rate_limiting_as_reachable() {
+        let d = describe_gate_failure(
+            r#"HTTP 429 Too Many Requests: {"error":"Rate limit exceeded."}"#,
+        );
+        assert!(d.contains("reachable"), "{d}");
+        assert!(d.contains("429"), "{d}");
+        assert!(!d.contains("unreachable"), "{d}");
+    }
+
+    /// Auth rejections point at the signer/API key, not the network.
+    #[test]
+    fn gate_failure_names_auth_rejection() {
+        let d = describe_gate_failure("HTTP 401 Unauthorized: bad signature");
+        assert!(d.contains("credentials"), "{d}");
+        assert!(!d.contains("unreachable"), "{d}");
+    }
+
+    /// Only an initial HTTP 401 should trigger the gate's one-shot retry.
+    #[test]
+    fn gate_retry_is_limited_to_http_401() {
+        assert!(should_retry_gate_check(
+            "HTTP 401 Unauthorized: stale session"
+        ));
+        assert!(!should_retry_gate_check(
+            "HTTP 403 Forbidden: insufficient role"
+        ));
+        assert!(!should_retry_gate_check(
+            "HTTP 429 Too Many Requests: slow down"
+        ));
+        assert!(!should_retry_gate_check(
+            "HTTP 500 Internal Server Error: boom"
+        ));
+        assert!(!should_retry_gate_check(
+            "POST http://kleos.example/gate/check failed (HTTP 401 in body)"
+        ));
+    }
+
+    /// A rejected first request is repeated once and can recover successfully.
+    #[tokio::test]
+    async fn gate_check_retries_once_after_http_401() {
+        let (client, server) = gate_status_server(&["401 Unauthorized", "201 Created"]).await;
+        let result = request_gate_check(&client, json!({"command": "test"}))
+            .await
+            .expect("second gate request should recover");
+
+        assert_eq!(result["allowed"], true);
+        assert_eq!(server.await.expect("join gate test server"), 2);
+    }
+
+    /// A second HTTP 401 is returned without making a third request.
+    #[tokio::test]
+    async fn gate_check_stops_after_one_retry() {
+        let (client, server) = gate_status_server(&["401 Unauthorized", "401 Unauthorized"]).await;
+        let error = request_gate_check(&client, json!({"command": "test"}))
+            .await
+            .expect_err("second authentication rejection must remain an error");
+
+        assert!(error.starts_with("HTTP 401"), "{error}");
+        assert_eq!(server.await.expect("join gate test server"), 2);
+    }
+
+    /// A non-authentication status is returned after the first request.
+    #[tokio::test]
+    async fn gate_check_does_not_retry_http_403() {
+        let (client, server) = gate_status_server(&["403 Forbidden"]).await;
+        let error = request_gate_check(&client, json!({"command": "test"}))
+            .await
+            .expect_err("authorization rejection must remain an error");
+
+        assert!(error.starts_with("HTTP 403"), "{error}");
+        assert_eq!(server.await.expect("join gate test server"), 1);
+    }
+
+    /// Stop-time completion drains eligible gates and stops at the first waiting state.
+    #[tokio::test]
+    async fn session_gate_completion_stops_when_no_gate_completed() {
+        let (client, server) = gate_completion_server(&[
+            r#"{"ok":true,"completed":true,"gate_id":3}"#,
+            r#"{"ok":true,"completed":true,"gate_id":2}"#,
+            r#"{"ok":true,"completed":false,"gate_id":1,"reason":"awaiting memory store"}"#,
+        ])
+        .await;
+
+        complete_session_gates(&client, "session-test").await;
+
+        assert_eq!(server.await.expect("join completion server"), 3);
+    }
+
+    /// A 5xx is a Kleos-side fault and must be attributed as such.
+    #[test]
+    fn gate_failure_names_server_error_as_kleos_side() {
+        let d = describe_gate_failure("HTTP 500 Internal Server Error: boom");
+        assert!(d.contains("500"), "{d}");
+        assert!(d.contains("Kleos-side"), "{d}");
+    }
+
+    /// Only a genuine transport fault should implicate reachability.
+    #[test]
+    fn gate_failure_names_transport_failure() {
+        let d = describe_gate_failure(
+            "POST http://kleos.example:4200/gate/check failed (tcp connect error)",
+        );
+        assert!(d.contains("transport failure or timeout"), "{d}");
+        assert!(d.contains("KLEOS_URL"), "{d}");
+    }
+
+    /// The reason string is echoed into the agent's context, so credential-shaped
+    /// material in upstream error text must never survive into it.
+    #[test]
+    fn gate_failure_redacts_credentials() {
+        let d = describe_gate_failure(
+            "HTTP 403 Forbidden: rejected Bearer sk-live-abcdef123456 for api_key=deadbeef",
+        );
+        assert!(!d.contains("sk-live-abcdef123456"), "{d}");
+        assert!(!d.contains("deadbeef"), "{d}");
+        assert!(d.contains("[redacted]"), "{d}");
+    }
+
+    /// Long upstream bodies are capped, and multibyte text must not panic the cut.
+    #[test]
+    fn gate_failure_truncates_multibyte_detail_without_panic() {
+        let long = format!("HTTP 500: {}", "é".repeat(GATE_FAILURE_DETAIL_MAX * 2));
+        let d = describe_gate_failure(&long);
+        assert!(d.contains("truncated"), "{d}");
+    }
 
     #[test]
     /// Verifies the bootstrap query derives from cwd and falls back when absent.
@@ -907,6 +1471,60 @@ mod tests {
         assert!(!id.is_empty());
     }
 
+    /// Verifies Codex rollout messages expose their role and textual content.
+    #[test]
+    fn test_transcript_message_reads_codex_payload() {
+        let value = json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Codex Remote Control is failing"}]
+            }
+        });
+        let (role, text) = transcript_message(&value).expect("message should parse");
+        assert_eq!(role, "assistant");
+        assert_eq!(text, "Codex Remote Control is failing");
+    }
+
+    /// Verifies a short follow-up gains its prior subject while skipping itself.
+    #[test]
+    fn test_contextual_recall_message_uses_recent_dialogue() {
+        let path = std::env::temp_dir().join(format!(
+            "kleos-recall-transcript-{}-{}.jsonl",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("unnamed")
+        ));
+        let lines = [
+            json!({"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Remote Control broke on every phone"}]}}),
+            json!({"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I am checking Codex Remote Control versions"}]}}),
+            json!({"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"it worked yesterday"}]}}),
+        ];
+        let transcript = lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, transcript).expect("transcript fixture should write");
+        let input = json!({"transcript_path": path});
+
+        let query = contextual_recall_message(&input, "it worked yesterday", 800);
+
+        let _ = std::fs::remove_file(input["transcript_path"].as_str().unwrap_or_default());
+        assert!(query.starts_with("Current prompt: it worked yesterday"));
+        assert!(query.contains("Codex Remote Control versions"));
+        assert!(query.contains("Remote Control broke on every phone"));
+        assert_eq!(query.matches("it worked yesterday").count(), 1);
+    }
+
+    /// Verifies self-contained long prompts are not diluted with transcript history.
+    #[test]
+    fn test_contextual_recall_message_preserves_long_prompt() {
+        let prompt = "x".repeat(500);
+        let query = contextual_recall_message(&json!({}), &prompt, 800);
+        assert_eq!(query, prompt);
+    }
+
     #[test]
     /// Verifies Bash tool inputs use the literal command string.
     fn test_derive_command_bash() {
@@ -934,5 +1552,36 @@ mod tests {
         let input = json!({"url": "https://example.com"});
         let cmd = derive_command("WebFetch", &input);
         assert_eq!(cmd, "https://example.com");
+    }
+
+    /// Nested tool inputs yield unique path hints and ignore unrelated strings.
+    #[test]
+    fn extracts_bounded_touched_paths() {
+        let input = json!({
+            "tool_input": {
+                "file_path": "/repo/src/lib.rs",
+                "edits": [
+                    {"path": "src/main.rs"},
+                    {"filePath": "/repo/src/lib.rs"},
+                    {"message": "not/a/path/hint"}
+                ]
+            }
+        });
+
+        assert_eq!(
+            extract_touched_paths(&input),
+            vec!["/repo/src/lib.rs", "src/main.rs"]
+        );
+    }
+
+    /// Mutating hook tools trigger incremental refresh while read-only tools do not.
+    #[test]
+    fn classifies_repository_mutators() {
+        assert!(tool_may_modify_repository("Edit"));
+        assert!(tool_may_modify_repository("NotebookEdit"));
+        assert!(tool_may_modify_repository("mcp__filesystem__apply_patch"));
+        assert!(tool_may_modify_repository("Bash"));
+        assert!(!tool_may_modify_repository("Read"));
+        assert!(!tool_may_modify_repository("WebSearch"));
     }
 }

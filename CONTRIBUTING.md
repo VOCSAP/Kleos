@@ -6,41 +6,96 @@
 git clone https://github.com/Ghost-Frame/Kleos.git
 cd Kleos
 cargo build --workspace
-cargo test --workspace
+cargo test --workspace --exclude kleos-migrate
 ```
 
+`cargo test` is the simple local option above; it is not exact CI parity. CI runs
+the same test set through `cargo-nextest` with a 2-way partition -- see
+[Before Pushing](#before-pushing) for the nextest install and invocation.
+
 Rust 1.94 or later. The workspace builds on Linux, macOS, and WSL2. Native Windows builds are untested -- use WSL2.
+
+The full workspace is large (26 crates, wants ~8 GiB RAM to build). For day-to-day
+server work you can build just what you need and skip the heavy crates:
+
+```bash
+cargo build -p kleos-server -p kleos-cli -p kleos-mcp
+```
+
+`cargo test --workspace` excludes `kleos-migrate` throughout this guide and in CI:
+it links a second SQLite backend and conflicts with the SQLCipher symbols pulled
+in by the rest of the workspace.
 
 ### System Dependencies
 
 **Debian/Ubuntu:**
 ```bash
-sudo apt install build-essential pkg-config libssl-dev clang protobuf-compiler
+sudo apt install build-essential pkg-config libssl-dev clang protobuf-compiler libpcsclite-dev
 ```
+
+`libpcsclite-dev` is needed for the PIV/smartcard (YubiKey) path, which the
+default workspace build pulls in.
 
 **macOS:**
 ```bash
 brew install openssl protobuf
 ```
 
+(PC/SC is provided by the system framework on macOS, so no extra smartcard package is needed.)
+
 SQLite is vendored via `rusqlite` (bundled feature). SQLCipher is vendored at compile time -- no system libsqlcipher needed.
 
 ## Workspace Structure
 
+26-crate Cargo workspace, plus the `sdk/` directory (non-Rust client SDKs). Crates by area:
+
+**Core & server**
 ```
-kleos/
-  kleos-lib/            Core library -- all domain logic lives here
-  kleos-server/         HTTP API server (Axum)
-  kleos-cli/            CLI client over the HTTP API
-  kleos-sidecar/        Session-scoped memory proxy
-  kleos-mcp/            MCP server (Model Context Protocol)
-  kleos-cred/           Credential management library
-  kleos-credd/          Credential management daemon
-  kleos-approval-tui/   Approval workflow TUI (WIP)
-  kleos-migrate/        Monolith-to-tenant shard ETL tool
-  agent-forge/          Structured reasoning CLI
-  sdk/                  Client SDKs (TypeScript)
-  hooks/                Claude Code hook scripts
+kleos-lib       Core library -- all domain logic: memory, search, embeddings, graph,
+                intelligence, services, skills, growth, auth, gate, jobs. Feature-gated brain backend.
+kleos-server    Axum HTTP API server. Route modules, middleware layers, embedded React web GUI.
+kleos-config    Shared config types + env resolution, used by both the server and the
+                installer so the two never drift.
+kleos-client    Shared Rust HTTP client with PIV/Ed25519 envelope signing.
+```
+
+**Clients & integration**
+```
+kleos-cli           Command-line client over the HTTP API. Memory ops, skills, handoffs, creds.
+kleos-mcp           MCP server (Model Context Protocol). Curated tool registry; stdio by default.
+kleos-sidecar       Session-scoped memory proxy. File watcher, batched flushing, optional Ollama compression.
+kleos-token-client  Tiny std-only client for the phylaxd SO_PEERCRED token broker (no kleos-lib dep).
+sdk/                Client SDKs: TypeScript, Python, Go.
+```
+
+**Agent tooling & safety**
+```
+agent-forge         Structured-reasoning CLI. Spec/hypothesis/verify protocol, Tree-sitter AST parsing.
+forge               agent-forge compute engine as a library (repo-map, code search, comment-check,
+                    challenge-code), used server-side by kleos-server.
+kleos-sh            Shell command gate. Static validation, SSRF guard, approval queue, Claude Code hook.
+kleos-fs            AST-aware filesystem ops. Guarded read/write/edit with configurable allowed roots.
+eidolon-supervisor  Session drift-detection daemon. Real-time transcript watching, rule-based alerts.
+```
+
+**Credentials & security**
+```
+kleos-cred                Credential management library + `cred` CLI. YubiKey, Argon2id, ECDH, vault.
+kleos-credd               Base credential daemon. Two-tier (master + agent) keys, AES-256-GCM, ECDH bootstrap.
+kleos-phylax              Agent-native credential authority -- approvals, leases, ECDH, namespaces.
+kleos-phylaxd             The credential daemon actually deployed (`credd`): kleos-credd + Phylax policy.
+kleos-phylax-ssh-agent    OpenSSH agent protocol server -- wire protocol + KeyProvider trait.
+kleos-phylax-ssh-agentd   Headless SSH agent daemon that brokers keys/signing through phylaxd.
+```
+
+**Ops & install**
+```
+kleos-migrate       One-shot ETL from an encrypted monolith DB into per-tenant shards.
+kleos-cleanup       Deduplication and log-demotion utility.
+kleos-ingest        Transcript ingest daemon. Request signing, file watching, LLM summarization.
+kleos-install-core  Shared installer library (download, verification, config, system integration).
+kleos-install       TUI installer (ratatui wizard).
+kleos-install-gui   GUI installer (eframe/egui wizard).
 ```
 
 **Key rule:** domain logic goes in `kleos-lib`. Server routes go in `kleos-server`. Don't put business logic in the server crate.
@@ -67,7 +122,7 @@ scripts/install-git-hooks.sh
 cargo check --workspace
 
 # Run tests (in-memory SQLite, no external deps)
-cargo test --workspace
+cargo test --workspace --exclude kleos-migrate
 
 # Lint before committing - warnings are errors
 cargo clippy --workspace -- -D warnings
@@ -75,8 +130,8 @@ cargo clippy --workspace -- -D warnings
 
 ### Before Pushing
 
-Run the exact CI gate locally -- this is what `ci.yml` runs, and what the
-pre-push hook runs for you:
+Run the local gate before pushing -- this matches most of what `ci.yml` runs,
+and is what the pre-push hook runs for you:
 
 ```bash
 # Fast gate (fmt + clippy + cargo-deny + MSRV) -- a couple of minutes:
@@ -86,7 +141,7 @@ scripts/preflight.sh
 scripts/preflight.sh --full
 ```
 
-The individual CI commands, if you prefer to run them by hand:
+The individual commands, if you prefer to run them by hand:
 
 ```bash
 cargo fmt --all -- --check
@@ -94,6 +149,26 @@ cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
 cargo test --workspace --exclude kleos-migrate
 cargo deny check        # licenses, sources, advisories, bans -- fails independently of your code
 ```
+
+`preflight.sh` and the plain `cargo test` command above run the workspace test
+suite serially through the stock test harness -- close enough for local
+iteration, but not what CI actually runs. CI runs the same tests through
+`cargo-nextest`, split across a 2-way hash partition, for exact parity:
+
+```bash
+# Install cargo-nextest (same release ci.yml pins)
+curl -LsSf "https://get.nexte.st/0.9.138/linux" | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
+
+# Reproduce a CI partition locally (partition N of 2)
+cargo nextest run --workspace --exclude kleos-migrate --partition "hash:1/2"
+
+# Or run the whole suite through nextest without partitioning
+cargo nextest run --workspace --exclude kleos-migrate
+```
+
+Release builds run separately, on the project's self-hosted Woodpecker runner
+via `.woodpecker.yml`, triggered by `v*` tags. GitHub Actions (`ci.yml`) only
+runs the PR/push checks above.
 
 ### Code Style
 
@@ -111,6 +186,36 @@ cargo deny check        # licenses, sources, advisories, bans -- fails independe
 - First line under 72 characters
 - Reference issues when applicable: "fix memory leak in search (#42)"
 
+### Signed Commits
+
+`main` requires every commit to carry a **verified signature**. If your commits
+are unsigned, GitHub shows an "Unverified" badge and the PR cannot be merged.
+GitHub does not warn you about this when you push, so set signing up once before
+you contribute.
+
+The simplest path is **SSH signing** -- you already have an SSH key for GitHub:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub   # your public key
+git config --global commit.gpgsign true
+```
+
+Then add that same key as a **Signing Key** under GitHub -> Settings -> SSH and
+GPG keys. A signing key is a separate entry from an authentication key, even
+when it is the same file -- without it GitHub cannot verify your signature.
+
+GPG and S/MIME signing work too if you prefer them; see GitHub's "About commit
+signature verification" documentation. Verify locally before pushing:
+
+```bash
+git log --show-signature -1     # expect: Good "git" signature ...
+```
+
+If you have already pushed unsigned commits, re-sign them with
+`git rebase --exec 'git commit --amend --no-edit -S' -i <base>` and force-push
+the branch.
+
 ## Pull Requests
 
 1. Fork the repo
@@ -123,10 +228,11 @@ cargo deny check        # licenses, sources, advisories, bans -- fails independe
 
 - [ ] `cargo fmt --all -- --check` is clean
 - [ ] `cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings` passes
-- [ ] `cargo test --workspace --exclude kleos-migrate` passes
+- [ ] `cargo test --workspace --exclude kleos-migrate` passes (or `cargo nextest run --workspace --exclude kleos-migrate` for exact CI parity, see [Before Pushing](#before-pushing))
 - [ ] `cargo deny check` passes (licenses, sources, advisories, bans)
 - [ ] New code has tests where applicable
 - [ ] Documentation updated if behavior changes
+- [ ] Commits are signed with a verified signature (see Signed Commits above)
 - [ ] No unrelated changes in the PR
 
 ## Testing
@@ -143,7 +249,7 @@ async fn test_search_returns_recent_memories_first() {
 
 - Use `#[tokio::test]` for async tests
 - Name tests descriptively: `test_search_returns_recent_memories_first`
-- Tests run with `cargo test --workspace` -- no feature flags needed
+- Tests run with `cargo test --workspace --exclude kleos-migrate` -- no feature flags needed
 
 ## Common Pitfalls
 
@@ -159,13 +265,18 @@ async fn test_search_returns_recent_memories_first() {
 | Crate | Flag | Default | Purpose |
 |-------|------|---------|---------|
 | `kleos-lib` | `brain_hopfield` | on | Brain module, Hopfield networks, spreading activation |
+| `kleos-lib` | `piv` | off | PIV/YubiKey smartcard auth (pulls in PC/SC; needs `libpcsclite-dev` on Linux) |
 | `kleos-lib` | `sqlcipher` | off | SQLCipher at-rest encryption (required for `KLEOS_ENCRYPTION_MODE` != `none`) |
+| `kleos-lib` | `sqlcipher-vendored` | off | SQLCipher with vendored OpenSSL (cross-compile targets) |
+| `kleos-lib` | `vendored-openssl` | off | Vendor OpenSSL from source (cross-compile targets) |
 | `kleos-lib` | `bundled-sqlite` | off | Vendor SQLite from source (needed on Windows) |
 | `kleos-lib` | `tenant-sharding` | off | Per-tenant database sharding |
 | `kleos-lib` | `test-utils` | off | Test helpers for downstream crates |
 | `kleos-lib` | `credd-raw` | off | Raw credential access support |
+| `kleos-mcp` | `piv` | on | PIV/YubiKey request signing (disable with `--no-default-features`) |
 | `kleos-mcp` | `http` | off | HTTP transport (default is stdio only) |
-| `kleos-cred` | `gui` | off | eframe-based credential manager GUI |
+| `kleos-client` | `piv` | on | PIV/Ed25519 envelope signing |
+| `kleos-cred` | `gui` | off | eframe-based credential manager GUI (`cred-gui` binary) |
 
 ## Migration Tool
 

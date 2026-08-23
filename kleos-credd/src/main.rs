@@ -8,8 +8,8 @@ use kleos_credd::server;
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "engram-credd")]
-#[command(about = "Engram credential management daemon")]
+#[command(name = "kleos-credd")]
+#[command(about = "Kleos credential management daemon")]
 // CLI arguments for starting credd with credential and database inputs.
 struct Args {
     /// Listen address

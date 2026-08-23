@@ -92,13 +92,16 @@ async fn publish_event_handler(
     let db_clone = db.clone();
     let channel = event.channel.clone();
     let action = event.action.clone();
+    // Scope the target lookup to the event's owner so a monolith-mode fan-out
+    // cannot deliver this tenant's payload to another tenant's webhook URL.
+    let event_user_id = event.user_id;
     let shutdown = state.shutdown_token.clone();
     let fanout_json = event_json.clone();
     state.background_tasks.lock().await.spawn(async move {
         tokio::select! {
             _ = shutdown.cancelled() => {}
             _ = async {
-                if let Ok(targets) = get_webhook_targets(&db_clone, &channel, &action).await {
+                if let Ok(targets) = get_webhook_targets(&db_clone, &channel, &action, event_user_id).await {
                     deliver_webhooks(&targets, &fanout_json);
                 }
             } => {}
@@ -216,10 +219,13 @@ async fn subscribe_handler(
 /// Unsubscribes from a channel.
 async fn unsubscribe_handler(
     ResolvedDb(db): ResolvedDb,
-    Auth(_auth): Auth,
+    Auth(auth): Auth,
     Json(body): Json<UnsubscribeBody>,
 ) -> Result<Json<Value>, AppError> {
-    let deleted = delete_subscription(&db, &body.agent, &body.channel).await?;
+    // Scope the delete to the caller's tenant so a monolith-mode unsubscribe
+    // cannot remove another tenant's subscription row by guessing agent/channel.
+    let deleted =
+        delete_subscription(&db, &body.agent, &body.channel, auth.effective_user_id()).await?;
     Ok(Json(json!({ "deleted": deleted })))
 }
 

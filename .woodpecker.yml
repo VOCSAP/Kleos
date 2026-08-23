@@ -1,14 +1,16 @@
-# Woodpecker CI pipeline for Kleos
-# Runs on a self-hosted local runner (Podman backend)
-
-# Run exactly one pipeline per change: pull_request for PR branches, push only
-# on main, and tags. This avoids firing a push pipeline AND a pull_request
-# pipeline for the same PR-branch commit, which ran two full builds at once and
-# exhausted the 2-slot runner (SIGBUS in ld). See the per-step notes below.
+# Woodpecker CI pipeline for Kleos -- RELEASES ONLY (tag events).
+#
+# Runs on a self-hosted local runner (Podman backend) because the release
+# artifacts -- linux-x64 + windows-x64 cross-compile, docker buildx image, and
+# crate publishing -- are too heavy for GitHub-hosted runners.
+#
+# PR and push-to-main code checks (cargo check / clippy / test / fmt / deny)
+# run on GitHub Actions (.github/workflows/ci.yml) on GitHub-hosted runners.
+# They used to ALSO run here on every pull_request and push, which duplicated
+# the GitHub Actions checks and tied up the 2-slot self-hosted runner; a hung
+# or backlogged runner then left PR checks stuck "pending" on GitHub. Woodpecker
+# no longer triggers on pull_request or push -- only on tags.
 when:
-  - event: pull_request
-  - event: push
-    branch: main
   - event: tag
 
 variables:
@@ -22,64 +24,11 @@ variables:
     CARGO_TARGET_DIR: target
     CARGO_BUILD_JOBS: "4"
     CARGO_BUILD_RUSTC_WRAPPER: ""
-    # Drop test-profile debuginfo: the kleos-lib test binaries (e.g. artifacts_fts)
-    # link to ~480MB with debuginfo, and two concurrent test workflows on the
-    # 2-slot agent exhaust the container, killing ld with SIGBUS (signal 7).
-    # Mirrors the GitHub Actions fix in #79.
-    CARGO_PROFILE_TEST_DEBUG: "0"
   - &ci_env_windows
     CARGO_TARGET_DIR: target-windows
     CARGO_BUILD_RUSTC_WRAPPER: ""
 
 steps:
-  # ── CI checks (push to main + PRs) ──────────────────────────
-  check:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    environment: *ci_env
-    commands:
-      - *install_deps
-      - cargo check --workspace
-
-  clippy:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    depends_on: [check]
-    environment: *ci_env
-    commands:
-      - *install_deps
-      - rustup component add clippy
-      - cargo clippy --workspace --exclude kleos-migrate --all-targets -- -D warnings
-
-  test:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    depends_on: [check]
-    environment: *ci_env
-    commands:
-      - *install_deps
-      - cargo test --workspace --exclude kleos-migrate
-
-  fmt:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    commands:
-      - rustup component add rustfmt
-      - cargo fmt --all -- --check
-
-  deny:
-    image: *rust_image
-    when:
-      - event: [push, pull_request]
-    environment: *ci_env
-    commands:
-      - cargo install --locked cargo-deny
-      - cargo deny check
-
   # ── Release builds (tags only) ───────────────────────────────
   # Two parallel build steps: linux-x64 (native), windows-x64
 
@@ -96,9 +45,12 @@ steps:
       - cargo build --profile release-prod -p kleos-sh -p kleos-fs -p agent-forge -p eidolon-supervisor
       # kleos-ingest (transcript ingest daemon) + kleos-cleanup (operator junk pruner): linux-only release artifacts.
       - cargo build --profile release-prod -p kleos-ingest -p kleos-cleanup
+      # Installer binaries: README's recommended install path. The GUI builds
+      # natively on linux only for now; Windows GUI cross-compile is unvalidated.
+      - cargo build --profile release-prod -p kleos-install -p kleos-install-gui
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kleos-ingest kleos-cleanup kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar kleos-credd cred cred-gui kleos-mcp kleos-sh kleos-fs agent-forge eidolon-supervisor kleos-ingest kleos-cleanup kr kw ke kleos-install kleos-install-gui; do
           src="target/release-prod/$bin"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-linux-x64"
@@ -115,10 +67,24 @@ steps:
       - apt-get update && apt-get install -y --no-install-recommends protobuf-compiler pkg-config clang libprotobuf-dev gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 perl make && rm -rf /var/lib/apt/lists/*
       - rustup target add x86_64-pc-windows-gnu
       - export CARGO_BUILD_JOBS=4
-      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor
+      # kleos-server/ml re-enables the local ONNX/LanceDB stack that
+      # --no-default-features would otherwise drop now that kleos-lib gates it
+      # behind the default-on `ml` feature (ort/lancedb have cross-compiled for
+      # windows-gnu in every release to date; the ml dep versions are unchanged
+      # since v1.8.0, only newly `optional`).
+      #
+      # kleos-credd, kleos-fs (kr/kw/ke) and kleos-install are LINUX-ONLY and
+      # are deliberately absent from this list. kleos-credd depends on `nix`
+      # (unix-only) and kleos-lib/piv; kleos-fs is a unix filesystem CLI. A
+      # single `cargo build` fails as a whole if any one crate does not compile,
+      # so adding them (attempted for v1.8.1-rc.1) aborted the entire windows
+      # build and dropped even the nine binaries that shipped in v1.8.0. This
+      # list is the proven v1.8.0 crate set plus the ml feature flag. Do not add
+      # unix-only crates here; ship them as linux artifacts only.
+      - cargo build --profile release-prod --target x86_64-pc-windows-gnu --no-default-features --features kleos-lib/vendored-openssl,kleos-lib/sqlcipher-vendored,kleos-cred/gui,kleos-server/ml -p kleos-server -p kleos-cli -p kleos-sidecar -p kleos-cred -p kleos-mcp -p kleos-sh -p agent-forge -p eidolon-supervisor
       - mkdir -p release-artifacts
       - |
-        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-mcp kleos-sh agent-forge eidolon-supervisor kr kw ke; do
+        for bin in kleos-server kleos-cli kleos-sidecar cred cred-gui kleos-mcp kleos-sh agent-forge eidolon-supervisor; do
           src="target-windows/x86_64-pc-windows-gnu/release-prod/$bin.exe"
           if [ -f "$src" ]; then
             cp "$src" "release-artifacts/$bin-windows-x64.exe"
@@ -141,6 +107,13 @@ steps:
       generate_release_notes: true
       checksum:
         - sha256
+      # Canonical manifest name + flattened entries: the installers
+      # (kleos-install-core download.rs, dist/install.sh, dist/install.ps1)
+      # all verify against SHA256SUMS with bare filenames. The plugin default
+      # (sha256sum.txt with release-artifacts/ prefixes) matched none of them,
+      # so integrity verification had silently never worked on any release.
+      checksum-file: SHA256SUMS
+      checksum-flatten: true
 
   build-docker:
     image: woodpeckerci/plugin-docker-buildx
@@ -149,6 +122,10 @@ steps:
     failure: ignore
     settings:
       repo: ghostframe/kleos
+      # The Dockerfile's final stage is the sidecar image; without an explicit
+      # target, buildx builds that LAST stage, so the published image was the
+      # sidecar binary masquerading as the server.
+      target: runtime
       tags:
         - latest
         - "${CI_COMMIT_TAG}"
@@ -184,6 +161,13 @@ steps:
             return 1
           fi
         }
+        # Publish in dependency order. kleos-lib gained a dependency on
+        # kleos-config after 1.8.0; kleos-config must be on crates.io before
+        # kleos-lib can resolve it, or the whole publish (and pipeline) fails
+        # with "no matching package named kleos-config found". kleos-config is
+        # standalone (no internal path deps); kleos-cred depends on kleos-lib.
+        publish kleos-config
+        sleep 30
         publish kleos-lib
         sleep 30
         publish kleos-cred

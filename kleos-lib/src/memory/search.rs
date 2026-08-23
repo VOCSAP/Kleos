@@ -178,6 +178,11 @@ struct Candidate {
     /// new or never-reviewed memories. The decay block falls back to
     /// `initial_stability(Rating::Good)` in that case.
     fsrs_stability: Option<f64>,
+    /// Timestamp of the memory's last FSRS review, when one has happened.
+    /// The decay block anchors elapsed time here; None falls back to
+    /// `created_at`, which matches an unreviewed memory's true FSRS
+    /// reference point.
+    fsrs_last_review_at: Option<String>,
     semantic_score: Option<f64>,
     personality_signal_score: Option<f64>,
     score: f64,
@@ -212,6 +217,8 @@ struct HydratedCandidateRow {
     category: String,
     is_archived: bool,
     is_consolidated: bool,
+    /// Last FSRS review timestamp; see `Candidate::fsrs_last_review_at`.
+    fsrs_last_review_at: Option<String>,
 }
 
 /// Joined memory metadata for graph expansion candidates.
@@ -337,6 +344,7 @@ fn minimal_injected_candidate(id: i64) -> Candidate {
         access_count: 0,
         pagerank_score: 0.0,
         fsrs_stability: None,
+        fsrs_last_review_at: None,
         semantic_score: None,
         personality_signal_score: None,
         score: 0.0,
@@ -398,6 +406,7 @@ fn inject_graph_neighbors(
                     access_count: 0,
                     pagerank_score: 0.0,
                     fsrs_stability: None,
+                    fsrs_last_review_at: None,
                     semantic_score: None,
                     personality_signal_score: None,
                     score: 0.0,
@@ -451,11 +460,15 @@ async fn hydrate_candidates(
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     // Scope to the owner (bound after the id list) so single-DB mode never
     // hydrates another user's candidate; a no-op in a single-owner shard.
+    // status != 'pending' drops review-gate pending memories from every search
+    // result: hybrid/reranked funnel all candidate ids through here, so this is
+    // the single choke point. A no-op on pre-gate data (all rows approved).
     let sql = format!(
         "SELECT id, created_at, importance, is_static, source_count, \
          version, is_latest, source, model, access_count, pagerank_score, \
-         fsrs_stability, content, category, is_archived, is_consolidated \
-         FROM memories WHERE id IN ({}) AND user_id = ?",
+         fsrs_stability, content, category, is_archived, is_consolidated, \
+         fsrs_last_review_at \
+         FROM memories WHERE id IN ({}) AND user_id = ? AND status != 'pending'",
         placeholders
     );
 
@@ -489,6 +502,7 @@ async fn hydrate_candidates(
                 category: row.get(13)?,
                 is_archived: row.get::<_, i32>(14)? != 0,
                 is_consolidated: row.get::<_, i32>(15)? != 0,
+                fsrs_last_review_at: row.get(16)?,
             });
         }
         Ok(hydrated)
@@ -556,9 +570,16 @@ async fn fetch_memories_batch(
 
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     // Scope to the owner (bound after the id list); a no-op in a single-owner shard.
+    // status != 'pending' is the review-gate backstop: this is the only content
+    // fetch for hybrid_search output (assembly drops any id absent from the map),
+    // so it also blocks pending memories pulled in by the graph/facts/community
+    // channels, whose neighbor/member queries run after hydration and do not
+    // themselves filter status. is_archived = 0 closes the same gap for rejected
+    // rows (which are archived rather than deleted) reaching hydration this way.
     let fetch_sql = format!(
         "SELECT {} FROM memories \
-         WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1",
+         WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
+         AND status != 'pending' AND is_archived = 0",
         MEMORY_COLUMNS, placeholders
     );
 
@@ -600,16 +621,21 @@ async fn fetch_links_batch(
     // "owner" memory ID so we can group results into the right bucket. The
     // joined memory is scoped to the owner (one extra `?` per half) so single-DB
     // mode never returns a link into another user's memory; a no-op in a shard.
+    // m.status != 'pending' is the review-gate predicate: a link target/source
+    // that hasn't cleared review must not surface via the memory_links JOIN.
+    // m.status and m.is_archived are selected so the row loop can also drop
+    // rejected (archived) rows, which is_archived != 0 alone does not exclude
+    // via SQL here (kept in the loop to match the existing is_forgotten check).
     let link_sql = format!(
         "SELECT ml.source_id AS owner, ml.target_id, ml.similarity, ml.type, \
-             m.content, m.category, m.is_forgotten \
+             m.content, m.category, m.is_forgotten, m.status, m.is_archived \
          FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? \
+         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending' \
          UNION ALL \
          SELECT ml.target_id AS owner, ml.source_id, ml.similarity, ml.type, \
-             m.content, m.category, m.is_forgotten \
+             m.content, m.category, m.is_forgotten, m.status, m.is_archived \
          FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ?"
+         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending'"
     );
 
     db.read(move |conn| {
@@ -632,6 +658,11 @@ async fn fetch_links_batch(
         while let Some(row) = rows.next()? {
             // Skip forgotten memories
             if row.get::<_, i32>(6)? != 0 {
+                continue;
+            }
+            // Skip archived memories (rejected rows carry is_archived = 1); the
+            // review-gate predicate above already excludes pending rows in SQL.
+            if row.get::<_, i32>(8)? != 0 {
                 continue;
             }
             let owner: i64 = row.get(0)?;
@@ -728,16 +759,37 @@ async fn centroid_or_sqlite_vector(
     user_id: i64,
 ) -> Result<Vec<super::types::VectorHit>> {
     if let Some(index) = db.vector_index.as_ref() {
-        match index.search(embedding, candidate_target).await {
-            Ok(hits) => Ok(hits
-                .into_iter()
-                .map(|hit| super::types::VectorHit {
-                    memory_id: hit.memory_id,
-                    distance: hit.distance,
-                    rank: hit.rank,
-                    matching_chunk_text: None,
-                })
-                .collect()),
+        // Finding [87]: the centroid index carries no tenant identity, so in
+        // shared/monolith mode foreign users' vectors would consume candidate
+        // slots and only be discarded later at hydration -- recall starvation.
+        // Over-collect (bounded), then keep the caller's own visible memories
+        // up to the original target, mirroring chunk_vector_search.
+        let collect_target = candidate_target
+            .saturating_mul(4)
+            .clamp(candidate_target, 1024);
+        match index.search(embedding, collect_target).await {
+            Ok(hits) => {
+                let ids: Vec<i64> = hits.iter().map(|h| h.memory_id).collect();
+                let owned = super::vector::filter_owned_visible(db, &ids, user_id).await?;
+                let mut out: Vec<super::types::VectorHit> = Vec::with_capacity(candidate_target);
+                for hit in hits {
+                    if !owned.contains(&hit.memory_id) {
+                        continue;
+                    }
+                    // Re-rank over the surviving hits so downstream RRF sees a
+                    // dense ranking, not the sparse pre-filter one.
+                    out.push(super::types::VectorHit {
+                        memory_id: hit.memory_id,
+                        distance: hit.distance,
+                        rank: out.len(),
+                        matching_chunk_text: None,
+                    });
+                    if out.len() >= candidate_target {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
             Err(e) => {
                 warn!(
                     "LanceDB vector search failed, falling back to SQLite vectors: {}",
@@ -859,6 +911,7 @@ pub async fn hybrid_search(
                         access_count: 0,
                         pagerank_score: 0.0,
                         fsrs_stability: None,
+                        fsrs_last_review_at: None,
                         semantic_score: semantic,
                         personality_signal_score: None,
                         score: 0.0,
@@ -909,6 +962,7 @@ pub async fn hybrid_search(
                     access_count: 0,
                     pagerank_score: 0.0,
                     fsrs_stability: None,
+                    fsrs_last_review_at: None,
                     semantic_score: None,
                     personality_signal_score: None,
                     score: 0.0,
@@ -989,7 +1043,16 @@ pub async fn hybrid_search(
         let ids: Arc<[i64]> = results.keys().copied().collect::<Vec<i64>>().into();
         if !ids.is_empty() {
             if let Ok(rows) = hydrate_candidates(db, Arc::clone(&ids), user_id).await {
+                // Review gate: hydrate_candidates omits status='pending' rows, so any
+                // vector/FTS candidate absent from the hydrated set is pending (or was
+                // deleted mid-query). Record which ids survived so we can drop the rest
+                // before ranking, truncation, or graph-seed expansion -- otherwise a
+                // pending memory pollutes the pool and can displace a real result that
+                // is then never fetched. This makes hydration the real choke point the
+                // doc-comment on hydrate_candidates already claims it to be.
+                let mut hydrated_ids: HashSet<i64> = HashSet::with_capacity(rows.len());
                 for row in rows {
+                    hydrated_ids.insert(row.id);
                     if let Some(c) = results.get_mut(&row.id) {
                         c.created_at = row.created_at;
                         c.importance = row.importance;
@@ -1010,6 +1073,7 @@ pub async fn hybrid_search(
                         c.access_count = row.access_count;
                         c.pagerank_score = row.pagerank_score;
                         c.fsrs_stability = row.fsrs_stability;
+                        c.fsrs_last_review_at = row.fsrs_last_review_at;
                         if c.content.is_empty() {
                             c.content = row.content;
                         }
@@ -1020,6 +1084,10 @@ pub async fn hybrid_search(
                         c.is_consolidated = row.is_consolidated;
                     }
                 }
+                // Drop candidates that did not hydrate (pending, or gone mid-query).
+                // Guarded by the Ok arm: a transient hydrate failure keeps the pool
+                // intact rather than blanking every result.
+                results.retain(|id, _| hydrated_ids.contains(id));
             }
         }
     }
@@ -1061,7 +1129,13 @@ pub async fn hybrid_search(
             let stability = c.fsrs_stability.unwrap_or_else(|| {
                 crate::fsrs::initial_stability(crate::fsrs::Rating::Good) as f64
             });
-            let ref_str = &c.created_at;
+            // Anchor elapsed time on the last FSRS review when one happened
+            // (matching fsrs::recall and the /fsrs routes); created_at is only
+            // the correct reference point for never-reviewed memories. Anchoring
+            // reviewed memories on created_at paired a fresh stability with a
+            // full-lifetime elapsed, crushing retrievability toward zero for
+            // old-but-actively-reinforced memories on every search surface.
+            let ref_str = c.fsrs_last_review_at.as_deref().unwrap_or(&c.created_at);
             let elapsed = if !ref_str.is_empty() {
                 let normalized = if ref_str.contains('Z') {
                     ref_str.to_string()
@@ -1517,7 +1591,17 @@ pub async fn hybrid_search(
                 }
             }
             if let Some(thr) = filter_threshold {
-                if r.score < thr as f64 {
+                // Same scale caveat as context assembly: r.score is on the [0,1]
+                // similarity scale only when the reranker ran; otherwise it is the
+                // raw RRF-fusion value. Gate on the cosine semantic_score when not
+                // reranked so a caller's similarity-scale threshold does not
+                // silently drop every result.
+                if !scoring::passes_relevance_gate(
+                    r.reranked,
+                    r.score,
+                    r.semantic_score,
+                    thr as f64,
+                ) {
                     return false;
                 }
             }
@@ -1942,7 +2026,13 @@ async fn faceted_db_scan(
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
     // Build SQL with applicable WHERE clauses pushed to DB level.
-    let mut conditions = vec!["is_forgotten = 0".to_string(), "is_latest = 1".to_string()];
+    // status != 'pending' keeps review-gate pending memories out of faceted
+    // search results; a no-op on pre-gate data.
+    let mut conditions = vec![
+        "is_forgotten = 0".to_string(),
+        "is_latest = 1".to_string(),
+        "status != 'pending'".to_string(),
+    ];
     let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![];
     let mut idx = 1usize;
 
@@ -2216,6 +2306,7 @@ mod tests {
     /// honors the cap, so a hop-2 neighbor always ranks beneath its full-weight hop-1 parents.
     #[test]
     fn inject_graph_neighbors_applies_multiplier_and_cap() {
+        // Build a GraphExpansionRow fixture with the given link id for the test.
         fn row(id: i64) -> GraphExpansionRow {
             GraphExpansionRow {
                 link_id: id,
@@ -2369,6 +2460,7 @@ mod tests {
             access_count: 0,
             pagerank_score: 0.0,
             fsrs_stability: None,
+            fsrs_last_review_at: None,
             semantic_score: None,
             personality_signal_score: None,
             score: 1.0,
@@ -2393,5 +2485,87 @@ mod tests {
         assert!(boosted_score > 1.0);
         assert_eq!(candidate.score, candidate.combined_score);
         assert!(candidate.score > boosted_score);
+    }
+
+    // A memory reviewed recently must not decay as if never reviewed: the
+    // decay anchor is fsrs_last_review_at, falling back to created_at only
+    // for never-reviewed memories. Regression test for the search-time decay
+    // block pairing a fresh post-review stability with a full-lifetime
+    // elapsed, which crushed old-but-reinforced memories on every surface.
+    #[tokio::test]
+    async fn decay_anchors_on_last_fsrs_review_not_created_at() {
+        let db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-mem db");
+        let mut ids = Vec::new();
+        for marker in ["reviewed anchor probe", "unreviewed anchor probe"] {
+            let stored = crate::memory::store(
+                &db,
+                crate::memory::types::StoreRequest {
+                    content: format!("fsrs decay {marker} content"),
+                    user_id: Some(1),
+                    ..Default::default()
+                },
+                None,
+                false,
+            )
+            .await
+            .expect("seed store");
+            ids.push(stored.id);
+        }
+        let (reviewed_id, unreviewed_id) = (ids[0], ids[1]);
+
+        // Both memories: created a year ago with identical strong stability;
+        // only the first was FSRS-reviewed just now.
+        db.write(move |conn| {
+            conn.execute(
+                "UPDATE memories SET created_at = datetime('now', '-365 days'), \
+                 fsrs_stability = 10.0 WHERE id IN (?1, ?2)",
+                [reviewed_id, unreviewed_id],
+            )?;
+            conn.execute(
+                "UPDATE memories SET fsrs_last_review_at = datetime('now') WHERE id = ?1",
+                [reviewed_id],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("backdate + review stamp");
+
+        let results = super::hybrid_search(
+            &db,
+            crate::memory::types::SearchRequest {
+                query: "fsrs decay anchor probe".to_string(),
+                user_id: Some(1),
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("hybrid_search");
+
+        let decay_of = |id: i64| {
+            results
+                .iter()
+                .find(|r| r.memory.id == id)
+                .and_then(|r| r.decay_score)
+                .expect("result carries decay_score")
+        };
+        let (reviewed, unreviewed) = (decay_of(reviewed_id), decay_of(unreviewed_id));
+        // decay_score = importance (5) * retrievability. Anchored on the
+        // just-now review, elapsed ~= 0 so retrievability ~= 1.0 and the
+        // score sits at ~5.0; anchored on the year-old created_at (the
+        // pre-fix behavior, and still the control's anchor) it decays well
+        // below that. Pre-fix both memories scored identically (~2.9).
+        assert!(
+            reviewed >= 4.9,
+            "reviewed-just-now memory must be anchored on its review time \
+             (expected decay_score ~5.0, got {reviewed}; control {unreviewed})"
+        );
+        assert!(
+            unreviewed < 4.0,
+            "never-reviewed year-old control must decay from created_at \
+             (got {unreviewed})"
+        );
     }
 }

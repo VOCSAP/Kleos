@@ -18,7 +18,7 @@ use axum::{
     routing::any,
     Router,
 };
-use kleos_sidecar::{build_test_state, routes, SidecarState};
+use kleos_sidecar::{build_test_state, routes, CodeContextMode, SidecarState};
 use reqwest::Client;
 use tokio::net::TcpListener;
 
@@ -39,20 +39,26 @@ struct MockState {
     batch_fail_after: Arc<Mutex<Option<usize>>>,
 }
 
+/// Test-facing accessors and knobs for the mock upstream's recorded state.
 impl MockState {
+    /// Number of POST /batch calls the mock upstream has received so far.
     fn batch_call_count(&self) -> usize {
         self.batch_calls.lock().unwrap().len()
     }
 
+    /// Set the HTTP status the mock returns for /batch.
     fn set_batch_status(&self, code: u16) {
         *self.batch_status.lock().unwrap() = code;
     }
 
+    /// Configure /batch to accept the first `k` ops then fail (None = succeed).
     fn set_batch_fail_after(&self, k: Option<usize>) {
         *self.batch_fail_after.lock().unwrap() = k;
     }
 }
 
+/// Mock POST /batch handler: records the request body and applies the
+/// configured status / fail-after behaviour.
 async fn mock_batch(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> impl IntoResponse {
     let status = *ms.batch_status.lock().unwrap();
     let fail_after = *ms.batch_fail_after.lock().unwrap();
@@ -110,6 +116,7 @@ async fn mock_batch(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> 
     }
 }
 
+/// Mock POST /store handler: records the request body and returns a stub id.
 async fn mock_store(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> impl IntoResponse {
     let body_bytes = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
@@ -120,10 +127,12 @@ async fn mock_store(AxumState(ms): AxumState<MockState>, req: Request<Body>) -> 
     (StatusCode::OK, axum::Json(serde_json::json!({"id": 1}))).into_response()
 }
 
+/// Mock health endpoint: always 200.
 async fn mock_health(_req: Request<Body>) -> impl IntoResponse {
     StatusCode::OK
 }
 
+/// Catch-all for unexpected routes: 404.
 async fn mock_catch_all(_req: Request<Body>) -> impl IntoResponse {
     StatusCode::NOT_FOUND
 }
@@ -172,6 +181,8 @@ async fn spawn_sidecar(
     (url, state, handle)
 }
 
+/// Bind the sidecar router for `state` on a random port and serve it in a
+/// background task. Returns (base_url, state, join_handle).
 async fn spawn_sidecar_with_state(
     state: SidecarState,
 ) -> (String, SidecarState, tokio::task::JoinHandle<()>) {
@@ -189,6 +200,54 @@ async fn spawn_sidecar_with_state(
     (url, cloned_state, handle)
 }
 
+/// Poll `cond` every 25ms until it holds or `max` elapses; returns whether it
+/// held. Replaces fixed post-action sleeps, which raced the sidecar's async
+/// flush tasks under loaded parallel test runners (nextest runs many test
+/// processes at once, so scheduling latency varies widely).
+async fn wait_until(max: Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + max;
+    while !cond() {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    true
+}
+
+/// Bounded wait for a session's flush BOOKKEEPING: polls until the named
+/// session's (stored_count, pending_count) match the expected pair or `max`
+/// elapses. The mock upstream receives /batch before the sidecar records the
+/// outcome, so the batch call count alone is too early an observable for
+/// assertions about stored/pending state.
+async fn wait_for_counts(
+    state: &SidecarState,
+    sess: &str,
+    stored: usize,
+    pending: usize,
+    max: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + max;
+    loop {
+        let got = {
+            let sessions = state.sessions.read().await;
+            sessions
+                .list()
+                .into_iter()
+                .find(|s| s.id == sess)
+                .map(|s| (s.stored_count, s.pending_count))
+        };
+        if got == Some((stored, pending)) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+/// reqwest client with a 5s timeout and an optional bearer-token header.
 fn client(token: Option<&str>) -> Client {
     let mut builder = Client::builder().timeout(Duration::from_secs(5));
     if let Some(t) = token {
@@ -238,12 +297,10 @@ async fn test_happy_path_observe_and_flush() {
         assert_eq!(r.status(), StatusCode::ACCEPTED);
     }
 
-    // Give the flush task a moment to complete.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Mock upstream should have received at least one /batch call.
+    // Mock upstream should receive at least one /batch call once the async
+    // flush task runs (bounded wait instead of a fixed sleep).
     assert!(
-        ms.batch_call_count() >= 1,
+        wait_until(Duration::from_secs(10), || ms.batch_call_count() >= 1).await,
         "expected at least 1 /batch call, got {}",
         ms.batch_call_count()
     );
@@ -274,6 +331,10 @@ async fn test_happy_path_observe_and_flush() {
 
 #[tokio::test]
 async fn test_retry_exhaustion_returns_503() {
+    // Manual serve loop (no spawn_sidecar): set the loopback allowance so the
+    // flush actually reaches the mock and exhausts on real HTTP 500s, rather
+    // than failing earlier (and vacuously) on outbound-URL validation.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let (upstream_url, ms, _upstream) = spawn_mock_upstream().await;
     ms.set_batch_status(500);
 
@@ -344,6 +405,13 @@ async fn test_retry_exhaustion_returns_503() {
 
 #[tokio::test]
 async fn test_graceful_shutdown_flushes_pending() {
+    // This test wires its own serve loop (to control with_graceful_shutdown)
+    // instead of going through spawn_sidecar, so it must set the loopback
+    // allowance itself: without it validate_outbound_url rejects the mock
+    // upstream and the shutdown flush silently sends nothing. Under threaded
+    // cargo test, sibling tests' spawn_sidecar calls leaked this process-global
+    // var and masked the dependency; per-test-process runners (nextest) do not.
+    std::env::set_var("KLEOS_NET_ALLOW_PRIVATE", "1");
     let (upstream_url, ms, _upstream) = spawn_mock_upstream().await;
     let token = "test-token-shutdown";
 
@@ -406,11 +474,10 @@ async fn test_graceful_shutdown_flushes_pending() {
     // Trigger graceful shutdown.
     let _ = shutdown_tx.send(());
 
-    // Allow time for flush to complete.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
+    // Bounded wait matching the 10s flush deadline above: a fixed 500ms sleep
+    // raced the serve task's shutdown flush under parallel test load.
     assert!(
-        ms.batch_call_count() >= 1,
+        wait_until(Duration::from_secs(10), || ms.batch_call_count() >= 1).await,
         "flush should have occurred during graceful shutdown"
     );
 }
@@ -480,143 +547,96 @@ async fn test_session_start_and_end_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: /compress passthrough for small payload (under threshold).
+// Test 5: local code injection survives an unavailable memory upstream.
 // ---------------------------------------------------------------------------
 
+/// Exact code retrieval remains useful when both Kleos search routes return 404.
 #[tokio::test]
-async fn test_compress_passthrough_small_payload() {
+async fn test_code_context_injects_when_memory_recall_fails() {
     let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
-    let token = "test-token-compress";
-    let (sidecar_url, _state, _sidecar) =
-        spawn_sidecar(upstream_url, Some(token.to_string())).await;
-    let c = client(Some(token));
+    let token = "test-token-code-context";
+    let repository = tempfile::tempdir().unwrap();
+    std::fs::create_dir(repository.path().join(".git")).unwrap();
+    std::fs::create_dir(repository.path().join("src")).unwrap();
+    std::fs::write(
+        repository.path().join("src/lib.rs"),
+        "/// Reconciles one invoice.\npub fn reconcile_invoice() -> bool { true }\n",
+    )
+    .unwrap();
 
-    // build_test_state sets compress_passthrough_bytes = 100.
-    // A payload of 50 bytes is under threshold -> passthrough=true.
-    let r = c
-        .post(format!("{}/compress", sidecar_url))
-        .json(&serde_json::json!({
-            "tool_name": "Read",
-            "tool_output": "x".repeat(50),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["passthrough"], true);
-    assert_eq!(body["reason"], "below_threshold");
-}
-
-// ---------------------------------------------------------------------------
-// Test 6: /compress rejects payload over compress_max_input_bytes with 413.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_compress_too_large_returns_413() {
-    let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
-    let token = "test-token-413";
-    let (sidecar_url, _state, _sidecar) =
-        spawn_sidecar(upstream_url, Some(token.to_string())).await;
-    let c = client(Some(token));
-
-    // build_test_state sets compress_max_input_bytes = 1000.
-    // A payload of 1100 bytes is over limit -> 413.
-    let r = c
-        .post(format!("{}/compress", sidecar_url))
-        .json(&serde_json::json!({
-            "tool_name": "Read",
-            "tool_output": "y".repeat(1100),
-        }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(
-        r.status(),
-        StatusCode::PAYLOAD_TOO_LARGE,
-        "expected 413 for payload over compress_max_input_bytes"
-    );
-}
-
-#[tokio::test]
-async fn test_compress_disabled_returns_passthrough() {
-    let (upstream_url, _ms, _upstream) = spawn_mock_upstream().await;
-    let token = "test-token-compress-disabled";
     let mut state = build_test_state(upstream_url, Some(token.to_string()));
-    state.compress_enabled = false;
-    state.llm = None;
+    state.code_context_mode = CodeContextMode::Inject;
+    state
+        .code_index
+        .as_ref()
+        .unwrap()
+        .refresh(repository.path())
+        .unwrap();
     let (sidecar_url, _state, _sidecar) = spawn_sidecar_with_state(state).await;
-    let c = client(Some(token));
-
-    let r = c
-        .post(format!("{}/compress", sidecar_url))
+    let response = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
         .json(&serde_json::json!({
-            "tool_name": "Read",
-            "tool_output": "z".repeat(500),
+            "query": "Where is reconcile_invoice implemented?",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
         }))
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status(), StatusCode::OK);
-    let body: serde_json::Value = r.json().await.unwrap();
-    assert_eq!(body["passthrough"], true);
-    assert_eq!(body["reason"], "disabled");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["code_mode"], "inject");
+    assert!(body["memory_error"].is_string());
+    assert!(body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("pub fn reconcile_invoice"));
+    assert_eq!(body["code_pack"]["snippets"].as_array().unwrap().len(), 1);
+
+    let repeated = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
+        .json(&serde_json::json!({
+            "query": "invoice reconciliation behavior",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(repeated.status(), StatusCode::OK);
+    let repeated_body: serde_json::Value = repeated.json().await.unwrap();
+    assert!(repeated_body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .is_empty());
+    assert!(repeated_body["code_pack"]["snippets"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let exact_repeat = client(Some(token))
+        .post(format!("{}/recall", sidecar_url))
+        .json(&serde_json::json!({
+            "query": "reconcile_invoice",
+            "session_id": "sess-code-context",
+            "cwd": repository.path(),
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(exact_repeat.status(), StatusCode::OK);
+    let exact_body: serde_json::Value = exact_repeat.json().await.unwrap();
+    assert!(exact_body["context"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("pub fn reconcile_invoice"));
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: file-watcher checkpoint -- write a JSONL file, run process_file once
-// to advance the position, write the checkpoint, then call process_file again
-// and confirm no duplicate observations.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn test_watcher_checkpoint_no_duplicate_ingestion() {
-    use kleos_sidecar::watcher::flush_checkpoint;
-    use std::collections::HashMap;
-
-    let dir = tempfile::tempdir().unwrap();
-    let jsonl_path = dir.path().join("session.jsonl");
-    let cp_path = dir.path().join("checkpoint.json");
-
-    // Write two JSONL entries.
-    let line1 = r#"{"type":"tool_use","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
-    let line2 =
-        r#"{"type":"tool_use","tool_name":"Edit","tool_input":{"file_path":"/tmp/foo.rs"}}"#;
-    std::fs::write(&jsonl_path, format!("{}\n{}\n", line1, line2)).unwrap();
-
-    // Simulate the position after reading both lines.
-    let mut positions: HashMap<std::path::PathBuf, u64> = HashMap::new();
-    let full_len = std::fs::metadata(&jsonl_path).unwrap().len();
-    positions.insert(jsonl_path.clone(), full_len);
-
-    // Write checkpoint.
-    flush_checkpoint(&cp_path, &positions);
-
-    // Checkpoint file should exist.
-    assert!(cp_path.exists(), "checkpoint file should be written");
-
-    // Load checkpoint and verify positions are correct.
-    let json_text = std::fs::read_to_string(&cp_path).unwrap();
-    let loaded: HashMap<std::path::PathBuf, u64> = serde_json::from_str(&json_text).unwrap();
-    assert_eq!(
-        loaded.get(&jsonl_path).copied(),
-        Some(full_len),
-        "loaded checkpoint should match the written position"
-    );
-
-    // If we were to process the file again starting from `full_len`, no new
-    // lines would be read -- confirming no duplicate ingestion.
-    // We verify this by checking that start_pos == file_len means zero new bytes.
-    let file_len = std::fs::metadata(&jsonl_path).unwrap().len();
-    let start_pos = *loaded.get(&jsonl_path).unwrap();
-    assert_eq!(
-        start_pos, file_len,
-        "start_pos at end of file means no lines re-read"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: idle session sweep expires stale sessions.
+// Test 6: idle session sweep expires stale sessions.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -710,9 +730,12 @@ async fn test_partial_batch_requeues_failed_and_counts_only_successes() {
         assert_eq!(r.status(), StatusCode::ACCEPTED);
     }
 
-    // Give the inline flush a moment to finish.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
+    // Bounded wait for the flush bookkeeping (not just the /batch arrival),
+    // then pin the exact call count.
+    assert!(
+        wait_for_counts(&state, "sess-partial", 3, 2, Duration::from_secs(10)).await,
+        "first-flush bookkeeping did not land"
+    );
     assert_eq!(ms.batch_call_count(), 1, "exactly one batch sent so far");
 
     {
@@ -751,8 +774,11 @@ async fn test_partial_batch_requeues_failed_and_counts_only_successes() {
             .unwrap();
         assert_eq!(r.status(), StatusCode::ACCEPTED);
     }
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
+    // Same bookkeeping-based wait for the second flush.
+    assert!(
+        wait_for_counts(&state, "sess-partial", 8, 0, Duration::from_secs(10)).await,
+        "second-flush bookkeeping did not land"
+    );
     assert_eq!(ms.batch_call_count(), 2, "second batch should be flushed");
 
     {

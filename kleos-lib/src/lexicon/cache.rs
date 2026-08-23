@@ -162,17 +162,11 @@ pub(super) fn resolve_override(repo: &Path, lang: &str) -> Option<Arc<ParsedLexi
     new_parsed
 }
 
-#[cfg(test)]
-pub(super) fn clear_cache() {
-    if let Ok(mut g) = cache().write() {
-        g.clear();
-    }
-}
-
 /// Clear the entire lexicon override cache so the next lookup re-reads the
-/// override files from disk. Used by `POST /admin/lexicon/reload` to force
-/// an immediate refresh ahead of the 5-second TTL.
-pub fn purge_runtime_cache() {
+/// override files from disk. Used in tests, and by VOCSAP's
+/// `lexicon::vocsap::reload_overrides` (`POST /admin/lexicon/reload`) to
+/// force an immediate refresh ahead of the 5-second TTL.
+pub(super) fn clear_cache() {
     if let Ok(mut g) = cache().write() {
         g.clear();
     }

@@ -21,12 +21,18 @@ $Suffix = "windows-x64"
 if ($env:KLEOS_BINARIES) {
     $BinList = $env:KLEOS_BINARIES -split ","
 } else {
+    # NOTE: kr/kw/ke (kleos-fs) and kleos-credd are LINUX-ONLY -- they depend on
+    # unix-only crates and are not cross-compiled for windows-gnu (see
+    # .woodpecker.yml build-windows-x64). Do not list them here: with
+    # $ErrorActionPreference = "Stop", a 404 on a missing binary aborts the
+    # whole install. Windows profiles ship only the binaries the release
+    # actually produces for windows-x64.
     switch ($Profile) {
         { $_ -in "agent-host", "agent" } {
-            $BinList = @("kleos-cli", "kleos-sh", "kr", "kw", "ke", "agent-forge", "eidolon-supervisor", "kleos-cred", "kleos-credd")
+            $BinList = @("kleos-cli", "kleos-sh", "agent-forge", "eidolon-supervisor", "cred")
         }
         "full" {
-            $BinList = @("kleos-server", "kleos-cli", "kleos-sidecar", "kleos-credd", "kleos-cred", "kleos-mcp", "kleos-sh", "kr", "kw", "ke", "agent-forge", "eidolon-supervisor")
+            $BinList = @("kleos-server", "kleos-cli", "kleos-sidecar", "cred", "kleos-mcp", "kleos-sh", "agent-forge", "eidolon-supervisor")
         }
         default {
             $BinList = @("kleos-server", "kleos-cli", "kleos-mcp")
@@ -82,11 +88,11 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 $BaseUrl = "https://github.com/$Repo/releases/download/v$Version"
 $Failed = @()
 
-# Fetch SHASUMS256.txt once. Graceful if missing (older releases may not have it).
+# Fetch SHA256SUMS once. Graceful if missing (older releases may not have it).
 $ShaManifest = @{}
 $HasManifest = $false
 try {
-    $raw = (Invoke-WebRequest -Uri "$BaseUrl/SHASUMS256.txt" -UseBasicParsing).Content
+    $raw = (Invoke-WebRequest -Uri "$BaseUrl/SHA256SUMS" -UseBasicParsing).Content
     foreach ($line in ($raw -split "`n")) {
         $line = $line.Trim()
         if ($line -and $line -match '^([0-9a-f]{64})\s+(.+)$') {
@@ -95,11 +101,11 @@ try {
     }
     if ($ShaManifest.Count -gt 0) {
         $HasManifest = $true
-        Write-Host "  manifest: SHASUMS256.txt fetched; integrity will be verified"
+        Write-Host "  manifest: SHA256SUMS fetched; integrity will be verified"
     }
 }
 catch {
-    Write-Host "  warn: SHASUMS256.txt not found for this release; integrity NOT verified" -ForegroundColor Yellow
+    Write-Host "  warn: SHA256SUMS not found for this release; integrity NOT verified" -ForegroundColor Yellow
 }
 Write-Host ""
 

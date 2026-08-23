@@ -10,8 +10,7 @@ pub mod types;
 
 pub use types::*;
 
-/// Patch 14 -- parse the `KLEOS_LLM_THINK` env value into an optional
-/// thinking-mode setting.
+/// Parse the `KLEOS_LLM_THINK` env value into an optional thinking-mode setting.
 ///
 /// Accepts (case-insensitive, trimmed):
 ///   - `"1"`, `"true"`, `"yes"`, `"on"`   -> `Some(true)`  (reasoning ON)
@@ -21,7 +20,7 @@ pub use types::*;
 ///
 /// `None` is the neutral default: callers inject nothing, so the request body is
 /// byte-identical to one built without this feature and the model keeps its own
-/// default thinking behaviour (upstream-neutral semantics).
+/// default thinking behaviour.
 fn parse_think_setting(raw: Option<String>) -> Option<bool> {
     let value = raw?;
     match value.trim().to_ascii_lowercase().as_str() {
@@ -38,7 +37,7 @@ fn parse_think_setting(raw: Option<String>) -> Option<bool> {
     }
 }
 
-/// Patch 14 -- resolve the thinking-mode setting from the environment.
+/// Resolve the thinking-mode setting from the environment.
 ///
 /// Reads `KLEOS_LLM_THINK` (canonical) with a legacy `ENGRAM_LLM_THINK` fallback
 /// via [`crate::kleos_env`]. Returns `None` when unset/empty so injection is a
@@ -47,32 +46,33 @@ pub fn think_setting() -> Option<bool> {
     parse_think_setting(crate::kleos_env("LLM_THINK").ok())
 }
 
-/// Patch 14 -- inject the `think` and `reasoning_effort` fields into an
-/// OpenAI-compat / Ollama request body, driven by [`think_setting`].
+/// Inject the `think` and `reasoning_effort` fields into an OpenAI-compat /
+/// Ollama request body, driven by [`think_setting`].
 ///
-/// When `KLEOS_LLM_THINK` is unset (or empty) this is a no-op and the body is
-/// left untouched, preserving the upstream default where the model decides.
-/// When set, it injects `think = <bool>` and the OpenAI-standard
-/// `reasoning_effort` (`"high"` ON, `"none"` OFF) so the toggle works on both
-/// Ollama endpoint styles: Ollama silently ignores the native `think` field on
-/// `/v1/chat/completions` and honours `reasoning_effort`, while `/api/*`
-/// endpoints honour `think`.
+/// When the operator has not set `KLEOS_LLM_THINK` (or set it empty), this is a
+/// no-op and the body is left untouched -- preserving the upstream default where
+/// the model decides. When set, it injects `think = <bool>` and the
+/// OpenAI-standard `reasoning_effort` (`"high"` when ON, `"none"` when OFF), so
+/// the toggle works on both Ollama endpoint styles (Ollama silently ignores the
+/// `think` field on `/v1/chat/completions`, honouring `reasoning_effort`
+/// instead; the native `/api/*` endpoints honour `think`).
 ///
-/// Factored so the call sites that bypass `services::broca::call_llm_endpoint`
-/// (LocalModelClient, Loom, handoffs::atoms) can share it without duplicating
-/// the snippet. Idempotent: only inserts the keys when absent (mirror
-/// `or_insert_with`). No-op on non-object values.
+/// Idempotent: only inserts keys when absent, so a value already set by the
+/// caller is preserved. No-op on non-object JSON values.
 pub(crate) fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
     inject_reasoning_setting(body, think_setting());
 }
 
-/// Patch 14 -- core injector applying an explicit thinking-mode `setting`.
+/// Core injector applying an explicit thinking-mode `setting`.
 ///
 /// `None` is a no-op (body untouched). Used directly by call sites that have a
 /// per-client override taking precedence over the global env var: the local
 /// Ollama client honours `KLEOS_SIDECAR_LLM_THINK` (Patch 11, via
-/// `OllamaConfig.think`) before falling back to [`think_setting`]. Idempotent:
-/// only inserts keys when absent. No-op on non-object values.
+/// `OllamaConfig.think`) before falling back to [`think_setting`]. Also lets
+/// callers that have already resolved the setting (e.g. to gate an expensive
+/// body round-trip on `is_some()`) reuse the injection logic without
+/// re-reading the environment. Idempotent: only inserts keys when absent.
+/// No-op on non-object values.
 pub(crate) fn inject_reasoning_setting(body: &mut serde_json::Value, setting: Option<bool>) {
     let Some(think) = setting else {
         return;
@@ -242,6 +242,8 @@ mod tests {
 
     #[test]
     fn inject_reasoning_setting_none_is_noop() {
+        // The unset path (None) leaves the body byte-identical -- this is what
+        // call_llm_endpoint relies on to skip the serde round-trip entirely.
         let mut v = serde_json::json!({"model": "x"});
         inject_reasoning_setting(&mut v, None);
         assert_eq!(v, serde_json::json!({"model": "x"}));

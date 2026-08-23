@@ -18,13 +18,15 @@ use kleos_lib::graph::{communities, cooccurrence};
 mod types;
 use types::{
     AdminCredProxyBody, AdminCredResolveBody, AdminPageRankQuery, AsyncDeprovisionBody,
-    BackfillEntitiesBody, BootstrapBody, ColdStorageParams, DeprovisionBody, GcBody,
-    MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody, RecentDeprovisionQuery,
-    ReembedBody, ResetBody, SetQuotaBody, SkipShardBody, VectorRebuildIndexBody,
-    VectorSyncReplayBody,
+    BackfillEntitiesBody, BootstrapBody, ColdStorageParams, DeadLettersQuery, DeprovisionBody,
+    GcBody, MaintenanceBody, MigrateDownBody, PitrPrepareBody, ProvisionBody,
+    RecentDeprovisionQuery, ReembedBody, ResetBody, SetQuotaBody, SkipShardBody,
+    VectorRebuildIndexBody, VectorSyncReplayBody,
 };
 
-/// Reject the request with a 403 unless the auth context carries the admin scope.
+/// Reject the request unless the auth context carries the admin scope.
+/// EngError::Auth maps to 401 at the error layer, so non-admin callers
+/// receive 401 "admin scope required" on every route in this file.
 fn require_admin(auth: &AuthContext) -> Result<(), AppError> {
     if !auth.has_scope(&Scope::Admin) {
         return Err(AppError(kleos_lib::EngError::Auth(
@@ -77,6 +79,7 @@ pub fn router() -> Router<AppState> {
         .route("/admin/cold-storage", get(cold_storage_handler))
         .route("/admin/providers", get(admin_providers))
         .route("/admin/tasks", get(admin_tasks))
+        .route("/admin/dead-letters", get(admin_dead_letters))
         .route("/admin/cred/resolve", post(admin_cred_resolve))
         .route("/admin/cred/proxy", post(admin_cred_proxy))
         // Maintenance + SLA
@@ -265,14 +268,14 @@ async fn bootstrap(
         return Ok((
             StatusCode::FORBIDDEN,
             Json(json!({
-                "error": "bootstrap disabled: set ENGRAM_BOOTSTRAP_SECRET to enable"
+                "error": "bootstrap disabled: set KLEOS_BOOTSTRAP_SECRET to enable"
             })),
         ));
     };
     if expected.is_empty() {
         return Ok((
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "bootstrap disabled: ENGRAM_BOOTSTRAP_SECRET is empty" })),
+            Json(json!({ "error": "bootstrap disabled: KLEOS_BOOTSTRAP_SECRET is empty" })),
         ));
     }
 
@@ -319,47 +322,70 @@ async fn bootstrap(
         ));
     }
 
-    // Belt-and-suspenders: if any prior build already minted keys without the
-    // sentinel being set, keep refusing so we don't produce a second admin.
-    let existing_count =
-        count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
-    if existing_count > 0 {
-        return Ok((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "bootstrap already complete" })),
-        ));
+    // The sentinel is now claimed. Everything below can fail (DB errors, key
+    // minting), and a failure AFTER the claim would permanently brick bootstrap
+    // with zero admin keys unless we release the claim. Run the remaining work
+    // in a block and, on any error, delete the sentinel so bootstrap is
+    // retryable. The legitimate "already complete" branch keeps the sentinel.
+    let outcome: Result<(StatusCode, Json<Value>), AppError> = async {
+        // Belt-and-suspenders: if any prior build already minted keys without the
+        // sentinel being set, keep refusing so we don't produce a second admin.
+        let existing_count =
+            count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?;
+        if existing_count > 0 {
+            return Ok((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "bootstrap already complete" })),
+            ));
+        }
+
+        // SECURITY (MT-F15): user_id=1 is the reserved operator sentinel.
+        // Insert the row explicitly so later AUTOINCREMENT-driven user
+        // creation never collides with it and so every tenant-scoped query
+        // has a real FK target. INSERT OR IGNORE is idempotent.
+        state
+            .db
+            .write(|conn| {
+                Ok(conn.execute(
+                    "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
+                     VALUES (1, 'operator', 'admin', 1)",
+                    [],
+                )?)
+            })
+            .await
+            .map_err(AppError)?;
+
+        let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
+        let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;
+
+        Ok((
+            StatusCode::CREATED,
+            Json(json!({
+                "key": raw_key.clone(),
+                "api_key": raw_key,
+                "name": key.name,
+                "scopes": key.scopes,
+                "user_id": key.user_id,
+                "message": "Bootstrap complete. Store this key -- it will not be shown again."
+            })),
+        ))
     }
+    .await;
 
-    // SECURITY (MT-F15): user_id=1 is the reserved operator sentinel.
-    // Insert the row explicitly so later AUTOINCREMENT-driven user
-    // creation never collides with it and so every tenant-scoped query
-    // has a real FK target. INSERT OR IGNORE is idempotent.
-    state
-        .db
-        .write(|conn| {
-            Ok(conn.execute(
-                "INSERT OR IGNORE INTO users (id, username, role, is_admin) \
-                 VALUES (1, 'operator', 'admin', 1)",
-                [],
-            )?)
-        })
-        .await
-        .map_err(AppError)?;
-
-    let scopes = vec![Scope::Read, Scope::Write, Scope::Admin];
-    let (key, raw_key) = create_key(&state.db, 1, "admin", scopes, None).await?;
-
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "key": raw_key.clone(),
-            "api_key": raw_key,
-            "name": key.name,
-            "scopes": key.scopes,
-            "user_id": key.user_id,
-            "message": "Bootstrap complete. Store this key -- it will not be shown again."
-        })),
-    ))
+    if outcome.is_err() {
+        // Release the claim so a subsequent bootstrap can retry. Best-effort:
+        // if this delete also fails there is nothing more we can do, and the
+        // original error is the one worth surfacing.
+        let _ = state
+            .db
+            .write(|conn| {
+                Ok::<_, kleos_lib::EngError>(
+                    conn.execute("DELETE FROM app_state WHERE key = 'bootstrap_claimed'", [])?,
+                )
+            })
+            .await;
+    }
+    outcome
 }
 
 // --- Stats ---
@@ -536,13 +562,13 @@ async fn backfill_entities(
     let mut entities_created: i64 = 0;
     let mut links_created: i64 = 0;
 
-    for (memory_id, content) in memories {
-        // Use user_id = 1 as the tenant-shard owner for backfill; the field is
-        // ignored internally (post migration v35) but must be supplied for the
-        // function signature. If we ever need per-memory user_id we can add it
-        // to the backfill query.
+    for (memory_id, content, user_id) in memories {
+        // Attribute extracted entities to the memory's real owner. The tenancy
+        // repair (v55/v64) restored user_id to the entity tables, so a
+        // hardcoded user_id=1 misattributes every tenant's entities to the
+        // operator account in shared-monolith mode.
         match kleos_lib::graph::entities::extract_and_link_entities(
-            &state.db, memory_id, &content, 1,
+            &state.db, memory_id, &content, user_id,
         )
         .await
         {
@@ -653,6 +679,24 @@ async fn admin_tasks(
     require_admin(&auth)?;
     let stats = kleos_lib::jobs::get_job_stats(&state.db).await?;
     to_json(stats)
+}
+
+/// GET /admin/dead-letters -- list service dead-letter rows (newest first),
+/// optionally filtered by `?service=` and capped by `?limit=` (default 50,
+/// max 200). Rows are written by ServiceGuard when a guarded internal call
+/// exhausts its retries; pruning past the retention window is automatic.
+#[tracing::instrument(skip_all)]
+async fn admin_dead_letters(
+    State(state): State<AppState>,
+    Auth(auth): Auth,
+    Query(query): Query<DeadLettersQuery>,
+) -> Result<Json<Value>, AppError> {
+    require_admin(&auth)?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let items =
+        kleos_lib::resilience::list_dead_letters(&state.db, query.service.as_deref(), limit)
+            .await?;
+    Ok(Json(json!({ "count": items.len(), "dead_letters": items })))
 }
 
 /// POST /admin/cred/resolve -- ask credd to resolve a cred slot for a named agent.
@@ -984,7 +1028,7 @@ async fn backup_handler(
     // operators could save a corrupted file and only discover it at restore
     // time. integrity_check runs SQLite's `PRAGMA integrity_check` against
     // the snapshot and returns early on any reported issue.
-    match kleos_lib::db::backup::integrity_check(&tmp_path).await {
+    match kleos_lib::db::backup::integrity_check(&tmp_path, state.encryption_key).await {
         Ok(messages) if !messages.is_empty() => {
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(AppError(kleos_lib::EngError::Internal(format!(
@@ -1149,7 +1193,8 @@ async fn admin_pitr_prepare(
     // Previously any absolute path was accepted, letting an admin token write
     // DB snapshots anywhere the process could reach.
     let dest = sanitize_pitr_dest(&state.config.data_dir, &body.dest_path)?;
-    let prepared = kleos_lib::db::pitr::prepare_restore(&dir, target, &dest).await?;
+    let prepared =
+        kleos_lib::db::pitr::prepare_restore(&dir, target, &dest, state.encryption_key).await?;
     Ok(Json(json!(prepared)))
 }
 
@@ -1316,7 +1361,7 @@ async fn admin_vector_rebuild_index(
         "row_count": row_count,
         "chunk_rebuilt": chunk_rebuilt,
         "chunk_row_count": chunk_row_count,
-        "min_rows_for_index": kleos_lib::vector::lance::MIN_ROWS_FOR_INDEX,
+        "min_rows_for_index": kleos_lib::vector::MIN_ROWS_FOR_INDEX,
     })))
 }
 
@@ -1836,6 +1881,14 @@ async fn admin_monolith_status(
     })))
 }
 
+/// Columns copied from the monolith into a tenant shard during drain.
+///
+/// `user_id` MUST be included: without it the INSERT leaves shard rows at the
+/// schema default (user_id = 0), and since shard reads still filter
+/// `WHERE user_id = ?` the drained memories become invisible to their owner.
+/// Ordering is load-bearing: the row-copy reads `content` at index 0 and
+/// `created_at` at `col_count - 2`, so `content` must stay first and
+/// `created_at`/`updated_at` must stay the last two columns.
 const MONOLITH_DRAIN_COLUMNS: &str = "\
     content, category, source, session_id, importance, \
     embedding, embedding_vec_1024, version, is_latest, \
@@ -1844,7 +1897,7 @@ const MONOLITH_DRAIN_COLUMNS: &str = "\
     forget_after, forget_reason, model, recall_hits, recall_misses, \
     adaptive_score, pagerank_score, last_accessed_at, access_count, \
     tags, episode_id, decay_score, confidence, sync_id, status, \
-    space_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
+    space_id, user_id, fsrs_stability, fsrs_difficulty, fsrs_storage_strength, \
     fsrs_retrieval_strength, fsrs_learning_state, fsrs_reps, fsrs_lapses, \
     fsrs_last_review_at, is_superseded, is_consolidated, \
     valence, arousal, dominant_emotion, created_at, updated_at";
@@ -1902,6 +1955,7 @@ async fn admin_monolith_drain(
     let mut total_drained = 0usize;
     let mut total_skipped = 0usize;
     let mut total_errors = 0usize;
+    let mut total_failed = 0usize;
 
     for uid in &user_ids {
         let uid_val = *uid;
@@ -1959,6 +2013,7 @@ async fn admin_monolith_drain(
         let row_count = rows.len();
         let mut inserted = 0usize;
         let mut skipped = 0usize;
+        let mut failed = 0usize;
 
         let col_insert_owned = col_insert.clone();
         let insert_result = tenant_db
@@ -1985,21 +2040,25 @@ async fn admin_monolith_drain(
                         .collect();
                     match tx.execute(&col_insert_owned, params.as_slice()) {
                         Ok(_) => inserted += 1,
+                        // Count insert failures separately from dedup skips: a
+                        // failed row did NOT reach the shard and must not be
+                        // forgotten in the monolith below.
                         Err(e) => {
                             tracing::warn!(error = %e, "drain: insert failed");
-                            skipped += 1;
+                            failed += 1;
                         }
                     }
                 }
                 tx.commit()?;
-                Ok((inserted, skipped))
+                Ok((inserted, skipped, failed))
             })
             .await;
 
         match insert_result {
-            Ok((ins, skip)) => {
+            Ok((ins, skip, fail)) => {
                 inserted = ins;
                 skipped = skip;
+                failed = fail;
             }
             Err(e) => {
                 tracing::error!(user_id = uid_val, error = %e, "drain: batch insert failed");
@@ -2012,7 +2071,11 @@ async fn admin_monolith_drain(
             }
         }
 
-        if inserted > 0 {
+        // Reclaim the source rows only when every non-duplicate row is safely in
+        // the shard. If any insert failed, leave the monolith rows intact so a
+        // re-run can migrate them; blanket-forgetting on partial success would
+        // permanently lose the rows that never landed.
+        if inserted > 0 && failed == 0 {
             let mark_result = state
                 .db
                 .write(move |conn| {
@@ -2029,6 +2092,12 @@ async fn admin_monolith_drain(
             if let Err(e) = mark_result {
                 tracing::error!(user_id = uid_val, error = %e, "drain: failed to mark monolith rows forgotten");
             }
+        } else if failed > 0 {
+            tracing::warn!(
+                user_id = uid_val,
+                failed,
+                "drain: leaving monolith rows intact after partial insert failure"
+            );
         }
 
         per_user.push(json!({
@@ -2036,16 +2105,23 @@ async fn admin_monolith_drain(
             "monolith_rows": row_count,
             "inserted": inserted,
             "skipped_duplicate": skipped,
+            "failed": failed,
+            // When rows failed to insert their monolith copies are retained for retry.
+            "source_retained": failed > 0,
         }));
 
         total_drained += inserted;
         total_skipped += skipped;
+        total_failed += failed;
     }
 
     Ok(Json(json!({
-        "status": "drained",
+        // "drained" only when nothing failed; "partial" flags that some source
+        // rows were retained and a re-run is needed.
+        "status": if total_failed > 0 { "partial" } else { "drained" },
         "total_inserted": total_drained,
         "total_skipped_duplicate": total_skipped,
+        "total_failed_rows": total_failed,
         "total_errors": total_errors,
         "per_user": per_user,
     })))
@@ -2278,24 +2354,26 @@ async fn force_retry_deprovision(
                 "deprovision {dep_id} not found"
             )))
         })?;
+    // A missing tenant row means there is nothing to retry against; enqueuing
+    // a teardown job with an empty tenant_id would run against nothing and
+    // report as re-enqueued. Surface it instead of a misleading success.
     let tenant_row = registry
         .registry_db()
-        .get_by_user_id(&log.target_user_id.to_string())?;
-    // Extract tenant_id before consuming tenant_row in the if-let to avoid borrow-after-move.
-    let tenant_id = tenant_row
-        .as_ref()
-        .map(|r| r.tenant_id.clone())
-        .unwrap_or_default();
-    if let Some(row) = tenant_row {
-        registry.registry_db().update_status(
-            &row.tenant_id,
-            kleos_lib::tenant::types::TenantStatus::Deleting,
-        )?;
-    }
+        .get_by_user_id(&log.target_user_id.to_string())?
+        .ok_or_else(|| {
+            AppError(kleos_lib::EngError::NotFound(format!(
+                "no tenant row for user_id {}; nothing to retry",
+                log.target_user_id
+            )))
+        })?;
+    registry.registry_db().update_status(
+        &tenant_row.tenant_id,
+        kleos_lib::tenant::types::TenantStatus::Deleting,
+    )?;
     let payload = serde_json::json!({
         "deprovision_id": dep_id,
         "user_id": log.target_user_id,
-        "tenant_id": tenant_id,
+        "tenant_id": tenant_row.tenant_id,
     })
     .to_string();
     kleos_lib::jobs::enqueue_job(&state.db, "deprovision_teardown", &payload, 5).await?;
@@ -2359,9 +2437,13 @@ async fn skip_shard_deprovision(
         .registry_db()
         .update_deletion_log_shard_skipped(&dep_id, note)?;
 
+    // The log row was already marked skipped above, so a missing tenant row is
+    // reported rather than erroring: the response distinguishes "skipped and
+    // cleaned" from "skipped but no tenant row existed to clean".
     let tenant_row = registry
         .registry_db()
         .get_by_user_id(&log.target_user_id.to_string())?;
+    let tenant_row_found = tenant_row.is_some();
     if let Some(row) = &tenant_row {
         kleos_lib::tenant::teardown::delete_monolith_rows(&state.db, log.target_user_id).await?;
         registry.registry_db().mark_tombstone(&row.tenant_id)?;
@@ -2369,6 +2451,7 @@ async fn skip_shard_deprovision(
 
     Ok(Json(json!({
         "skipped": true,
+        "tenant_row_found": tenant_row_found,
         "deprovision_id": dep_id,
     })))
 }

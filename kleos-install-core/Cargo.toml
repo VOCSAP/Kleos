@@ -1,15 +1,14 @@
 [package]
 name = "kleos-install-core"
-version = "1.8.0"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Shared core logic for the Kleos interactive installer"
 license = "Elastic-2.0"
 
 [dependencies]
-kleos-config = { path = "../kleos-config", version = "1.8.0" }
+kleos-config = { path = "../kleos-config", version = "1.10.0" }
 serde = { workspace = true }
-serde_json = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
 dirs = { workspace = true }
@@ -17,4 +16,6 @@ toml = { workspace = true }
 reqwest = { workspace = true, features = ["blocking"] }
 thiserror = { workspace = true }
 hex = { workspace = true }
-semver = "1"
+
+[dev-dependencies]
+tempfile = { workspace = true }

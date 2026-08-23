@@ -37,8 +37,4 @@ pub enum InstallError {
     /// Upgrade detection or execution failed.
     #[error("upgrade error: {0}")]
     Upgrade(String),
-
-    /// The user cancelled the installation.
-    #[error("installation cancelled by user")]
-    Cancelled,
 }

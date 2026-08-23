@@ -1,21 +1,29 @@
-pub mod pool;
 mod types;
 
+/// Re-exported so callers can select the HTTP wire format explicitly (see
+/// [`HttpReranker::with_format`]).
+pub use self::types::RerankFormat;
 use self::types::{
-    CohereRerankRequest, CohereRerankResponse, RerankFormat, RerankResult, TeiRerankRequest,
-    TeiRerankResponse,
+    CohereRerankRequest, CohereRerankResponse, RerankResult, TeiRerankRequest, TeiRerankResponse,
 };
 use crate::config::Config;
 use crate::db::Database;
+#[cfg(feature = "ml")]
 use crate::embeddings::download::ensure_reranker_model;
 use crate::resilience::ServiceGuard;
 use crate::{EngError, Result};
 use async_trait::async_trait;
+#[cfg(feature = "ml")]
 use ort::session::Session;
+#[cfg(feature = "ml")]
 use ort::value::Tensor;
+#[cfg(feature = "ml")]
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(feature = "ml")]
+use std::sync::Mutex;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+#[cfg(feature = "ml")]
 use tokenizers::Tokenizer;
 use tracing::{info, warn};
 
@@ -64,12 +72,14 @@ pub trait Reranker: Send + Sync {
 // --- ONNX cross-encoder backend (IBM Granite) ---
 
 /// Cross-encoder reranker using IBM Granite model via ONNX Runtime.
+#[cfg(feature = "ml")]
 pub struct OnnxReranker {
     inner: Arc<RerankerInner>,
     top_k: usize,
 }
 
 /// Shared, thread-safe inner state for the ONNX reranker (model session + tokenizer).
+#[cfg(feature = "ml")]
 struct RerankerInner {
     /// ONNX Runtime session guarded by a mutex (the session is not Sync).
     session: Mutex<Session>,
@@ -80,6 +90,7 @@ struct RerankerInner {
 }
 
 /// A staged reranker model discovered on disk: its directory and short name.
+#[cfg(feature = "ml")]
 struct StagedReranker {
     /// Directory holding `tokenizer.json` + `model_quantized.onnx`.
     dir: PathBuf,
@@ -96,6 +107,7 @@ struct StagedReranker {
 /// reranker (`reranker`/`granite`) and that hold BOTH model files qualify, so the embedder
 /// dir (bge-m3) is never mistaken for a cross-encoder. Returns the lowest-named match for
 /// determinism, or `None` when nothing usable is staged.
+#[cfg(feature = "ml")]
 fn find_staged_reranker_fallback(
     configured_dir: &Path,
     configured_name: &str,
@@ -122,6 +134,7 @@ fn find_staged_reranker_fallback(
 }
 
 /// Constructor for the local ONNX cross-encoder reranker.
+#[cfg(feature = "ml")]
 impl OnnxReranker {
     /// Load the Granite cross-encoder model and tokenizer and build the reranker.
     pub async fn new(config: &Config) -> Result<Self> {
@@ -205,6 +218,7 @@ impl OnnxReranker {
 }
 
 /// Cross-encoder scoring on the shared model session.
+#[cfg(feature = "ml")]
 impl RerankerInner {
     /// Score a single query-document pair. Returns relevance score 0-1 (sigmoid of logit).
     fn score_pair(&self, query: &str, document: &str) -> Result<f32> {
@@ -262,6 +276,7 @@ impl RerankerInner {
 }
 
 /// Reranker implementation backed by the local ONNX cross-encoder.
+#[cfg(feature = "ml")]
 #[async_trait]
 impl Reranker for OnnxReranker {
     #[tracing::instrument(
@@ -285,6 +300,20 @@ impl Reranker for OnnxReranker {
 
         let k = self.top_k.min(results.len());
 
+        // Normalize the fusion scores across the reranked window onto [0,1] before
+        // blending. The fusion score is RRF-scale (~0.006-0.05) while the CE score is
+        // a [0,1] sigmoid, so blending them raw leaves the (1-w) fusion weight
+        // negligible and the reranked order effectively pure cross-encoder. Min-max
+        // scaling restores the intended contribution of the fusion signal.
+        let (fusion_min, fusion_max) = results
+            .iter()
+            .take(k)
+            .map(|r| r.score)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), s| {
+                (lo.min(s), hi.max(s))
+            });
+        let fusion_span = fusion_max - fusion_min;
+
         for result in results.iter_mut().take(k) {
             // Prefer the best-matching chunk over the full memory content: a long memory
             // truncated at the cross-encoder's 512-token window can hide the very passage
@@ -306,10 +335,17 @@ impl Reranker for OnnxReranker {
             // gate reads an uncontaminated [0,1] confidence rather than the compound
             // `score` (which is entangled with decay/pagerank/recency).
             result.ce_confidence = Some(ce_score as f64);
-            // Blend cross-encoder with the original fusion score (default 70/30,
-            // KLEOS_RERANKER_CE_WEIGHT tunable).
+            // Blend cross-encoder with the normalized fusion score (default 70/30,
+            // KLEOS_RERANKER_CE_WEIGHT tunable). With span 0 (single candidate or
+            // all-equal fusion) the fusion term is a neutral 0.5 so ordering falls to
+            // the cross-encoder.
             let w = reranker_ce_weight();
-            result.score = ce_score as f64 * w + result.score * (1.0 - w);
+            let norm_fusion = if fusion_span > 0.0 {
+                (result.score - fusion_min) / fusion_span
+            } else {
+                0.5
+            };
+            result.score = ce_score as f64 * w + norm_fusion * (1.0 - w);
             // Provenance: mark this row as cross-encoded so callers and the eval harness can
             // see the reranker actually ran (hybrid_search defaults reranked=false).
             result.reranked = Some(true);
@@ -480,6 +516,14 @@ impl HttpReranker {
     /// Configured wire format.
     pub fn format(&self) -> RerankFormat {
         self.format
+    }
+
+    /// Override the wire format detected from the environment. Lets callers
+    /// (and tests) select TEI vs Cohere explicitly instead of mutating the
+    /// process-global `KLEOS_RERANKER_FORMAT` env var.
+    pub fn with_format(mut self, format: RerankFormat) -> Self {
+        self.format = format;
+        self
     }
 }
 
@@ -662,6 +706,18 @@ impl Reranker for HttpReranker {
         // Apply scores: blend remote score with the original (default 70/30,
         // KLEOS_RERANKER_CE_WEIGHT tunable).
         let w = reranker_ce_weight();
+        // Normalize the fusion scores across the reranked set onto [0,1] before
+        // blending (see the ONNX backend): the fusion score is RRF-scale while the
+        // remote CE score is [0,1], so without this the (1-w) fusion weight is
+        // negligible and reranked order is effectively pure cross-encoder.
+        let (fusion_min, fusion_max) = rerank_resp
+            .iter()
+            .filter(|item| item.index < results.len())
+            .map(|item| results[item.index].score)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), s| {
+                (lo.min(s), hi.max(s))
+            });
+        let fusion_span = fusion_max - fusion_min;
         for item in &rerank_resp {
             if item.index < results.len() {
                 // L2 ABSTAIN: capture a [0,1]-normalized cross-encoder confidence
@@ -675,7 +731,18 @@ impl Reranker for HttpReranker {
                     RerankFormat::Cohere => item.score,
                 };
                 results[item.index].ce_confidence = Some(ce_norm);
-                results[item.index].score = item.score * w + results[item.index].score * (1.0 - w);
+                // Normalized fusion contribution; neutral 0.5 when the span is zero.
+                let norm_fusion = if fusion_span > 0.0 {
+                    (results[item.index].score - fusion_min) / fusion_span
+                } else {
+                    0.5
+                };
+                // Blend with the [0,1]-normalized CE confidence, not the raw wire
+                // score: a TEI logit is unbounded and would both swamp the (1-w)
+                // fusion term and push blended scores outside [0,1] (breaking
+                // min-relevance gating downstream). For Cohere, ce_norm IS the
+                // wire score, so this is an identity change for that arm.
+                results[item.index].score = ce_norm * w + norm_fusion * (1.0 - w);
                 // Provenance: mark this row as reranked (see the ONNX backend).
                 results[item.index].reranked = Some(true);
             }
@@ -735,10 +802,21 @@ pub async fn create_reranker(
         .to_lowercase();
 
     match backend.as_str() {
+        #[cfg(feature = "ml")]
         "onnx" | "local" => {
             let reranker = OnnxReranker::new(config).await?;
             Ok(Some(Arc::new(reranker) as Arc<dyn Reranker>))
         }
+        // ml-off builds carry no local cross-encoder: fail with actionable
+        // guidance instead of a missing-model error. Callers already treat
+        // create_reranker errors as "run without a reranker".
+        #[cfg(not(feature = "ml"))]
+        "onnx" | "local" => Err(EngError::InvalidInput(
+            "the onnx reranker backend requires a build with the 'ml' feature; \
+             rebuild with default features, or set KLEOS_RERANKER_BACKEND=http \
+             or none"
+                .into(),
+        )),
         "http" | "remote" | "cohere" | "jina" | "tei" => {
             let reranker = HttpReranker::from_env(config.reranker_top_k, db).ok_or_else(|| {
                 EngError::InvalidInput(
@@ -755,8 +833,9 @@ pub async fn create_reranker(
     }
 }
 
-#[cfg(test)]
-/// Tests for the offline staged-reranker fallback resolution.
+#[cfg(all(test, feature = "ml"))]
+/// Tests for the offline staged-reranker fallback resolution (an ml-only
+/// concern: the fallback exists to keep the local ONNX backend alive).
 mod tests {
     use super::*;
 

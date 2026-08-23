@@ -1,6 +1,7 @@
 use kleos_lib::config::{Config, EncryptionMode};
 use kleos_lib::cred::CreddClient;
 use kleos_lib::db::Database;
+#[cfg(feature = "ml")]
 use kleos_lib::embeddings::onnx::OnnxProvider;
 use kleos_lib::embeddings::openai::OpenAiProvider;
 use kleos_lib::embeddings::EmbeddingProvider;
@@ -10,9 +11,9 @@ use kleos_lib::llm::{local::LocalModelClient, OllamaConfig};
 use kleos_lib::reranker::{self, Reranker};
 use kleos_lib::services::brain::create_brain_backend;
 use kleos_server::background::{
-    start_auto_backup_task, start_auto_checkpoint_task, start_event_retention_task,
-    start_job_cleanup_task, start_job_worker_task, start_session_reaper_task,
-    start_stale_task_sweeper, start_vector_sync_replay_task,
+    start_auto_backup_task, start_auto_checkpoint_task, start_dead_letter_retention_task,
+    start_event_retention_task, start_job_cleanup_task, start_job_worker_task,
+    start_session_reaper_task, start_stale_task_sweeper, start_vector_sync_replay_task,
 };
 use kleos_server::dreamer::{new_stats_handle, start_dreamer_task};
 use kleos_server::state::AppState;
@@ -93,43 +94,43 @@ async fn main() {
         let embedder = Arc::clone(&embedder);
         let config = config.clone();
         tokio::spawn(async move {
+            // Bound the embedding HTTP client: a hung endpoint must not block
+            // embed() (and therefore every vector operation) forever. Fall back
+            // to a default client only if the builder somehow fails.
+            let embed_http_client = reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new());
             let provider: Option<Arc<dyn EmbeddingProvider>> = if let Some(p) =
-                OpenAiProvider::from_env(reqwest::Client::new(), config.embedding_dim)
+                OpenAiProvider::from_env(embed_http_client, config.embedding_dim)
             {
                 tracing::info!(url = %p.url, dim = config.embedding_dim, "loading OpenAI-compatible embedding provider...");
-                match p.embed("warmup").await {
-                    Ok(_) => {
-                        tracing::info!("OpenAI-compatible embedding provider ready");
-                        Some(Arc::new(p))
-                    }
-                    Err(e) => {
-                        tracing::warn!("OpenAI-compatible embedding provider probe failed: {}. Vector search disabled.", e);
-                        None
+                // Probe with capped-backoff retry: the embedding endpoint is
+                // often still starting when this server boots, and the old
+                // single-shot probe left vector search disabled until a manual
+                // restart. A permanently-dead endpoint keeps warning at the
+                // backoff cap, which is visible and recoverable in place.
+                let mut delay = std::time::Duration::from_secs(5);
+                loop {
+                    match p.embed("warmup").await {
+                        Ok(_) => {
+                            tracing::info!("OpenAI-compatible embedding provider ready");
+                            break Some(Arc::new(p));
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                retry_in_secs = delay.as_secs(),
+                                "OpenAI-compatible embedding provider probe failed: {}. Vector search disabled until it succeeds.",
+                                e
+                            );
+                            tokio::time::sleep(delay).await;
+                            delay = (delay * 2).min(std::time::Duration::from_secs(300));
+                        }
                     }
                 }
             } else {
-                tracing::info!("loading ONNX embedding model in background...");
-                match OnnxProvider::new(&config).await {
-                    Ok(provider) => {
-                        let prewarm_start = std::time::Instant::now();
-                        match provider.embed("warmup").await {
-                            Ok(_) => tracing::info!(
-                                elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
-                                "embedder pre-warm complete"
-                            ),
-                            Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
-                        }
-                        tracing::info!("ONNX embedding provider ready");
-                        Some(Arc::new(provider))
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
-                                e
-                            );
-                        None
-                    }
-                }
+                load_local_onnx_embedder(&config).await
             };
 
             let mut guard = embedder.write().await;
@@ -325,6 +326,20 @@ async fn main() {
         }
     }
 
+    // Resume Loom workflow runs left in-flight by a previous crash/restart on
+    // the primary DB. In shared-monolith mode this is the whole loom dataset; in
+    // sharded mode a tenant shard's runs resume when that shard is next advanced.
+    match kleos_lib::services::loom::recover_inflight_runs(&db_arc).await {
+        Ok(advanced) => {
+            if advanced > 0 {
+                tracing::info!(advanced, "loom in-flight run recovery complete");
+            }
+        }
+        Err(e) => {
+            tracing::error!("loom in-flight run recovery failed: {e}");
+        }
+    }
+
     // H-005: per-pattern semaphores cap concurrent fire-and-forget background tasks.
     // Each defaults to 64 permits; set KLEOS_BG_SEM_<NAME>=N to override.
     fn bg_sem(name: &str, default: usize) -> Arc<Semaphore> {
@@ -337,7 +352,6 @@ async fn main() {
     }
     let fact_extract_sem = bg_sem("FACT_EXTRACT", 64);
     let brain_absorb_sem = bg_sem("BRAIN_ABSORB", 64);
-    let audit_log_sem = bg_sem("AUDIT_LOG", 64);
     let ingest_sem = bg_sem("INGEST", 64);
     let background_tasks = Arc::new(tokio::sync::Mutex::new(JoinSet::<()>::new()));
 
@@ -353,7 +367,9 @@ async fn main() {
     }
 
     let state = AppState {
-        db: db_arc,
+        // Cloned (not moved) so the audit-worker spawn below can also borrow it.
+        db: Arc::clone(&db_arc),
+        encryption_key,
         credd: Arc::new(CreddClient::from_config(&config)),
         config: Arc::new(config),
         embedder,
@@ -374,8 +390,12 @@ async fn main() {
         background_tasks: Arc::clone(&background_tasks),
         fact_extract_sem,
         brain_absorb_sem,
-        audit_log_sem,
         ingest_sem,
+        // Dedicated audit worker ([57]): middleware try_sends, worker writes.
+        audit_tx: kleos_server::middleware::audit::spawn_audit_worker(
+            Arc::clone(&db_arc),
+            shutdown.clone(),
+        ),
         replay_guard: Arc::new(kleos_lib::auth_piv::ReplayGuard::new()),
         session_manager: Arc::new(
             kleos_lib::auth_piv::SessionManager::from_env_or_generate()
@@ -405,6 +425,21 @@ async fn main() {
             start_pagerank_refresh_job(Arc::clone(&db), Arc::clone(&cfg))
         }));
         tracing::info!("background pagerank refresh job started");
+
+        // Finding [5]: tenant shards hold their own graphs, so the monolith
+        // refresh above never touches them. Mirror the community-detection
+        // pattern and run the per-shard refresh whenever a registry exists.
+        if let Some(ref registry) = state.tenant_registry {
+            let registry = Arc::clone(registry);
+            let cfg = Arc::clone(&state.config);
+            supervised.push(Supervised::spawn("pagerank-refresh-tenant", move || {
+                kleos_lib::jobs::pagerank_refresh_tenant::start_pagerank_refresh_job_tenant(
+                    Arc::clone(&registry),
+                    Arc::clone(&cfg),
+                )
+            }));
+            tracing::info!("background tenant pagerank refresh job started");
+        }
     } else {
         tracing::info!("pagerank disabled -- skipping refresh job");
     }
@@ -473,8 +508,9 @@ async fn main() {
 
     {
         let db = Arc::clone(&state.db);
+        let registry = state.tenant_registry.clone();
         supervised.push(Supervised::spawn("job-worker", move || {
-            start_job_worker_task(Arc::clone(&db))
+            start_job_worker_task(Arc::clone(&db), registry.clone())
         }));
         tracing::info!("job-worker background task started");
     }
@@ -507,6 +543,14 @@ async fn main() {
         tracing::info!("event-retention background task started (3600s interval)");
     }
 
+    {
+        let db = Arc::clone(&state.db);
+        supervised.push(Supervised::spawn("dead-letter-retention", move || {
+            start_dead_letter_retention_task(Arc::clone(&db))
+        }));
+        tracing::info!("dead-letter-retention background task started (3600s interval)");
+    }
+
     if state.config.backup_enabled {
         let db = Arc::clone(&state.db);
         let data_dir = state.config.data_dir.clone();
@@ -514,6 +558,7 @@ async fn main() {
         let interval = state.config.backup_interval_secs;
         let retention = state.config.backup_retention;
         let retention_daily = state.config.backup_retention_daily;
+        let backup_key = state.encryption_key;
         supervised.push(Supervised::spawn("auto-backup", move || {
             start_auto_backup_task(
                 Arc::clone(&db),
@@ -522,6 +567,7 @@ async fn main() {
                 interval,
                 retention,
                 retention_daily,
+                backup_key,
             )
         }));
         tracing::info!(
@@ -669,10 +715,20 @@ async fn register_job_handlers(
     // ingestion.fact_extract -- durable fast_extract_facts invocation.
     // Payload: { "memory_id": i64, "content": string, "user_id": i64,
     //            "episode_id": i64|null }
+    //
+    // The memory row these jobs reference lives in whichever database the
+    // ingestion request wrote it to: the tenant's own shard in sharded mode,
+    // the monolith otherwise. The handler must resolve that same database
+    // from the payload's user_id at execution time -- the fixed monolith db
+    // it used to close over would look up the memory_id in the wrong file
+    // (per-file autoincrement ids collide across shards, so a collision
+    // derives facts against another tenant's memory rather than erroring).
     {
         let db = Arc::clone(&db);
+        let registry = tenant_registry.clone();
         kleos_lib::jobs::register_job_handler("ingestion.fact_extract", move |payload| {
             let db = Arc::clone(&db);
+            let registry = registry.clone();
             async move {
                 let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
                     kleos_lib::EngError::InvalidInput(
@@ -692,6 +748,10 @@ async fn register_job_handlers(
                     ),
                 )?;
                 let episode_id = payload.get("episode_id").and_then(|v| v.as_i64());
+                let db = match registry {
+                    Some(ref reg) => reg.get_or_create(&user_id.to_string()).await?.db.clone(),
+                    None => db,
+                };
                 kleos_lib::intelligence::extraction::fast_extract_facts(
                     db.as_ref(),
                     &content,
@@ -709,11 +769,14 @@ async fn register_job_handlers(
     // ingestion.entity_extract -- durable extract_and_link_entities invocation.
     // Payload: { "memory_id": i64, "content": string, "user_id": i64,
     //            "episode_id": i64|null }
-    // Shares the same payload shape as ingestion.fact_extract for symmetry.
+    // Shares the same payload shape as ingestion.fact_extract for symmetry,
+    // including the execution-time shard resolution (see the comment there).
     {
         let db = Arc::clone(&db);
+        let registry = tenant_registry.clone();
         kleos_lib::jobs::register_job_handler("ingestion.entity_extract", move |payload| {
             let db = Arc::clone(&db);
+            let registry = registry.clone();
             async move {
                 let memory_id = payload.get("memory_id").and_then(|v| v.as_i64()).ok_or(
                     kleos_lib::EngError::InvalidInput(
@@ -732,6 +795,10 @@ async fn register_job_handlers(
                         "ingestion.entity_extract payload missing user_id".into(),
                     ),
                 )?;
+                let db = match registry {
+                    Some(ref reg) => reg.get_or_create(&user_id.to_string()).await?.db.clone(),
+                    None => db,
+                };
                 kleos_lib::graph::entities::extract_and_link_entities(
                     db.as_ref(),
                     memory_id,
@@ -865,4 +932,44 @@ async fn supervise(mut tasks: Vec<Supervised>, shutdown: CancellationToken) {
         tasks[idx].handle = new_handle;
         tracing::info!(task = name, attempts, "background task respawned");
     }
+}
+
+/// Load and pre-warm the in-process ONNX embedding provider (ml builds).
+/// Failure degrades to no embedder: vector search disabled, FTS retrieval
+/// stays active, mirroring the remote-provider probe-failure path.
+#[cfg(feature = "ml")]
+async fn load_local_onnx_embedder(config: &Config) -> Option<Arc<dyn EmbeddingProvider>> {
+    tracing::info!("loading ONNX embedding model in background...");
+    match OnnxProvider::new(config).await {
+        Ok(provider) => {
+            let prewarm_start = std::time::Instant::now();
+            match provider.embed("warmup").await {
+                Ok(_) => tracing::info!(
+                    elapsed_ms = prewarm_start.elapsed().as_millis() as u64,
+                    "embedder pre-warm complete"
+                ),
+                Err(e) => tracing::warn!("embedder pre-warm failed: {}", e),
+            }
+            tracing::info!("ONNX embedding provider ready");
+            Some(Arc::new(provider))
+        }
+        Err(e) => {
+            tracing::warn!(
+                "ONNX embedding provider failed to initialize: {}. Vector search disabled.",
+                e
+            );
+            None
+        }
+    }
+}
+
+/// ml-off stub: no in-process embedder is compiled into this build. Configure
+/// KLEOS_EMBEDDING_URL for a remote provider, or run FTS-only.
+#[cfg(not(feature = "ml"))]
+async fn load_local_onnx_embedder(_config: &Config) -> Option<Arc<dyn EmbeddingProvider>> {
+    tracing::info!(
+        "no KLEOS_EMBEDDING_URL configured and this build has the 'ml' feature disabled; \
+         running without an embedding provider (vector search disabled, FTS retrieval active)"
+    );
+    None
 }

@@ -469,8 +469,22 @@ pub async fn decay_tick(
     let importance_map: std::collections::HashMap<i64, i32> =
         db_patterns.iter().map(|p| (p.id, p.importance)).collect();
 
-    // Decay each pattern in the network
-    for &id in network.pattern_ids().to_vec().iter() {
+    // The in-process Hopfield network is shared across tenants (one instance per
+    // server process, holding every user's absorbed patterns), so
+    // network.pattern_ids() spans all owners. Restrict decay, persistence, and
+    // eviction to the caller's own patterns: iterating all of them would mutate
+    // and evict other tenants' patterns from memory while only the caller's DB
+    // rows are persisted/deleted -- cross-tenant recall loss and in-memory/DB
+    // desync.
+    let owned_ids: Vec<i64> = network
+        .pattern_ids()
+        .iter()
+        .copied()
+        .filter(|&id| network.owner_of(id) == Some(user_id))
+        .collect();
+
+    // Decay each of the caller's own patterns in the network
+    for &id in owned_ids.iter() {
         let old_strength = match network.strength(id) {
             Some(s) => s,
             None => continue,
@@ -489,8 +503,8 @@ pub async fn decay_tick(
         }
     }
 
-    // Persist decayed strengths
-    for &id in network.pattern_ids() {
+    // Persist decayed strengths (caller's patterns only)
+    for &id in &owned_ids {
         if let Some(s) = network.strength(id) {
             if let Err(e) = pattern::update_strength(db, id, user_id, s).await {
                 tracing::warn!(pattern_id = id, strength = s, error = %e, "update_strength (decay persist) failed");
@@ -528,8 +542,14 @@ pub async fn prune_weak(
     user_id: i64,
     threshold: f32,
 ) -> Result<usize> {
+    // Shared network: prune only the caller's own patterns. Iterating all
+    // pattern_ids would evict other tenants' weak patterns from the in-process
+    // network while the DB delete below is scoped to user_id (see decay_tick).
     let mut dead = Vec::new();
     for &id in network.pattern_ids().to_vec().iter() {
+        if network.owner_of(id) != Some(user_id) {
+            continue;
+        }
         if let Some(s) = network.strength(id) {
             if s < threshold {
                 dead.push(id);

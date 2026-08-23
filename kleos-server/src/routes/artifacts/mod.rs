@@ -193,8 +193,9 @@ async fn upload_artifact(
     let display_name = name.unwrap_or_else(|| filename.clone());
     let size_bytes = data.len() as i64;
 
-    // Enforce per-tenant storage quota before writing.
-    kleos_lib::quota::enforce_storage_quota(&db, size_bytes).await?;
+    // Enforce per-tenant storage quota before writing. Pass the caller's id so
+    // the usage sum is scoped to this tenant in shared-monolith mode.
+    kleos_lib::quota::enforce_storage_quota(&db, auth.effective_user_id(), size_bytes).await?;
 
     // Compute hash and extract indexable text from plaintext BEFORE encryption.
     let sha256 = artifacts::sha256_hex(&data);
@@ -228,7 +229,8 @@ async fn upload_artifact(
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("blobs");
-            let dest = artifacts::blob_path(&blobs_dir, &sha256, is_encrypted);
+            let dest =
+                artifacts::blob_path(&blobs_dir, auth.effective_user_id(), &sha256, is_encrypted);
 
             // Create sharded subdirectory.
             if let Some(parent) = dest.parent() {
@@ -424,7 +426,13 @@ async fn download_artifact(
                     format!("attachment; filename=\"{}\"", safe_filename),
                 )
                 .body(body)
-                .unwrap()
+                .map_err(|e| {
+                    // A crafted stored mime_type can produce an invalid header value;
+                    // fail with 500 rather than panicking the worker.
+                    AppError(kleos_lib::EngError::Internal(format!(
+                        "failed to build artifact response: {e}"
+                    )))
+                })?
                 .into_response())
         }
     } else {

@@ -229,11 +229,14 @@ async fn fail_step_handler(
 
 /// Handler for `GET /loom/stats`.
 ///
-/// Returns aggregate workflow and run statistics scoped to the authenticated user.
+/// Returns aggregate workflow and run statistics for the caller's resolved DB.
+/// In sharded mode that is the caller's own tenant shard; in shared-monolith
+/// mode the loom tables are not user-scoped, so the counts span all tenants
+/// (see `loom::get_stats`). `Auth` still gates the endpoint.
 async fn get_stats_handler(
-    Auth(auth): Auth,
+    Auth(_auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let stats = get_stats(&db, Some(auth.effective_user_id())).await?;
+    let stats = get_stats(&db).await?;
     Ok(Json(json!(stats)))
 }

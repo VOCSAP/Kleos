@@ -19,6 +19,7 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 
+/// Request/query body types for the prompt routes.
 mod types;
 use types::{GeneratePromptRequest, HeaderBody, PromptQuery};
 
@@ -47,6 +48,81 @@ fn living_excluded_categories() -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Default maximum characters of any single memory injected into the living
+/// prompt's "Relevant Memories" section.
+///
+/// Caps total size so a handful of large ingestion chunks (up to ~3000 chars
+/// each) cannot flood the agent's context -- the root of the 15.6KB session-start
+/// blowup. Eight memories at this cap stay well under 5KB.
+const DEFAULT_LIVING_MEMORY_CHARS: usize = 600;
+
+/// Reads the per-memory char cap for living-prompt injection (env-tunable).
+fn living_memory_char_cap() -> usize {
+    std::env::var("KLEOS_RECALL_MEMORY_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n| *n >= 80)
+        .unwrap_or(DEFAULT_LIVING_MEMORY_CHARS)
+}
+
+/// True when already-trimmed `content` appears to begin in the middle of a word
+/// -- a broken ingestion chunk like "ect and must be wrapped".
+///
+/// Such fragments open with a lowercase ASCII letter. Clean memories open with a
+/// capital, a digit, or markdown/structural punctuation ('#', '-', '|', '*',
+/// '`', quote, paren), so gating on a leading lowercase ASCII letter drops the
+/// fragments without discarding well-formed content. Belt-and-suspenders with
+/// the chunker fix and the prod data cleanup: even a stray fragment never
+/// surfaces.
+fn starts_midword(content: &str) -> bool {
+    content
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase())
+}
+
+/// Truncate `content` to at most `cap` bytes, preferring a trailing whitespace
+/// boundary so a word is not cut, appending an ellipsis when truncated.
+fn truncate_for_injection(content: &str, cap: usize) -> String {
+    if content.len() <= cap {
+        return content.to_string();
+    }
+    let mut end = cap.min(content.len());
+    while end > 0 && !content.is_char_boundary(end) {
+        end -= 1;
+    }
+    // Prefer cutting at the last whitespace before the cap, but only if it does
+    // not throw away more than half the budget (avoids near-empty snippets).
+    if let Some(ws) = content[..end].rfind(char::is_whitespace) {
+        if ws >= cap / 2 {
+            end = ws;
+        }
+    }
+    format!("{} ...", content[..end].trim_end())
+}
+
+/// Format one Broca action as an injected activity line: "- [<created_at>] <text>\n".
+///
+/// Prefers the narrated sentence; falls back to "<agent> <action>" so a row
+/// without a narrative still yields a readable line. Narratives can embed
+/// payload values, so the text is credential-scrubbed like every other
+/// injected surface before it reaches the agent's context.
+fn activity_line(act: &kleos_lib::services::broca::ActionEntry) -> String {
+    let line = match act.narrative.as_deref() {
+        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+        _ => format!("{} {}", act.agent, act.action),
+    };
+    let scrubbed = scrub_credentials(&line);
+    format!("- [{}] {}\n", act.created_at, scrubbed.trim())
+}
+
+/// Format one recalled memory as an imperative, citable line:
+/// "- [mem <id>] <content>\n". The id tag is what lets an agent cite, re-fetch,
+/// and be audited against the specific memory it relied on.
+fn memory_line(id: i64, capped: &str) -> String {
+    format!("- [mem {id}] {}\n", capped.trim())
+}
+
 /// Returns true for curated sources that are exempt from the category denylist.
 ///
 /// Plan documents ingest as `plan:<relpath>`, but the auto-categorizer relabels
@@ -71,6 +147,7 @@ fn living_result_is_relevant(
     }
 }
 
+/// Builds the prompt-generation router (`/prompt`, `/prompt/generate`, `/header`).
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/prompt", get(get_prompt))
@@ -78,6 +155,7 @@ pub fn router() -> Router<AppState> {
         .route("/header", post(post_header))
 }
 
+/// GET /prompt -- render a context prompt for `query` at a token budget.
 async fn get_prompt(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -108,6 +186,8 @@ async fn get_prompt(
     })))
 }
 
+/// POST /prompt/generate -- assemble the living prompt (personality, relevant
+/// memories, brain patterns, growth) for a session-start agent.
 async fn post_prompt_generate(
     Auth(auth): Auth,
     State(state): State<AppState>,
@@ -141,6 +221,8 @@ async fn post_prompt_generate(
     let include_instincts = body.include_instincts.unwrap_or(false);
     let brain_limit = body.brain_limit.unwrap_or(5).clamp(1, 20);
     let growth_limit = body.growth_limit.unwrap_or(5).clamp(1, 20);
+    let include_activity = body.include_activity.unwrap_or(false);
+    let activity_limit = body.activity_limit.unwrap_or(10).clamp(1, 30);
 
     let mut sources: Vec<Value> = Vec::new();
     let mut sections: Vec<String> = Vec::new();
@@ -228,6 +310,7 @@ async fn post_prompt_generate(
         // sidecar recall gate so one config governs every injection path.
         let min_semantic = living_min_semantic();
         let excluded = living_excluded_categories();
+        let memory_chars = living_memory_char_cap();
         let relevant: Vec<&kleos_lib::memory::types::SearchResult> = results
             .iter()
             .filter(|r| {
@@ -235,18 +318,30 @@ async fn post_prompt_generate(
                     || !excluded.contains(&r.memory.category.to_ascii_lowercase())
             })
             .filter(|r| living_result_is_relevant(r, min_semantic))
+            // Drop broken ingestion chunks that begin mid-word ("ect...",
+            // "ple...") so corrupt fragments never enter the agent's context.
+            .filter(|r| !starts_midword(r.memory.content.trim()))
             .collect();
         if !relevant.is_empty() {
-            let mut buf = String::from("## Relevant Memories\n");
+            // Imperative framing (mem 28166 rec. d): a bare bullet list reads as
+            // advisory and gets skipped under context pressure. Open with a
+            // directive and tag every entry with its memory id so the agent can
+            // cite, re-fetch, and be audited against specific memories.
+            let mut buf = String::from(
+                "## Relevant Memories\n\
+                 These are retrieved facts from your memory store, not suggestions. \
+                 Treat them as ground truth unless directly contradicted by fresher \
+                 evidence, and cite the [mem <id>] tag when you rely on one.\n",
+            );
             for r in relevant {
                 // Scrub credentials before injection, matching the brain path
                 // (which scrubs each MemorySummary). Without this, raw stored
                 // content (including any leaked secret or tool-call fragment)
                 // would pass straight into the agent's context.
                 let scrubbed = scrub_credentials(r.memory.content.trim());
-                buf.push_str("- ");
-                buf.push_str(scrubbed.trim());
-                buf.push('\n');
+                // Cap each memory so a few large chunks cannot flood context.
+                let capped = truncate_for_injection(scrubbed.trim(), memory_chars);
+                buf.push_str(&memory_line(r.memory.id, &capped));
                 sources.push(json!({
                     "id": r.memory.id,
                     "kind": "memory",
@@ -377,20 +472,12 @@ async fn post_prompt_generate(
                         }));
                     }
 
-                    let kleos_url = state
-                        .config
-                        .eidolon
-                        .url
-                        .as_deref()
-                        .unwrap_or("http://127.0.0.1:4200");
-
                     let living = build_living_prompt(
                         task,
                         &task_memories,
                         &task_contradictions,
                         &infra_memories,
                         &failure_memories,
-                        kleos_url,
                         &state.config.servers,
                         &state.config.safety.rules,
                     );
@@ -426,6 +513,50 @@ async fn post_prompt_generate(
                     }));
                 }
                 sections.push(buf);
+            }
+        }
+    }
+
+    // Living prompt: Recent agent activity from the Broca action log. Injecting
+    // the feed makes coordination state arrive with the prompt instead of
+    // depending on the agent choosing to fetch it -- the documented failure
+    // mode of prose "read the feed" rules (they decay; injection does not).
+    if include_activity {
+        match kleos_lib::services::broca::query_actions(
+            &db,
+            None,
+            None,
+            None,
+            None,
+            activity_limit,
+            0,
+            auth.effective_user_id(),
+        )
+        .await
+        {
+            Ok(actions) if !actions.is_empty() => {
+                let mut buf = String::from(
+                    "## Recent Agent Activity\n\
+                     The latest actions other agents reported, newest first. Read \
+                     before acting: do not duplicate in-flight work, and build on \
+                     what just finished.\n",
+                );
+                for act in &actions {
+                    buf.push_str(&activity_line(act));
+                    sources.push(json!({
+                        "id": act.id,
+                        "kind": "activity",
+                        "agent": act.agent,
+                        "action": act.action,
+                    }));
+                }
+                sections.push(buf);
+            }
+            Ok(_) => {}
+            // The feed is an enhancement; a broken feed must never take prompt
+            // generation down with it.
+            Err(e) => {
+                tracing::warn!("prompt/generate broca activity fetch failed: {}", e);
             }
         }
     }
@@ -472,6 +603,7 @@ async fn post_prompt_generate(
     })))
 }
 
+/// POST /header -- generate a compact context header for the given actor.
 async fn post_header(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
@@ -513,6 +645,7 @@ fn truncate_prompt_to_chars(prompt: &mut String, target_chars: usize) -> bool {
     true
 }
 
+/// Unit tests for prompt-route helpers and request deserialization.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,6 +666,7 @@ mod tests {
         assert_eq!(q, "short");
     }
 
+    /// All living-context flags deserialize from a full request body.
     #[test]
     fn generate_request_deserializes_living_flags() {
         let json = r#"{
@@ -554,6 +688,7 @@ mod tests {
         assert_eq!(req.growth_limit, Some(3));
     }
 
+    /// Omitted living-context flags default to None (server applies defaults).
     #[test]
     fn generate_request_defaults_living_flags_to_none() {
         let json = r#"{"agent": "a", "task": "t"}"#;
@@ -578,6 +713,47 @@ mod tests {
         assert!(!is_curated_source("planning-notes"));
     }
 
+    /// Mid-word fragments (broken ingestion chunks) are rejected; well-formed
+    /// content opening with a capital, digit, or markdown punctuation passes.
+    #[test]
+    fn starts_midword_rejects_fragments_only() {
+        assert!(starts_midword("ect and must be wrapped. |"));
+        assert!(starts_midword("ple: fail soft, log/report"));
+        assert!(starts_midword("nt.\n\n- step 4"));
+        assert!(!starts_midword("The quick brown fox"));
+        assert!(!starts_midword("## Heading"));
+        assert!(!starts_midword("- bullet item"));
+        assert!(!starts_midword("| table | cell |"));
+        assert!(!starts_midword("`code`"));
+        assert!(!starts_midword("2026-06-29 deploy note"));
+        assert!(!starts_midword(""));
+    }
+
+    /// Per-memory truncation caps size, prefers a word boundary, and is a no-op
+    /// under budget.
+    #[test]
+    fn truncate_for_injection_caps_on_word_boundary() {
+        let short = "well within budget";
+        assert_eq!(truncate_for_injection(short, 600), short);
+
+        let long = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
+        let out = truncate_for_injection(long, 20);
+        assert!(out.len() <= 24, "capped length: {out:?}");
+        assert!(out.ends_with(" ..."));
+        // Must not cut inside a word: the body before " ..." ends at a vocab word.
+        let body = out.trim_end_matches(" ...");
+        assert!(
+            long.starts_with(body),
+            "body must be a clean prefix: {body:?}"
+        );
+        assert!(!body.ends_with("charli"), "must not truncate mid-word");
+
+        // Multibyte safety: budget landing inside an emoji must not panic.
+        let mb = format!("{}\u{1F600}{}", "a".repeat(10), "b".repeat(40));
+        let _ = truncate_for_injection(&mb, 12);
+    }
+
+    /// The static instinct-domains summary contains its expected anchor text.
     #[test]
     fn instinct_summary_is_static() {
         // Verify the instinct summary text is available
@@ -590,5 +766,63 @@ mod tests {
         );
         assert!(summary.contains("Instinct Domains"));
         assert!(summary.contains("infrastructure"));
+    }
+
+    /// Builds an [`ActionEntry`] fixture for activity-line tests.
+    fn action_fixture(narrative: Option<&str>) -> kleos_lib::services::broca::ActionEntry {
+        kleos_lib::services::broca::ActionEntry {
+            id: 7,
+            agent: "codex".into(),
+            service: "kleos".into(),
+            action: "task.completed".into(),
+            payload: serde_json::json!({}),
+            narrative: narrative.map(|n| n.to_string()),
+            axon_event_id: None,
+            user_id: 1,
+            created_at: "2026-07-23 01:00:00".into(),
+        }
+    }
+
+    /// Activity lines prefer the narrated sentence when one exists.
+    #[test]
+    fn activity_line_prefers_narrative() {
+        let act = action_fixture(Some("codex finished the galaxy merge"));
+        assert_eq!(
+            activity_line(&act),
+            "- [2026-07-23 01:00:00] codex finished the galaxy merge\n"
+        );
+    }
+
+    /// Rows with no narrative (or a blank one) fall back to "<agent> <action>"
+    /// so the injected line is never empty.
+    #[test]
+    fn activity_line_falls_back_to_agent_action() {
+        let expected = "- [2026-07-23 01:00:00] codex task.completed\n";
+        assert_eq!(activity_line(&action_fixture(None)), expected);
+        assert_eq!(activity_line(&action_fixture(Some("   "))), expected);
+    }
+
+    /// Memory lines carry the citable [mem <id>] tag and trim their content.
+    #[test]
+    fn memory_line_tags_id() {
+        assert_eq!(
+            memory_line(35712, " branch audit \n"),
+            "- [mem 35712] branch audit\n"
+        );
+    }
+
+    /// The new activity flags deserialize when present and default to None when
+    /// omitted, so the server-side defaults (off, limit 10) stay in control.
+    #[test]
+    fn generate_request_activity_flags() {
+        let json = r#"{"agent": "a", "task": "t", "include_activity": true, "activity_limit": 5}"#;
+        let req: GeneratePromptRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.include_activity, Some(true));
+        assert_eq!(req.activity_limit, Some(5));
+
+        let bare: GeneratePromptRequest =
+            serde_json::from_str(r#"{"agent": "a", "task": "t"}"#).unwrap();
+        assert!(bare.include_activity.is_none());
+        assert!(bare.activity_limit.is_none());
     }
 }

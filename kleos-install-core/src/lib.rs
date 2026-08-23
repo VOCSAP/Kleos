@@ -33,7 +33,8 @@ pub mod plan;
 
 // Convenience re-exports for the most commonly used types.
 pub use components::{
-    all_components, profile_components, resolve_dependencies, Component, Platform, Profile,
+    all_components, check_platform_published, is_platform_published, profile_components,
+    resolve_dependencies, Component, Platform, Profile,
 };
 pub use config::{EmbeddingConfig, InstallerConfig, RerankerConfig, SecurityConfig, ServerConfig};
 pub use download::{DownloadProgress, Release, ReleaseAsset};
@@ -41,4 +42,4 @@ pub use error::InstallError;
 pub use plan::{InstallPlan, InstallProgress, InstallResult};
 pub use platform::PlatformInfo;
 pub use system::SystemIntegration;
-pub use upgrade::{ExistingInstall, InstalledComponent};
+pub use upgrade::{ExistingInstall, InstalledComponent, PreservedSecrets};

@@ -11,7 +11,7 @@ use eframe::egui;
 use kleos_install_core::system::SystemIntegration;
 use kleos_install_core::{
     profile_components, EmbeddingConfig, ExistingInstall, InstallPlan, InstallerConfig,
-    PlatformInfo, Profile, RerankerConfig, SecurityConfig, ServerConfig,
+    PlatformInfo, PreservedSecrets, Profile, RerankerConfig, SecurityConfig, ServerConfig,
 };
 
 use crate::steps;
@@ -108,6 +108,10 @@ pub struct InstallerApp {
     pub selected_profile: Option<Profile>,
     /// Security keys and access-control settings.
     pub security_config: SecurityConfig,
+    /// Secrets read from an existing install's `.env`, if any, so the
+    /// Security step can indicate which fields were preserved rather than
+    /// freshly generated.
+    pub preserved_secrets: PreservedSecrets,
     /// System service integration choice.
     pub system_integration: SystemIntegration,
     /// Directory where binaries will be placed.
@@ -118,8 +122,14 @@ pub struct InstallerApp {
     pub version: String,
 
     // -- Detected environment --
-    /// Platform detection results.
+    /// Platform detection results. Only meaningful when `platform_error` is
+    /// `None`; otherwise this holds an inert placeholder that must not be
+    /// rendered or acted on.
     pub platform_info: PlatformInfo,
+    /// Set when platform detection failed at startup (unrecognized OS/arch,
+    /// or a recognized platform with no published release). When `Some`, the
+    /// wizard shows a dedicated error screen instead of the normal steps.
+    pub platform_error: Option<String>,
     /// An existing Kleos installation detected on this machine, if any.
     pub existing_install: Option<ExistingInstall>,
 
@@ -172,6 +182,10 @@ pub struct InstallerApp {
     // -- UI transient state --
     /// Whether the "are you sure you want to quit?" confirmation is visible.
     pub show_quit_confirm: bool,
+    /// Whether the "installation in progress, cannot close" warning is
+    /// visible. Set when the native window-close button is clicked while
+    /// `install_running` is `true`.
+    pub show_install_warning: bool,
 
     // -- Advanced toggles --
     /// Expert toggles collected on the Advanced step, folded into the plan.
@@ -182,18 +196,34 @@ pub struct InstallerApp {
 impl InstallerApp {
     /// Construct a new [`InstallerApp`] with sensible defaults.
     ///
-    /// Detects the current platform, generates initial security keys, and
-    /// applies the Kleos visual theme to the egui context.
+    /// Detects the current platform, generates initial security keys (or
+    /// reuses ones preserved from an existing install), and applies the
+    /// Kleos visual theme to the egui context.
+    ///
+    /// Platform detection can fail (unrecognized OS/arch, or a recognized
+    /// platform with no published release). Rather than propagating that as
+    /// an error out of `eframe`'s app-creation closure -- which would leave a
+    /// GUI user staring at a window that flashed and vanished with no
+    /// message -- the error is stored in `platform_error` and a placeholder
+    /// `PlatformInfo` is used so construction can still complete; `update`
+    /// renders a dedicated error screen whenever `platform_error` is `Some`.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply_theme(&cc.egui_ctx);
 
-        let platform_info = PlatformInfo::detect();
+        let (platform_info, platform_error) = match PlatformInfo::detect() {
+            Ok(info) => (info, None),
+            Err(e) => (fallback_platform_info(), Some(e.to_string())),
+        };
         let install_dir = platform_info.default_install_dir.clone();
         let config_dir = platform_info.default_config_dir.clone();
 
-        let security_config = generate_security_config();
-
         let existing_install = kleos_install_core::upgrade::detect_existing_install();
+        let preserved_secrets = existing_install
+            .as_ref()
+            .map(kleos_install_core::upgrade::read_preserved_secrets)
+            .unwrap_or_default();
+
+        let security_config = generate_security_config(&preserved_secrets);
 
         let selected_components = profile_components(Profile::Server)
             .into_iter()
@@ -213,11 +243,13 @@ impl InstallerApp {
             selected_components,
             selected_profile: Some(Profile::Server),
             security_config,
+            preserved_secrets,
             system_integration: SystemIntegration::None,
             install_dir,
             config_dir,
             version: "latest".to_string(),
             platform_info,
+            platform_error,
             existing_install,
             embedding_provider_local: true,
             reranker_mode: 2,
@@ -238,6 +270,7 @@ impl InstallerApp {
             install_progress_channel: Arc::new(Mutex::new(Vec::new())),
             install_result: None,
             show_quit_confirm: false,
+            show_install_warning: false,
             advanced: steps::advanced::AdvancedToggles::default(),
         }
     }
@@ -381,6 +414,25 @@ impl eframe::App for InstallerApp {
     /// Draws the step-indicator panel at the top, the current step's content
     /// in the central area, and the navigation controls in a bottom panel.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Platform detection failed at startup -- show the error screen only
+        // and skip every other panel; there is nothing safe to configure or
+        // install without a valid platform.
+        if let Some(message) = &self.platform_error {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                draw_platform_error(ui, message);
+            });
+            return;
+        }
+
+        // Intercept the native window-close request while an install is
+        // running: non-atomic file writes may be in flight, so cancel the
+        // close and show a warning instead of letting the window disappear
+        // mid-write.
+        if self.install_running && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.show_install_warning = true;
+        }
+
         // Drain progress messages from background thread every frame.
         if self.install_running {
             self.poll_progress();
@@ -391,6 +443,13 @@ impl eframe::App for InstallerApp {
         egui::TopBottomPanel::top("step_indicator").show(ctx, |ui| {
             draw_step_indicator(ui, self);
         });
+
+        // -- Upgrade notice banner (only when an existing install was found) --
+        if let Some(existing) = &self.existing_install {
+            egui::TopBottomPanel::top("upgrade_banner").show(ctx, |ui| {
+                draw_upgrade_banner(ui, existing);
+            });
+        }
 
         // -- Bottom panel: navigation buttons --
         egui::TopBottomPanel::bottom("nav_buttons").show(ctx, |ui| {
@@ -410,8 +469,27 @@ impl eframe::App for InstallerApp {
             });
         });
 
-        // -- Quit confirmation modal --
-        if self.show_quit_confirm {
+        // -- Install-in-progress warning modal (native close attempted mid-install) --
+        if self.show_install_warning && self.install_running {
+            egui::Window::new("Installation in Progress")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.label(
+                        "Kleos is still writing files to disk and cannot be safely \
+                         interrupted. Please wait for the installation to finish \
+                         before closing this window.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("OK").clicked() {
+                        self.show_install_warning = false;
+                    }
+                });
+        }
+
+        // -- Quit confirmation modal (never shown while an install is running) --
+        if self.show_quit_confirm && !self.install_running {
             egui::Window::new("Quit Installer?")
                 .collapsible(false)
                 .resizable(false)
@@ -473,11 +551,27 @@ fn draw_step_indicator(ui: &mut egui::Ui, app: &InstallerApp) {
     ui.separator();
 }
 
+/// Return `true` if every validatable field on the current step passes its
+/// validator, mirroring the TUI's field validators. Steps with no
+/// validatable input (Components, Security, SystemIntegration, Advanced,
+/// Summary) are always valid -- the wizard is strictly linear, so by the
+/// time the user reaches Summary every earlier step was valid at the moment
+/// they last advanced past it.
+fn current_step_is_valid(app: &InstallerApp) -> bool {
+    match app.current_step {
+        WizardStep::ServerConfig => steps::server::is_valid(app),
+        WizardStep::Embeddings => steps::embeddings::is_valid(app),
+        _ => true,
+    }
+}
+
 /// Draw the navigation bar (Back / Next / Cancel) at the bottom of the window.
 ///
 /// The "Back" button is hidden on the first step. The "Next" button becomes
-/// "Install" when on the final Summary step. Cancel shows the quit
-/// confirmation unless the install is already complete.
+/// "Install" when on the final Summary step and is disabled while the current
+/// step has an active validation error. Cancel shows the quit confirmation
+/// unless the install is already complete, and is disabled entirely while an
+/// install is running -- there is no safe way to cancel mid-write.
 fn draw_nav_buttons(ui: &mut egui::Ui, app: &mut InstallerApp) {
     ui.separator();
     ui.add_space(4.0);
@@ -488,13 +582,15 @@ fn draw_nav_buttons(ui: &mut egui::Ui, app: &mut InstallerApp) {
         } else {
             "Cancel"
         };
-        if ui.button(close_label).clicked() {
-            if app.install_result.is_some() {
-                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
-            } else {
-                app.show_quit_confirm = true;
+        ui.add_enabled_ui(!app.install_running, |ui| {
+            if ui.button(close_label).clicked() {
+                if app.install_result.is_some() {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    app.show_quit_confirm = true;
+                }
             }
-        }
+        });
 
         // Push Back / Next to the right.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -506,7 +602,11 @@ fn draw_nav_buttons(ui: &mut egui::Ui, app: &mut InstallerApp) {
                     "Next >"
                 };
 
-                if ui.button(next_label).clicked() {
+                let valid = current_step_is_valid(app);
+                let clicked = ui
+                    .add_enabled_ui(valid, |ui| ui.button(next_label).clicked())
+                    .inner;
+                if clicked {
                     if app.is_last_step() {
                         app.install_running = true;
                         start_install(app);
@@ -610,20 +710,93 @@ impl kleos_install_core::InstallProgress for ChannelProgress {
 }
 
 // ---------------------------------------------------------------------------
+// Upgrade / platform-error UI
+// ---------------------------------------------------------------------------
+
+/// Draw a persistent banner shown on every step once an existing Kleos
+/// installation has been detected, so the upgrade behavior is visible well
+/// before the user reaches the Install button: an existing install was
+/// found, already-configured secrets are being reused rather than
+/// regenerated, and the current config will be backed up before being
+/// overwritten (see `InstallPlan::execute`'s upgrade backup step).
+fn draw_upgrade_banner(ui: &mut egui::Ui, existing: &ExistingInstall) {
+    ui.add_space(4.0);
+    ui.colored_label(
+        theme::COLOR_WARN,
+        format!(
+            "Existing Kleos installation detected at {} ({} component(s)) -- this is an \
+             upgrade. Preserved secrets will be reused (any missing ones generated fresh) \
+             and the current kleos.toml/.env will be backed up before being overwritten.",
+            existing.install_dir.display(),
+            existing.components.len(),
+        ),
+    );
+    ui.add_space(4.0);
+}
+
+/// Render a full-window error screen shown when platform detection failed at
+/// startup (unrecognized OS/arch, or a recognized platform with no published
+/// Kleos release). The wizard cannot proceed without a valid platform, so
+/// this replaces the normal step flow entirely rather than letting the
+/// window flash and vanish with no visible message.
+fn draw_platform_error(ui: &mut egui::Ui, message: &str) {
+    ui.add_space(40.0);
+    ui.vertical_centered(|ui| {
+        ui.heading("Unable to Start Installer");
+        ui.add_space(12.0);
+        ui.colored_label(theme::COLOR_ERROR, message);
+        ui.add_space(20.0);
+        if ui.button("Quit").clicked() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    });
+}
+
+/// Build an inert placeholder [`PlatformInfo`] used only when platform
+/// detection fails, so [`InstallerApp::new`] can still finish constructing a
+/// valid `InstallerApp`. Every field is a harmless default; none of it is
+/// ever read because `update` shows the platform-error screen instead of the
+/// normal wizard whenever `platform_error` is `Some`.
+fn fallback_platform_info() -> PlatformInfo {
+    PlatformInfo {
+        platform: kleos_install_core::Platform::LinuxX64,
+        os_name: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        has_systemd: false,
+        has_launchd: false,
+        default_install_dir: PathBuf::new(),
+        default_config_dir: PathBuf::new(),
+        default_data_dir: PathBuf::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Key generation
 // ---------------------------------------------------------------------------
 
-/// Generate a new [`SecurityConfig`] with cryptographically random keys.
-///
-/// Delegates to `kleos_install_core::security::generate_hex_key` which uses
-/// the OS CSPRNG via the `rand` crate.
-fn generate_security_config() -> SecurityConfig {
+/// Generate a new [`SecurityConfig`], reusing any secrets preserved from an
+/// existing installation's `.env` and generating a fresh value (via the OS
+/// CSPRNG through the `rand` crate, delegated to `kleos_install_core::security`)
+/// for any field that came back `None` -- no existing install, or a field
+/// missing/unreadable in the existing `.env`. `initial_api_key` is never
+/// preserved (it is not part of `PreservedSecrets`): a fresh one is always
+/// issued.
+fn generate_security_config(preserved: &PreservedSecrets) -> SecurityConfig {
     use kleos_install_core::security;
     SecurityConfig {
-        encryption_key: security::generate_encryption_key(),
-        api_key_pepper: security::generate_api_key_pepper(),
+        encryption_key: preserved
+            .encryption_key
+            .clone()
+            .unwrap_or_else(security::generate_encryption_key),
+        api_key_pepper: preserved
+            .api_key_pepper
+            .clone()
+            .unwrap_or_else(security::generate_api_key_pepper),
         initial_api_key: security::generate_api_key(),
-        hmac_secret: security::generate_hmac_secret(),
+        hmac_secret: preserved
+            .hmac_secret
+            .clone()
+            .unwrap_or_else(security::generate_hmac_secret),
         open_access: false,
     }
 }

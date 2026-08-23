@@ -95,6 +95,18 @@ async fn update_project(
     Path(id): Path<i64>,
     Json(body): Json<kleos_lib::projects::UpdateProjectBody>,
 ) -> Result<Json<Value>, AppError> {
+    // Validate the status against the allowlist before writing, mirroring
+    // create_project, so an invalid status is a 400 rather than a silently
+    // persisted bad value.
+    if let Some(ref status) = body.status {
+        if !kleos_lib::projects::VALID_PROJECT_STATUSES.contains(&status.as_str()) {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                "invalid status '{}'; must be one of {:?}",
+                status,
+                kleos_lib::projects::VALID_PROJECT_STATUSES
+            ))));
+        }
+    }
     let metadata = body
         .metadata
         .as_ref()

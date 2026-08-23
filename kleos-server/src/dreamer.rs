@@ -46,6 +46,38 @@ pub fn monotonic_millis() -> u64 {
 const GROWTH_REFLECT_CHANCE: f64 = 0.2;
 /// Number of recent memory contents to feed growth::reflect as context.
 const GROWTH_CONTEXT_SIZE: usize = 20;
+/// Number of most-recent growth observations fed back as `existing_growth`,
+/// so the LLM's "do NOT repeat things already known" instruction has actual
+/// prior observations to check against instead of always seeing `None`.
+const EXISTING_GROWTH_LIMIT: usize = 15;
+
+/// Join the most-recent growth observations into a single string for the
+/// `existing_growth` field of `GrowthReflectRequest`. `space_id` scopes the
+/// observations to the same space as the reflection being fed (Patch 33) --
+/// `None` (the legacy/default bucket) falls back to `list_observations`'s
+/// unfiltered "no space scoping" behaviour, matching the convention already
+/// used by routes/prompts/mod.rs for context-assembly call sites that have
+/// no resolved space. The review-gate predicate (status/is_archived) inside
+/// `list_observations` is unconditional, so this never widens past it.
+async fn existing_growth_context(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+) -> Option<String> {
+    match growth::list_observations(db, EXISTING_GROWTH_LIMIT, space_id, None, user_id).await {
+        Ok(obs) if !obs.is_empty() => Some(
+            obs.into_iter()
+                .map(|o| o.content)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Ok(_) => None,
+        Err(e) => {
+            warn!(user_id, error = %e, "dreamer: failed to load existing growth observations");
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct DreamerStats {
@@ -409,7 +441,8 @@ async fn run_cycle(
                     let req = GrowthReflectRequest {
                         service: "dreamer".to_string(),
                         context: merged_ctx,
-                        existing_growth: None,
+                        existing_growth: existing_growth_context(db, *user_id, *space_id_opt)
+                            .await,
                         prompt_override: None,
                         space_id: *space_id_opt,
                     };
@@ -668,10 +701,12 @@ async fn recent_memory_contents_for_space(
 ) -> Result<Vec<String>, EngError> {
     let limit_i64 = limit as i64;
     // 727d97fc merge: combine Patch 35's space scoping with upstream #93's
-    // user_id predicate. Upstream re-added `memories.user_id` (migration 64 /
-    // tenant v55) for monolith multi-user isolation, so the growth pass must
-    // filter BOTH the space (avoid cross-project leakage, Kleos #3028) AND the
-    // user (avoid cross-tenant leakage in monolith mode).
+    // user_id predicate and upstream's review-gate `status != 'pending'`
+    // predicate. Upstream re-added `memories.user_id` (migration 64 / tenant
+    // v55) for monolith multi-user isolation, so the growth pass must filter
+    // BOTH the space (avoid cross-project leakage, Kleos #3028) AND the user
+    // (avoid cross-tenant leakage in monolith mode); `status != 'pending'`
+    // keeps an unreviewed memory out of the growth-reflection context.
     db.read(move |conn| match space_id {
         Some(sid) => {
             let mut stmt = conn
@@ -679,6 +714,7 @@ async fn recent_memory_contents_for_space(
                     "SELECT content FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
                        AND is_latest = 1 AND user_id = ?3 AND space_id = ?1 \
+                       AND status != 'pending' \
                      ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -696,6 +732,7 @@ async fn recent_memory_contents_for_space(
                     "SELECT content FROM memories \
                      WHERE is_forgotten = 0 AND is_archived = 0 \
                        AND is_latest = 1 AND user_id = ?2 AND space_id IS NULL \
+                       AND status != 'pending' \
                      ORDER BY created_at DESC LIMIT ?1",
                 )
                 .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
@@ -805,7 +842,12 @@ async fn run_cycle_tenants(
                         let req = GrowthReflectRequest {
                             service: "dreamer".to_string(),
                             context: ctx,
-                            existing_growth: None,
+                            existing_growth: existing_growth_context(
+                                &tenant_db,
+                                *user_id,
+                                *space_id_opt,
+                            )
+                            .await,
                             prompt_override: None,
                             space_id: *space_id_opt,
                         };

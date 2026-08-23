@@ -18,6 +18,16 @@ if [[ "${PREFLIGHT_SKIP:-0}" == "1" ]]; then
 fi
 
 ROOT="$(git rev-parse --show-toplevel)"
+
+# Optional machine-local gate, run before the repo's own checks. Maintainers can
+# point this at any additional policy check they want applied to outbound
+# content; it is not part of the repo's required checks and is absent by default,
+# so contributors are unaffected. A non-zero exit aborts the push.
+LOCAL_GATE="${GIT_LOCAL_PREPUSH_GATE:-$HOME/.config/git/local-prepush-gate}"
+if [[ -x "$LOCAL_GATE" ]]; then
+    "$LOCAL_GATE" || exit 1
+fi
+
 if [[ ! -f "$ROOT/scripts/preflight.sh" ]]; then
     echo "pre-push: scripts/preflight.sh missing -- skipping." >&2
     exit 0

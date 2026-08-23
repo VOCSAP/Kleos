@@ -61,11 +61,7 @@ pub async fn create_handler(
         );
     }
 
-    let permissions = AgentKeyPermissions {
-        categories: body.categories,
-        allow_raw: body.allow_raw,
-        namespaces: Vec::new(),
-    };
+    let permissions = AgentKeyPermissions::new(body.categories, body.allow_raw, Vec::new());
 
     let (raw_key, key_info) =
         create_agent_key(&state.db, auth.user_id(), &body.name, &permissions).await?;

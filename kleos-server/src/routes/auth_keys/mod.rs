@@ -18,6 +18,16 @@ use crate::{
 mod types;
 use types::{CreateGrantBody, CreateKeyBody, CreateSpaceBody, ListGrantsQuery, RotateKeyBody};
 
+/// Upper bound on a key's derived TTL (seconds). Clamps chrono arithmetic so an
+/// absurd `ttl_secs` cannot overflow the expiry timestamp and panic the handler.
+/// ~100 years, far past any legitimate key lifetime.
+const MAX_KEY_TTL_SECS: i64 = 3_153_600_000;
+
+/// Upper bound on a rotation grace window (hours), for the same overflow reason.
+/// ~100 years.
+const MAX_KEY_GRACE_HOURS: i64 = 876_000;
+
+/// Builds the router for API-key, space, and instance-grant management routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/keys", post(create_key).get(list_keys))
@@ -134,7 +144,7 @@ async fn create_key(
     // Absolute expires_at takes precedence; otherwise derive from ttl_secs.
     let final_expires_at = body.expires_at.clone().or_else(|| {
         body.ttl_secs.filter(|s| *s > 0).map(|s| {
-            (chrono::Utc::now() + chrono::Duration::seconds(s))
+            (chrono::Utc::now() + chrono::Duration::seconds(s.min(MAX_KEY_TTL_SECS)))
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()
         })
@@ -165,6 +175,7 @@ async fn create_key(
     ))
 }
 
+/// Lists the API keys owned by the caller.
 async fn list_keys(
     State(state): State<AppState>,
     Auth(auth_ctx): Auth,
@@ -173,6 +184,7 @@ async fn list_keys(
     Ok(Json(json!({ "keys": keys })))
 }
 
+/// Revokes an API key. Admins may revoke any key; other callers only their own.
 async fn revoke_key(
     State(state): State<AppState>,
     Auth(auth_ctx): Auth,
@@ -218,6 +230,7 @@ async fn revoke_key(
     Ok(Json(json!({ "revoked": true, "id": id })))
 }
 
+/// Rotates an API key: issues a successor and expires the old key after a grace window.
 async fn rotate_key(
     State(state): State<AppState>,
     Auth(auth_ctx): Auth,
@@ -256,7 +269,7 @@ async fn rotate_key(
     let grace_hours = body
         .grace_hours
         .unwrap_or(state.config.auth_key_rotation_grace_hours)
-        .max(1);
+        .clamp(1, MAX_KEY_GRACE_HOURS);
     let grace_expiry = (chrono::Utc::now() + chrono::Duration::hours(grace_hours))
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
@@ -310,6 +323,21 @@ async fn create_space(
 
     let (id, created_at) = db
         .write(move |conn| {
+            // Finding [41]: unbounded space creation let one caller grow the
+            // spaces table without limit. Count-capped per user, checked in
+            // the same write closure as the INSERT so concurrent creates
+            // cannot race past the cap.
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM spaces WHERE user_id = ?1",
+                params![user_id],
+                |row| row.get(0),
+            )?;
+            if count >= kleos_lib::validation::MAX_SPACES_PER_USER {
+                return Err(kleos_lib::EngError::Forbidden(format!(
+                    "space limit reached ({} max)",
+                    kleos_lib::validation::MAX_SPACES_PER_USER
+                )));
+            }
             Ok(conn.query_row(
                 "INSERT INTO spaces (user_id, name, description) VALUES (?1, ?2, ?3) RETURNING id, created_at",
                 params![user_id, name_clone, description],
@@ -328,6 +356,7 @@ async fn create_space(
     ))
 }
 
+/// Lists the spaces owned by the caller.
 async fn list_spaces(
     ResolvedDb(db): ResolvedDb,
     Auth(auth_ctx): Auth,
@@ -374,6 +403,7 @@ async fn list_spaces(
     Ok(Json(json!({ "spaces": spaces })))
 }
 
+/// Deletes a space by id. Admins may delete any space; other callers only their own.
 async fn delete_space(
     ResolvedDb(db): ResolvedDb,
     Auth(auth_ctx): Auth,

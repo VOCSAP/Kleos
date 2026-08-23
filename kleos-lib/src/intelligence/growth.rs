@@ -3,6 +3,8 @@
 //! Observes recent activity, generates observations about patterns, and
 //! stores them as growth memories.
 
+// Dream-cycle telemetry only exists when the brain substrate is compiled in.
+#[cfg(feature = "brain_hopfield")]
 use crate::brain::dream::types::DreamCycleResult;
 use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
@@ -98,10 +100,15 @@ pub async fn list_observations(
     let uid_idx = params_vec.len() + 1;
     params_vec.push(rusqlite::types::Value::Integer(user_id));
     let limit_idx = params_vec.len() + 1;
+    // Review-gate predicate (upstream): unreviewed (pending) or rejected
+    // (is_archived = 1) growth observations must not be listed as active
+    // observations. Unioned with the Patch 33 space_id + upstream user_id
+    // scoping already built into `extra_clause`/`uid_idx` above.
     let sql = format!(
         "SELECT id, content, source, importance, created_at \
          FROM memories \
          WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?{uid_idx}{extra_clause} \
+           AND status != 'pending' AND is_archived = 0 \
          ORDER BY created_at DESC LIMIT ?{limit_idx}"
     );
     db.read(move |conn| {
@@ -141,10 +148,14 @@ pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Re
         // Upstream #70 -- scope by owner: alice must not materialize bob's
         // observation. The user_id filter (upstream) is unioned with the
         // Patch 33 space_id propagation (VOCSAP).
+        // Review-gate predicate (upstream): an unreviewed (pending) or
+        // rejected (is_archived = 1) observation must not be materialized
+        // into an insight.
         let result: Option<(String, String, Option<i64>)> = conn
             .query_row(
                 "SELECT content, source, space_id FROM memories \
-                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2",
+                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2 \
+                 AND status != 'pending' AND is_archived = 0",
                 rusqlite::params![observation_id, user_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
@@ -307,6 +318,7 @@ async fn resolve_growth_observation(
 /// describe what the consolidation cycle did. These are prepended to the
 /// recent-memory context so the LLM reflects on both what happened in
 /// the brain and what the agent recently experienced.
+#[cfg(feature = "brain_hopfield")]
 pub fn build_dream_context(
     result: &DreamCycleResult,
     pattern_count: usize,
@@ -424,9 +436,16 @@ pub async fn reflect(
     let prefix_clone = prefix.clone();
     let is_dup: bool = db
         .read(move |conn| {
+            // Dedup guard (spam prevention), not a content-surfacing path: a
+            // recent pending or approved observation SHOULD suppress a duplicate,
+            // so status is deliberately not filtered here. Only rejected/archived
+            // rows are excluded (is_archived = 0), matching the store-dedup rule at
+            // memory/mod.rs so a genuinely recurring pattern can resurface after a
+            // reject rather than being silently suppressed forever.
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM memories WHERE category = 'growth' \
+                     AND is_archived = 0 \
                      AND substr(content, 1, 200) = ?1 \
                      AND user_id = ?2 \
                      AND created_at > datetime('now', '-24 hours')",
@@ -573,12 +592,15 @@ async fn match_observations(
         return Ok(Vec::new());
     }
     db.read(move |conn| {
+        // Review-gate predicate: unreviewed (pending) or rejected (is_archived = 1)
+        // growth observations must not surface via the FTS match channel.
         let mut stmt = conn.prepare(
             "SELECT m.id, m.content, m.source, m.importance, m.created_at \
                  FROM memories_fts \
                  JOIN memories m ON m.id = memories_fts.rowid \
                  WHERE memories_fts MATCH ?1 \
                    AND m.category = 'growth' AND m.is_forgotten = 0 AND m.user_id = ?2 \
+                   AND m.status != 'pending' AND m.is_archived = 0 \
                  ORDER BY memories_fts.rank LIMIT ?3",
         )?;
         let observations = stmt
@@ -728,6 +750,7 @@ mod tests {
         assert!(kw.contains("gemacht"));
     }
 
+    /// Test fixture: a GrowthObservation with the given content and timestamp.
     fn make_obs(content: &str, created_at: &str) -> GrowthObservation {
         GrowthObservation {
             id: 1,

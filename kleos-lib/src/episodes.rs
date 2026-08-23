@@ -224,11 +224,13 @@ pub async fn get_episode_memories(
     user_id: i64,
 ) -> Result<Vec<serde_json::Value>> {
     db.read(move |conn| {
+        // status != 'pending' is the review-gate predicate: GET
+        // /episodes/{id}/memories must not return pending memory content.
         let mut stmt = conn.prepare(
             "SELECT id, content, category, source, importance, created_at
                  FROM memories
                  WHERE episode_id = ?1 AND user_id = ?2 AND is_forgotten = 0 \
-                   AND is_latest = 1 AND is_archived = 0
+                   AND is_latest = 1 AND is_archived = 0 AND status != 'pending'
                  ORDER BY created_at DESC",
         )?;
 

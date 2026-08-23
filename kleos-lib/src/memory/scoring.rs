@@ -543,23 +543,68 @@ pub fn extract_query_date(query: &str) -> Option<String> {
                 let days = if unit.starts_with("day") {
                     n
                 } else if unit.starts_with("week") {
-                    n * 7
+                    n.saturating_mul(7)
                 } else if unit.starts_with("month") {
-                    n * 30
+                    n.saturating_mul(30)
                 } else {
                     0
                 };
                 if days > 0 {
-                    return Some(
-                        (now - chrono::Duration::days(days))
-                            .format("%Y-%m-%d")
-                            .to_string(),
-                    );
+                    // Clamp before building the Duration: an absurd N (e.g.
+                    // "99999999999 days ago" from a crafted query) would otherwise
+                    // overflow chrono's Duration or the DateTime subtraction and
+                    // panic the request. Saturating_mul above guards the unit scale.
+                    let days = days.min(MAX_QUERY_AGE_DAYS);
+                    if let Some(dt) = now.checked_sub_signed(chrono::Duration::days(days)) {
+                        return Some(dt.format("%Y-%m-%d").to_string());
+                    }
                 }
             }
         }
     }
     None
+}
+
+/// Upper bound (in days) that a natural-language "N units ago" query may resolve
+/// to. Clamps chrono Duration/DateTime math so a crafted query cannot overflow
+/// and panic; ~10,000 years is far past any real memory age.
+const MAX_QUERY_AGE_DAYS: i64 = 3_650_000;
+
+/// Relevance-gate decision shared by search post-filtering and context assembly.
+/// The floor is a `[0,1]` relevance value, so it must be compared against a signal
+/// on that scale: the cross-encoder-blended `score` when the reranker ran,
+/// otherwise the cosine `semantic_score`. Results with neither (FTS-only hits)
+/// carry lexical signal and are kept. The raw RRF-fusion `score` (~0.02) must
+/// never be compared against a similarity-scale floor -- that silently drops the
+/// entire semantic layer when no reranker is active to rescale it.
+pub(crate) fn passes_relevance_gate(
+    reranked: Option<bool>,
+    score: f64,
+    semantic_score: Option<f64>,
+    min_relev: f64,
+) -> bool {
+    let gate = if reranked == Some(true) {
+        Some(score)
+    } else {
+        semantic_score
+    };
+    match gate {
+        Some(s) => s >= min_relev,
+        None => true,
+    }
+}
+
+/// Pick the default relevance floor for the signal `passes_relevance_gate`
+/// will compare. The two arms live on different scales (the CE-blended score
+/// runs far lower than raw bge-m3 cosines; see
+/// `DEFAULT_RERANKED_MIN_RELEVANCE`), so each arm gets its own default. An
+/// explicit caller-supplied floor wins for both arms unchanged.
+pub(crate) fn effective_min_relevance(explicit: Option<f64>, reranked: Option<bool>) -> f64 {
+    match (explicit, reranked) {
+        (Some(x), _) => x,
+        (None, Some(true)) => crate::context::types::DEFAULT_RERANKED_MIN_RELEVANCE,
+        (None, _) => crate::context::types::DEFAULT_MIN_RELEVANCE,
+    }
 }
 
 /// Computes a reciprocal-rank score for one result position.
@@ -678,6 +723,63 @@ mod tests {
         assert!(extract_query_date("yesterday").is_some());
         assert!(extract_query_date("last week").is_some());
         assert!(extract_query_date("3 days ago").is_some());
+    }
+
+    /// A crafted "N units ago" query with an absurd N must clamp, not panic the
+    /// request via chrono Duration/DateTime overflow.
+    #[test]
+    fn extract_relative_absurd_n_clamps_without_panicking() {
+        assert!(extract_query_date("99999999999999 days ago").is_some());
+        assert!(extract_query_date("99999999999999 months ago").is_some());
+        assert!(extract_query_date(&format!("{} weeks ago", i64::MAX)).is_some());
+    }
+
+    /// The relevance gate compares against the scale-appropriate [0,1] signal:
+    /// the CE score when reranked, the cosine semantic_score otherwise, and keeps
+    /// results that carry neither (FTS-only lexical hits).
+    #[test]
+    fn relevance_gate_uses_scale_appropriate_signal() {
+        // Reranked: gate on the already-[0,1] blended score; ignore semantic_score.
+        assert!(passes_relevance_gate(Some(true), 0.62, Some(0.10), 0.55));
+        assert!(!passes_relevance_gate(Some(true), 0.40, Some(0.99), 0.55));
+        // Not reranked: gate on cosine, ignore the tiny RRF-fusion score. A real
+        // match (cosine 0.60) now survives where the raw 0.02 fusion score would
+        // previously have dropped it against the 0.55 floor.
+        assert!(passes_relevance_gate(Some(false), 0.02, Some(0.80), 0.55));
+        assert!(passes_relevance_gate(None, 0.02, Some(0.60), 0.55));
+        assert!(!passes_relevance_gate(Some(false), 0.02, Some(0.30), 0.55));
+        // FTS-only hit (no cosine) is kept regardless of the tiny fusion score.
+        assert!(passes_relevance_gate(Some(false), 0.02, None, 0.55));
+    }
+
+    /// Each gate arm gets a scale-appropriate default floor (cosine 0.55 vs
+    /// CE-blend 0.25), while an explicit caller floor overrides both arms.
+    #[test]
+    fn effective_min_relevance_defaults_split_by_arm() {
+        use crate::context::types::{DEFAULT_MIN_RELEVANCE, DEFAULT_RERANKED_MIN_RELEVANCE};
+        // Explicit override wins on both arms.
+        assert_eq!(effective_min_relevance(Some(0.9), Some(true)), 0.9);
+        assert_eq!(effective_min_relevance(Some(0.9), None), 0.9);
+        // Reranked default is the CE-blend-scale floor.
+        assert_eq!(
+            effective_min_relevance(None, Some(true)),
+            DEFAULT_RERANKED_MIN_RELEVANCE
+        );
+        // Non-reranked (and unknown) defaults stay on the cosine-scale floor.
+        assert_eq!(
+            effective_min_relevance(None, Some(false)),
+            DEFAULT_MIN_RELEVANCE
+        );
+        assert_eq!(effective_min_relevance(None, None), DEFAULT_MIN_RELEVANCE);
+        // A wanted reranked block at the observed 0.28-0.34 band survives the
+        // new default where the old shared 0.55 floor dropped it.
+        assert!(passes_relevance_gate(
+            Some(true),
+            0.28,
+            Some(0.10),
+            effective_min_relevance(None, Some(true))
+        ));
+        assert!(!passes_relevance_gate(Some(true), 0.28, Some(0.10), 0.55));
     }
 
     /// Verifies month-day phrases normalize to a calendar date.

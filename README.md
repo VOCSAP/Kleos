@@ -37,6 +37,7 @@ Memory in Kleos follows the same arc as biological memory -- acquisition, consol
 - **Modern Hopfield network** (feature-gated) with softmax attention and capacity exponential in dimension. Backs an associative instinct system with causal edge scoring.
 - **Personality-shaped recall** -- six signal types (preference, value, motivation, decision, emotion, identity) extracted from stored text. Two agents querying the same memories get different results.
 - **On-store processing** -- SimHash deduplication, SVO contradiction detection, atomic fact decomposition, entity extraction, and auto-linking all happen before the store call returns.
+- **Optional human review gate (off by default).** When enabled, memories from configured sources land in a pending inbox for approve, reject, or edit before they become recallable, instead of auto-approving. Pending memories are withheld from recall, search, and listings until approved. Opt in with `KLEOS_REVIEW_GATE_ENABLED=1` plus `KLEOS_REVIEW_GATE_SOURCES` (a comma-separated source allowlist); leaving either unset keeps every store auto-approved, exactly as before.
 
 ### Context assembly
 
@@ -85,6 +86,7 @@ A protocol that controls how agents think, not just what they remember:
 - **Spec before code** -- `spec-task` requires acceptance criteria and edge cases before implementation begins
 - **Hypothesis before fix** -- `log-hypothesis` with confidence scoring, `recall-errors` to prevent repeating mistakes
 - **Verification before done** -- `verify` runs commands against spec criteria, `challenge-code` generates adversarial review
+- **Human-facing spec views** -- Fluency builds render authoritative Forge records into `requirements.md`, `design.md`, and evidence-derived `tasks.md`
 - **AST-aware code analysis** -- Tree-sitter parsing across Rust, TypeScript, Python, Go, C, C++, JS. `repo-map` builds ranked symbol lists within token budgets.
 - **Session resilience** -- git checkpoints and rollback for recovery from destructive edits
 
@@ -126,15 +128,23 @@ A protocol that controls how agents think, not just what they remember:
 
 **Install with the interactive installer (recommended):**
 
-Download the latest installer from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
+Prebuilt binary installers ship for linux-x64: a TUI installer (`kleos-install`) and a GUI installer (`kleos-install-gui`). Download the latest from [Releases](https://github.com/Ghost-Frame/Kleos/releases), then run:
 
 ```bash
-# TUI installer (terminal)
+# TUI installer (terminal) -- linux-x64
 ./kleos-install
 
-# GUI installer (desktop)
+# GUI installer (desktop) -- linux-x64
 ./kleos-install-gui
 ```
+
+On Windows, install with the PowerShell script (it fetches the windows-x64 binaries from the latest release):
+
+```powershell
+irm https://raw.githubusercontent.com/Ghost-Frame/Kleos/main/dist/install.ps1 | iex
+```
+
+Other platforms build from source (below).
 
 The installer walks you through component selection, server configuration, embedding provider setup, security key generation, and optional systemd/launchd service registration. Choose a profile (Server, Agent Host, Full, Custom) or pick individual components.
 
@@ -142,11 +152,41 @@ The installer walks you through component selection, server configuration, embed
 
 ```bash
 git clone https://github.com/Ghost-Frame/Kleos.git && cd Kleos
+
+# System packages (Debian/Ubuntu): protobuf-compiler builds the proto-based
+# vector-store dependency (LanceDB); libpcsclite-dev is for the PIV/YubiKey
+# smartcard path. Both are pulled in by the default workspace build.
+sudo apt install protobuf-compiler libpcsclite-dev
+
 cargo build --release -p kleos-server -p kleos-cli
-KLEOS_BOOTSTRAP_SECRET=pick-a-secret ./target/release/kleos-server
+KLEOS_BOOTSTRAP_SECRET=pick-a-secret \
+KLEOS_SESSION_KEY=$(openssl rand -hex 32) \
+  ./target/release/kleos-server
 ```
 
+`KLEOS_SESSION_KEY` is a 32-byte hex HMAC key for session tokens. Leave it
+unset for a quick local try and the server generates an ephemeral one at
+startup (with a warning) -- fine for one run, but sessions won't survive a
+restart. Set it explicitly for anything you plan to keep running.
+
 Server starts on `127.0.0.1:4200`. In another terminal:
+
+**First run:** with default features, the server background-downloads its local
+ML models from Hugging Face the first time it starts -- a bge-m3 embedding model
+and a cross-encoder reranker (quantized ONNX by default; several hundred MB
+each, up to ~2.3 GiB if you switch the embedder to the FP32 variant). They land
+under `<data dir>/engram/models/<model-name>` (e.g.
+`~/.local/share/engram/models/bge-m3` on Linux), and future restarts skip the
+download once the files are present. For air-gapped or pre-staged deployments,
+set `KLEOS_EMBEDDING_OFFLINE_ONLY=1` to make a missing model file a hard error
+instead of a network fetch, and pre-stage the files yourself (`KLEOS_EMBEDDING_MODEL_DIR`
+/ `KLEOS_RERANKER_MODEL_DIR` control where they're expected). Point `KLEOS_EMBEDDING_URL`
+and/or `KLEOS_RERANKER_URL` (with `KLEOS_RERANKER_BACKEND=http`) at a remote
+provider instead, and the server skips its local download and ONNX runtime
+entirely for that model. To leave the whole local inference stack out of the
+binary, build with `--no-default-features` (the default-on `ml` cargo feature
+gates the ONNX/LanceDB stack; retrieval degrades to FTS + sqlite-vec and the
+remote providers above).
 
 **Bootstrap your admin key (one-time):**
 
@@ -195,16 +235,17 @@ Kleos speaks three protocols:
 
 ### Claude Code integration
 
-Kleos ships ready-to-use hooks in `hooks/`:
-
-- **Simple** -- session start/end, per-turn memory recall, tool observation. Bash + curl.
-- **Full** -- adds Eidolon brain-aware context, automatic sidecar startup, Chiasm task tracking, growth materialization, Agent-Forge protocol enforcement, and session quality scoring.
-
-Copy the hooks, configure `settings.json`, and your agent has persistent memory, coordination, structured reasoning, and real-time supervision across sessions.
+The `hooks/` bundle is under maintenance and not currently shipped. For
+session-start (and other lifecycle) integration today, call the `kleos-cli hook`
+subcommands directly from your own hook scripts -- `kleos-cli hook session-start`,
+`user-prompt`, `stop`, `pre-tool`, `post-tool`, and `post-bash` are supported and
+documented in `docs/KLEOS_OPERATIONS_MANUAL.md`. The mandatory-rules text these
+hooks inject is operator-configurable via the `KLEOS_MANDATORY_RULES` environment
+variable on the server. A new hooks bundle will ship once the surface stabilises.
 
 ### What runs inside
 
-22-crate Rust workspace. The server handles:
+26-crate Rust workspace. The server handles:
 
 - **Multi-tenancy** -- each tenant gets its own encrypted SQLite database, connection pools, and quota limits
 - **8 middleware layers** -- auth, per-tenant rate limiting, audit log, IP extraction, JSON depth limits, Prometheus metrics, safe-mode, compression/timeouts
@@ -221,7 +262,9 @@ Copy the hooks, configure `settings.json`, and your agent has persistent memory,
 - Buffers observations in memory instead of blocking on every write
 - Optional compression via local Ollama (thinking mode opt-in via `LLM_THINK=true` globally or `KLEOS_SIDECAR_LLM_THINK=true` sidecar-only; default is off so non-thinking models stay supported out of the box)
 - Batched flushing to the server
-- File-watching and persistent session support
+- Hook-driven repository refresh for deterministic local code context
+- `off`, `shadow`, and `inject` rollout modes with an independent code token budget
+- In-memory session continuity without a local AI runtime or transcript watcher
 
 ### Runtime overlays (Patches 15, 19b, 38)
 
@@ -299,7 +342,7 @@ cargo build --release -p kleos-server -p kleos-cli -p kleos-mcp
 cargo build --release -p kleos-cli -p kleos-sh -p kleos-cred -p kleos-credd \
   -p agent-forge -p eidolon-supervisor
 
-# Full workspace (all 17 crates -- needs ~8 GiB RAM)
+# Full workspace (all 26 crates -- needs ~8 GiB RAM)
 cargo build --release --workspace
 ```
 
@@ -394,8 +437,8 @@ Four channels run per query:
 
 ### Scope
 
-- 20 Rust crates, ~204K lines of code
-- ~6,000 test declarations across 113 test files
+- 26 Rust crates, ~211K lines of Rust across 621 files
+- ~1,800 test declarations (`#[test]` / `#[tokio::test]`) across 246 files
 - Single statically linked binary with the mimalloc allocator
 - No Python runtime. No external service dependencies at rest.
 
@@ -405,14 +448,21 @@ Four channels run per query:
 | --- | --- |
 | `kleos-lib` | Core library: memory, search, embeddings, graph, intelligence, services, skills, growth, auth, gate, jobs. Feature-gated `brain` backend. |
 | `kleos-server` | Axum HTTP server. 59 route modules, 8 middleware layers, embedded React web GUI (dashboard + 3D memory graph). |
+| `kleos-config` | Shared configuration types and environment resolution, used by both the server and the installer so the two never drift. |
 | `kleos-cli` | Command-line client. Memory ops, skill management, handoffs, credential management. |
+| `kleos-client` | Shared Rust HTTP client with PIV/Ed25519 envelope signing. |
 | `kleos-mcp` | MCP transport bridge. Curated daily-driver registry with compatibility aliases; stdio by default, HTTP behind a feature flag. |
-| `kleos-sidecar` | Session-scoped memory proxy. File watcher, batched flushing, Ollama compression, persistent sessions. |
+| `kleos-sidecar` | Session-scoped memory proxy. Batched flushing and hook-driven local code-context retrieval. |
 | `kleos-cred` | Credential library. YubiKey challenge-response, Argon2id KDF, ECDH agreement, CRED:v3 vault resolution. |
 | `kleos-credd` | Base credential daemon. Two-tier auth (master + agent keys), AES-256-GCM encryption, zero-knowledge agent bootstrap. |
-| `kleos-phylaxd` (`phylaxd`) | The credential daemon actually deployed. Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. The `credd` service runs this binary. |
+| `kleos-phylax` | Agent-native credential authority library: approvals, leases, ECDH, namespaces. |
+| `kleos-phylaxd` (`phylaxd`) | Composes `kleos-credd`'s base router with Phylax agent-native security policy enforcement; behaves as plain `credd` with no policies set. Not yet part of releases or the installer -- `kleos-credd` is the credential daemon that actually ships as the `credd` service. |
+| `kleos-phylax-ssh-agent` | OpenSSH agent protocol server: wire protocol and KeyProvider trait. |
+| `kleos-phylax-ssh-agentd` | Headless SSH agent daemon that brokers keys and signing through phylaxd. |
+| `kleos-token-client` | Tiny std-only client for the phylaxd SO_PEERCRED token broker (no kleos-lib dependency). |
 | `kleos-ingest` | Transcript ingest daemon. PIV/software-key request signing, file watching, LLM summarization, real-time observation streaming. |
 | `agent-forge` | Structured reasoning CLI. 20+ subcommands. Tree-sitter AST parsing for 7 languages. |
+| `forge` | agent-forge compute engine as a library (repo-map, code search, comment-check, challenge-code), used server-side by kleos-server. |
 | `eidolon-supervisor` | Session drift detection daemon. Real-time transcript watching, rule-based alerts. |
 | `kleos-sh` | Shell command gate. Static validation, SSRF guard, human approval queue. |
 | `kleos-fs` | AST-aware filesystem operations. Guarded read/write with agent-forge integration. |
@@ -442,7 +492,7 @@ The installer (`kleos-install` or `kleos-install-gui`) supports four profiles:
 | Profile | Includes |
 |---------|----------|
 | `Server` | kleos-server, kleos-cli |
-| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, phylaxd |
+| `Agent Host` | kleos-cli, kleos-sh, agent-forge, eidolon-supervisor, cred, kleos-credd |
 | `Full` | Every binary |
 | `Custom` | Pick individual components |
 

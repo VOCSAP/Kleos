@@ -102,7 +102,7 @@ async fn append_handler(
         ))));
     }
 
-    append_output(&db, &id, &body.line).await?;
+    append_output(&db, &id, auth.effective_user_id(), &body.line).await?;
 
     // Broadcast to any WebSocket subscribers (scoped to this tenant only).
     {

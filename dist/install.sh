@@ -101,7 +101,7 @@ download() {
 
 # ─── SHA-256 verification ────────────────────────────────────────────────────
 #
-# Every release publishes a SHASUMS256.txt file alongside the binaries.  Each
+# Every release publishes a SHA256SUMS file alongside the binaries.  Each
 # line is `<sha256>  <filename>`.  We download that manifest once, then verify
 # each binary after it lands.  A verification failure deletes the partial
 # download and aborts the installer so a MITM or tampered mirror cannot leave
@@ -142,7 +142,7 @@ verify_sha256() {
 }
 
 lookup_expected_sha256() {
-    # $1 = filename as it appears in SHASUMS256.txt
+    # $1 = filename as it appears in SHA256SUMS
     file="$1"
     [ -n "${SHASUMS_FILE:-}" ] && [ -f "$SHASUMS_FILE" ] || return 0
     awk -v f="$file" '$2 == f || $2 == "*"f {print $1; exit}' "$SHASUMS_FILE"
@@ -165,23 +165,23 @@ main() {
     base_url="https://github.com/${REPO}/releases/download/v${VERSION}"
     failed=""
 
-    # Fetch the release's SHASUMS256.txt once.  We deliberately do NOT make
+    # Fetch the release's SHA256SUMS once.  We deliberately do NOT make
     # the overall install depend on reaching it (a release may predate the
     # SHA manifest), but if we have it we enforce strict verification below.
     SHASUMS_FILE="$(mktemp -t kleos-shasums.XXXXXX)"
-    if download "${base_url}/SHASUMS256.txt" "$SHASUMS_FILE" 2>/dev/null \
+    if download "${base_url}/SHA256SUMS" "$SHASUMS_FILE" 2>/dev/null \
             && [ -s "$SHASUMS_FILE" ]; then
         if [ -z "$SHA256_CMD" ]; then
             echo "warn: no sha256sum/shasum available; skipping integrity check" >&2
             rm -f "$SHASUMS_FILE"
             SHASUMS_FILE=""
         else
-            echo "  manifest: SHASUMS256.txt fetched; integrity will be verified"
+            echo "  manifest: SHA256SUMS fetched; integrity will be verified"
         fi
     else
         rm -f "$SHASUMS_FILE"
         SHASUMS_FILE=""
-        echo "warn: SHASUMS256.txt not found for this release; integrity NOT verified" >&2
+        echo "warn: SHA256SUMS not found for this release; integrity NOT verified" >&2
     fi
     echo ""
 

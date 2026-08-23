@@ -27,6 +27,16 @@ content, source, and timestamp. Three inline actions are available:
 The inbox count is shown in the tab label so the operator can see at a glance
 whether review is needed.
 
+The review gate is off by default, so on a fresh install the Inbox stays empty
+and every stored memory is auto-approved straight into the timeline and recall.
+To route memories into the Inbox, enable the gate with
+`KLEOS_REVIEW_GATE_ENABLED=1` and list the sources to hold for review in
+`KLEOS_REVIEW_GATE_SOURCES` (a comma-separated allowlist). Both are required:
+enabling the gate with an empty allowlist gates nothing. While the gate is
+enabled, memories from listed sources are written as `pending` and withheld from
+recall, search, and listings until approved here. See the operations manual
+under `kleos-server` for the full configuration reference.
+
 ### Projects field and "Show empty" toggle
 
 The Projects card lists every project that memories have been tagged to. By

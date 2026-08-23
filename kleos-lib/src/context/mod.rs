@@ -522,7 +522,11 @@ async fn assemble_context_inner(
     let flags = resolve_layer_flags(&opts, depth);
     let semantic_ceiling = resolve_semantic_ceiling(&context_strategy, opts.semantic_ceiling);
     let semantic_limit = resolve_semantic_limit(&context_strategy, opts.semantic_limit);
-    let min_relev = opts.min_relevance.unwrap_or(DEFAULT_MIN_RELEVANCE);
+    // Relevance floor: resolved PER RESULT at the gate below, because the two
+    // gate arms compare signals on different scales (CE-blended score vs raw
+    // cosine) and therefore carry different defaults. An explicit
+    // `opts.min_relevance` still overrides both arms.
+    let min_relevance_opt = opts.min_relevance;
 
     let truncate = |content: &str| truncate_to_token_budget(content, max_memory_tokens);
 
@@ -547,7 +551,10 @@ async fn assemble_context_inner(
 
     // ---- Phase 1: Static facts, ranked by query relevance ----
     if flags.include_static {
-        let mut statics = get_static_memories(db, user_id).await.unwrap_or_default();
+        let mut statics = get_static_memories(db, user_id).await.unwrap_or_else(|e| {
+            tracing::warn!("context assembly: static-memory fetch failed: {e}");
+            Default::default()
+        });
         if let Some(ref sf) = source_filter {
             statics.retain(|s| s.source.contains(sf.as_str()));
         }
@@ -652,7 +659,13 @@ async fn assemble_context_inner(
         exclude_consolidated: Some(true),
         ..Default::default()
     };
-    let mut semantic_results = hybrid_search(db, search_req).await.unwrap_or_default();
+    // A failed semantic search must be observable: silently defaulting to an
+    // empty result set is indistinguishable from "no relevant memories" and
+    // hides systemic DB/embedding failures from operators.
+    let mut semantic_results = hybrid_search(db, search_req).await.unwrap_or_else(|e| {
+        tracing::warn!("context assembly: semantic search failed: {e}");
+        Default::default()
+    });
     timing.search_ms = Some(t_search.elapsed().as_millis() as u64);
 
     // 3.1: context assembly is what the model actually reads, yet without this it ranks
@@ -698,8 +711,6 @@ async fn assemble_context_inner(
         }
     }
 
-    let now_ms = chrono::Utc::now().timestamp_millis();
-
     for r in semantic_results.iter() {
         if seen_ids.contains(&r.memory.id) {
             continue;
@@ -736,24 +747,27 @@ async fn assemble_context_inner(
             }
         }
 
-        let raw_score = r.score;
-        if raw_score < min_relev {
+        // Gate on a [0,1] relevance signal. r.score is the CE-blended confidence
+        // only when the reranker ran; otherwise it is the raw RRF-fusion value
+        // (~0.02) that no real match can clear, so the cosine semantic_score is
+        // used instead (FTS-only hits with no cosine are kept). The default
+        // floor is per-arm (cosine 0.55 vs CE-blend 0.25): sharing the cosine
+        // floor previously dropped wanted reranked blocks, whose blended scores
+        // sit far lower (see DEFAULT_RERANKED_MIN_RELEVANCE for the evidence).
+        if !crate::memory::scoring::passes_relevance_gate(
+            r.reranked,
+            r.score,
+            r.semantic_score,
+            crate::memory::scoring::effective_min_relevance(min_relevance_opt, r.reranked),
+        ) {
             continue;
         }
 
-        // Recency boost: last 48h get +10%
-        let mut score = raw_score;
-        if let Ok(created) = r
-            .memory
-            .created_at
-            .replace(' ', "T")
-            .parse::<chrono::DateTime<chrono::Utc>>()
-        {
-            let age_ms = now_ms - created.timestamp_millis();
-            if age_ms < RECENCY_BOOST_MS {
-                score *= 1.10;
-            }
-        }
+        // Recency is already applied exactly once, inside hybrid_search's
+        // compound score (`recency_boost`); a second +10% here double-counted
+        // it in the block's reported score without changing selection or
+        // ordering, which the budget loop above decides before this point.
+        let score = r.score;
 
         // Check if this is a fact with a parent
         let mem_detail = get_memory_without_embedding(db, r.memory.id, user_id)
@@ -965,7 +979,10 @@ async fn assemble_context_inner(
             if used_tokens >= (token_budget as f64 * 0.85) as usize {
                 break;
             }
-            let linked = get_links(db, sid, user_id).await.unwrap_or_default();
+            let linked = get_links(db, sid, user_id).await.unwrap_or_else(|e| {
+                tracing::warn!(sid, "context assembly: link expansion failed: {e}");
+                Default::default()
+            });
             for l in &linked {
                 if seen_ids.contains(&l.id) || l.is_forgotten {
                     continue;
@@ -1035,7 +1052,12 @@ async fn assemble_context_inner(
     let t_recent = Instant::now();
     let recent_ceiling = (token_budget as f64 * 0.93) as usize;
     if flags.include_recent && used_tokens < recent_ceiling {
-        let recent = get_recent_dynamic(db, user_id, 5).await.unwrap_or_default();
+        let recent = get_recent_dynamic(db, user_id, 5)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("context assembly: recent-memory fetch failed: {e}");
+                Default::default()
+            });
         for r in &recent {
             if seen_ids.contains(&r.id) {
                 continue;
@@ -1191,13 +1213,19 @@ async fn assemble_context_inner(
             }
             scratchpad::list_entries(db, user_id, None, None, session_filter)
                 .await
+                .inspect_err(|e| tracing::warn!("context assembly: scratchpad fetch failed: {e}"))
                 .ok()
         },
         async {
             if !flags.include_current_state {
                 return None;
             }
-            get_current_state(db, user_id).await.ok()
+            get_current_state(db, user_id)
+                .await
+                .inspect_err(|e| {
+                    tracing::warn!("context assembly: current-state fetch failed: {e}")
+                })
+                .ok()
         },
         async {
             if !flags.include_personality {
@@ -1205,6 +1233,7 @@ async fn assemble_context_inner(
             }
             personality::get_profile_for_injection(db, user_id)
                 .await
+                .inspect_err(|e| tracing::warn!("context assembly: personality fetch failed: {e}"))
                 .ok()
                 .flatten()
         },
@@ -1212,7 +1241,10 @@ async fn assemble_context_inner(
             if !flags.include_preferences {
                 return None;
             }
-            get_user_preferences(db, user_id).await.ok()
+            get_user_preferences(db, user_id)
+                .await
+                .inspect_err(|e| tracing::warn!("context assembly: preferences fetch failed: {e}"))
+                .ok()
         },
     );
 
@@ -1384,7 +1416,10 @@ async fn assemble_context_inner(
     let ctx_mem_ids: Vec<i64> = blocks.iter().map(|b| b.id).collect();
     let ctx_art_map = crate::artifacts::enrich_with_artifacts(db, user_id, &ctx_mem_ids)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("context assembly: artifact enrichment failed: {e}");
+            Default::default()
+        });
 
     let block_summaries: Vec<ContextBlockSummary> = blocks
         .iter()
