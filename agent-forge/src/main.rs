@@ -32,6 +32,14 @@ struct Cli {
     #[arg(long)]
     output: Option<PathBuf>,
 
+    /// Slug naming this invocation's scratch pair, used INSTEAD of --input and
+    /// --output. Resolves to `<scratch>/<slug>.in.json` and
+    /// `<scratch>/<slug>.out.json`, where `<scratch>` is `$AGENT_FORGE_SCRATCH_DIR`
+    /// or `~/.agent-forge/scratch`. The caller states a NAME, never a path, so the
+    /// location stops being a free parameter that each caller invents differently.
+    #[arg(long)]
+    name: Option<String>,
+
     /// Path to database file
     #[arg(long, default_value = "~/.agent-forge/forge.db")]
     db: String,
@@ -147,18 +155,113 @@ fn run_schema(command_name: &str) -> ! {
     }
 }
 
+/// Resolve the directory holding `--name`-derived scratch files: the
+/// `AGENT_FORGE_SCRATCH_DIR` environment variable when set and non-empty,
+/// otherwise `~/.agent-forge/scratch` (alongside the default `--db`, which is
+/// why that home is the right one). Creates the directory if it is missing and
+/// exits with a named error rather than panicking when it cannot.
+fn scratch_dir() -> PathBuf {
+    let dir = match std::env::var("AGENT_FORGE_SCRATCH_DIR") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
+        _ => match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(home) if !home.trim().is_empty() => {
+                PathBuf::from(home.trim()).join(".agent-forge").join("scratch")
+            }
+            _ => {
+                eprintln!(
+                    "agent-forge: cannot resolve a scratch directory: neither \
+                     AGENT_FORGE_SCRATCH_DIR nor HOME/USERPROFILE is set. \
+                     Pass --input/--output explicitly, or set one of them."
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "agent-forge: cannot create scratch directory {}: {e}",
+            dir.display()
+        );
+        std::process::exit(2);
+    }
+    dir
+}
+
+/// Validate a `--name` slug BEFORE it is ever joined onto a directory.
+///
+/// The slug is a string an agent supplies that becomes a filesystem path, so it
+/// is treated as hostile input: only `[A-Za-z0-9._-]` is accepted, and `..` is
+/// rejected outright. Without this, `--name ../../etc/passwd` would escape the
+/// scratch directory, which is precisely the class of defect the flag exists to
+/// avoid (a caller choosing a location). Enforced here, at the single point
+/// where a name becomes a path.
+fn validate_slug(slug: &str) -> Result<(), String> {
+    if slug.is_empty() {
+        return Err("--name must not be empty".to_string());
+    }
+    if slug.contains("..") {
+        return Err(format!("--name {slug:?} must not contain '..'"));
+    }
+    if let Some(bad) = slug
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-'))
+    {
+        return Err(format!(
+            "--name {slug:?} contains {bad:?}; only letters, digits, '.', '_' and '-' \
+             are allowed (it is a NAME, not a path)"
+        ));
+    }
+    Ok(())
+}
+
 /// Extract the `(input, output)` paths from the CLI args, exiting with a
-/// descriptive error if either is missing. Used by every subcommand except
-/// `Help`, which prints to stdout instead.
+/// descriptive error if they cannot be determined. Used by every subcommand
+/// except `Help`, which prints to stdout instead.
+///
+/// This is the ONLY place a path is decided, which is why `--name` is resolved
+/// here and nowhere else. Precedence is per-field and deliberate: an explicit
+/// `--input`/`--output` always wins over the `--name`-derived path, so no
+/// existing caller changes behaviour. Mixing them (say `--name` plus `--input`
+/// alone) is therefore well defined rather than silently surprising: the
+/// explicit half is honoured and the other half is derived.
 fn require_io(cli: &Cli) -> (PathBuf, PathBuf) {
-    let input = cli.input.clone().unwrap_or_else(|| {
-        eprintln!("agent-forge: --input <FILE> is required for this subcommand");
-        std::process::exit(2);
-    });
-    let output = cli.output.clone().unwrap_or_else(|| {
-        eprintln!("agent-forge: --output <FILE> is required for this subcommand");
-        std::process::exit(2);
-    });
+    let derived = match cli.name.as_deref() {
+        Some(slug) => {
+            if let Err(msg) = validate_slug(slug) {
+                eprintln!("agent-forge: {msg}");
+                std::process::exit(2);
+            }
+            let dir = scratch_dir();
+            Some((
+                dir.join(format!("{slug}.in.json")),
+                dir.join(format!("{slug}.out.json")),
+            ))
+        }
+        None => None,
+    };
+
+    let input = cli
+        .input
+        .clone()
+        .or_else(|| derived.as_ref().map(|(i, _)| i.clone()))
+        .unwrap_or_else(|| {
+            eprintln!(
+                "agent-forge: --input <FILE> is required for this subcommand \
+                 (or pass --name <SLUG> to derive it under the scratch directory)"
+            );
+            std::process::exit(2);
+        });
+    let output = cli
+        .output
+        .clone()
+        .or_else(|| derived.as_ref().map(|(_, o)| o.clone()))
+        .unwrap_or_else(|| {
+            eprintln!(
+                "agent-forge: --output <FILE> is required for this subcommand \
+                 (or pass --name <SLUG> to derive it under the scratch directory)"
+            );
+            std::process::exit(2);
+        });
     (input, output)
 }
 
