@@ -15,11 +15,18 @@ use kleos_lib::services::brain::{AbsorbMemoryData, BrainBackend};
 /// Upstream's absorb (#60) injects every stored memory into the global
 /// Hopfield substrate without semantic filtering. We skip two classes of
 /// noise before `brain.absorb`:
-///   - `sidecar-gate*` sources (gate prompts, not real recall material) --
-///     always filtered.
+///   - `sidecar*` sources -- always filtered. Covers both the legacy
+///     `sidecar-gate*` sources (gate prompts from the old gate.rs/watcher.rs
+///     watcher, removed by upstream PR #217/commit e5526e80) and the current
+///     sidecar's default `source = "sidecar"` (kleos-sidecar/src/main.rs:217).
+///     Widened after the merge that reactivated the sidecar: the narrower
+///     `sidecar-gate` prefix stopped matching anything and would have
+///     silently re-opened the 2026-05-29 incident (619 raw sidecar turns
+///     absorbed into the Hopfield substrate via `fast_extract_facts`, which
+///     has no source filter of its own -- this guard is the only gate).
 ///   - memories below an importance threshold -- opt-in via the env var
 ///     `KLEOS_BRAIN_ABSORB_MIN_IMPORTANCE` (default 0.0 = inactive, so the
-///     behaviour matches upstream except for the sidecar-gate skip).
+///     behaviour matches upstream except for the sidecar skip).
 fn brain_absorb_min_importance() -> f64 {
     std::env::var("KLEOS_BRAIN_ABSORB_MIN_IMPORTANCE")
         .ok()
@@ -31,7 +38,7 @@ fn brain_absorb_min_importance() -> f64 {
 /// should be skipped. Split from the env lookup so it can be unit-tested
 /// without touching process environment.
 fn should_absorb_with_threshold(source: &str, importance: f64, min_importance: f64) -> bool {
-    if source.starts_with("sidecar-gate") {
+    if source.starts_with("sidecar") {
         return false;
     }
     if importance < min_importance {
@@ -332,5 +339,29 @@ mod tests {
     fn sidecar_gate_wins_over_high_importance_and_threshold() {
         // sidecar-gate is filtered even above an active threshold.
         assert!(!should_absorb_with_threshold("sidecar-gate:x", 10.0, 5.0));
+    }
+
+    #[test]
+    fn new_sidecar_default_source_is_filtered() {
+        // The post-#217 sidecar (gate.rs/watcher.rs removed upstream) posts
+        // observations with source="sidecar" (kleos-sidecar/src/main.rs:217),
+        // not "sidecar-gate". The Patch 39 guard must still catch it.
+        assert!(!should_absorb_with_threshold("sidecar", 9.0, 0.0));
+    }
+
+    #[test]
+    fn sidecar_gate_still_filtered_after_widening() {
+        // Both the legacy and current sidecar source forms are covered by
+        // the same "sidecar" prefix -- no regression on the original guard.
+        assert!(!should_absorb_with_threshold("sidecar-gate", 9.0, 0.0));
+        assert!(!should_absorb_with_threshold("sidecar-gate:deploy", 9.0, 0.0));
+    }
+
+    #[test]
+    fn normal_source_still_passes_after_widening() {
+        // A source that merely contains "sidecar" as a substring (not a
+        // prefix) must not be caught by the widened guard.
+        assert!(should_absorb_with_threshold("claude-session", 4.0, 0.0));
+        assert!(should_absorb_with_threshold("not-a-sidecar-thing", 4.0, 0.0));
     }
 }
