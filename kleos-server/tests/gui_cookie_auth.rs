@@ -58,6 +58,7 @@ async fn gui_app() -> axum::Router {
         sessions: Arc::new(RwLock::new(HashMap::new())),
         eidolon_config: None,
         approval_notify: None,
+        supervisor_notifiers: Arc::new(RwLock::new(HashMap::new())),
         pending_approvals: Arc::new(Mutex::new(HashMap::new())),
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
