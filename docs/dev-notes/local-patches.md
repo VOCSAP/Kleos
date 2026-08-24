@@ -3994,6 +3994,53 @@ Niveau delta : chirurgical (2 lignes). Seul conflit textuel du merge :
 entree 7). Verifs lang upstream OK (`MEMORY_COLUMN_COUNT==48`, `lang` en fin de
 `MEMORY_COLUMNS`, `row_to_memory` `lang: row.get(47)?`), `space_id` reste index 31.
 
+### Friction recurrente -- `StoreRequest.space` casse les literaux de test upstream a chaque merge
+
+**Symptome :** Patch 33 (`b64540d2`, 2026-05-25) a ajoute `space:
+Option<String>` a `StoreRequest` (`kleos-lib/src/memory/types.rs:328`), champ
+VOCSAP-local absent d'upstream Ghost-Frame. `StoreRequest` ne derive PAS
+`Default` (seulement `Debug`/`Clone`/`Serialize`/`Deserialize`) ; un `impl
+Default` manuel existe (`types.rs:357`) et inclut `space: None`. Consequence :
+tout test upstream qui construit `StoreRequest { ... }` en literal complet
+(sans `..Default::default()`) casse la compilation avec `E0063 missing field
+`space`` des qu'il est absorbe dans le fork -- erreur de **compilation**, pas
+serde runtime (`#[serde(default)]` sur `space` ne joue qu'a la deserialisation
+JSON, jamais a la construction Rust).
+
+**Deja survenu 3 fois** (2 avant ce fichier, +1 ci-dessus a la ligne 3989) :
+- 2026-06-02, commit `fde2ffc4` "restore user_id isolation + NULL-safe space
+  filters post-3ee0b0bf".
+- 2026-06-29, merge `d905d4e7` -- cf. entree juste au-dessus
+  (`kleos-lib/src/jobs/community_detection.rs:231`).
+- 2026-08-24, post-merge `733a9466` (absorb upstream `7ce95482`, 156
+  commits) : 6 fichiers casses (`entity_extraction.rs`, `l5_channels.rs`,
+  `review_gate_surfaces.rs`, `review_gate_store_pending.rs`,
+  `review_gate_search.rs`, `context_review_gate.rs`), fixes appliques.
+
+**Detection (executable sans contexte prealable) :**
+```
+cargo check -p kleos-lib --tests --features bundled-sqlite
+# chercher "missing field `space`" dans la sortie -> fichier + ligne
+```
+Ou proactif avant meme de compiler :
+```
+grep -n "StoreRequest {" kleos-lib/tests/*.rs
+```
+puis pour chaque site verifier que le bloc contient soit `space:`, soit
+`..Default::default()`. Si aucun des deux -> casse.
+
+**Fix (test-only, zero risque prod) :** ajouter `space: None,` dans le
+literal (convention : juste apres `space_id: None,`). Ne JAMAIS toucher le
+champ ou l'`impl Default` cote production pour ce symptome.
+
+**Options durables discutees (non tranchees, decision operateur) :**
+(i) repatcher a chaque merge -- cout mesure ~10 min diagnostic + N one-liners,
+viable indefiniment ; (ii) adopter `..Default::default()` sur tout NOUVEAU
+test VOCSAP -- reduit notre propre risque de recidive mais ne stoppe pas les
+literaux upstream ; (iii) proposer `space` en PR upstream Ghost-Frame -- seule
+option qui supprime la divergence a la source, incertain qu'upstream le veuille
+(concept VOCSAP multi-tenant), reste ouverte cote operateur.
+
 ---
 
 ## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)
@@ -5354,6 +5401,274 @@ verify 2/2.
 
 **Conditions de retrait :** candidat PR upstream Ghost-Frame (env-overridable
 timeout, behavior-neutral). A retirer du fork si upstream merge la PR.
+
+---
+
+## Patch 49 -- `include_unscoped` inoperant sur /search, /recall, /list et cousins (2026-08-24)
+
+**Symptome :** Patch 33 documente `include_unscoped` comme inclusif par
+defaut cote serveur (espace nomme + espace `default` de l'utilisateur +
+lignes legacy `space_id IS NULL`), desactivable via `include_unscoped:
+false`. En pratique le flag etait un no-op : une recherche scopee sur un
+space nomme n'incluait ni `default` ni les lignes NULL, avec ou sans le flag.
+Consequence operationnelle : toute memoire stockee avec `--no-space` devenait
+invisible au rappel automatique des hooks Claude Code, silencieusement.
+
+Trois causes racines independantes, plus une duplication de la logique de
+filtre sur 4 endpoints :
+
+**Cause 1 -- defaut serveur en contradiction avec la doc du CLI.** Les
+structs HTTP-facing (`SearchBody`, `RecallBody`, `ListQuery` dans
+`kleos-server/src/routes/memory/types.rs`, et leurs equivalents sur
+`/growth/observations`, `/conversations`, `/messages/search`) declaraient
+`#[serde(default)]` sur `include_unscoped: Option<bool>`. Un champ absent du
+payload deserialise alors en `None`, que `kleos-lib` traite comme strict.
+Seul `kleos-server/src/routes/brain/types.rs` respectait le contrat
+documente via un `#[serde(default = "default_include_unscoped")]` retournant
+`Some(true)`.
+
+**Cause 2 -- cle de cache incomplete (bug en code upstream pur).** Le cache
+de resultats de recherche (`SEARCH_CACHE`, TTL 15s, `kleos-lib/src/memory/
+search.rs`) hashe `space_id` mais pas `include_unscoped`
+(`hash_search_params`, ~ligne 83-103). Deux requetes qui ne different QUE par
+ce flag partagent donc la meme entree de cache pendant la fenetre de 15s :
+un appel `include_unscoped=true` suivi d'un appel strict recoit en retour les
+resultats inclusifs mis en cache par le premier (fuite inter-space, l'inverse
+exact de l'intention anti-leak de Patch 33/37), et inversement un appel
+`include_unscoped=true` suivant un appel strict recent semble ne rien faire.
+Confirme par mesure d'inversion d'ordre (requete froide flag-ON d'abord :
+le flag fonctionne ; l'appel strict qui suit dans les 15s recoit alors les
+lignes du space `default`).
+
+**IMPORTANT pour un futur mergeur :** `hash_search_params` est du code
+upstream pur (aucun commentaire `Patch NN`, aucune trace VOCSAP dans son
+historique). Un rebase upstream qui reecrit cette fonction peut donc
+reintroduire l'omission silencieusement, sans qu'aucun de nos tests locaux
+ne le detecte a la review du diff -- seul un test qui exerce explicitement
+`include_unscoped` sur deux requetes consecutives dans la fenetre de TTL le
+detecterait.
+
+**Cause 3 -- les tiers `/recall` "static" et "important" n'avaient AUCUN mode
+inclusif.** `memory::list_static` et `memory::list_important`
+(`kleos-lib/src/memory/mod.rs`) codaient en dur `AND space_id = ?N` avec pour
+seule alternative `space_id IS NULL` cote appelant (aucun filtre du tout, pas
+un mode inclusif). Mesure : le tier "important" scope retournait des lignes
+`importance=8` alors que la sentinelle `importance=9` etait absente ; le tri
+`ORDER BY importance DESC, id DESC LIMIT 10` exclut cette hypothese de
+troncature (une ligne imp=9 ne peut pas etre evincee par des imp=8), donc
+c'est bien le predicat d'espace qui l'excluait. Meme mesure sur le tier
+static : zero ligne static dans une reponse scopee alors que la meme memoire
+remonte via `context --no-space`.
+
+**Duplication (4 copies independantes de la meme logique) :**
+
+| Copie | Fichier | Sert |
+|---|---|---|
+| 1 | `kleos-lib/src/memory/mod.rs::list` (+ Cause 3 : `list_static`/`list_important`) | GET /list, POST /recall (tiers static/important/recent) |
+| 2 | `kleos-lib/src/intelligence/growth.rs::list_observations` | GET /growth/observations |
+| 3 | `kleos-lib/src/conversations.rs::build_space_filter` | GET /conversations, POST /messages/search |
+| 4 | `kleos-server/src/routes/brain/types.rs` + `brain/mod.rs` (post-filtre, Patch 36) | POST /brain/query (deja conforme au contrat de DEFAUT documente -- mais PAS semantiquement identique aux 3 autres copies, cf. correction ci-dessous) |
+
+**Correction (review post-implementation) : la copie 4 n'est PAS semantiquement
+alignee sur les copies 1-3.** `brain/mod.rs:129-134` (`load_memory_space_ids` +
+`retain`) traite `include_unscoped=true` comme "space courant OU lignes
+`space_id IS NULL`" -- il ne matche PAS le bucket `default` de l'utilisateur :
+```rust
+result.activated.retain(|m| match space_map.get(&m.id) {
+    Some(Some(sid)) => *sid == target_id,   // space courant uniquement
+    Some(None) => include_unscoped,         // legacy NULL
+    None => false,
+});
+```
+contre le predicat a 3 clauses (`space_id = ? OR space_id = default OR
+space_id IS NULL`) des copies 1-3. C'est une divergence **preexistante de
+Patch 36** (2026-05-26), non introduite par Patch 49 -- Patch 49 n'a touche
+que le defaut serde de `BrainQueryRequest::include_unscoped` (deja correct
+avant ce patch), pas la logique de retain elle-meme. Notee ici comme
+**connue et explicitement hors perimetre de Patch 49** ; a traiter dans un
+patch dedie si l'alignement des 4 copies devient un objectif.
+
+Angle mort supplementaire : `kleos-mcp/src/tools.rs` (~ligne 174-228) injecte
+le `space` resolu dans les payloads MCP mais jamais `include_unscoped` -- tous
+les outils MCP heritent donc du defaut serveur et basculent avec lui (ce
+patch les corrige sans toucher `kleos-mcp`).
+
+**Approche :**
+
+- **Lot A (chirurgical, upstream pur) :** `hash_search_params` hashe
+  desormais `req.include_unscoped` a cote de `req.space_id`. Corrige la
+  Cause 2. Niveau delta : chirurgical (1 ligne + commentaire), mais dans du
+  code upstream -- cf. l'avertissement ci-dessus pour le prochain rebase.
+- **Lot B (chirurgical, frontiere HTTP uniquement) :** `SearchBody`,
+  `RecallBody`, `ListQuery` passent a `#[serde(default =
+  "default_include_unscoped")]` (helper local retournant `Some(true)`),
+  copiant exactement le pattern deja conforme de `brain/types.rs`. Corrige
+  la Cause 1 pour /search, /recall, /list. `kleos-lib/src/memory/
+  search.rs:1550` (`unwrap_or(false)`) et la construction de `SearchRequest`
+  dans `faceted_search` (`include_unscoped: None`, deliberement) restent
+  INCHANGES : le defaut documente est un contrat d'API a la frontiere HTTP,
+  pas un contrat de bibliotheque, et `faceted_search` est un appelant interne
+  qui doit rester strict.
+- **Lot C (chirurgical, meme pattern x3) :** meme traitement sur
+  `ObservationsQuery` (`growth/types.rs`), `ListConversationsParams`
+  (`conversations/types.rs`), et `SearchMessagesRequest`
+  (`kleos-lib/src/conversations.rs` -- ce struct vit dans kleos-lib mais est
+  deserialise directement comme corps JSON de `POST /messages/search`, donc
+  il EST la frontiere HTTP pour cette route malgre son emplacement). Aucune
+  des 3 copies n'a de cache propre (verifie : aucune occurrence de
+  `cache`/`Cache`/`CACHE` dans `growth.rs` ni `conversations.rs`), donc la
+  Cause 2 ne s'y reproduit pas.
+- **Lot D (refactor local, JUSTIFIE) :** `list_static` et `list_important`
+  gagnent un parametre `include_unscoped: Option<bool>`, avec un helper prive
+  `inclusive_space_clause(idx)` qui factorise le predicat a 3 clauses
+  (`space_id = ? OR space_id = (SELECT ... 'default' ...) OR space_id IS
+  NULL`) deja utilise par `list`, pour ne pas l'ecrire une 3e fois dans ce
+  fichier. C'est le lot au plus gros delta upstream des quatre (changement
+  de signature sur des fonctions upstream pures, blame `7fdaed8d8`
+  Ghost-Frame 2026-06-25 ; seuls les commentaires "Patch 33" et l'argument
+  `resolved_space_id` cote appelant sont VOCSAP). Option ecartee : corriger
+  uniquement au call site (construire le set de resultats inclusif en 2
+  appels, ou tester `space_id IS NULL` en plus, sans toucher la signature) --
+  niveau "additif" moins cher, mais **incomplete par construction** : aucune
+  valeur de `space_id` ne peut selectionner `space_id IS NULL`, donc un fix
+  cote appelant ne peut pas rattraper les lignes legacy sans dupliquer
+  entierement la requete SQL au call site (ce qui recreerait une 5e copie de
+  la logique de filtre plutot que d'en reduire le nombre). Le refactor de
+  signature a ete prefere pour rester coherent avec la demande explicite de
+  l'operateur de "tout corriger en une passe" et pour eviter d'ajouter une
+  5e duplication.
+
+**Fichiers touches :**
+- `kleos-lib/src/memory/search.rs` (Lot A, chirurgical)
+- `kleos-server/src/routes/memory/types.rs` (Lot B, chirurgical, + 2 tests
+  `#[cfg(test)]` verifiant le comportement serde absent/false/true)
+- `kleos-server/src/routes/growth/types.rs`,
+  `kleos-server/src/routes/conversations/types.rs`,
+  `kleos-lib/src/conversations.rs` (Lot C, chirurgical x3)
+- `kleos-lib/src/memory/mod.rs` (Lot D, refactor local : `list_static`,
+  `list_important`, nouveau helper prive `inclusive_space_clause`)
+- `kleos-server/src/routes/memory/mod.rs` (Lot D, call sites recall handler
+  lignes ~721 et ~769, passe `body.include_unscoped`)
+- `kleos-lib/tests/recall_tiers.rs` (Lot D, 3 call sites mis a jour pour
+  compiler avec la nouvelle signature ; assertions inchangees)
+- Niveau delta global : chirurgical (Lots A/B/C) + refactor local (Lot D),
+  documente comme l'exige `CLAUDE.md` pour tout ce qui depasse le
+  chirurgical.
+
+**Tests :** `cargo check -p kleos-lib --features bundled-sqlite` et `cargo
+check -p kleos-server` verts (warnings preexistants non lies au patch
+uniquement). `cargo test -p kleos-server --lib routes::memory::types::` : 2/2
+verts, prouve empiriquement le contrat serde absent -> `Some(true)`, false
+explicite -> `Some(false)` (acceptance criterion mesure, pas suppose). Tests
+d'assertion complets sur les 4 lots delegues au test-engineer en aval de ce
+patch (cf. protocole de session).
+
+### Task 2 -- trou de contrat `include_unscoped: null` (review post-implementation)
+
+**Symptome :** `#[serde(default = "default_include_unscoped")]` ne joue QUE
+quand la CLE est absente du JSON. Un payload avec la cle presente et une
+valeur `null` explicite (`{"include_unscoped": null}`) traverse le chemin de
+deserialisation normal et retombe sur `None`, que `kleos-lib` traite comme
+strict -- meme classe de panne que la Cause 1 du corps de ce patch, atteinte
+par un chemin different. Aucun client de ce repo n'envoie ce payload (verifie
+: les 4 sites `kleos-cli` omettent la cle plutot que de la poser a `null`),
+mais un client externe faisant `json.dumps({"include_unscoped": None})`
+retomberait silencieusement en strict.
+
+**Approche ecartee :** normaliser `body.include_unscoped.or(Some(true))` a
+chaque handler HTTP juste avant usage. Rejetee car elle ne peut PAS faire
+passer le test cible `search_body_include_unscoped_explicit_null_key_
+should_be_inclusive` (kleos-10, `memory/types.rs`), qui deserialise
+`SearchBody` directement depuis un JSON brut (`serde_json::from_str`), sans
+passer par aucun handler. Un fix cote handler laisse le champ de la struct
+lui-meme incorrect ; seul un fix a la deserialisation ferme le trou pour de
+vrai, y compris pour tout futur appelant qui lirait le champ sans passer par
+un handler existant.
+
+**Approche retenue (chirurgical, frontiere HTTP) :** un
+`deserialize_with = "deserialize_include_unscoped"` local par fichier,
+combine avec le `default = "default_include_unscoped"` deja en place :
+```rust
+fn deserialize_include_unscoped<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.or(Some(true)))
+}
+```
+`default` s'applique quand la cle est absente ; `deserialize_with` s'applique
+quand la cle est presente (y compris `null`) -- les deux se combinent
+normalement en serde. Applique aux **6 structs frontiere** (symetrie
+demandee explicitement, pour ne pas repeter l'erreur du matin ou seule une
+partie des copies etait alignee) :
+- `SearchBody`, `RecallBody`, `ListQuery` (`kleos-server/src/routes/memory/
+  types.rs`)
+- `ObservationsQuery` (`kleos-server/src/routes/growth/types.rs`)
+- `ListConversationsParams` (`kleos-server/src/routes/conversations/
+  types.rs`)
+- `SearchMessagesRequest` (`kleos-lib/src/conversations.rs`)
+
+Sur les 6, seuls `SearchBody`/`RecallBody`/`SearchMessagesRequest` (corps
+JSON POST) exposent reellement le cas `null` a un client ; `ListQuery`,
+`ObservationsQuery`, `ListConversationsParams` sont extraits via
+`axum::extract::Query` (chaine de requete, aucun litteral `null` possible).
+Applique quand meme sur ces 3 pour un contrat identique et verifiable sur
+les 6 structs, pas seulement sur celles ou le bug est atteignable en
+pratique.
+
+**Fichiers touches (Task 2) :**
+- `kleos-server/src/routes/memory/types.rs` (helper +
+  `deserialize_with` sur 3 structs)
+- `kleos-server/src/routes/growth/types.rs` (helper +
+  `deserialize_with` sur 1 struct)
+- `kleos-server/src/routes/conversations/types.rs` (helper +
+  `deserialize_with` sur 1 struct)
+- `kleos-lib/src/conversations.rs` (helper + `deserialize_with` sur 1
+  struct)
+- Niveau delta : chirurgical (attribut serde + petit helper par fichier,
+  meme discipline que Lots B/C).
+
+**Tests (Task 2) :** passe cargo centralisee couvrant Patch 49 + les tests
+de kleos-10 + le fix kleos-11 (StoreRequest.space, sans rapport avec Patch
+49) en une seule fois :
+- `cargo check -p kleos-lib --features bundled-sqlite --tests` -- vert
+  (valide aussi le fix kleos-11 sur les 6 fichiers casses par
+  `StoreRequest missing field 'space'`, cf. section Patch 33 "Friction
+  recurrente").
+- `cargo check -p kleos-server` -- vert.
+- `cargo test -p kleos-lib --features bundled-sqlite --test recall_tiers`
+  -- 3/3 vert.
+- `cargo test -p kleos-server --lib routes::` -- 100/100 vert (etait 99
+  passed / 1 failed avant ce fix ; le seul test rouge,
+  `search_body_include_unscoped_explicit_null_key_should_be_inclusive`,
+  passe desormais).
+- `cargo test -p kleos-lib --features bundled-sqlite --lib
+  memory::search::tests::cache_key_distinguishes_include_unscoped_both_
+  directions` -- vert (test de cache de kleos-10 pour la Cause 2 / Lot A).
+
+**Limite connue, hors perimetre de Patch 49 -- un second trou dans la meme cle
+de cache reste ouvert.** `hash_search_params` ne hashe pas non plus
+`req.embedding` (zero occurrence de `req.embedding.hash` dans
+`kleos-lib/src/memory/search.rs`). Deux requetes avec la meme `query` texte
+et les memes filtres mais des embeddings differents peuvent donc encore
+collider sur la meme entree de cache pendant la fenetre de 15s. Non
+atteignable par un client HTTP normal (`SearchBody` n'expose pas de champ
+`embedding` a saisir), mais atteignable par un appelant interne
+(`faceted_search`, `search.rs` ~ligne 1946, qui construit un `SearchRequest`
+avec un embedding calcule) et lors d'un swap d'embedder a chaud. Detail pour
+la review : le commentaire upstream `search.rs:834-838` ("Done before
+hashing so the cache key is stable") montre que l'auteur upstream CROYAIT que
+l'embedding participait a la cle -- il n'y participe pas, ni avant ni apres
+ce commentaire. Meme classe de bug que Lot A (cle de cache incomplete, code
+upstream pur), deliberement NON corrige ici pour ne pas elargir le diff de
+Patch 49 ; a traiter dans un patch dedie si mesure comme reellement
+atteignable en pratique.
+
+**Conditions de retrait :** Lot A et B/C sont candidats PR upstream propres
+(Lot A corrige un bug upstream ; Lot B/C alignent un comportement deja
+documente par le CLI). Lot D reste local tant que la fonctionnalite
+`spaces` (Patch 33) elle-meme n'est pas remontee upstream ; a retirer en
+meme temps que Patch 33 si un jour absorbe.
 
 ---
 

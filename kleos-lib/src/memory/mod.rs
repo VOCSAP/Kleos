@@ -1223,6 +1223,24 @@ pub async fn calendar_counts(
     .await
 }
 
+/// Patch 49 Lot D: inclusive space predicate shared by `list_static` and
+/// `list_important` (the /recall "static" and "important" tiers). Mirrors
+/// the inline predicate `list` already applies above: named space, OR the
+/// user's default space, OR legacy pre-Patch-33 NULL rows. `idx` is the
+/// placeholder bound to `space_id`; the following placeholder (`idx + 1`)
+/// is bound to `user_id` for the default-space subquery. Extracted here so
+/// this three-clause OR is not written a third time in this file.
+fn inclusive_space_clause(idx: usize) -> String {
+    format!(
+        "(space_id = ?{idx} \
+          OR space_id = (SELECT id FROM spaces \
+                         WHERE user_id = ?{next} AND name = 'default' LIMIT 1) \
+          OR space_id IS NULL)",
+        idx = idx,
+        next = idx + 1,
+    )
+}
+
 /// List the owner's static (pinned) memories, ordered by importance then recency.
 ///
 /// Recall must always surface pinned/static memories regardless of how recently they
@@ -1235,35 +1253,55 @@ pub async fn list_static(
     db: &Database,
     user_id: i64,
     space_id: Option<i64>,
+    // Patch 49 -- Some(true) widens `space_id = ?` to the inclusive predicate
+    // (named space + user's default space + legacy NULL rows), matching
+    // `list`'s ListOptions.include_unscoped contract. None/Some(false) keep
+    // the prior strict behaviour. Prior to Patch 49 this function had no
+    // inclusive mode at all: `space_id: None` means "no space filter", not
+    // "inclusive", so it could not be reused for that purpose.
+    include_unscoped: Option<bool>,
     limit: usize,
 ) -> Result<Vec<Memory>> {
-    // Sequential parameters; the space branch adds `space_id = ?2` and shifts LIMIT to ?3.
-    let sql = if space_id.is_some() {
-        format!(
+    let inclusive = space_id.is_some() && matches!(include_unscoped, Some(true));
+    // Sequential parameters; the strict-space branch adds `space_id = ?2` and shifts LIMIT
+    // to ?3, the inclusive branch adds the 3-clause OR at ?2/?3 and shifts LIMIT to ?4.
+    let sql = match (space_id, inclusive) {
+        (Some(_), true) => format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
+               AND status != 'pending' AND {clause} \
+             ORDER BY importance DESC, created_at DESC LIMIT ?4",
+            cols = MEMORY_COLUMNS,
+            clause = inclusive_space_clause(2),
+        ),
+        (Some(_), false) => format!(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
                AND status != 'pending' AND space_id = ?2 \
              ORDER BY importance DESC, created_at DESC LIMIT ?3",
             cols = MEMORY_COLUMNS,
-        )
-    } else {
-        format!(
+        ),
+        (None, _) => format!(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
                AND status != 'pending' \
              ORDER BY importance DESC, created_at DESC LIMIT ?2",
             cols = MEMORY_COLUMNS,
-        )
+        ),
     };
     let cap = limit;
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
         let mut memories = Vec::with_capacity(cap);
-        let mut rows = match space_id {
-            Some(sid) => stmt.query(rusqlite::params![user_id, sid, limit as i64])?,
-            None => stmt.query(rusqlite::params![user_id, limit as i64])?,
+        let mut rows = match (space_id, inclusive) {
+            (Some(sid), true) => {
+                stmt.query(rusqlite::params![user_id, sid, user_id, limit as i64])?
+            }
+            (Some(sid), false) => stmt.query(rusqlite::params![user_id, sid, limit as i64])?,
+            (None, _) => stmt.query(rusqlite::params![user_id, limit as i64])?,
         };
         while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, user_id)?);
@@ -1284,41 +1322,60 @@ pub async fn list_important(
     db: &Database,
     user_id: i64,
     space_id: Option<i64>,
+    // Patch 49 -- same contract as `list_static::include_unscoped` above.
+    include_unscoped: Option<bool>,
     min_importance: i32,
     limit: usize,
 ) -> Result<Vec<Memory>> {
-    // Sequential parameters; the space branch adds `space_id = ?3` and shifts LIMIT to ?4.
-    let sql = if space_id.is_some() {
-        format!(
+    let inclusive = space_id.is_some() && matches!(include_unscoped, Some(true));
+    // Sequential parameters; the strict-space branch adds `space_id = ?3` and shifts LIMIT
+    // to ?4, the inclusive branch adds the 3-clause OR at ?3/?4 and shifts LIMIT to ?5.
+    let sql = match (space_id, inclusive) {
+        (Some(_), true) => format!(
+            "SELECT {cols} FROM memories \
+             WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
+               AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
+               AND status != 'pending' AND {clause} \
+             ORDER BY importance DESC, id DESC LIMIT ?5",
+            cols = MEMORY_COLUMNS,
+            clause = inclusive_space_clause(3),
+        ),
+        (Some(_), false) => format!(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
                AND status != 'pending' AND space_id = ?3 \
              ORDER BY importance DESC, id DESC LIMIT ?4",
             cols = MEMORY_COLUMNS,
-        )
-    } else {
-        format!(
+        ),
+        (None, _) => format!(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
                AND status != 'pending' \
              ORDER BY importance DESC, id DESC LIMIT ?3",
             cols = MEMORY_COLUMNS,
-        )
+        ),
     };
     let cap = limit;
     db.read(move |conn| {
         let mut stmt = conn.prepare(&sql)?;
         let mut memories = Vec::with_capacity(cap);
-        let mut rows = match space_id {
-            Some(sid) => stmt.query(rusqlite::params![
+        let mut rows = match (space_id, inclusive) {
+            (Some(sid), true) => stmt.query(rusqlite::params![
+                user_id,
+                min_importance,
+                sid,
+                user_id,
+                limit as i64
+            ])?,
+            (Some(sid), false) => stmt.query(rusqlite::params![
                 user_id,
                 min_importance,
                 sid,
                 limit as i64
             ])?,
-            None => stmt.query(rusqlite::params![user_id, min_importance, limit as i64])?,
+            (None, _) => stmt.query(rusqlite::params![user_id, min_importance, limit as i64])?,
         };
         while let Some(row) = rows.next()? {
             memories.push(row_to_memory(row, user_id)?);
@@ -2929,9 +2986,9 @@ mod tests {
         assert_eq!(all.len(), 2, "include_pending surfaces pending");
 
         // Recall tiers withhold pending.
-        let statics = list_static(&db, 1, None, 10).await.expect("static");
+        let statics = list_static(&db, 1, None, None, 10).await.expect("static");
         assert_eq!(statics.len(), 1, "list_static withholds pending");
-        let important = list_important(&db, 1, None, 50, 10)
+        let important = list_important(&db, 1, None, None, 50, 10)
             .await
             .expect("important");
         assert_eq!(important.len(), 1, "list_important withholds pending");

@@ -184,6 +184,33 @@ pub struct UpsertConversationRequest {
     pub space: Option<String>,
 }
 
+/// Patch 49 Lot C: `SearchMessagesRequest` is deserialized directly as the
+/// JSON body of POST /messages/search (kleos-server/src/routes/conversations/
+/// mod.rs::search_msgs), so it is the HTTP boundary type for that route even
+/// though it lives in kleos-lib. Mirrors the fix applied to the
+/// kleos-server-side boundary structs: an absent `include_unscoped` must
+/// deserialize to the documented server-side default `Some(true)`, not
+/// `None` (which downstream treats as strict). An explicit
+/// `include_unscoped: false` still deserializes to `Some(false)`.
+fn default_include_unscoped() -> Option<bool> {
+    Some(true)
+}
+
+/// Patch 49 task 2: `#[serde(default = ...)]` alone only fires when the KEY
+/// is absent. `SearchMessagesRequest` is a JSON POST body (unlike the
+/// Query-extracted boundary structs), so an explicit `"include_unscoped":
+/// null` IS reachable here and would otherwise deserialize to `None`
+/// (treated as strict downstream). Collapses `null` into the same
+/// inclusive default as absent; an explicit `true`/`false` is unaffected.
+fn deserialize_include_unscoped<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.or_else(default_include_unscoped))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMessagesRequest {
     pub query: String,
@@ -194,7 +221,10 @@ pub struct SearchMessagesRequest {
     pub space_id: Option<i64>,
     /// Patch 33 -- include the user's default space (and pre-v57 NULL
     /// rows) when filtering by space_id. None falls back to strict.
-    #[serde(default)]
+    #[serde(
+        default = "default_include_unscoped",
+        deserialize_with = "deserialize_include_unscoped"
+    )]
     pub include_unscoped: Option<bool>,
 }
 
@@ -779,5 +809,25 @@ mod tests {
         let input = "normal conversation text";
         let result = apply_scrub(input, &["alpha-secret".to_string()]);
         assert_eq!(result, input);
+    }
+
+    // Patch 49 Lot C acceptance check: `SearchMessagesRequest` is deserialized as the JSON
+    // body of POST /messages/search (kleos-server/src/routes/conversations/mod.rs), so
+    // serde_json is the correct medium here (unlike the query-string structs in
+    // kleos-server, which use serde_urlencoded via axum's Query<T> extractor). An absent
+    // `include_unscoped` key must deserialize to the documented default `Some(true)`, while
+    // an explicit `false` must still deserialize to `Some(false)`.
+    #[test]
+    fn search_messages_request_include_unscoped_default_is_true_but_explicit_false_stays_false() {
+        let absent: SearchMessagesRequest = serde_json::from_str(r#"{"query": "x"}"#).unwrap();
+        assert_eq!(absent.include_unscoped, Some(true));
+
+        let explicit_false: SearchMessagesRequest =
+            serde_json::from_str(r#"{"query": "x", "include_unscoped": false}"#).unwrap();
+        assert_eq!(explicit_false.include_unscoped, Some(false));
+
+        let explicit_true: SearchMessagesRequest =
+            serde_json::from_str(r#"{"query": "x", "include_unscoped": true}"#).unwrap();
+        assert_eq!(explicit_true.include_unscoped, Some(true));
     }
 }
