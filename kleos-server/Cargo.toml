@@ -74,6 +74,13 @@ tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true }
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
+# Patch 49: axum's Query<T> extractor deserializes via serde_urlencoded (see axum's own
+# Cargo.lock dependency block), not serde_json. A #[serde(default = ...)] test written
+# against serde_json::from_str exercises a different Deserializer and can pass while the
+# real HTTP extraction path (query string) still fails. Declared explicitly per the
+# "transitive crate needs a direct Cargo.toml entry" convention -- it is already resolved
+# transitively via axum, but not usable from test code without this line.
+serde_urlencoded = "0.7"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-{ target }{ archive-suffix }"

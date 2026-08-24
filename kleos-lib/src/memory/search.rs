@@ -89,6 +89,11 @@ fn hash_search_params(req: &SearchRequest) -> u64 {
     req.tags.hash(&mut h);
     req.question_type.hash(&mut h);
     req.space_id.hash(&mut h);
+    // Patch 49 Lot A: two requests differing only by include_unscoped are NOT
+    // the same cached query (one is strict, the other cross-space inclusive).
+    // Omitting this field let a strict follow-up read another request's
+    // include_unscoped=true results back out of cache within the TTL.
+    req.include_unscoped.hash(&mut h);
     req.include_forgotten.hash(&mut h);
     req.exclude_consolidated.hash(&mut h);
     req.threshold.map(|t| t.to_bits()).hash(&mut h);
@@ -2566,6 +2571,153 @@ mod tests {
             unreviewed < 4.0,
             "never-reviewed year-old control must decay from created_at \
              (got {unreviewed})"
+        );
+    }
+
+    /// Patch 49 Lot A regression: `hash_search_params` must hash `include_unscoped` so two
+    /// text-identical requests differing ONLY by that flag never collide in the 15s search
+    /// cache. Before the fix, the second call read back the first call's cached result set
+    /// regardless of its own `include_unscoped` value -- a cross-space leak when the strict
+    /// call followed an inclusive one, and a missing-rows bug in the opposite order. Covers
+    /// both directions with distinct query text per direction so the two scenarios do not
+    /// share a cache key with each other.
+    #[tokio::test]
+    async fn cache_key_distinguishes_include_unscoped_both_directions() {
+        let db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-mem db");
+        // Process-unique id: isolates this test's cache entries from any other test in this
+        // binary that might reuse a small user_id against the same process-wide SEARCH_CACHE.
+        let uid: i64 = 4_949_049;
+        // spaces.user_id REFERENCES users(id) -- the row must exist before
+        // resolve_or_create_space/default_space_id can insert against it.
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO users (id, username) VALUES (?1, ?2)",
+                rusqlite::params![uid, format!("patch49-cache-user-{uid}")],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed synthetic user");
+        let named = crate::space::resolve_or_create_space(&db, uid, "patch49-cache-probe")
+            .await
+            .expect("named space");
+        let default_space = crate::space::default_space_id(&db, uid)
+            .await
+            .expect("default space");
+
+        async fn seed(db: &crate::db::Database, uid: i64, content: &str, space_id: i64) -> i64 {
+            crate::memory::store(
+                db,
+                crate::memory::types::StoreRequest {
+                    content: content.to_string(),
+                    user_id: Some(uid),
+                    space_id: Some(space_id),
+                    ..Default::default()
+                },
+                None,
+                false,
+            )
+            .await
+            .expect("seed store")
+            .id
+        }
+
+        // --- Direction 1: inclusive first, strict immediately after (same TTL window). ---
+        let leak = seed(
+            &db,
+            uid,
+            "cachecollisionmarker default bucket leak row",
+            default_space,
+        )
+        .await;
+        let scoped = seed(
+            &db,
+            uid,
+            "cachecollisionmarker named space scoped row",
+            named,
+        )
+        .await;
+
+        let base_req = crate::memory::types::SearchRequest {
+            query: "cachecollisionmarker".to_string(),
+            user_id: Some(uid),
+            space_id: Some(named),
+            limit: Some(10),
+            ..Default::default()
+        };
+
+        let mut inclusive_req = base_req.clone();
+        inclusive_req.include_unscoped = Some(true);
+        let inclusive_results = super::hybrid_search(&db, inclusive_req)
+            .await
+            .expect("inclusive search");
+        let inclusive_ids: Vec<i64> = inclusive_results.iter().map(|r| r.memory.id).collect();
+        assert!(
+            inclusive_ids.contains(&leak) && inclusive_ids.contains(&scoped),
+            "control: inclusive search must surface both the scoped and default-bucket rows; \
+             got {inclusive_ids:?}"
+        );
+
+        let mut strict_req = base_req.clone();
+        strict_req.include_unscoped = Some(false);
+        let strict_results = super::hybrid_search(&db, strict_req)
+            .await
+            .expect("strict search immediately after inclusive");
+        let strict_ids: Vec<i64> = strict_results.iter().map(|r| r.memory.id).collect();
+        assert!(
+            strict_ids.contains(&scoped) && !strict_ids.contains(&leak),
+            "strict search run <15s after an inclusive search on the same text must not read \
+             back the inclusive cache entry (cross-space leak); got {strict_ids:?}"
+        );
+
+        // --- Direction 2: strict first, inclusive immediately after. Distinct query text so
+        // this does not share a cache key with direction 1 above. ---
+        let leak2 = seed(
+            &db,
+            uid,
+            "cachecollisionreverse default bucket leak row",
+            default_space,
+        )
+        .await;
+        let scoped2 = seed(
+            &db,
+            uid,
+            "cachecollisionreverse named space scoped row",
+            named,
+        )
+        .await;
+
+        let base_req2 = crate::memory::types::SearchRequest {
+            query: "cachecollisionreverse".to_string(),
+            user_id: Some(uid),
+            space_id: Some(named),
+            limit: Some(10),
+            ..Default::default()
+        };
+
+        let mut strict_req2 = base_req2.clone();
+        strict_req2.include_unscoped = Some(false);
+        let strict_results2 = super::hybrid_search(&db, strict_req2)
+            .await
+            .expect("strict search 2");
+        let strict_ids2: Vec<i64> = strict_results2.iter().map(|r| r.memory.id).collect();
+        assert!(
+            strict_ids2.contains(&scoped2) && !strict_ids2.contains(&leak2),
+            "control: strict search 2 must exclude the default-bucket row; got {strict_ids2:?}"
+        );
+
+        let mut inclusive_req2 = base_req2.clone();
+        inclusive_req2.include_unscoped = Some(true);
+        let inclusive_results2 = super::hybrid_search(&db, inclusive_req2)
+            .await
+            .expect("inclusive search run immediately after strict");
+        let inclusive_ids2: Vec<i64> = inclusive_results2.iter().map(|r| r.memory.id).collect();
+        assert!(
+            inclusive_ids2.contains(&leak2) && inclusive_ids2.contains(&scoped2),
+            "inclusive search run <15s after a strict search on the same text must not read \
+             back the strict cache entry (missing default-bucket row); got {inclusive_ids2:?}"
         );
     }
 }

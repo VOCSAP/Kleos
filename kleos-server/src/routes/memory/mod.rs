@@ -717,8 +717,14 @@ async fn recall(
     // surfaces. The prior path listed the 10 newest rows and filtered `is_static`
     // afterwards, silently dropping every static memory outside that window.
     // Patch 33: feed the resolved space id so the `space` name field is honored.
-    let static_memories =
-        memory::list_static(&db, user_id, resolved_space_id, RECALL_STATIC_LIMIT).await?;
+    let static_memories = memory::list_static(
+        &db,
+        user_id,
+        resolved_space_id,
+        body.include_unscoped,
+        RECALL_STATIC_LIMIT,
+    )
+    .await?;
 
     let query_embedding = {
         if let Some(embedder) = state.current_embedder().await {
@@ -764,6 +770,7 @@ async fn recall(
         &db,
         user_id,
         resolved_space_id,
+        body.include_unscoped,
         RECALL_IMPORTANT_MIN,
         RECALL_IMPORTANT_LIMIT,
     )
