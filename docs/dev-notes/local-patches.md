@@ -5683,3 +5683,80 @@ meme temps que Patch 33 si un jour absorbe.
 | agent-forge | oui | non |
 | kleos-sidecar | oui | non |
 | kleos-cred (cred + derive-db-key) | oui | non |
+
+---
+
+## Patch 50 -- `agent-forge` n'ecrivait jamais son enveloppe sur stdout (2026-08-25)
+
+**Symptome :** un agent respecte le protocole, appelle
+`agent-forge --name <slug> log-hypothesis`, la commande reussit et pose bien
+un `hyp_xxxxxxxx` dans `<slug>.out.json`. Le hook PreToolUse
+`enforce-agent-forge.sh` le bloque pourtant a sa premiere edition de fichier
+code, comme s'il n'avait rien declare.
+
+Cause racine mesuree le 2026-08-25 : le binaire n'a **jamais** imprime son
+enveloppe `Output`. Le seul `println!` de `main.rs` sert la sous-commande
+`schema` ; la terminaison passait uniquement par `write_output` vers le
+fichier. Verifie sur les deux formes d'appel, `--name` comme
+`--input`/`--output` explicites : 0 octet sur stdout, 0 sur stderr, et
+`exit 0` meme quand `success` vaut `false`.
+
+Le hook PostToolUse `~/.claude/hooks/track-agent-forge.sh`, durci le
+2026-08-24, exige depuis lors un identifiant `spec_<hex>` / `hyp_<hex>` dans
+`tool_response` **en plus** du match sur la commande Bash (garde
+`forge_saw_hyp_id` ligne 108, branche `log-hypothesis` lignes 133-140). Ce
+durcissement etait legitime : avant lui, `kleos-cli store "... log-outcome
+..."` purgeait le marqueur sur simple mention et `echo "agent-forge
+spec-task"` l'armait. Mais il a ete ecrit contre un binaire sans contrat
+stdout. Des ce jour-la, tout appel non suivi d'un `cat <slug>.out.json`
+laissait `tool_response` vide, le hook loguait `Ignored: ... state
+unchanged`, aucun `agent-forge-active.<session_id>` n'etait pose et
+`enforce-agent-forge.sh:111` refusait l'edition suivante. Mesure sur le log
+depuis le 2026-08-24 : `spec-task` 39 armes / 33 ignores, `log-hypothesis`
+32 / 32. Les deux sous-commandes echouaient au meme taux ; l'asymetrie
+apparente venait du chemin d'appel, le skill `agent-forge-spec` prescrivant
+un `&& cat` que la forme `--name` du CLAUDE.md global n'a pas.
+
+**Approche :** faire imprimer l'enveloppe au binaire, plutot que faire lire
+le fichier au hook. Niveau **chirurgical**, dans une zone deja divergente
+ouverte par `f348b263` (flag `--name`, 2026-08-23). Le niveau inferieur,
+canal overlay externe, n'existe pas pour un binaire. L'alternative sans delta
+upstream, faire lire `<slug>.out.json` au hook, a ete rejetee sur trois
+points : le fichier persiste entre les runs, donc un echec suivant un succes
+armerait quand meme le gate sauf a reintroduire un controle de mtime, c'est a
+dire le TTL fragile que le refactor du 2026-08-24 avait justement supprime ;
+`kleos-cli forge` n'ecrit aucun fichier local, la couverture serait partielle ;
+et surtout le hook lirait un fichier que l'agent controle en ecriture, ce qui
+rouvre la classe de bypass que le durcissement fermait. Le troisieme candidat,
+armer sur la seule correspondance de commande, est un revert pur de ce
+durcissement et a ete ecarte pour la meme raison.
+
+**Fichiers touches :** `agent-forge/src/main.rs` (22 lignes ajoutees).
+Nouveau helper `emit_stdout(&Output)`, appele apres `write_output` au site
+terminal de `main()` et au site d'erreur d'ouverture de la DB. Aucune
+signature modifiee, `json_io.rs` intact.
+
+**Tests :** cas d'erreur, 132 octets sur stdout la ou il y en avait 0 ; cas
+de succes, enveloppe complete, octet pour octet identique au fichier hormis
+le saut de ligne final de `println!`. De bout en bout, `agent-forge --name
+af-verify-vocab log-hypothesis` **sans** `cat` final produit desormais le
+verdict `State: log-hypothesis active (CLI), completion gates reset`, la ou
+il produisait `Ignored`. `verify` sur `cargo build --release -p agent-forge`
+passe (1/1). Le contournement `; cat <slug>.out.json` cote appelant n'est
+plus necessaire.
+
+**Limite connue, hors perimetre de ce patch :** les branches sans
+identifiant restent bloquees, pour une cause differente. `forge_saw_success`
+(`track-agent-forge.sh:109-111`) n'accepte que `spec_`/`hyp_` en hexa ou les
+mots `recorded|logged|updated|completed`, alors que `verify` renvoie
+`id: null` et le message `Verification passed (N/M steps)`. Un `verify`
+reussi ne pose donc toujours pas `agent-forge-verified.<session_id>` (4
+armes / 48 ignores sur la meme periode). `challenge-code` et `session-diff`
+partagent cette garde. Le correctif est cote hook, pas cote binaire, et fait
+l'objet d'une carte roadmap dediee.
+
+**Conditions de retrait :** si upstream Ghost-Frame adopte un contrat stdout
+pour `agent-forge` (PR possible, le changement n'a rien de specifique a
+VOCSAP et corrige aussi le `exit 0` sur `success: false`), ce patch et le
+`--name` de `f348b263` fusionnent avec la version amont et disparaissent du
+fork.
