@@ -273,6 +273,25 @@ fn require_io(cli: &Cli) -> (PathBuf, PathBuf) {
     (input, output)
 }
 
+/// Echo the result envelope on stdout, in addition to the `--output` file.
+///
+/// The file stays the machine-readable contract; stdout is what a caller
+/// actually observes. Until this existed, every subcommand printed nothing at
+/// all and exited 0 even on `success: false`, so a caller could not tell a
+/// logged hypothesis from a rejected one without reading the file back. That
+/// silence also broke the PostToolUse hook that gates code edits on seeing a
+/// `spec_`/`hyp_` identifier in the command's output: a perfectly valid call
+/// left no trace for it to match, and the next edit was refused.
+///
+/// A rendering failure is reported on stderr and left non-fatal: the envelope
+/// has already been persisted, so the run itself succeeded.
+fn emit_stdout(output: &Output) {
+    match serde_json::to_string_pretty(output) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Failed to render output on stdout: {}", e),
+    }
+}
+
 /// Parse args, open the forge DB, dispatch to the requested tool, and write
 /// the JSON result to `--output`. Any error becomes an `Output::error` payload.
 /// The `Help` variant short-circuits before any DB or file I/O.
@@ -298,6 +317,7 @@ fn main() {
         Err(e) => {
             let output = Output::error(format!("Database error: {}", e));
             write_output(&output_path, &output).ok();
+            emit_stdout(&output);
             std::process::exit(1);
         }
     };
@@ -453,4 +473,6 @@ fn main() {
         eprintln!("Failed to write output: {}", e);
         std::process::exit(1);
     }
+
+    emit_stdout(&output);
 }
