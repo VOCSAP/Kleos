@@ -1,7 +1,7 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-08-23 (merge upstream 7ce95482 -- 156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
+**Dernière mise à jour :** 2026-09-02 (Patch 51 -- cache de session PIV corrompu). Merge upstream de reference : 7ce95482 du 2026-08-23 (156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
@@ -5760,3 +5760,98 @@ pour `agent-forge` (PR possible, le changement n'a rien de specifique a
 VOCSAP et corrige aussi le `exit 0` sur `success: false`), ce patch et le
 `--name` de `f348b263` fusionnent avec la version amont et disparaissent du
 fork.
+
+---
+
+## Patch 51 -- cache de session PIV corrompu = panne permanente de tout client (2026-09-02)
+
+**Symptome :** tous les clients Kleos d'un poste echouent sur **tous** les
+endpoints, y compris avec une charge minimale :
+
+```
+Error: GET http://192.168.10.21:4200/handoffs/search?q=...&limit=1 failed:
+  builder error -> failed to parse header value
+```
+
+Mesure du 2026-09-02 sur `DESKTOP-7B2CIVN`. Le fichier de cache de session
+`%LOCALAPPDATA%/kleos-session-d069be7b63989d26f2933ccef6eb7ca0` (43 octets,
+date du 2026-09-01 14:46) etait **integralement rempli d'octets 0x00**,
+octet pour octet identique a `head -c 43 /dev/zero`. C'est l'artefact NTFS
+classique d'une ecriture interrompue : la taille finale est committee dans
+les metadonnees, les donnees ne sont jamais flushees, et la relecture rend
+des NUL. Les neuf autres fichiers `kleos-session-*` du poste etaient sains,
+un seul etait corrompu, et ce seul fichier suffisait a mettre tous les
+clients a terre.
+
+Chaine causale, verifiee de bout en bout :
+
+1. `RequestSigner::cached_session` (`kleos-lib/src/auth_piv.rs`) validait le
+   contenu par `tok.trim()` puis `is_empty()`. **`0x00` n'est pas un
+   whitespace Rust**, donc `trim` ne le retire pas et 43 NUL ne sont pas
+   vides : le token corrompu passait le garde.
+2. `Client::apply_auth` (`kleos-client/src/client.rs:60`) le posait en
+   header `X-Kleos-Session`. `reqwest` refuse un `HeaderValue` contenant
+   `0x00`, d'ou l'erreur -- **cote client, avant tout envoi reseau**.
+3. La requete n'atteignant jamais le serveur, il n'y avait **aucun 401**,
+   donc le self-heal `clear_session()` (cable sur 401) ne se declenchait
+   jamais. La panne etait **permanente**.
+4. Le chemin du cache n'est scope que par `identity_hash`, donc **tous les
+   processus de la meme identite sur l'hote** (sessions Claude Code, hooks,
+   MCP, sidecar) lisaient le meme fichier empoisonne. La panne etait
+   **partagee**.
+
+Le diagnostic initial des sessions precedentes attribuait cette erreur au
+label d'agent auto-detecte et prescrivait `KLEOS_AGENT_LABEL=...` en
+contournement. C'est faux : `main.rs` defaute sur `"kleos-cli"` quand la
+variable est absente, et `identity status` confirmait des labels propres
+(`DESKTOP-7B2CIVN` / `kleos-cli` / `none`). Poser la variable "reparait" par
+effet de bord, en changeant l'`identity_hash` donc le fichier de cache lu.
+Les memoires Kleos correspondantes ont ete corrigees (#15847, #15848).
+
+**Approche :** valider a la frontiere du cache plutot qu'a la construction de
+la requete. Niveau **chirurgical** : 4 lignes dans `cached_session`, plus un
+predicat libre `is_header_safe_token` en additif pur. Le niveau inferieur
+(canal overlay, env var) n'existe pas ici -- le garde doit vivre la ou le
+fichier est lu. Le token est une valeur opaque emise par le serveur, donc
+l'alphabet accepte est le plus strict qui couvre encore tout encodage
+plausible : VCHAR ASCII, `0x21..=0x7e`.
+
+Le fichier corrompu est **supprime** au lieu d'etre seulement ignore. C'est
+le point qui compte : sans suppression, chaque processus refait la lecture,
+re-echoue le garde, et paie un re-signing complet a chaque appel. Avec, la
+corruption s'auto-repare au premier appel suivant, exactement comme le fait
+deja `clear_session` sur 401.
+
+**Fichiers touches :** `kleos-lib/src/auth_piv.rs` uniquement.
+`cached_session` (garde + doc-comment expliquant la classe de panne),
+nouveau `fn is_header_safe_token(&str) -> bool`, et trois tests unitaires
+dans le `mod tests` existant. Aucune signature modifiee.
+`kleos-client/src/client.rs` **non touche** : le site qui echouait n'est pas
+celui qu'il faut corriger.
+
+**Tests :** `cargo test -p kleos-lib --features bundled-sqlite --lib
+auth_piv` -> 31 passed / 0 failed, dont les trois nouveaux :
+
+- `header_safe_token_rejects_non_vchar` -- couvre NUL seul, NUL enchasse,
+  newline, espace et non-ASCII ; le cas NUL est celui qui motive le patch.
+- `corrupt_session_cache_is_discarded_and_deleted` -- ecrit 43 octets NUL au
+  chemin de cache reel d'un signer jetable, exige `None` **et** l'absence du
+  fichier ensuite. C'est la reproduction fidele de l'incident.
+- `valid_session_cache_is_returned` -- le chemin rapide protege continue de
+  rendre le token, trim de son newline final.
+
+`agent-forge verify` passe 2/2 (tests + `cargo build -p kleos-lib`).
+Empirique : apres retrait du fichier corrompu, `kleos-cli search` repond
+immediatement et un nouveau cache propre de 43 caracteres alphanumeriques est
+reemis.
+
+**Remede manuel** si un poste presente le symptome avec un binaire
+pre-patch : `rm -f "$LOCALAPPDATA"/kleos-session-*` (Git Bash). Sans effet de
+bord, le token est reemis au premier appel.
+
+**Conditions de retrait :** candidat PR upstream direct. Le bug n'a rien de
+specifique a VOCSAP -- toute plateforme peut rendre un fichier tronque ou
+zero-fill apres une coupure, et le cout de la panne (permanente, partagee
+par hote, avec un message d'erreur qui pointe vers reqwest et non vers le
+cache) est disproportionne face aux quatre lignes de garde. Si Ghost-Frame
+absorbe le correctif, ce patch disparait du fork.

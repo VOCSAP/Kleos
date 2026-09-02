@@ -11,7 +11,8 @@
 *.sqlite-wal
 
 # Agent/IDE config (private)
-CLAUDE.md
+# CLAUDE.md est tracke (conventions du fork) ; l'infra locale vit dans CLAUDE.local.md.
+CLAUDE.local.md
 .claude/
 .codex
 .worktrees/

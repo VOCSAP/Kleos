@@ -1098,6 +1098,15 @@ impl RequestSigner {
 
     /// Returns the cached session token: the in-process copy if present,
     /// otherwise the on-disk copy (which is then promoted into memory).
+    ///
+    /// A cache file whose contents cannot be sent as a header value is treated
+    /// as corruption and deleted rather than returned. An interrupted write can
+    /// leave the file at its final length but filled with NUL, and `trim` does
+    /// not strip NUL, so such a token used to reach `reqwest` and fail there
+    /// with "failed to parse header value" -- before any request left the
+    /// process, hence with no 401 to trigger `clear_session`. The cache path is
+    /// keyed only by `identity_hash`, so the failure was permanent and shared
+    /// by every process running under the same identity on the host.
     pub fn cached_session(&self) -> Option<String> {
         if let Some(tok) = self.session_token.lock().unwrap().clone() {
             return Some(tok);
@@ -1106,6 +1115,10 @@ impl RequestSigner {
         let tok = std::fs::read_to_string(&path).ok()?;
         let tok = tok.trim();
         if tok.is_empty() {
+            return None;
+        }
+        if !is_header_safe_token(tok) {
+            let _ = std::fs::remove_file(&path);
             return None;
         }
         *self.session_token.lock().unwrap() = Some(tok.to_string());
@@ -1261,6 +1274,17 @@ impl SignedRequest {
     }
 }
 
+/// Whether a cached session token can legally be sent as an HTTP header value.
+/// A session token is opaque server-issued material, so the accepted alphabet
+/// is the strictest one that still covers every encoding a server could pick:
+/// ASCII VCHAR, `0x21..=0x7e`. Everything else -- NUL padding from a truncated
+/// write, a stray control byte, non-ASCII text -- is rejected at the cache
+/// boundary instead of at request-build time, where the resulting error is
+/// opaque and unrecoverable.
+fn is_header_safe_token(tok: &str) -> bool {
+    !tok.is_empty() && tok.bytes().all(|b| (0x21..=0x7e).contains(&b))
+}
+
 /// Resolve the user's home directory (`HOME` or `USERPROFILE`) used to locate
 /// the default identity key path.
 fn dirs_for_key_path() -> Option<std::path::PathBuf> {
@@ -1337,6 +1361,56 @@ mod tests {
         assert!(!skip_piv_for_tier(Some("piv")));
         assert!(!skip_piv_for_tier(Some("")));
         assert!(!skip_piv_for_tier(Some("hardware")));
+    }
+
+    // -- Session-cache integrity --
+
+    /// Only ASCII VCHAR survives the cache guard. NUL is the case that matters:
+    /// it is not whitespace, so `trim` leaves it in place, and it is the byte an
+    /// interrupted write leaves behind.
+    #[test]
+    fn header_safe_token_rejects_non_vchar() {
+        assert!(is_header_safe_token("kleos-session.abc123"));
+        assert!(!is_header_safe_token(""));
+        assert!(!is_header_safe_token("\0\0\0"));
+        assert!(!is_header_safe_token("abc\0def"));
+        assert!(!is_header_safe_token("abc\ndef"));
+        assert!(!is_header_safe_token("abc def"));
+        assert!(!is_header_safe_token("abcdéf"));
+    }
+
+    /// A NUL-filled cache file (an interrupted write that kept its final length)
+    /// must yield no token and be deleted, so the next request re-signs instead
+    /// of failing forever at header-build time with no 401 to self-heal on.
+    #[test]
+    fn corrupt_session_cache_is_discarded_and_deleted() {
+        let signer = RequestSigner::from_key_bytes([7u8; 32], "host", "corrupt-cache-test", "none");
+        let path = signer.session_file_path().expect("session cache path");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, vec![0u8; 43]).unwrap();
+
+        assert_eq!(signer.cached_session(), None);
+        assert!(
+            !path.exists(),
+            "a corrupt cache file must be removed, otherwise the failure is permanent"
+        );
+    }
+
+    /// A well-formed cache file is still returned, trimmed of its trailing
+    /// newline: the guard must not break the fast path it protects.
+    #[test]
+    fn valid_session_cache_is_returned() {
+        let signer = RequestSigner::from_key_bytes([9u8; 32], "host", "valid-cache-test", "none");
+        let path = signer.session_file_path().expect("session cache path");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&path, "sess.abc123DEF456\n").unwrap();
+
+        assert_eq!(signer.cached_session().as_deref(), Some("sess.abc123DEF456"));
+        signer.clear_session();
     }
 
     /// Return the current Unix timestamp in milliseconds for tests.
