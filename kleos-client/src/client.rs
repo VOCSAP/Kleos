@@ -94,10 +94,45 @@ impl Client {
         total / attempts
     }
 
+    /// Sends a request, retrying once when a cached session token was the
+    /// credential and the server answered 401.
+    ///
+    /// Sessions live in the server's memory and expire on a sliding TTL, so a
+    /// cached token may be unknown to it. `apply_auth` then sends
+    /// `X-Kleos-Session` alone -- no signature, no bearer -- and the server's
+    /// session path falls through to its generic "Authentication required"
+    /// fallback, a 401 that names the wrong cause. Dropping the token forces
+    /// the second attempt to re-sign. A request that carried no session token
+    /// is not retried, so a rejected key still costs one round trip.
+    async fn execute(
+        &self,
+        http: &reqwest::Client,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        content_type: Option<&str>,
+    ) -> Result<reqwest::Response, String> {
+        let used_session = self
+            .signer
+            .as_ref()
+            .is_some_and(|s| s.cached_session().is_some());
+        let resp = self
+            .execute_once(http, method, path, body, content_type)
+            .await?;
+        if !used_session || resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+        if let Some(signer) = &self.signer {
+            signer.clear_session();
+        }
+        self.execute_once(http, method, path, body, content_type)
+            .await
+    }
+
     /// Core request dispatcher with URL failover. Tries each configured URL in
     /// order; on connection-level failures (timeout, refused, unreachable) falls
     /// through to the next URL. HTTP errors (4xx, 5xx) are returned immediately.
-    async fn execute(
+    async fn execute_once(
         &self,
         http: &reqwest::Client,
         method: &str,
@@ -670,5 +705,81 @@ mod tests {
         let result = append_query_string("/list", &args);
         let count = result.matches("tags=").count();
         assert_eq!(count, 2);
+    }
+
+    /// Accepts two connections, answering 401 to any request that carries a
+    /// session token and 200 to any that does not. Returns the per-request
+    /// record of "carried a session token", which is what the assertions read.
+    fn spawn_session_probe(
+        listener: tokio::net::TcpListener,
+        always_401: bool,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<bool>>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = std::sync::Arc::clone(&seen);
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let with_session = req.contains("x-kleos-session:");
+                recorder.lock().unwrap().push(with_session);
+                // `connection: close` on every answer: a keep-alive socket
+                // would let the retry reuse this connection, and the second
+                // `accept` would then never resolve.
+                let resp = if with_session || always_401 {
+                    "HTTP/1.1 401 Unauthorized\r\nconnection: close\r\ncontent-length: 2\r\n\r\n{}"
+                } else {
+                    "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 11\r\n\r\n{\"ok\":true}"
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        seen
+    }
+
+    /// A session token the server rejects must cost one retry, not a failed
+    /// command. `apply_auth` sends `X-Kleos-Session` alone, so such a request
+    /// reaches the server with no signature to fall back on and earns a 401
+    /// whose message blames the missing signature. The second attempt must
+    /// carry no token, which is what the recorded `[true, false]` proves.
+    #[tokio::test]
+    async fn stale_session_token_is_dropped_and_the_request_replayed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = spawn_session_probe(listener, false);
+
+        let signer = kleos_lib::auth_piv::RequestSigner::from_key_bytes(
+            [9u8; 32],
+            "host",
+            "session-retry-test",
+            "none",
+        );
+        signer.set_session("stale.session.token".to_string());
+        let client = Client::new(format!("http://{addr}"), None, Some(signer));
+
+        let out = client.get("/health").await.expect("the retry must recover");
+        assert_eq!(out["ok"], json!(true));
+        assert_eq!(*seen.lock().unwrap(), vec![true, false]);
+    }
+
+    /// Without a session token there is nothing stale to shed, so a 401 is the
+    /// server's verdict on the credential itself and must be returned after a
+    /// single round trip rather than doubled.
+    #[tokio::test]
+    async fn rejected_bearer_key_is_not_retried() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = spawn_session_probe(listener, true);
+
+        let client = Client::new(format!("http://{addr}"), Some("bad-key".to_string()), None);
+
+        let err = client.get("/health").await.unwrap_err();
+        assert!(err.contains("401"), "unexpected error: {err}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 }

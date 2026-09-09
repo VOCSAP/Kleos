@@ -1,7 +1,7 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-09-02 (Patch 51 -- cache de session PIV corrompu). Merge upstream de reference : 7ce95482 du 2026-08-23 (156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
+**Dernière mise à jour :** 2026-09-09 (Patch 52 -- 401 sur session expiree jamais rejoue). Merge upstream de reference : 7ce95482 du 2026-08-23 (156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
@@ -5855,3 +5855,97 @@ zero-fill apres une coupure, et le cout de la panne (permanente, partagee
 par hote, avec un message d'erreur qui pointe vers reqwest et non vers le
 cache) est disproportionne face aux quatre lignes de garde. Si Ghost-Frame
 absorbe le correctif, ce patch disparait du fork.
+
+---
+
+## Patch 52 -- un token de session expire produit un 401 jamais rejoue (2026-09-09)
+
+**Symptome :** n'importe quelle commande client echoue par intermittence,
+typiquement un store :
+
+```
+Error: HTTP 401 Unauthorized http://192.168.10.21:4200/store:
+  Authentication required. Provide X-Kleos-Sig header or Bearer token.
+```
+
+Relancer la commande a l'identique, sans rien changer, reussit. Observe
+depuis au moins le 2026-08-26 sur plusieurs sessions d'agent (memoires Kleos
+#15068 et #16387, qui constatent l'intermittence sans la resoudre ; cause
+racine dans #16579). Le message accuse la clef, ce qui a produit deux faux
+diagnostics successifs -- clef absente, puis clef refusee en ecriture -- alors
+que `KLEOS_API_KEY` etait chaque fois presente et valide.
+
+Chaine causale, verifiee de bout en bout :
+
+1. `Client::apply_auth` (`kleos-client/src/client.rs:59`) retourne des que
+   `signer.cached_session()` rend un token : la requete part avec
+   `X-Kleos-Session` **seul**, sans signature PIV ni bearer de secours.
+2. Le serveur garde ses sessions en memoire, avec un TTL glissant de 900 s
+   (`kleos-lib/src/auth_piv.rs:359`). Tout redemarrage de `kleos-server`, et
+   tout creux d'activite plus long que le TTL, rend le token inconnu de lui.
+3. `kleos-server/src/middleware/auth.rs:502` trace l'echec de `verify` en
+   `debug` et **tombe en cascade sans early return**. Aucune autre methode
+   d'auth n'etant presente dans la requete, elle traverse tous les chemins et
+   atteint le fallback `auth.rs:1078`, qui rend le message generique cite plus
+   haut. Le 401 nomme donc la mauvaise cause.
+4. `Client::handle_response` (`client.rs:271`) appelle bien `clear_session()`
+   sur 401, mais ne rejoue pas la requete. Seul `post_mcp` (`client.rs:392`,
+   upstream `2c5fee94`) porte un retry. La premiere commande qui suit
+   l'expiration echoue donc toujours, et c'est le re-lancement manuel de
+   l'operateur qui re-signe.
+
+L'intermittence vient du partage : le cache `kleos-session-<identity_hash>`
+n'est scope que par identite, donc tous les processus de la meme identite sur
+l'hote lisent le meme fichier. Un seul paie le 401, le supprime, et les
+suivants re-signent.
+
+**Approche :** rendre le retry generique au lieu de le laisser au seul
+`post_mcp`. Niveau **chirurgical** : `execute` garde son nom et ses neuf sites
+d'appel, son corps est renomme `execute_once` sans autre changement, et un
+nouveau `execute` de vingt lignes l'encadre. Rediriger les sites d'appel
+plutot que renommer la definition aurait coute neuf lignes de delta au lieu
+d'une, et surtout aurait deplace la zone de conflit sur le corps meme de la
+boucle de failover, que upstream retouche regulierement.
+
+Le niveau inferieur (canal overlay, variable d'environnement) n'existe pas
+ici : il s'agit du comportement d'un client, pas d'un reglage.
+
+Le retry est conditionne a `used_session`. Sans cette condition, une clef
+refusee couterait deux allers-retours au lieu d'un, et un serveur qui rend 401
+sur tout verrait la charge de chaque client doubler.
+
+Le pendant serveur -- rendre le message du fallback specifique quand une
+session a ete presentee et rejetee -- n'est **pas** fait ici : il ameliore le
+diagnostic, pas le comportement, et ouvrirait un site de delta dans un
+middleware upstream tres actif.
+
+**Fichiers touches :** `kleos-client/src/client.rs` uniquement. Une ligne de
+signature modifiee, le wrapper `execute` ajoute, deux tests et un helper de
+stub dans le `mod tests` existant. Aucune signature publique modifiee.
+`post_mcp` conserve son propre retry : redondant desormais, mais le supprimer
+ouvrirait un delta upstream sans rien gagner.
+
+**Tests :** `cargo test -p kleos-client --features kleos-lib/bundled-sqlite
+--lib` -> 24 passed / 0 failed, dont les deux nouveaux :
+
+- `stale_session_token_is_dropped_and_the_request_replayed` -- un stub TCP
+  local repond 401 a toute requete portant `X-Kleos-Session` et 200 sinon ; le
+  test exige la reussite **et** la trace `[true, false]`, donc la preuve que la
+  seconde tentative a lache le token.
+- `rejected_bearer_key_is_not_retried` -- le stub repond 401 a tout ; sans
+  token de session, le client ne doit emettre qu'une seule requete.
+
+Test de mutation, pour prouver que le garde mord : en forcant `used_session` a
+`false`, `stale_session_token_is_dropped_and_the_request_replayed` echoue avec
+`HTTP 401 Unauthorized .../health`, c'est-a-dire exactement le symptome
+d'origine.
+
+Sous Windows la feature `kleos-lib/bundled-sqlite` est obligatoire : sans elle
+le link du binaire de test echoue sur `LNK1181: cannot open input file
+'sqlite3.lib'`.
+
+**Conditions de retrait :** candidat PR upstream direct. Le bug n'a rien de
+specifique a VOCSAP, et upstream a deja pose la moitie du correctif en donnant
+ce retry a `post_mcp` seul (`2c5fee94`). Si Ghost-Frame absorbe la
+generalisation, ce patch disparait du fork.
+
