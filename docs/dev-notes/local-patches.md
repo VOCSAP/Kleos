@@ -1,7 +1,7 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-09-09 (Patch 52 -- 401 sur session expiree jamais rejoue). Merge upstream de reference : 7ce95482 du 2026-08-23 (156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
+**Dernière mise à jour :** 2026-09-12 (Patch 53 -- toolbox, catalogue d'outils indexes). Merge upstream de reference : 7ce95482 du 2026-08-23 (156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
@@ -5949,3 +5949,203 @@ specifique a VOCSAP, et upstream a deja pose la moitie du correctif en donnant
 ce retry a `post_mcp` seul (`2c5fee94`). Si Ghost-Frame absorbe la
 generalisation, ce patch disparait du fork.
 
+
+---
+
+## Patch 53 -- Toolbox : catalogue d'outils indexes (partage + emplacements par user) (2026-09-12)
+
+**Symptome :** sous upstream pur, un poste n'a aucun moyen de repondre a
+"a-t-on deja un outil pour X, et ou est-il ?". Le besoin est quotidien dans
+un parc ou les outils sont eparpilles entre depots GitHub, clones locaux,
+skills, plugins, serveurs MCP et pages de doc, sur plusieurs machines. Rien
+dans Kleos ne stocke cette carte.
+
+Le candidat evident, `skill_records` + `skills::search::find_skills`, ne tient
+pas a l'usage, pour trois raisons verifiees dans le code :
+
+1. **La recherche y est lexicale seule.** `find_skills` declare bien un
+   `vector_score` dans son `FindResult` et la table porte deja les colonnes
+   `embedding BLOB` et `embedding_vec_1024 FLOAT32(1024)`
+   (`kleos-lib/src/db/migrations.rs`, corps de la v78), mais le canal est inerte :
+   le commentaire de `kleos-lib/src/skills/search.rs:71` le dit explicitement,
+   "trigram fuzzy + vector cosine are scaffolded but skipped when the supporting
+   tables / embeddings are absent. They become active once Phase 1.5 (trigrams)
+   and Phase 1.6 (embeddings) ship". Une requete en langage naturel
+   ("convertir un PDF scanne en texte cherchable") ne matche donc que si
+   l'utilisateur a devine les mots exacts de la fiche.
+2. **Le `kind` est un enum ferme.** `SkillKind` (`kleos-lib/src/skills/types.rs:16`)
+   vaut `Skill | Agent | Command | Workflow`. Un depot, un binaire CLI, un
+   serveur MCP ou une page de doc n'ont aucune valeur ou se ranger : les
+   accueillir demanderait d'etendre un enum upstream, donc un site de conflit
+   dans un type public reexporte partout.
+3. **Le dreamer reecrit cette table sans qu'on le lui demande.**
+   `kleos-server/src/dreamer.rs` appelle `evolver::fix_skill` (:561),
+   `evolver::capture_skill` (:595) et `evolver::derive_skill` (:628) sur les
+   lignes de `skill_records`. Une fiche d'outil posee la serait tot ou tard
+   passee au LLM et modifiee : exactement ce qu'un catalogue ne doit pas subir.
+
+S'ajoute un manque structurel : `skill_records` n'a pas la separation dont le
+catalogue a besoin -- une fiche **partagee** entre utilisateurs (le texte et son
+embedding, coute cher a produire) et des **emplacements scopes par
+utilisateur** (hote, chemin local, tags). Il n'y a pas non plus de notion
+d'emplacement du tout.
+
+**Approche :** module additif `kleos-lib/src/toolbox/`, tables via le canal
+overlay VOCSAP (Patch 41), routes serveur dans un sous-module neuf, et cinq
+lignes seulement dans des fichiers upstream. Le serveur ne fait que stockage et
+retrieval : aucun clone, aucun fetch d'URL, aucun parcours de dossier cote
+serveur. Toute la digestion (lecture du depot, redaction de la fiche) est cote
+client, dans deux prompts traces sous `docs/toolbox/`.
+
+Deux tables, parce que le partage et l'isolation ne portent pas sur la meme
+chose :
+
+- `toolbox_tools` -- une ligne par cle canonique, agnostique de l'utilisateur :
+  fiche (`name`, `summary`, `body`, `keywords`), `content_hash`, embedding,
+  commit d'indexation. Registre monolith uniquement (elle vit dans `state.db`).
+- `toolbox_locations` -- scopee `user_id` : `host`, `local_path`, `tags`,
+  `notes`. Registree sur **les deux** registres (tenant pour les shards,
+  monolith pour le mode base unique ou `ResolvedDb == state.db`). La jointure
+  entre les deux tables se fait **en Rust, jamais en SQL** : en mode sharde
+  elles sont dans deux fichiers distincts.
+
+La table partagee n'est jamais lue sans le filtre "cles que cet utilisateur
+possede" (`store::list_user_keys`). C'est la seule barriere anti-fuite entre
+utilisateurs, et elle est testee comme telle.
+
+Aucune des deux tables ne porte `space_id`. Le bridge MCP injecte `space` /
+`space_id` dans tous les appels (`kleos-mcp/src/tools.rs`, `maybe_inject_space`) :
+les types de requete sont donc sans `deny_unknown_fields` et ignorent ces
+champs.
+
+**Pourquoi pas le niveau d'en dessous.** Le niveau zero delta est atteint pour
+le schema -- aucune entree dans `MIGRATIONS` / `TENANT_MIGRATIONS`, tout passe
+par `VOCSAP_MONOLITH_OVERLAYS` / `VOCSAP_TENANT_OVERLAYS` -- mais il ne peut pas
+couvrir le reste : un canal overlay pose du DDL, il ne cree ni endpoint HTTP ni
+tool MCP, et une variable d'environnement ne fait pas apparaitre une route. Le
+niveau immediatement inferieur en volume de code aurait ete de **reutiliser
+`skill_records`** : c'est precisement ce que les trois points du symptome
+interdisent. Ecrire dans une table que le dreamer fait reecrire par un LLM, sur
+des colonnes d'embedding que la Phase 1.6 upstream va cabler a sa maniere, avec
+un enum de `kind` qu'il faudrait elargir, revient a echanger deux fichiers neufs
+contre un site de conflit permanent dans le coeur upstream le plus actif. Le
+choix retenu est donc **additif pur** partout ou c'est possible, et
+**chirurgical** (une ligne par fichier) la ou il faut bien se brancher.
+
+**Fichiers touches.**
+
+Lignes dans des fichiers suivis par upstream -- cinq sites, aucun renommage,
+aucun attribut cosmetique :
+
+| Fichier | Delta |
+|---|---|
+| `kleos-lib/src/lib.rs` | +1 ligne : `pub mod toolbox;` (:62, place alphabetique) |
+| `kleos-server/src/routes/mod.rs` | +1 ligne : `pub mod toolbox;` |
+| `kleos-server/src/server.rs` | +1 ligne : `.merge(routes::toolbox::router())`, a cote des autres merges |
+| `kleos-client/src/routes.rs` | entrees `route!` **additives** dans `ROUTES`, bloc `// -- toolbox --` en fin de table : `toolbox.index`, `toolbox.find`, `toolbox.get`, `toolbox.list`, `toolbox.forget`, `toolbox.reindex` |
+| `kleos-mcp/src/tools.rs` | 4 noms ajoutes a `DAILY_TOOL_NAMES` : `toolbox.index`, `toolbox.find`, `toolbox.get`, `toolbox.list` (les deux autres restent hors surface quotidienne) |
+
+Fichiers additifs, aucun conflit possible au rebase :
+
+- `kleos-lib/src/toolbox/mod.rs`, `types.rs`, `key.rs`, `store.rs`, `search.rs`,
+  `embedding.rs`, `tests.rs`.
+- `kleos-lib/src/db/vocsap/toolbox_tools.sql`, `toolbox_locations.sql`.
+- `kleos-server/src/routes/toolbox/mod.rs` (6 routes : `POST` et `GET
+  /toolbox/entries`, `GET` et `DELETE /toolbox/entries/{id}`,
+  `POST /toolbox/find`, `POST /toolbox/reindex`).
+- `docs/toolbox/README.md`, `docs/toolbox/skills/tool-index/SKILL.md`,
+  `docs/toolbox/skills/tool-find/SKILL.md`, `docs/toolbox/agents/toolbox.md`
+  (prompts client en francais, installables dans `~/.claude/skills/` et
+  `~/.claude/agents/`, ou concatenables dans un `AGENTS.md` pour Codex).
+
+`kleos-lib/src/db/vocsap/mod.rs` recoit trois entrees d'overlay
+(`toolbox_tools` monolith, `toolbox_locations` monolith et tenant) et deux
+tests. Ce fichier est **VOCSAP par construction** (canal Patch 41) : l'editer
+est du delta zero vis-a-vis d'upstream.
+
+Deux helpers upstream sont **dupliques** plutot que rendus publics :
+`embedding_to_blob` (`kleos-server/src/routes/memory/mod.rs:320`) et
+`blob_to_embedding` (`memory/vector_sync.rs:81`), f32 little-endian, quatre
+lignes chacun. Elargir leur visibilite aurait coute deux sites de delta dans des
+fichiers upstream tres actifs pour economiser huit lignes. `rrf_score`
+(`kleos-lib/src/memory/scoring.rs:611`) est en revanche deja public et reutilise
+tel quel.
+
+**Cle canonique et ecrasement.** La cle est **toujours recalculee par le
+serveur** depuis les champs bruts (`key.git_remote` > `key.url` >
+`key.local_path`) ; le client n'en envoie jamais. Les formes git convergent :
+`https://`, `git@host:owner/repo.git`, `ssh://`, identifiants integres, `.git`
+final, slash final et casse sont normalises vers `<hote>/<chemin>` en
+minuscules. Une cle locale est `local:<hote>:<chemin>`, chemin en casse d'origine.
+La fiche partagee est ecrasee selon "derniere indexation gagnante **si son
+commit est plus recent**" : commit entrant plus recent -> `updated` ; egal ->
+`kept` sauf `force` ; plus ancien -> `kept` ; entrant sans commit face a un
+stocke date -> `kept` sauf `force` ; stocke sans commit -> `updated`. Hash
+identique -> `unchanged`. Dans tous les cas l'emplacement de l'appelant est
+upserte, et un embedding manquant est comble meme sur `kept`.
+
+**Variables d'environnement :** toutes prefixees `KLEOS_TOOLBOX_`, toutes
+optionnelles, aucune obligatoire pour que la fonctionnalite marche.
+
+| Variable | Defaut | Effet |
+|---|---|---|
+| `KLEOS_TOOLBOX_MAX_BODY_BYTES` | `262144` | plafond du champ `body` a l'indexation ; au-dela, `400`. `summary` est plafonne a 4 KiB en dur et `keywords` a 64 entrees |
+| `KLEOS_TOOLBOX_RERANK` | non posee (off) | defaut du champ `rerank` de `POST /toolbox/find` (`1` / `true` -> on). Sans effet si `AppState::current_reranker()` est `None` |
+| `KLEOS_TOOLBOX_EMBEDDING_MODEL` | `unknown` | nom de modele enregistre avec l'embedding quand le provider n'expose pas le sien ; sert a `POST /toolbox/reindex` pour reperer les vecteurs d'un autre modele |
+
+Sans embedder configure, l'indexation reussit quand meme (`"embedded": false`)
+et la recherche retombe sur la FTS5 seule ; `reindex` comble les vecteurs plus
+tard.
+
+**Tests :** `cargo test -p kleos-lib --features bundled-sqlite --lib toolbox`
+-> 37 passed / 0 failed (35 tests du module, plus les deux tests d'overlay que
+le filtre attrape parce que leur nom contient `toolbox`), et
+`--lib db::vocsap` -> 8 passed / 0 failed. Les familles qui comptent :
+
+- **Cle** (12 tests, `key.rs`) : https avec `.git`, ssh scp-like, `ssh://`,
+  identifiants `user:token@`, port explicite, casse, slash final, url non-git
+  gardee profonde, local avec et sans hote, et l'erreur "aucun champ fourni".
+- **Politique d'ecrasement** (`tests.rs`) : un test par ligne de la table
+  ci-dessus, `insert_then_same_content_is_unchanged`,
+  `newer_commit_overwrites_the_shared_sheet`,
+  `older_commit_is_kept_even_with_force`,
+  `same_commit_time_needs_force_to_overwrite`,
+  `incoming_without_commit_is_kept_unless_forced`,
+  `stored_without_commit_is_last_writer_wins`,
+  `embedding_is_backfilled_on_a_kept_sheet`.
+- **Isolation** : `a_user_never_sees_a_tool_they_do_not_own` -- l'utilisateur B
+  ne voit pas l'outil de A **alors que la ligne partagee existe**. C'est le test
+  qui garde la contrainte anti-fuite ; s'il tombe, le catalogue fuit.
+  `delete_locations_forgets_for_one_user_only_and_keeps_the_sheet` couvre le
+  pendant en suppression.
+- **Recherche** : `fts_channel_works_without_any_embedding` (serveur sans
+  embedder), `vector_channel_finds_what_the_words_do_not` (le cas que la FTS ne
+  peut pas attraper), `rrf_puts_a_tool_matched_by_both_channels_first`,
+  `kind_and_tag_filters_narrow_the_result_set`, `limit_is_clamped_and_defaults`.
+- **Overlays** (`db/vocsap/mod.rs`) :
+  `toolbox_overlays_create_then_noop_on_monolith` (apply x2 sur une connexion
+  nue, puis insert + `MATCH` pour prouver que les triggers FTS sont cables) et
+  `toolbox_locations_overlay_creates_then_noop_on_tenant` (verifie en plus que
+  `toolbox_tools` n'apparait **pas** dans un shard : la fiche partagee ne doit
+  jamais y etre dupliquee).
+
+**Conditions de retrait :** deux scenarios.
+
+1. Upstream livre un catalogue d'outils equivalent -- fiche partagee, cle
+   canonique, emplacements par utilisateur, recherche hybride. Le patch
+   disparait alors entierement : retirer les cinq lignes upstream, supprimer le
+   module et le sous-module de routes, retirer les trois entrees d'overlay. Les
+   tables restent en base (SQLite ne les rend pas au `DROP` automatiquement) :
+   un `DROP TABLE toolbox_tools`, `toolbox_tools_fts`, `toolbox_locations` est a
+   faire a la main apres migration des donnees.
+2. La Phase 1.6 upstream cable les embeddings sur `skill_records`, **et**
+   `SkillKind` s'ouvre, **et** une ligne peut etre soustraite a l'evolveur du
+   dreamer. Les trois conditions doivent tenir ensemble ; deux sur trois ne
+   suffisent pas. Dans ce cas une fusion vers `skills` devient discutable, mais
+   elle ne se ferait qu'au prix d'un `space_id` a neutraliser et d'une notion
+   d'emplacement a inventer cote upstream. A reevaluer, pas a presumer.
+
+Le patch n'est pas un candidat PR upstream en l'etat : il repose sur le canal
+overlay VOCSAP et sur l'absence de `space` dans le catalogue, deux choix de
+fork. La partie generique (cle canonique, politique d'ecrasement par date de
+commit) serait extractible si Ghost-Frame s'y interessait.
