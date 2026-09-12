@@ -59,6 +59,7 @@ pub mod spaces;
 pub mod str_safe;
 pub mod sync;
 pub mod tenant;
+pub mod toolbox;
 pub mod validation;
 pub mod vector;
 pub mod webhooks;

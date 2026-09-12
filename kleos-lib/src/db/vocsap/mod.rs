@@ -134,6 +134,32 @@ fn monolith_conversations_space_id_apply(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Create the shared toolbox catalog: `toolbox_tools`, its FTS5 shadow and the
+/// three sync triggers (Patch 53). User-agnostic by design -- one row per
+/// canonical tool key, shared across users; who owns what is recorded by
+/// `toolbox_locations` instead. Monolith-only: the sheet and its embedding
+/// always live in the main DB, never in a shard.
+fn monolith_toolbox_tools_apply(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("toolbox_tools.sql"))
+        .map_err(|e| EngError::DatabaseMessage(format!("vocsap overlay toolbox_tools failed: {e}")))?;
+    Ok(())
+}
+
+/// Create `toolbox_locations` (Patch 53). Registered on BOTH registries: in
+/// sharded mode the locations live in the caller's shard, in single-DB mode
+/// `ResolvedDb` is the main DB and the table must exist there too.
+fn toolbox_locations_ddl(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("toolbox_locations.sql"))
+        .map_err(|e| {
+            EngError::DatabaseMessage(format!("vocsap overlay toolbox_locations failed: {e}"))
+        })?;
+    Ok(())
+}
+
+fn monolith_toolbox_locations_apply(conn: &Connection) -> Result<()> {
+    toolbox_locations_ddl(conn)
+}
+
 // --- tenant overlay bodies (ported from the former numbered migrations) ---
 
 /// Repair tenants stuck on the pre-merge supervisor_injections layout: re-add
@@ -238,6 +264,12 @@ fn tenant_structured_facts_extraction_source_apply(
     Ok(())
 }
 
+/// Create `toolbox_locations` in a tenant shard (Patch 53). Same DDL as the
+/// monolith body; no owner-scoped backfill (the table is created empty).
+fn tenant_toolbox_locations_apply(conn: &Connection, _owner: Option<i64>) -> Result<()> {
+    toolbox_locations_ddl(conn)
+}
+
 // --- overlay registries ---
 
 // Each `needs` guard ANDs `table_exists` in front of its column/index probe.
@@ -261,6 +293,19 @@ static VOCSAP_MONOLITH_OVERLAYS: &[VocsapOverlay] = &[
                 && !table_has_column(conn, "conversations", "space_id")?)
         },
         apply: monolith_conversations_space_id_apply,
+    },
+    // Creator overlays: they own the table they guard on, so their `needs` is a
+    // plain "not there yet" and they legitimately fire on a connection where the
+    // table is absent (see CREATOR_OVERLAYS in the tests).
+    VocsapOverlay {
+        name: "toolbox_tools",
+        needs: |conn| Ok(!table_exists(conn, "toolbox_tools")?),
+        apply: monolith_toolbox_tools_apply,
+    },
+    VocsapOverlay {
+        name: "toolbox_locations",
+        needs: |conn| Ok(!table_exists(conn, "toolbox_locations")?),
+        apply: monolith_toolbox_locations_apply,
     },
 ];
 
@@ -305,6 +350,13 @@ static VOCSAP_TENANT_OVERLAYS: &[VocsapTenantOverlay] = &[
         },
         apply: tenant_structured_facts_extraction_source_apply,
     },
+    // Creator overlay (see the monolith registry): the shard holds the caller's
+    // tool locations; the shared sheets stay in the main DB.
+    VocsapTenantOverlay {
+        name: "toolbox_locations",
+        needs: |conn| Ok(!table_exists(conn, "toolbox_locations")?),
+        apply: tenant_toolbox_locations_apply,
+    },
 ];
 
 // --- entry points (called at the end of each runner) ---
@@ -339,6 +391,13 @@ pub(crate) fn apply_tenant_overlays(conn: &Connection, owner_user_id: Option<i64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Overlays that CREATE their own table instead of altering an upstream one.
+    /// The "no-op when the target table is absent" contract only binds the
+    /// alter-style overlays: a creator overlay firing on a connection where its
+    /// table does not exist yet is exactly its job, not the partial-migration
+    /// hazard that guard was written for.
+    const CREATOR_OVERLAYS: &[&str] = &["toolbox_tools", "toolbox_locations"];
 
     /// Minimal upstream-shaped fixtures: just enough of each target table for the
     /// overlays to act on. Deliberately omits the VOCSAP columns/index so the
@@ -451,17 +510,86 @@ mod tests {
         // calls apply_*_overlays). Without the table_exists guard, table_has_column
         // returns false on a missing table -> needs() = true -> apply() = ERROR
         // "no such table". With the guard every overlay must cleanly no-op.
+        // Creator overlays are exempt: they own their table (see CREATOR_OVERLAYS).
         let conn = Connection::open_in_memory().unwrap();
         for o in VOCSAP_MONOLITH_OVERLAYS {
+            if CREATOR_OVERLAYS.contains(&o.name) {
+                continue;
+            }
             assert!(!(o.needs)(&conn).unwrap(), "monolith overlay {} must skip when its table is absent", o.name);
         }
         for o in VOCSAP_TENANT_OVERLAYS {
+            if CREATOR_OVERLAYS.contains(&o.name) {
+                continue;
+            }
             assert!(!(o.needs)(&conn).unwrap(), "tenant overlay {} must skip when its table is absent", o.name);
         }
         // The entry points must not error against the table-less connection.
         apply_monolith_overlays(&conn).unwrap();
         apply_tenant_overlays(&conn, Some(1)).unwrap();
         apply_tenant_overlays(&conn, None).unwrap();
+    }
+
+    #[test]
+    fn toolbox_overlays_create_then_noop_on_monolith() {
+        // Bare connection: the toolbox overlays create their own tables, so they
+        // must fire here and be a clean no-op on the second run.
+        let conn = make_monolith_base();
+        apply_monolith_overlays(&conn).unwrap();
+
+        assert!(table_exists(&conn, "toolbox_tools").unwrap());
+        assert!(table_exists(&conn, "toolbox_tools_fts").unwrap());
+        assert!(table_exists(&conn, "toolbox_locations").unwrap());
+        assert!(index_exists(&conn, "idx_toolbox_tools_kind").unwrap());
+        assert!(index_exists(&conn, "idx_toolbox_locations_user_key").unwrap());
+
+        for o in VOCSAP_MONOLITH_OVERLAYS {
+            assert!(!(o.needs)(&conn).unwrap(), "overlay {} should be no-op", o.name);
+        }
+        apply_monolith_overlays(&conn).unwrap();
+
+        // The FTS triggers keep the shadow table in sync with the content table.
+        conn.execute_batch(
+            "INSERT INTO toolbox_tools
+                (tool_key, key_kind, kind, name, summary, content_hash, created_at, updated_at)
+             VALUES ('github.com/vocsap/kleos', 'git', 'repo', 'Kleos',
+                     'persistent semantic memory server', 'h', 'now', 'now');",
+        )
+        .unwrap();
+        let hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM toolbox_tools_fts WHERE toolbox_tools_fts MATCH 'semantic'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "the fts insert trigger must index the new row");
+    }
+
+    #[test]
+    fn toolbox_locations_overlay_creates_then_noop_on_tenant() {
+        let conn = make_tenant_base();
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+        assert!(table_exists(&conn, "toolbox_locations").unwrap());
+        // The shared sheet table is monolith-only: a shard must NOT get it.
+        assert!(!table_exists(&conn, "toolbox_tools").unwrap());
+
+        for o in VOCSAP_TENANT_OVERLAYS {
+            assert!(!(o.needs)(&conn).unwrap(), "overlay {} should be no-op", o.name);
+        }
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+
+        // The uniqueness contract the location upsert relies on.
+        conn.execute_batch(
+            "INSERT INTO toolbox_locations (user_id, tool_key, host, local_path, last_seen_at, created_at)
+             VALUES (1, 'k', 'h', '/p', 'now', 'now');",
+        )
+        .unwrap();
+        let dup = conn.execute_batch(
+            "INSERT INTO toolbox_locations (user_id, tool_key, host, local_path, last_seen_at, created_at)
+             VALUES (1, 'k', 'h', '/p', 'now', 'now');",
+        );
+        assert!(dup.is_err(), "(user_id, tool_key, host, local_path) must be unique");
     }
 
     #[test]
