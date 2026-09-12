@@ -115,6 +115,11 @@ const DAILY_TOOL_NAMES: &[&str] = &[
     "forge_repo_map",
     "forge.search_code",
     "forge_search_code",
+    // -- toolbox (catalog of the tools we already have) --
+    "toolbox.index",
+    "toolbox.find",
+    "toolbox.get",
+    "toolbox.list",
 ];
 
 /// Parse one route's schema, falling back to an object-shaped schema on bad metadata.

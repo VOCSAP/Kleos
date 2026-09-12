@@ -173,7 +173,8 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::policy::router())
         .merge(routes::users::router())
         .merge(routes::mcp_schema::router())
-        .merge(routes::mcp_tokens::router());
+        .merge(routes::mcp_tokens::router())
+        .merge(routes::toolbox::router());
 
     // Frameshift growth routes ship behind a feature gate (default off). When
     // disabled, `/frameshift-growth/*` is never mounted and returns 404.
