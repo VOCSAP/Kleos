@@ -4299,6 +4299,61 @@ pub static ROUTES: &[Route] = &[
         "Delete an attention note (mark as done).",
         r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
     ),
+    // -- toolbox -----------------------------------------------------------
+    // Catalog of the tools a team already has. The sheet is shared across
+    // users; "where I keep it" is per user. `toolbox.find` is a read, but the
+    // server gates POST on Write scope unless the path is on its read-only-POST
+    // allowlist, so it is declared Write here to match what is enforced.
+    route!(
+        Post,
+        Write,
+        "toolbox.index",
+        "/toolbox/entries",
+        "Index a tool (repo, skill, plugin, CLI, MCP server, doc) into the shared catalog and record where you keep it.",
+        ["toolbox_index"],
+        r#"{"type":"object","properties":{"key":{"type":"object","description":"Raw identity; the server derives the canonical key from it. Give git_remote for a clone, url for a hosted tool, local_path otherwise.","properties":{"git_remote":{"type":"string","description":"git remote get-url origin, any spelling"},"url":{"type":"string"},"local_path":{"type":"string","description":"Absolute path on the indexing machine"},"host":{"type":"string","description":"Hostname of the indexing machine"}}},"kind":{"type":"string","description":"repo, skill, plugin, cli, mcp, doc or other"},"name":{"type":"string"},"summary":{"type":"string","description":"3-5 dense sentences: what it is for and when to use it. This is what gets embedded."},"body":{"type":"string","description":"Full markdown sheet"},"keywords":{"type":"array","items":{"type":"string"},"description":"10-25 keywords, max 64"},"canonical_url":{"type":"string"},"commit":{"type":"object","description":"Commit the sheet was written from; drives the newer-wins overwrite policy.","properties":{"sha":{"type":"string"},"time":{"type":"integer","description":"Commit time, unix seconds"}},"required":["sha"]},"tags":{"type":"array","items":{"type":"string"},"description":"Tags on your own location row"},"notes":{"type":"string"},"force":{"type":"boolean","description":"Overwrite the shared sheet even when the stored commit is not older"}},"required":["key","kind","name","summary"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "toolbox.find",
+        "/toolbox/find",
+        "Search your indexed tools in natural language (FTS + embeddings); results carry the places you keep each tool.",
+        ["toolbox_find"],
+        r#"{"type":"object","properties":{"query":{"type":"string","description":"Natural language description of the task at hand"},"kind":{"type":"string","description":"Keep only tools of this kind"},"tags":{"type":"array","items":{"type":"string"},"description":"Keep only tools whose location carries all of these tags"},"limit":{"type":"integer","description":"1 to 50, default 10"},"rerank":{"type":"boolean","description":"Cross-encoder second pass when a reranker is loaded"}},"required":["query"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "toolbox.get",
+        "/toolbox/entries/{id}",
+        "Fetch one indexed tool sheet plus your locations for it.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "toolbox.list",
+        "/toolbox/entries",
+        "List the tools you have indexed, name-ordered.",
+        r#"{"type":"object","properties":{"kind":{"type":"string"},"limit":{"type":"integer","description":"1 to 100, default 25"},"offset":{"type":"integer"}}}"#
+    ),
+    route!(
+        Delete,
+        Write,
+        "toolbox.forget",
+        "/toolbox/entries/{id}",
+        "Forget a tool for yourself: drops your locations for it, never the shared sheet.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "toolbox.reindex",
+        "/toolbox/reindex",
+        "Compute the embeddings missing from your indexed tools. Idempotent; call until candidates is 0.",
+        r#"{"type":"object","properties":{"missing_only":{"type":"boolean","description":"Skip sheets embedded by a different model, only fill empty ones"},"limit":{"type":"integer","description":"Sheets to embed in this call, 1 to 1000, default 200"}}}"#
+    ),
 ];
 
 #[cfg(test)]

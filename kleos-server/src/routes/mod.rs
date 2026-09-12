@@ -57,6 +57,7 @@ pub mod structural;
 pub mod supervisor;
 pub mod tasks;
 pub mod thymus;
+pub mod toolbox;
 pub mod users;
 pub mod webhooks;
 pub mod well_known;
