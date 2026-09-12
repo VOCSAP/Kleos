@@ -269,7 +269,7 @@ async fn embedding_is_backfilled_on_a_kept_sheet() {
 }
 
 #[tokio::test]
-async fn overwrite_without_an_embedder_clears_the_stale_vector() {
+async fn overwrite_without_an_embedder_keeps_the_vector_and_marks_the_model_stale() {
     let shared = db().await;
     let first = request(
         "https://github.com/o/r",
@@ -283,6 +283,10 @@ async fn overwrite_without_an_embedder_clears_the_stale_vector() {
     let (entry, _) = upsert(&shared, &first, Some((&vector, "m")), 1).await;
     assert!(entry.has_embedding);
 
+    // A client indexing against a server with no embedder rewrites the sheet.
+    // Dropping the vector here would take the row out of the search's vector
+    // channel with nothing able to put it back until someone reindexes; keeping
+    // it with a NULL model says "stale, recompute me" instead.
     let second = request(
         "https://github.com/o/r",
         "R",
@@ -293,10 +297,95 @@ async fn overwrite_without_an_embedder_clears_the_stale_vector() {
     );
     let (entry, outcome) = upsert(&shared, &second, None, 1).await;
     assert_eq!(outcome, UpsertOutcome::Updated);
+    assert_eq!(entry.summary, "rewritten");
     assert!(
-        !entry.has_embedding,
-        "a vector describing the previous text must not survive the overwrite"
+        entry.has_embedding,
+        "the stored vector must survive an overwrite that carries none"
     );
+    assert_eq!(
+        entry.embedding_model, None,
+        "a vector describing the previous text must be flagged stale"
+    );
+
+    // And the reindex route finds it: it targets rows whose model differs from
+    // the configured one, which NULL always does.
+    let keys = vec!["github.com/o/r".to_string()];
+    let stale = store::tools_needing_embedding(&shared, &keys, Some("m"))
+        .await
+        .unwrap();
+    assert_eq!(
+        stale.len(),
+        1,
+        "the stale-model row must be a reindex target"
+    );
+    assert_eq!(stale[0].0, entry.id);
+
+    // `missing_only` looks at the vector, not the model: this row has one.
+    let missing = store::tools_needing_embedding(&shared, &keys, None)
+        .await
+        .unwrap();
+    assert!(missing.is_empty());
+}
+
+#[tokio::test]
+async fn trailing_whitespace_is_not_new_content() {
+    let shared = db().await;
+    let req = request(
+        "https://github.com/o/r",
+        "R",
+        "does things",
+        "repo",
+        &["cli"],
+        Some(("aaa", 100)),
+    );
+    let (entry, outcome) = upsert(&shared, &req, None, 1).await;
+    assert_eq!(outcome, UpsertOutcome::Inserted);
+
+    // The row stores the trimmed text, so the hash has to be taken on the same
+    // values: otherwise a re-send that only gained a trailing newline would
+    // rewrite the sheet and steal `indexed_by_user_id`.
+    let mut padded = req.clone();
+    padded.name = "R  ".to_string();
+    padded.summary = "does things\n".to_string();
+    let (again, outcome) = upsert(&shared, &padded, None, 2).await;
+    assert_eq!(outcome, UpsertOutcome::Unchanged);
+    assert_eq!(again.content_hash, entry.content_hash);
+    assert_eq!(again.indexed_by_user_id, Some(1));
+}
+
+#[tokio::test]
+async fn tools_by_keys_orders_by_name_across_batches() {
+    let shared = db().await;
+    // One key more than a single `IN (...)` batch holds: the row that lands
+    // alone in the second batch is also the one that sorts first, so a
+    // per-batch ordering would put it last.
+    let total = store::MAX_IN_PARAMS + 1;
+    let mut keys = Vec::with_capacity(total);
+    for i in 0..total {
+        let name = if i + 1 == total {
+            "Aaa second batch".to_string()
+        } else {
+            format!("Zzz {i:04}")
+        };
+        let req = request(
+            &format!("https://github.com/o/r{i}"),
+            &name,
+            "s",
+            "repo",
+            &[],
+            None,
+        );
+        upsert(&shared, &req, None, 1).await;
+        keys.push(format!("github.com/o/r{i}"));
+    }
+
+    let tools = store::tools_by_keys(&shared, &keys).await.unwrap();
+    assert_eq!(tools.len(), total);
+    assert_eq!(tools[0].name, "Aaa second batch");
+    let names: Vec<String> = tools.iter().map(|t| t.name.to_lowercase()).collect();
+    let mut expected = names.clone();
+    expected.sort();
+    assert_eq!(names, expected, "the whole listing must be name-ordered");
 }
 
 #[tokio::test]

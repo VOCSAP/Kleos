@@ -151,10 +151,14 @@ pub(crate) fn placeholders(n: usize) -> String {
 /// | `Some(s)` | `None` | kept, unless `force` |
 /// | `None` | any | overwrite (last writer wins) |
 ///
-/// An overwrite replaces the sheet *and* its embedding: passing `embedding:
-/// None` clears the stored vector rather than leaving one that describes the
-/// previous text. A kept sheet whose stored embedding is NULL is backfilled
-/// opportunistically when the caller has one.
+/// An overwrite replaces the sheet, and its embedding when the caller has one.
+/// With `embedding: None` the stored vector is **kept** -- throwing away a
+/// vector nobody can recompute right now would silently drop the row out of the
+/// search's vector channel -- but `embedding_model` is set to NULL to mark it
+/// stale: that is exactly what `POST /toolbox/reindex` looks for
+/// ([`tools_needing_embedding`] selects `embedding_model IS NULL OR <> model`).
+/// A kept sheet whose stored embedding is NULL is backfilled opportunistically
+/// when the caller has one.
 ///
 /// The outcome is `Unchanged` whenever the stored content hash already matches
 /// the incoming one and the commit metadata would not change either -- nothing
@@ -171,13 +175,16 @@ pub async fn upsert_tool(
     user_id: i64,
 ) -> Result<(ToolEntry, UpsertOutcome)> {
     let keywords = normalize_keywords(&req.keywords);
-    let hash = content_hash(&req.name, &req.summary, &req.body, &keywords);
     let key = tool_key.to_string();
     let key_kind_s = key_kind.to_string();
     let kind = req.kind.trim().to_string();
     let name = req.name.trim().to_string();
     let summary = req.summary.trim().to_string();
     let body = req.body.clone();
+    // Hash what is stored, not what was sent: the row keeps the trimmed name and
+    // summary, so hashing the raw ones would make a re-send that differs only by
+    // trailing whitespace look like new content.
+    let hash = content_hash(&name, &summary, &body, &keywords);
     let canonical_url = req.canonical_url.clone();
     let (commit_sha, commit_time) = match &req.commit {
         Some(CommitInfo { sha, time }) => (Some(sha.trim().to_string()), *time),
@@ -252,8 +259,8 @@ pub async fn upsert_tool(
                             "UPDATE toolbox_tools SET key_kind = ?2, kind = ?3, name = ?4, \
                                 summary = ?5, body = ?6, keywords = ?7, canonical_url = ?8, \
                                 indexed_commit = ?9, indexed_commit_time = ?10, content_hash = ?11, \
-                                embedding = ?12, embedding_model = ?13, indexed_by_user_id = ?14, \
-                                updated_at = ?15 \
+                                embedding = COALESCE(?12, embedding), embedding_model = ?13, \
+                                indexed_by_user_id = ?14, updated_at = ?15 \
                              WHERE id = ?1",
                             params![
                                 id,
@@ -421,6 +428,11 @@ pub async fn get_tool_by_key(shared: &Database, tool_key: &str) -> Result<Option
 
 /// Fetch the shared sheets for a set of keys, in name order. Keys with no sheet
 /// (a location pointing at a tool nobody has indexed yet) are simply missing.
+///
+/// The SQL `ORDER BY` only orders one batch; the whole vector is re-sorted after
+/// the batches are concatenated, otherwise a caller with more than
+/// [`MAX_IN_PARAMS`] keys would get a listing ordered per batch (and therefore
+/// paginated wrong).
 pub async fn tools_by_keys(shared: &Database, keys: &[String]) -> Result<Vec<ToolEntry>> {
     if keys.is_empty() {
         return Ok(Vec::new());
@@ -446,6 +458,12 @@ pub async fn tools_by_keys(shared: &Database, keys: &[String]) -> Result<Vec<Too
             .await?;
         out.append(&mut rows);
     }
+    out.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
     Ok(out)
 }
 

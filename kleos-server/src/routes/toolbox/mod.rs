@@ -43,6 +43,12 @@ const MAX_KIND_BYTES: usize = 64;
 const MAX_KEYWORDS: usize = 64;
 const MAX_TAGS: usize = 64;
 const MAX_NOTES_BYTES: usize = 4096;
+/// How far into the future a `commit.time` may sit before it is a client bug.
+/// A day absorbs a clock skew or a timezone read as UTC; beyond that the value
+/// is wrong, and a wrong-but-huge commit time would freeze the shared sheet --
+/// the overwrite policy keeps the newest commit, so nothing could ever replace
+/// it again.
+const MAX_COMMIT_TIME_SKEW_SECS: i64 = 86_400;
 
 /// Listing page size. Entries carry their full body, so the page stays small.
 const DEFAULT_LIST_LIMIT: usize = 25;
@@ -106,6 +112,26 @@ fn too_long(field: &str, len: usize, max: usize) -> EngError {
     EngError::InvalidInput(format!("{field} is {len} bytes, max {max}"))
 }
 
+/// Reject a commit timestamp that cannot be real: negative (unix seconds before
+/// 1970 are not a commit date, and the policy compares them as integers), or
+/// more than a day ahead of `now`.
+fn validate_commit_time(time: Option<i64>, now: i64) -> Result<(), EngError> {
+    let Some(t) = time else {
+        return Ok(());
+    };
+    if t < 0 {
+        return Err(EngError::InvalidInput(format!(
+            "commit.time is {t}, must not be negative"
+        )));
+    }
+    if t > now.saturating_add(MAX_COMMIT_TIME_SKEW_SECS) {
+        return Err(EngError::InvalidInput(format!(
+            "commit.time is {t}, more than {MAX_COMMIT_TIME_SKEW_SECS}s in the future"
+        )));
+    }
+    Ok(())
+}
+
 /// Reject a sheet the catalog should not store. Everything here is a client
 /// bug, not a server condition, so all of it is a 400.
 fn validate_upsert(req: &UpsertToolRequest, max_body: usize) -> Result<(), EngError> {
@@ -139,6 +165,10 @@ fn validate_upsert(req: &UpsertToolRequest, max_body: usize) -> Result<(), EngEr
             req.tags.len()
         )));
     }
+    validate_commit_time(
+        req.commit.as_ref().and_then(|c| c.time),
+        chrono::Utc::now().timestamp(),
+    )?;
     Ok(())
 }
 
@@ -614,6 +644,35 @@ mod tests {
         let raw = serde_json::json!({ "query": "json parser", "space": "kleos" });
         let body: FindBody = serde_json::from_value(raw).expect("unknown fields ignored");
         assert_eq!(body.query, "json parser");
+    }
+
+    #[test]
+    fn commit_time_must_be_plausible() {
+        let now = 1_700_000_000i64;
+        assert!(validate_commit_time(None, now).is_ok());
+        assert!(validate_commit_time(Some(0), now).is_ok());
+        assert!(validate_commit_time(Some(now), now).is_ok());
+        // A day of skew is tolerated, a second more is not.
+        assert!(validate_commit_time(Some(now + MAX_COMMIT_TIME_SKEW_SECS), now).is_ok());
+        assert!(validate_commit_time(Some(now + MAX_COMMIT_TIME_SKEW_SECS + 1), now).is_err());
+        assert!(validate_commit_time(Some(i64::MAX), now).is_err());
+        assert!(validate_commit_time(Some(-1), now).is_err());
+    }
+
+    #[test]
+    fn validation_rejects_an_implausible_commit_time() {
+        let mut req = valid_request();
+        req.commit = Some(kleos_lib::toolbox::CommitInfo {
+            sha: "abc".into(),
+            time: Some(i64::MAX),
+        });
+        assert!(validate_upsert(&req, DEFAULT_MAX_BODY_BYTES).is_err());
+
+        req.commit = Some(kleos_lib::toolbox::CommitInfo {
+            sha: "abc".into(),
+            time: Some(chrono::Utc::now().timestamp()),
+        });
+        assert!(validate_upsert(&req, DEFAULT_MAX_BODY_BYTES).is_ok());
     }
 
     #[test]

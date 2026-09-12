@@ -240,18 +240,25 @@ async fn vector_channel(
 /// is wrapped in a synthetic one whose `memory.id` is its index in `results`
 /// (the reranker re-sorts its slice, so position cannot be used to map back) and
 /// whose content is the tool's name plus summary -- the same text the embedder
-/// sees. `rerank_score` is the blended score the backend produced, which keeps
-/// the reranked and non-reranked rows on one scale.
+/// sees.
+///
+/// Only the backend's own `top_k()` best fused hits are submitted: a backend
+/// cross-encodes that many and leaves the rest of its slice untouched, so
+/// handing it more would stamp a `rerank_score` on rows nobody reranked. The
+/// hits below the cut keep `rerank_score: None` and are ordered by their fusion
+/// score, which is the blend the reranked rows also carry.
 pub async fn rerank_find_results(
     reranker: &dyn Reranker,
     query: &str,
     results: &mut [FindResult],
 ) -> Result<()> {
-    if results.is_empty() {
+    let submitted = reranker.top_k().min(results.len());
+    if submitted == 0 {
         return Ok(());
     }
     let mut candidates: Vec<crate::memory::types::SearchResult> = results
         .iter()
+        .take(submitted)
         .enumerate()
         .map(|(idx, r)| synthetic_result(idx as i64, r))
         .collect();
@@ -260,6 +267,9 @@ pub async fn rerank_find_results(
 
     for c in &candidates {
         let idx = c.memory.id as usize;
+        if idx >= submitted {
+            continue;
+        }
         if let Some(slot) = results.get_mut(idx) {
             slot.rerank_score = Some(c.score);
         }
@@ -375,5 +385,96 @@ mod tests {
     fn fts_query_is_none_when_nothing_usable_remains() {
         assert!(fts_query("  ?! * \" ").is_none());
         assert!(fts_query("a b").is_none(), "single-char tokens are dropped");
+    }
+
+    /// A reranker that cross-encodes its two best candidates and reverses them.
+    /// Reversal is the point: a pass-through backend would leave the fused order
+    /// in place and prove nothing about the re-sort.
+    struct FakeReranker;
+
+    #[async_trait::async_trait]
+    impl Reranker for FakeReranker {
+        async fn rerank_results(
+            &self,
+            _query: &str,
+            results: &mut [crate::memory::types::SearchResult],
+        ) -> Result<()> {
+            for (i, r) in results.iter_mut().enumerate() {
+                r.score = i as f64;
+            }
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            Ok(())
+        }
+
+        fn backend_name(&self) -> &str {
+            "fake"
+        }
+
+        fn top_k(&self) -> usize {
+            2
+        }
+    }
+
+    /// One fused hit, everything but `name` and `score` filled with placeholders.
+    fn hit(name: &str, score: f64) -> FindResult {
+        FindResult {
+            tool: ToolEntry {
+                id: 0,
+                tool_key: format!("github.com/o/{name}"),
+                key_kind: "git".to_string(),
+                kind: "cli".to_string(),
+                name: name.to_string(),
+                summary: format!("{name} summary"),
+                body: String::new(),
+                keywords: Vec::new(),
+                canonical_url: None,
+                indexed_commit: None,
+                indexed_commit_time: None,
+                content_hash: String::new(),
+                has_embedding: false,
+                embedding_model: None,
+                indexed_by_user_id: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            locations: Vec::new(),
+            score,
+            fts_score: 0.0,
+            vector_score: 0.0,
+            rerank_score: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rerank_scores_only_the_candidates_it_submitted() {
+        let mut results = vec![hit("A", 0.9), hit("B", 0.8), hit("C", 0.7)];
+        rerank_find_results(&FakeReranker, "query", &mut results)
+            .await
+            .unwrap();
+
+        // `top_k` is 2: A and B were cross-encoded and reversed, C was not
+        // submitted at all and keeps its fusion score, which lands it between
+        // the two reranked rows.
+        let order: Vec<&str> = results.iter().map(|r| r.tool.name.as_str()).collect();
+        assert_eq!(order, vec!["B", "C", "A"]);
+        assert_eq!(results[0].rerank_score, Some(1.0));
+        assert_eq!(
+            results[1].rerank_score, None,
+            "a hit below top_k must not carry a score nobody computed"
+        );
+        assert_eq!(results[2].rerank_score, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn rerank_is_a_noop_on_an_empty_result_set() {
+        let mut results: Vec<FindResult> = Vec::new();
+        rerank_find_results(&FakeReranker, "query", &mut results)
+            .await
+            .unwrap();
+        assert!(results.is_empty());
     }
 }
