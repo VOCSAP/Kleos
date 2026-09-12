@@ -350,6 +350,36 @@ mod tests {
     }
 
     #[test]
+    fn a_clone_and_the_public_url_of_the_same_repo_share_one_key() {
+        // A cwd whose `origin` points at the repo (scp-like or https, with
+        // `.git`) and the bare browser URL of that repo must collapse to the
+        // same shared row, otherwise every user would embed the tool twice.
+        let expected = "github.com/vocsap/kleos";
+        let forms = [
+            KeyInput {
+                git_remote: Some("git@github.com:VOCSAP/Kleos.git".to_string()),
+                ..Default::default()
+            },
+            KeyInput {
+                git_remote: Some("https://github.com/VOCSAP/Kleos.git".to_string()),
+                ..Default::default()
+            },
+            KeyInput {
+                url: Some("https://github.com/VOCSAP/Kleos".to_string()),
+                ..Default::default()
+            },
+            KeyInput {
+                url: Some("https://github.com/vocsap/kleos/".to_string()),
+                ..Default::default()
+            },
+        ];
+        for input in &forms {
+            let (key, _) = normalize_tool_key(input).unwrap();
+            assert_eq!(key, expected, "input {input:?}");
+        }
+    }
+
+    #[test]
     fn no_identity_field_is_invalid_input() {
         let err = normalize_tool_key(&KeyInput::default()).unwrap_err();
         assert!(matches!(err, EngError::InvalidInput(_)), "got {err:?}");
