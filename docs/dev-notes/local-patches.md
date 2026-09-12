@@ -6076,7 +6076,13 @@ serveur** depuis les champs bruts (`key.git_remote` > `key.url` >
 `key.local_path`) ; le client n'en envoie jamais. Les formes git convergent :
 `https://`, `git@host:owner/repo.git`, `ssh://`, identifiants integres, `.git`
 final, slash final et casse sont normalises vers `<hote>/<chemin>` en
-minuscules. Une cle locale est `local:<hote>:<chemin>`, chemin en casse d'origine.
+minuscules. Le **port** n'est retire que pour un remote `git` (`ssh://host:2222`
+et `https://host` designent le meme depot) ; pour une cle `url` il est conserve,
+`http://nuc-01:3000/x` et `http://nuc-01:9000/x` etant deux services distincts.
+Une cle locale est `local:<hote>:<chemin>`, chemin en casse d'origine et
+**absolu** obligatoire (Unix `/...`, Windows `C:\...` ou `C:/...`, UNC
+`\\hote\partage`) : un chemin relatif n'a pas d'identite hors de la machine qui
+l'envoie, il est refuse en `InvalidInput`.
 La fiche partagee est ecrasee selon "derniere indexation gagnante **si son
 commit est plus recent**" : commit entrant plus recent -> `updated` ; egal ->
 `kept` sauf `force` ; plus ancien -> `kept` ; entrant sans commit face a un
@@ -6084,23 +6090,60 @@ stocke date -> `kept` sauf `force` ; stocke sans commit -> `updated`. Hash
 identique -> `unchanged`. Dans tous les cas l'emplacement de l'appelant est
 upserte, et un embedding manquant est comble meme sur `kept`.
 
-**Variables d'environnement :** toutes prefixees `KLEOS_TOOLBOX_`, toutes
-optionnelles, aucune obligatoire pour que la fonctionnalite marche.
+**Deux comportements fins, tous deux testes.**
+
+1. *Un ecrasement sans embedder ne jette pas le vecteur stocke.* Quand la fiche
+   est remplacee (`updated`) alors que l'appelant n'a pas d'embedding a fournir
+   (serveur sans embedder, ou embed en echec), l'UPDATE fait
+   `embedding = COALESCE(?, embedding)` et met `embedding_model = NULL`. Le
+   vecteur survit -- il decrit un texte legerement perime, ce qui reste
+   infiniment plus utile qu'un `NULL` qui sort la ligne du canal vectoriel sans
+   que personne puisse la recalculer -- et le modele a `NULL` la marque comme a
+   recalculer. C'est exactement ce que `POST /toolbox/reindex` cible :
+   `tools_needing_embedding` selectionne `embedding IS NULL OR embedding_model
+   IS NULL OR embedding_model <> <modele courant>`. Un `missing_only: true`, lui,
+   regarde le vecteur et laisse donc cette ligne tranquille.
+2. *Fiche stockee sans commit, hash identique -> `unchanged`, et
+   `indexed_by_user_id` n'est pas rafraichi.* La regle "stocke sans commit ->
+   last writer wins" ne s'applique que s'il y a quelque chose a ecrire : si le
+   hash entrant et les metadonnees de commit sont identiques a ce qui est
+   stocke, rien n'est ecrit du tout, donc la fiche garde le `indexed_by_user_id`
+   du **premier** indexeur. Le second n'a pas "perdu" : son emplacement, lui,
+   est bien upserte, et c'est la seule chose qui le concerne.
+
+**Scopes : `toolbox.find` est declare `Write`, et c'est subi.** La recherche est
+une lecture, mais c'est un POST, et le middleware d'auth
+(`kleos-server/src/middleware/auth.rs`, `is_read_only_post` :37) n'exempte du
+scope Write que des chemins **codes en dur** (`/search`, `/memories/search`,
+`/recall`, `/skills/search`, ...). `/toolbox/find` n'y figure pas : le declarer
+`Read` dans `kleos-client/src/routes.rs` ne changerait pas ce que le serveur
+impose, cela ferait seulement mentir la table des routes. Consequence assumee :
+**une cle read-only ne peut pas interroger le catalogue**. Condition de levee :
+si le besoin d'une cle de lecture pure apparait, ajouter `"/toolbox/find"` a
+l'allowlist de `is_read_only_post` -- une ligne dans un fichier upstream, donc un
+sixieme site de delta -- et repasser l'entree `route!` en `Read`.
+
+**Variables d'environnement :** les trois premieres sont prefixees
+`KLEOS_TOOLBOX_`, toutes sont optionnelles, aucune n'est obligatoire pour que la
+fonctionnalite marche.
 
 | Variable | Defaut | Effet |
 |---|---|---|
 | `KLEOS_TOOLBOX_MAX_BODY_BYTES` | `262144` | plafond du champ `body` a l'indexation ; au-dela, `400`. `summary` est plafonne a 4 KiB en dur et `keywords` a 64 entrees |
 | `KLEOS_TOOLBOX_RERANK` | non posee (off) | defaut du champ `rerank` de `POST /toolbox/find` (`1` / `true` -> on). Sans effet si `AppState::current_reranker()` est `None` |
 | `KLEOS_TOOLBOX_EMBEDDING_MODEL` | `unknown` | nom de modele enregistre avec l'embedding quand le provider n'expose pas le sien ; sert a `POST /toolbox/reindex` pour reperer les vecteurs d'un autre modele |
+| `KLEOS_EMBEDDING_MODEL` | -- | **pas une variable du toolbox** : c'est celle que lit deja le provider d'embedding compatible OpenAI. Le handler s'en sert comme repli quand `KLEOS_TOOLBOX_EMBEDDING_MODEL` n'est pas posee, avant de retomber sur `"unknown"` (`embedding_model_name()`). La poser suffit donc, sur un serveur a provider distant, pour que le nom stocke soit le vrai nom du modele |
 
 Sans embedder configure, l'indexation reussit quand meme (`"embedded": false`)
 et la recherche retombe sur la FTS5 seule ; `reindex` comble les vecteurs plus
 tard.
 
 **Tests :** `cargo test -p kleos-lib --features bundled-sqlite --lib toolbox`
--> 37 passed / 0 failed (35 tests du module, plus les deux tests d'overlay que
+-> 44 passed / 0 failed (42 tests du module, plus les deux tests d'overlay que
 le filtre attrape parce que leur nom contient `toolbox`), et
-`--lib db::vocsap` -> 8 passed / 0 failed. Les familles qui comptent :
+`--lib db::vocsap` -> 8 passed / 0 failed. Cote serveur,
+`--lib routes::toolbox` -> 8 passed et `--test routes_toolbox` -> 6 passed.
+Les familles qui comptent :
 
 - **Cle** (12 tests, `key.rs`) : https avec `.git`, ssh scp-like, `ssh://`,
   identifiants `user:token@`, port explicite, casse, slash final, url non-git
@@ -6112,7 +6155,23 @@ le filtre attrape parce que leur nom contient `toolbox`), et
   `same_commit_time_needs_force_to_overwrite`,
   `incoming_without_commit_is_kept_unless_forced`,
   `stored_without_commit_is_last_writer_wins`,
-  `embedding_is_backfilled_on_a_kept_sheet`.
+  `embedding_is_backfilled_on_a_kept_sheet`,
+  `overwrite_without_an_embedder_keeps_the_vector_and_marks_the_model_stale`
+  (le point 1 ci-dessus, plus la preuve que le reindex retrouve la ligne) et
+  `trailing_whitespace_is_not_new_content` (le hash porte sur les valeurs
+  trimees, celles qui sont reellement stockees).
+- **Listing** : `tools_by_keys_orders_by_name_across_batches` -- 501 cles, soit
+  un lot `IN (...)` de plus que `MAX_IN_PARAMS` : le tri est global, pas par lot,
+  sinon la pagination de `GET /toolbox/entries` decoupe un ordre faux.
+- **Reranking** : `rerank_scores_only_the_candidates_it_submitted` (reranker
+  factice, `top_k` = 2) -- seuls les `top_k` premiers candidats sont soumis et
+  portent un `rerank_score` ; les autres restent a `None` et gardent leur rang de
+  fusion.
+- **Validation serveur** : `commit_time_must_be_plausible` -- un `commit.time`
+  negatif ou a plus de 86400 s dans le futur est un `400`. Sans cette borne, une
+  date absurde (`i64::MAX`) gelerait la fiche partagee pour toujours : la
+  politique garde le commit le plus recent, donc plus rien ne pourrait la
+  remplacer.
 - **Isolation** : `a_user_never_sees_a_tool_they_do_not_own` -- l'utilisateur B
   ne voit pas l'outil de A **alors que la ligne partagee existe**. C'est le test
   qui garde la contrainte anti-fuite ; s'il tombe, le catalogue fuit.

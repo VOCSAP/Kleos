@@ -17,17 +17,22 @@ use crate::{EngError, Result};
 /// Priority: `git_remote` > `url` > `local_path`. At least one must be present.
 ///
 /// * git / url -> `<host>/<path>`, lowercased, no scheme, no credentials, no
-///   port, no `.git` suffix, no trailing slash. The path is kept whole for urls
+///   `.git` suffix, no trailing slash. The path is kept whole for urls
 ///   (`github.com/a/b/tree/main/x` stays deep -- only the repository root is a
-///   git identity).
-/// * local -> `local:<host>:<path>`. The path keeps its case (filesystems are
-///   case-sensitive); an absent host yields `local::<path>`.
+///   git identity). An explicit port is dropped for a **git** remote only,
+///   where `ssh://host:2222/t/r` and `https://host/t/r` are the same
+///   repository; for a **url** it is part of the identity, since
+///   `http://nuc-01:3000/x` and `http://nuc-01:9000/x` are two different
+///   services.
+/// * local -> `local:<host>:<path>`. The path must be absolute and keeps its
+///   case (filesystems are case-sensitive); an absent host yields
+///   `local::<path>`.
 pub fn normalize_tool_key(input: &KeyInput) -> Result<(String, KeyKind)> {
     if let Some(remote) = non_empty(&input.git_remote) {
-        return Ok((normalize_remote_like(remote)?, KeyKind::Git));
+        return Ok((normalize_remote_like(remote, true)?, KeyKind::Git));
     }
     if let Some(url) = non_empty(&input.url) {
-        return Ok((normalize_remote_like(url)?, KeyKind::Url));
+        return Ok((normalize_remote_like(url, false)?, KeyKind::Url));
     }
     if let Some(path) = non_empty(&input.local_path) {
         let host = non_empty(&input.host).unwrap_or("").trim().to_lowercase();
@@ -47,7 +52,9 @@ fn non_empty(v: &Option<String>) -> Option<&str> {
 }
 
 /// Normalize any remote-ish string (git remote or url) to `<host>/<path>`.
-fn normalize_remote_like(raw: &str) -> Result<String> {
+///
+/// `drop_port` is true for git remotes only: see [`normalize_tool_key`].
+fn normalize_remote_like(raw: &str, drop_port: bool) -> Result<String> {
     let raw = raw.trim();
     let had_scheme = raw.contains("://");
     let rest = match raw.find("://") {
@@ -71,7 +78,7 @@ fn normalize_remote_like(raw: &str) -> Result<String> {
         Some(i) => &authority[i + 1..],
         None => authority,
     };
-    let host = strip_port(host).to_lowercase();
+    let host = if drop_port { strip_port(host) } else { host }.to_lowercase();
     if host.is_empty() {
         return Err(EngError::InvalidInput(format!(
             "toolbox key: no host in {raw:?}"
@@ -120,10 +127,33 @@ fn strip_port(host: &str) -> &str {
     }
 }
 
+/// True when `raw` is an absolute filesystem path: Unix `/...`, Windows drive
+/// `C:\...` or `C:/...`, or a UNC share `\\host\share`.
+///
+/// A relative path has no identity across machines -- `tools/x` means a
+/// different directory for every caller, and two of them would collide on one
+/// shared key -- so it is rejected rather than normalized.
+fn is_absolute_local_path(raw: &str) -> bool {
+    let bytes = raw.as_bytes();
+    match bytes {
+        [b'/', ..] => true,
+        [b'\\', b'\\', ..] => true,
+        [d, b':', sep, ..] if d.is_ascii_alphabetic() && (*sep == b'/' || *sep == b'\\') => true,
+        _ => false,
+    }
+}
+
 /// Normalize a filesystem path for a `local:` key: backslashes become slashes,
 /// repeated slashes collapse, a trailing slash is dropped. Case is preserved.
+/// The path must be absolute.
 fn normalize_local_path(raw: &str) -> Result<String> {
-    let raw = raw.trim().replace('\\', "/");
+    let raw = raw.trim();
+    if !is_absolute_local_path(raw) {
+        return Err(EngError::InvalidInput(format!(
+            "toolbox key: local_path must be absolute, got {raw:?}"
+        )));
+    }
+    let raw = raw.replace('\\', "/");
     let mut out = String::with_capacity(raw.len());
     let mut prev_slash = false;
     for c in raw.chars() {
@@ -213,6 +243,64 @@ mod tests {
             git("ssh://git@git.example.org:2222/team/tool.git").0,
             "git.example.org/team/tool"
         );
+    }
+
+    #[test]
+    fn url_keeps_its_port_because_it_identifies_the_service() {
+        let url = |u: &str| {
+            normalize_tool_key(&KeyInput {
+                url: Some(u.to_string()),
+                ..Default::default()
+            })
+            .unwrap()
+        };
+        let (a, kind) = url("http://nuc-01:3000/x");
+        let (b, _) = url("http://nuc-01:9000/x");
+        assert_eq!(a, "nuc-01:3000/x");
+        assert_eq!(b, "nuc-01:9000/x");
+        assert_ne!(a, b, "two services on one host are two tools");
+        assert_eq!(kind, KeyKind::Url);
+
+        // The git side keeps folding ports away: see the test above -- the same
+        // repository is reachable over ssh on 2222 and over https on 443.
+        assert_eq!(
+            git("https://git.example.org:443/team/tool.git").0,
+            "git.example.org/team/tool"
+        );
+    }
+
+    #[test]
+    fn relative_local_path_is_rejected() {
+        for relative in ["tools/x", "./x", "../x", "x", "~/tools"] {
+            let err = normalize_tool_key(&KeyInput {
+                local_path: Some(relative.to_string()),
+                ..Default::default()
+            })
+            .unwrap_err();
+            assert!(
+                matches!(err, EngError::InvalidInput(_)),
+                "{relative} must be rejected, got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn absolute_local_paths_are_accepted_in_every_spelling() {
+        for absolute in [
+            "/srv/tools/x",
+            "C:/Users/me/tools",
+            "D:\\work\\tools",
+            "\\\\fileserver\\share\\tools",
+        ] {
+            assert!(
+                normalize_tool_key(&KeyInput {
+                    local_path: Some(absolute.to_string()),
+                    ..Default::default()
+                })
+                .is_ok(),
+                "{absolute} must be accepted"
+            );
+        }
     }
 
     #[test]

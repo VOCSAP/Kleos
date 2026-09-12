@@ -40,8 +40,16 @@ Priorité `git_remote` > `url` > `local_path` :
 | `https://github.com/a/b/tree/main/x` (champ `url`) | `github.com/a/b/tree/main/x` |
 | `local_path=/opt/tools/foo`, `host=nuc-01` | `local:nuc-01:/opt/tools/foo` |
 
-Les clés git et url sont minuscules, sans schéma, sans identifiants, sans port,
-sans `.git`, sans `/` final. Le chemin d'une clé `local:` garde sa casse.
+Les clés git et url sont minuscules, sans schéma, sans identifiants, sans
+`.git`, sans `/` final. Le **port** est retiré des clés `git` seulement -- le
+même dépôt se joint en `ssh://host:2222/t/r` et en `https://host/t/r` -- et
+conservé dans les clés `url`, où il fait partie de l'identité :
+`http://nuc-01:3000/x` et `http://nuc-01:9000/x` sont deux services différents,
+donc deux outils. Le chemin d'une clé `local:` garde sa casse et doit être
+**absolu** (`/srv/...`, `C:\...` ou `C:/...`, UNC `\\serveur\partage`) : un
+chemin relatif ne désigne rien hors de la machine qui l'a envoyé, et deux
+machines se marcheraient dessus sur la même clé partagée. Un `local_path`
+relatif est refusé en `400`.
 
 ### Politique d'écrasement de la fiche partagée
 
@@ -59,6 +67,12 @@ Si le `content_hash` entrant est identique au stocké, l'issue est `unchanged`.
 Dans tous les cas, **l'emplacement de l'appelant est upserté** et son
 `last_seen_at` rafraîchi. Un embedding manquant est rempli même sur `kept`.
 
+Un `updated` envoyé par un serveur **sans embedder** ne jette pas le vecteur
+stocké : celui-ci est conservé (il décrit un texte légèrement périmé, ce qui vaut
+mieux qu'une ligne sortie du canal vectoriel) et son `embedding_model` passe à
+`null`, ce qui le marque comme à recalculer. `POST /toolbox/reindex` le reprend
+au prochain passage.
+
 ## Surface
 
 | Route HTTP | Tool MCP (nom publié) | Rôle |
@@ -67,8 +81,14 @@ Dans tous les cas, **l'emplacement de l'appelant est upserté** et son
 | `POST /toolbox/find` | `toolbox_find` | recherche hybride (FTS5 + cosinus, fusion RRF) |
 | `GET /toolbox/entries/{id}` | `toolbox_get` | fiche + vos emplacements (404 si vous n'en avez aucun) |
 | `GET /toolbox/entries` | `toolbox_list` | vos outils (`?kind=&limit=&offset=`) |
-| `DELETE /toolbox/entries/{id}` | `toolbox_forget` | supprime **vos** emplacements |
-| `POST /toolbox/reindex` | `toolbox_reindex` | recalcule les embeddings manquants de vos outils |
+| `DELETE /toolbox/entries/{id}` | `toolbox_forget` (*) | supprime **vos** emplacements |
+| `POST /toolbox/reindex` | `toolbox_reindex` (*) | recalcule les embeddings manquants de vos outils |
+
+(*) `toolbox_forget` et `toolbox_reindex` sont **dispatchables par nom** (le
+bridge MCP les route comme les autres) mais **absents de `tools/list`** : ils ne
+sont pas dans `DAILY_TOOL_NAMES`, la surface quotidienne que le bridge publie.
+Un agent ne les verra donc pas dans sa liste de tools ; il faut les appeler
+explicitement par leur nom, ou passer par `curl` / `kleos-cli`.
 
 Les noms canoniques côté `kleos-client` sont pointés (`toolbox.index`) ; le
 bridge MCP les publie avec un underscore (`toolbox_index`). Dans Claude Code le
@@ -143,6 +163,7 @@ Le repli universel, si le client ne sait pas appeler un tool MCP, reste `curl`
 | `KLEOS_TOOLBOX_MAX_BODY_BYTES` | `262144` | taille maximale acceptée pour `body` ; au-delà, `400`. `summary` est plafonné à 4 KiB en dur, `keywords` à 64 entrées |
 | `KLEOS_TOOLBOX_RERANK` | non posée (off) | valeur par défaut du champ `rerank` de `POST /toolbox/find` (`1` / `true` -> on). N'a d'effet que si un reranker est configuré sur le serveur |
 | `KLEOS_TOOLBOX_EMBEDDING_MODEL` | `unknown` | nom de modèle enregistré avec l'embedding quand le provider n'expose pas le sien. Sert au `reindex` (ré-embedder ce qui vient d'un autre modèle) |
+| `KLEOS_EMBEDDING_MODEL` | -- | pas une variable de la toolbox : c'est celle que lit déjà le provider d'embedding compatible OpenAI. Le handler s'en sert comme **repli** quand `KLEOS_TOOLBOX_EMBEDDING_MODEL` n'est pas posée, avant de retomber sur `"unknown"`. Sur un serveur à provider distant, la poser suffit pour que le nom stocké soit le vrai nom du modèle |
 
 Si aucun embedder n'est configuré, l'indexation réussit quand même : la fiche
 est stockée sans vecteur (`"embedded": false`) et la recherche retombe sur la
