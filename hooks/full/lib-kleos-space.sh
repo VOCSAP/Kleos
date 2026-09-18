@@ -111,9 +111,8 @@ ensure_kleos_space_marker() {
     printf '%s' "$name"
 }
 
-# Merge KLEOS_SPACE into the project's .claude/settings.json `env` map.
-# `$1` = project root (settings.json lives at $1/.claude/settings.json).
-# `$2` = space name. Skips silently when jq is unavailable.
+# Merge KLEOS_SPACE into the project's local settings when present.
+# `$1` = project root. `$2` = space name. Skips silently when jq is unavailable.
 write_kleos_space_to_settings() {
     local project_root="$1"
     local space="$2"
@@ -121,8 +120,12 @@ write_kleos_space_to_settings() {
     [ -z "$space" ] && return 0
     command -v jq >/dev/null 2>&1 || return 0
 
-    local settings="$project_root/.claude/settings.json"
-    mkdir -p "$(dirname "$settings")" 2>/dev/null || return 0
+    local settings_dir="$project_root/.claude"
+    local settings="$settings_dir/settings.json"
+    if [ -f "$settings_dir/settings.local.json" ]; then
+        settings="$settings_dir/settings.local.json"
+    fi
+    mkdir -p "$settings_dir" 2>/dev/null || return 0
     if [ -f "$settings" ]; then
         local tmp="$settings.tmp.$$"
         if jq --arg s "$space" '.env = ((.env // {}) | .KLEOS_SPACE = $s)' \

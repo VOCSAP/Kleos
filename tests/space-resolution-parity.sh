@@ -19,9 +19,9 @@ set -uo pipefail
 
 KLEOS_CLI="${KLEOS_CLI:-kleos-cli}"
 
-# Source the bash helper from the repo working tree (not the deployed copy).
+# Source the repository helper unless KLEOS_SPACE_HELPER selects a deployed copy.
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LIB="$REPO_ROOT/hooks/full/lib-kleos-space.sh"
+LIB="${KLEOS_SPACE_HELPER:-$REPO_ROOT/hooks/full/lib-kleos-space.sh}"
 if [ ! -f "$LIB" ]; then
     echo "FAIL: helper not found at $LIB" >&2
     exit 1
@@ -51,6 +51,21 @@ assert_parity() {
     else
         FAIL=$((FAIL + 1))
         printf '  FAIL %-50s bash=%-30s rust=%s\n' "$label" "$bash_out" "$rust_out"
+    fi
+}
+
+assert_space_setting() {
+    local label="$1"
+    local settings="$2"
+    local expected="$3"
+    local actual
+    actual="$(jq -r '.env.KLEOS_SPACE // empty' "$settings")"
+    if [ "$actual" = "$expected" ]; then
+        PASS=$((PASS + 1))
+        printf '  OK  %-50s settings=%s\n' "$label" "$settings"
+    else
+        FAIL=$((FAIL + 1))
+        printf '  FAIL %-50s expected=%s actual=%s\n' "$label" "$expected" "${actual:-<empty>}"
     fi
 }
 
@@ -92,6 +107,26 @@ assert_parity "marker-comments-and-blanks" "$TMPROOT/case6-marker-comments"
 mkdir -p "$TMPROOT/case7-marker-wins/.git"
 printf 'override\n' > "$TMPROOT/case7-marker-wins/.kleos-space"
 assert_parity "marker-beats-git" "$TMPROOT/case7-marker-wins"
+
+# Case 8 -- an existing local settings file receives the session space.
+mkdir -p "$TMPROOT/case8-local-settings/.claude"
+printf '{"permissions":{"allow":["Bash(git status)"]}}\n' \
+    > "$TMPROOT/case8-local-settings/.claude/settings.local.json"
+printf '{"env":{"KLEOS_SPACE":"tracked"}}\n' \
+    > "$TMPROOT/case8-local-settings/.claude/settings.json"
+write_kleos_space_to_settings "$TMPROOT/case8-local-settings" "local-space"
+assert_space_setting "settings-local-preferred" \
+    "$TMPROOT/case8-local-settings/.claude/settings.local.json" "local-space"
+assert_space_setting "settings-json-preserved" \
+    "$TMPROOT/case8-local-settings/.claude/settings.json" "tracked"
+
+# Case 9 -- without a local settings file, the tracked settings file is used.
+mkdir -p "$TMPROOT/case9-settings-fallback/.claude"
+printf '{"permissions":{"allow":["Bash(git status)"]}}\n' \
+    > "$TMPROOT/case9-settings-fallback/.claude/settings.json"
+write_kleos_space_to_settings "$TMPROOT/case9-settings-fallback" "fallback-space"
+assert_space_setting "settings-json-fallback" \
+    "$TMPROOT/case9-settings-fallback/.claude/settings.json" "fallback-space"
 
 echo
 echo "=== Result: PASS=$PASS FAIL=$FAIL ==="
