@@ -350,10 +350,10 @@ Modification unique : le constructeur `chroma_only` appelle `POST /v1/retrieve` 
 
 ## 7. Ce qui reste a mesurer avant de s'engager
 
-| # | Mesure | Pourquoi | Ou dans le plan |
+| # | Mesure | Resultat / pourquoi | Ou dans le plan |
 |---|---|---|---|
-| 1 | Temps de chargement des 5 227 BLOB f32 depuis SQLite au demarrage | remplace le 8,8 ms du `.npy` ; budget < 200 ms | Lot 1 |
-| 2 | Produit scalaire en Rust sur 5 227 x 1 024, p50 | doit rester dans l'ordre du 1,58 ms numpy ; sinon SIMD | Lot 1 |
+| 1 | Temps de chargement des 5 227 BLOB f32 depuis SQLite au demarrage | MESURE : p50 20,896 ms, PASS (< 200 ms). Commande Criterion : `cargo bench --manifest-path C:/Users/Olivier/workspace/kleos-cache/Cargo.toml --bench index`. | Lot 1 |
+| 2 | Produit scalaire en Rust sur 5 227 x 1 024, p50 | MESURE : p50 1,865 ms, PASS (< 5 ms). Commande Criterion : `cargo bench --manifest-path C:/Users/Olivier/workspace/kleos-cache/Cargo.toml --bench index`. | Lot 1 |
 | 3 | Cout d'un passage `/list` sur LXC 121 (CPU et RSS de kleos-server pendant 6 pages de 1 000) | le LXC est sature ; si mesurable, intervalle 60 s -> 300 s, et le Patch 54 redevient une option | Lot 2 |
 | 4 | Taux de faux positifs du detecteur d'entropie sur les 5 227 documents reels | un seuil trop bas ampute le corpus ; un seuil trop haut ne corrige rien | Lot 2 |
 | 5 | `GET /me` avec une cle scope lecture : latence et champs | verification de cle au demarrage | Lot 2 |
