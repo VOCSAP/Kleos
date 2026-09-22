@@ -199,3 +199,18 @@ sous-agent pour un audit independant) vit dans
 `docs/dev-notes/local-patches.md` est la source de verite : un patch numerote
 par section, plus les statuts de merge upstream (patches absorbes, re-accroches,
 abandonnes). A consulter **avant tout merge ou rebase depuis Ghost-Frame/Kleos**.
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Le backlog vit dans la roadmap partagee `mcp__claude-peers__roadmap_*`, pas dans
+GitHub Issues. Debordement d'une carte trop petite : fichier gitignore sous
+`docs/dev-notes/`. Voir `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Contexte unique : un `CONTEXT.md` a la racine plus `docs/adr/`, tous deux crees
+a la demande par `/domain-modeling`. Voir `docs/agents/domain.md`.
