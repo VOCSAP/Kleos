@@ -114,13 +114,17 @@ async fn record_vector_sync_failure(
 }
 
 /// Replace stored chunk rows and chunk vectors for one memory.
-pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<f32>)]) {
+pub async fn write_chunks(
+    db: &Database,
+    memory_id: i64,
+    chunks: &[(String, Vec<f32>)],
+) -> Result<()> {
     let chunks_for_tx: Vec<(String, Vec<u8>)> = chunks
         .iter()
         .map(|(text, emb)| (text.clone(), embedding_to_blob(emb)))
         .collect();
 
-    let result = db
+    if let Err(e) = db
         .write(move |conn| {
             conn.execute(
                 "DELETE FROM memory_chunks WHERE memory_id = ?1",
@@ -137,10 +141,10 @@ pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<
             }
             Ok(())
         })
-        .await;
-
-    if let Err(e) = result {
+        .await
+    {
         warn!("chunk row write failed for memory {}: {}", memory_id, e);
+        return Err(e);
     }
 
     if let Some(index) = db.chunk_vector_index.as_ref() {
@@ -154,11 +158,12 @@ pub async fn write_chunks(db: &Database, memory_id: i64, chunks: &[(String, Vec<
                 "LanceDB chunk vector batch insert failed for memory {}: {}",
                 memory_id, e
             );
-            // Finding [30]: ledger the failure so the replay sweeper can
-            // re-derive the batch from the memory_chunks rows written above.
             record_vector_sync_failure(db, memory_id, 0, "chunk-insert", &e.to_string()).await;
+            return Err(e);
         }
     }
+
+    Ok(())
 }
 
 /// Copy chunk rows and vectors from an old memory version to a new version.
@@ -709,7 +714,7 @@ pub async fn store(
     }
 
     if let Some(ref chunks) = req.chunk_embeddings {
-        write_chunks(db, new_id, chunks).await;
+        let _ = write_chunks(db, new_id, chunks).await;
     }
 
     if let Err(e) = crate::graph::pagerank::mark_pagerank_dirty(db, 1).await {
@@ -1779,7 +1784,7 @@ pub async fn update(
 
     // Carry forward or replace chunk embeddings for the new version.
     if let Some(ref chunks) = req.chunk_embeddings {
-        write_chunks(db, new_id, chunks).await;
+        let _ = write_chunks(db, new_id, chunks).await;
     } else {
         carry_forward_chunks(db, id, new_id).await;
     }
@@ -3036,7 +3041,8 @@ mod tests {
                     ("second chunk".to_string(), vec![0.0, 1.0, 0.0, 0.0]),
                 ],
             )
-            .await;
+            .await
+            .expect("write chunks");
             ids.push(id);
         }
         assert_eq!(

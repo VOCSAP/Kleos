@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::index::vector::IvfHnswPqIndexBuilder;
 use lancedb::index::Index;
-use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use lancedb::table::OptimizeAction;
 use lancedb::DistanceType;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -470,6 +470,38 @@ impl VectorIndex for LanceIndex {
             .map_err(|e| lance_err("count LanceDB vector rows", e))
     }
 
+    async fn stored_keys(&self) -> Result<Vec<i64>> {
+        let table = self.ensure_table().await?;
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .select(Select::Columns(vec!["memory_id".to_string()]))
+            .execute()
+            .await
+            .map_err(|e| lance_err("scan LanceDB vector keys", e))?
+            .try_collect()
+            .await
+            .map_err(|e| lance_err("collect LanceDB vector keys", e))?;
+        let mut keys = Vec::new();
+        for batch in batches {
+            let memory_idx = batch
+                .schema()
+                .index_of("memory_id")
+                .map_err(|e| lance_err("read LanceDB key column", e))?;
+            let memory_ids = batch
+                .column(memory_idx)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .ok_or_else(|| EngError::Internal("LanceDB key column is not Int64".into()))?;
+            for row in 0..batch.num_rows() {
+                if memory_ids.is_null(row) {
+                    return Err(EngError::Internal("LanceDB key column is NULL".into()));
+                }
+                keys.push(memory_ids.value(row));
+            }
+        }
+        Ok(keys)
+    }
+
     /// Rebuild the vector index if the table has enough rows; `replace` forces
     /// a rebuild even if an index already exists.
     async fn rebuild_index(&self, replace: bool) -> Result<bool> {
@@ -509,6 +541,7 @@ impl VectorIndex for LanceIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
     use uuid::Uuid;
 
     // Unique scratch directory for a LanceDB table under the OS temp dir.
@@ -596,7 +629,10 @@ mod tests {
         assert_eq!(index.count().await.expect("count"), 12);
 
         let rebuilt = index.rebuild_index(true).await.expect("rebuild");
-        assert!(!rebuilt, "small table skips IVF_HNSW_PQ but still optimizes");
+        assert!(
+            !rebuilt,
+            "small table skips IVF_HNSW_PQ but still optimizes"
+        );
 
         assert_eq!(
             index.count().await.expect("count"),
@@ -682,6 +718,28 @@ mod tests {
             3,
             "overlapping batches must merge on the shared key, not duplicate it"
         );
+
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[tokio::test]
+    async fn stored_keys_reads_every_lance_row() {
+        let path = temp_path();
+        let index = LanceIndex::open(&path, 4).await.expect("open lance");
+        index
+            .insert_many(&[
+                (1000, vec![1.0, 0.0, 0.0, 0.0]),
+                (1001, vec![0.0, 1.0, 0.0, 0.0]),
+            ])
+            .await
+            .expect("insert rows");
+
+        let started = Instant::now();
+        let mut keys = index.stored_keys().await.expect("read stored keys");
+        let elapsed = started.elapsed();
+        println!("Lance key scan of {} rows took {elapsed:?}", keys.len());
+        keys.sort_unstable();
+        assert_eq!(keys, vec![1000, 1001]);
 
         let _ = std::fs::remove_dir_all(&path);
     }

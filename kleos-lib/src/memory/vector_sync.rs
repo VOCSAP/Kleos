@@ -8,10 +8,26 @@
 
 use super::types::VectorSyncReplayReport;
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use rusqlite::params;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkVectorCoverageCounts {
+    pub expected: usize,
+    pub present: usize,
+    pub missing: usize,
+    pub extras: usize,
+    pub memories_without_chunks: usize,
+    pub chunks_without_embeddings: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkVectorCoverage {
+    Known(ChunkVectorCoverageCounts),
+    Unknown { reason: String },
+}
 
 /// Batch-fetch embedding blobs for a set of memory IDs.
 /// Returns a HashMap keyed by memory_id. Rows whose embedding column is
@@ -82,6 +98,120 @@ fn blob_to_embedding(blob: &[u8]) -> Vec<f32> {
     blob.chunks_exact(4)
         .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
         .collect()
+}
+
+fn checked_chunk_lance_key(memory_id: i64, chunk_idx: i64) -> Result<i64> {
+    if memory_id < 0 || !(0..1000).contains(&chunk_idx) {
+        return Err(EngError::InvalidInput(format!(
+            "invalid chunk key components: memory_id={}, chunk_idx={}",
+            memory_id, chunk_idx
+        )));
+    }
+    memory_id
+        .checked_mul(1000)
+        .and_then(|key| key.checked_add(chunk_idx))
+        .ok_or_else(|| {
+            EngError::InvalidInput(format!(
+                "chunk key overflow: memory_id={}, chunk_idx={}",
+                memory_id, chunk_idx
+            ))
+        })
+}
+
+/// Compare eligible SQLite chunk keys with the keys currently stored in Lance.
+pub async fn chunk_vector_coverage(db: &Database) -> ChunkVectorCoverage {
+    let Some(index) = db.chunk_vector_index.as_ref() else {
+        return ChunkVectorCoverage::Unknown {
+            reason: "chunk vector index is unavailable".to_string(),
+        };
+    };
+
+    let expected = match db
+        .read(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT mc.memory_id, mc.chunk_idx
+                     FROM memory_chunks mc
+                     JOIN memories m ON m.id = mc.memory_id
+                     WHERE mc.embedding_vec_1024 IS NOT NULL
+                       AND m.is_forgotten = 0
+                       AND m.is_latest = 1",
+            )?;
+            let mut rows = stmt.query([])?;
+            let mut keys = HashSet::new();
+            while let Some(row) = rows.next()? {
+                let memory_id: i64 = row.get(0)?;
+                let chunk_idx: i64 = row.get(1)?;
+                keys.insert(checked_chunk_lance_key(memory_id, chunk_idx)?);
+            }
+            let memories_without_chunks: i64 = conn.query_row(
+                "SELECT COUNT(*)
+                     FROM memories m
+                     WHERE m.is_forgotten = 0
+                       AND m.is_latest = 1
+                       AND TRIM(m.content) <> ''
+                       AND NOT EXISTS (
+                           SELECT 1 FROM memory_chunks mc WHERE mc.memory_id = m.id
+                       )",
+                [],
+                |row| row.get(0),
+            )?;
+            let chunks_without_embeddings: i64 = conn.query_row(
+                "SELECT COUNT(*)
+                     FROM memory_chunks mc
+                     JOIN memories m ON m.id = mc.memory_id
+                     WHERE mc.embedding_vec_1024 IS NULL
+                       AND m.is_forgotten = 0
+                       AND m.is_latest = 1",
+                [],
+                |row| row.get(0),
+            )?;
+            Ok((
+                keys,
+                usize::try_from(memories_without_chunks).map_err(|_| {
+                    EngError::Internal("memory-without-chunks count is negative".to_string())
+                })?,
+                usize::try_from(chunks_without_embeddings).map_err(|_| {
+                    EngError::Internal("chunk-without-embedding count is negative".to_string())
+                })?,
+            ))
+        })
+        .await
+    {
+        Ok(expected) => expected,
+        Err(error) => {
+            return ChunkVectorCoverage::Unknown {
+                reason: format!("read SQLite chunk coverage: {}", error),
+            };
+        }
+    };
+
+    let lance_keys = match index.stored_keys().await {
+        Ok(keys) => keys,
+        Err(error) => {
+            return ChunkVectorCoverage::Unknown {
+                reason: format!("read Lance chunk keys: {}", error),
+            };
+        }
+    };
+    let mut stored = HashSet::new();
+    for key in lance_keys {
+        if key < 0 {
+            return ChunkVectorCoverage::Unknown {
+                reason: format!("invalid Lance chunk key: {}", key),
+            };
+        }
+        stored.insert(key);
+    }
+
+    let (expected, memories_without_chunks, chunks_without_embeddings) = expected;
+    ChunkVectorCoverage::Known(ChunkVectorCoverageCounts {
+        expected: expected.len(),
+        present: expected.intersection(&stored).count(),
+        missing: expected.difference(&stored).count(),
+        extras: stored.difference(&expected).count(),
+        memories_without_chunks,
+        chunks_without_embeddings,
+    })
 }
 
 /// Rebuild the LanceDB vector index from all existing memory embeddings.
@@ -380,7 +510,9 @@ pub async fn replay_vector_sync_pending_for_user(
 pub struct BackfillReport {
     pub scanned: usize,
     pub primary_embeddings_filled: usize,
+    pub chunk_rows_attempted: usize,
     pub chunk_rows_written: usize,
+    pub chunk_rows_failed: usize,
     pub failures: usize,
 }
 
@@ -512,8 +644,15 @@ pub async fn backfill_missing_embeddings_limited(
             {
                 Ok(pairs) if !pairs.is_empty() => {
                     let n = pairs.len();
-                    super::write_chunks(db, memory_id, &pairs).await;
-                    report.chunk_rows_written += n;
+                    report.chunk_rows_attempted += n;
+                    match super::write_chunks(db, memory_id, &pairs).await {
+                        Ok(()) => report.chunk_rows_written += n,
+                        Err(e) => {
+                            warn!("chunk row write failed for {}: {}", memory_id, e);
+                            report.chunk_rows_failed += n;
+                            report.failures += 1;
+                        }
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -600,4 +739,344 @@ pub async fn build_lance_chunk_index_from_existing(db: &Database) -> Result<usiz
     }
 
     Ok(count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embeddings::EmbeddingProvider;
+    use crate::vector::{LanceIndex, VectorHit, VectorIndex};
+    use crate::EngError;
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use uuid::Uuid;
+
+    struct FailingChunkIndex;
+
+    #[async_trait]
+    impl VectorIndex for FailingChunkIndex {
+        async fn insert(&self, _memory_id: i64, _embedding: &[f32]) -> Result<()> {
+            Err(EngError::Internal("chunk index unavailable".to_string()))
+        }
+
+        async fn search(&self, _embedding: &[f32], _limit: usize) -> Result<Vec<VectorHit>> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, _memory_id: i64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+
+        async fn rebuild_index(&self, _replace: bool) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    struct FixedEmbedder;
+
+    impl EmbeddingProvider for FixedEmbedder {
+        fn embed<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<f32>>> + Send + 'a>>
+        {
+            Box::pin(async { Ok(vec![0.5; 4]) })
+        }
+    }
+
+    #[tokio::test]
+    async fn backfill_reports_chunk_rows_failed_by_lance() {
+        let mut db = Database::connect_memory()
+            .await
+            .expect("in-memory database");
+        db.chunk_vector_index = Some(Arc::new(FailingChunkIndex));
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, user_id) \
+                 VALUES ('chunk backfill candidate', 'general', 'test', 5, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed memory");
+
+        let report = backfill_missing_embeddings_limited(&db, &FixedEmbedder, Some(1))
+            .await
+            .expect("backfill continues after Lance failure");
+
+        assert_eq!(report.chunk_rows_attempted, 1);
+        assert_eq!(report.chunk_rows_written, 0);
+        assert_eq!(report.chunk_rows_failed, 1);
+        assert_eq!(report.failures, 1);
+        let pending: i64 = db
+            .read(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM vector_sync_pending WHERE op = 'chunk-insert'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .expect("read vector-sync ledger");
+        assert_eq!(pending, 1);
+    }
+
+    struct ChunkKeysIndex {
+        keys: Mutex<Vec<i64>>,
+    }
+
+    impl ChunkKeysIndex {
+        fn new(keys: Vec<i64>) -> Self {
+            Self {
+                keys: Mutex::new(keys),
+            }
+        }
+
+        fn replace_keys(&self, keys: Vec<i64>) {
+            *self.keys.lock().expect("chunk keys lock") = keys;
+        }
+    }
+
+    #[async_trait]
+    impl VectorIndex for ChunkKeysIndex {
+        async fn insert(&self, _memory_id: i64, _embedding: &[f32]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn search(&self, _embedding: &[f32], _limit: usize) -> Result<Vec<VectorHit>> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, _memory_id: i64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn count(&self) -> Result<usize> {
+            Ok(self.keys.lock().expect("chunk keys lock").len())
+        }
+
+        async fn stored_keys(&self) -> Result<Vec<i64>> {
+            Ok(self.keys.lock().expect("chunk keys lock").clone())
+        }
+
+        async fn rebuild_index(&self, _replace: bool) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    struct UnavailableChunkKeysIndex;
+
+    #[async_trait]
+    impl VectorIndex for UnavailableChunkKeysIndex {
+        async fn insert(&self, _memory_id: i64, _embedding: &[f32]) -> Result<()> {
+            Ok(())
+        }
+
+        async fn search(&self, _embedding: &[f32], _limit: usize) -> Result<Vec<VectorHit>> {
+            Ok(Vec::new())
+        }
+
+        async fn delete(&self, _memory_id: i64) -> Result<()> {
+            Ok(())
+        }
+
+        async fn count(&self) -> Result<usize> {
+            Ok(0)
+        }
+
+        async fn stored_keys(&self) -> Result<Vec<i64>> {
+            Err(EngError::Internal("chunk key scan unavailable".to_string()))
+        }
+
+        async fn rebuild_index(&self, _replace: bool) -> Result<bool> {
+            Ok(false)
+        }
+    }
+
+    async fn coverage_database() -> Database {
+        let db = Database::connect_memory()
+            .await
+            .expect("in-memory database");
+        db.write(|conn| {
+            for content in ["indexed chunks", "no chunks", "missing embedding"] {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, importance, user_id) \
+                     VALUES (?1, 'general', 'test', 5, 1)",
+                    [content],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO memory_chunks (memory_id, chunk_idx, content, embedding_vec_1024) \
+                 VALUES (1, 0, 'first', ?1), (1, 1, 'second', ?1), (3, 0, 'unembedded', NULL)",
+                [vec![0_u8; 16]],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed coverage database");
+        db
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_compares_distinct_keys_with_missing_and_extras() {
+        let mut db = coverage_database().await;
+        db.chunk_vector_index = Some(Arc::new(ChunkKeysIndex::new(vec![1000, 1000, 9000])));
+
+        assert_eq!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Known(ChunkVectorCoverageCounts {
+                expected: 2,
+                present: 1,
+                missing: 1,
+                extras: 1,
+                memories_without_chunks: 1,
+                chunks_without_embeddings: 1,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_is_unknown_when_key_read_fails() {
+        let mut db = coverage_database().await;
+        db.chunk_vector_index = Some(Arc::new(UnavailableChunkKeysIndex));
+
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Unknown { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_is_unknown_for_an_invalid_lance_key() {
+        let mut db = coverage_database().await;
+        db.chunk_vector_index = Some(Arc::new(ChunkKeysIndex::new(vec![-1])));
+
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Unknown { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_is_unknown_for_an_invalid_sql_key() {
+        let mut db = coverage_database().await;
+        db.write(|conn| {
+            conn.execute(
+                "UPDATE memory_chunks SET chunk_idx = 1000 WHERE memory_id = 1 AND chunk_idx = 0",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("make chunk key invalid");
+        db.chunk_vector_index = Some(Arc::new(ChunkKeysIndex::new(Vec::new())));
+
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Unknown { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_is_unknown_for_an_overflowing_sql_key() {
+        let mut db = Database::connect_memory()
+            .await
+            .expect("in-memory database");
+        let memory_id = i64::MAX / 1000 + 1;
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO memories (id, content, category, source, importance, user_id) \
+                 VALUES (?1, 'overflow', 'general', 'test', 5, 1)",
+                [memory_id],
+            )?;
+            conn.execute(
+                "INSERT INTO memory_chunks (memory_id, chunk_idx, content, embedding_vec_1024) \
+                 VALUES (?1, 0, 'overflow', ?2)",
+                rusqlite::params![memory_id, vec![0_u8; 16]],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed overflowing chunk key");
+        db.chunk_vector_index = Some(Arc::new(ChunkKeysIndex::new(Vec::new())));
+
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Unknown { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_keeps_no_state_between_samples() {
+        let mut db = coverage_database().await;
+        let index = Arc::new(ChunkKeysIndex::new(Vec::new()));
+        db.chunk_vector_index = Some(index.clone());
+
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Known(ChunkVectorCoverageCounts { missing: 2, .. })
+        ));
+
+        index.replace_keys(vec![1000, 1001]);
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Known(ChunkVectorCoverageCounts { missing: 0, .. })
+        ));
+
+        index.replace_keys(Vec::new());
+        assert!(matches!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Known(ChunkVectorCoverageCounts { missing: 2, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn chunk_coverage_converges_when_write_chunks_returns() {
+        let path = std::env::temp_dir().join(format!("kleos-chunk-coverage-{}", Uuid::new_v4()));
+        let mut db = Database::connect_memory()
+            .await
+            .expect("in-memory database");
+        db.chunk_vector_index = Some(Arc::new(
+            LanceIndex::open(path.to_string_lossy(), 4)
+                .await
+                .expect("open Lance chunk index"),
+        ));
+        db.write(|conn| {
+            conn.execute(
+                "INSERT INTO memories (content, category, source, importance, user_id) \
+                 VALUES ('convergence', 'general', 'test', 5, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed memory");
+
+        let started = Instant::now();
+        crate::memory::write_chunks(&db, 1, &[("chunk".to_string(), vec![0.5; 4])])
+            .await
+            .expect("write chunks");
+        let elapsed = started.elapsed();
+        println!("chunk write and Lance convergence took {elapsed:?}");
+
+        assert_eq!(
+            chunk_vector_coverage(&db).await,
+            ChunkVectorCoverage::Known(ChunkVectorCoverageCounts {
+                expected: 1,
+                present: 1,
+                missing: 0,
+                extras: 0,
+                memories_without_chunks: 0,
+                chunks_without_embeddings: 0,
+            })
+        );
+
+        let _ = std::fs::remove_dir_all(path);
+    }
 }
