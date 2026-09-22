@@ -4,7 +4,7 @@ pub mod lance;
 #[cfg(feature = "ml")]
 pub use lance::LanceIndex;
 
-use crate::Result;
+use crate::{EngError, Result};
 use async_trait::async_trait;
 
 /// Name of the primary (whole-memory) vector table.
@@ -45,6 +45,12 @@ pub trait VectorIndex: Send + Sync {
     async fn delete(&self, memory_id: i64) -> Result<()>;
     /// Number of rows currently in the index.
     async fn count(&self) -> Result<usize>;
+    /// Read every stored key when the backend supports a coverage diagnostic.
+    async fn stored_keys(&self) -> Result<Vec<i64>> {
+        Err(EngError::NotImplemented(
+            "vector index does not expose stored keys".to_string(),
+        ))
+    }
 
     /// Batched upsert. Default impl loops `insert`; LanceIndex overrides with
     /// a single delete+add round trip so a backfill pass paying the

@@ -14,6 +14,7 @@ use crate::state::AppState;
 use kleos_lib::auth::{create_key, AuthContext, Scope};
 use kleos_lib::cred::ProxyResponse;
 use kleos_lib::graph::{communities, cooccurrence};
+use kleos_lib::memory::vector_sync::{chunk_vector_coverage, ChunkVectorCoverage};
 
 mod types;
 use types::{
@@ -1393,10 +1394,34 @@ async fn admin_vector_health(
 
         let handle = match registry.get(&row.user_id).await {
             Ok(Some(h)) => h,
-            _ => continue,
+            _ => {
+                per_tenant.push(json!({
+                    "tenant_id": row.tenant_id,
+                    "chunk_vector_coverage": {
+                        "status": "unknown",
+                        "reason": "tenant database is unavailable",
+                    },
+                }));
+                continue;
+            }
         };
 
         let db = handle.database();
+        let chunk_coverage = match chunk_vector_coverage(&db).await {
+            ChunkVectorCoverage::Known(counts) => json!({
+                "status": "known",
+                "expected": counts.expected,
+                "present": counts.present,
+                "missing": counts.missing,
+                "extras": counts.extras,
+                "memories_without_chunks": counts.memories_without_chunks,
+                "chunks_without_embeddings": counts.chunks_without_embeddings,
+            }),
+            ChunkVectorCoverage::Unknown { reason } => json!({
+                "status": "unknown",
+                "reason": reason,
+            }),
+        };
 
         let lance_count = if let Some(ref idx) = db.vector_index {
             idx.count().await.ok().unwrap_or(0)
@@ -1438,16 +1463,15 @@ async fn admin_vector_health(
             .await
             .unwrap_or((0, 0, 0));
 
-        if active > 0 || chunks > 0 || lance_count > 0 {
-            per_tenant.push(json!({
-                "tenant_id": row.tenant_id,
-                "lance_row_count": lance_count,
-                "chunk_lance_row_count": chunk_lance_count,
-                "memories_active_count": active,
-                "chunk_row_count": chunks,
-                "vector_sync_pending_count": pending,
-            }));
-        }
+        per_tenant.push(json!({
+            "tenant_id": row.tenant_id,
+            "lance_row_count": lance_count,
+            "chunk_lance_row_count": chunk_lance_count,
+            "memories_active_count": active,
+            "chunk_row_count": chunks,
+            "vector_sync_pending_count": pending,
+            "chunk_vector_coverage": chunk_coverage,
+        }));
 
         total_lance += lance_count;
         total_chunk_lance += chunk_lance_count;

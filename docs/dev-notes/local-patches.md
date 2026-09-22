@@ -6208,3 +6208,57 @@ Le patch n'est pas un candidat PR upstream en l'etat : il repose sur le canal
 overlay VOCSAP et sur l'absence de `space` dans le catalogue, deux choix de
 fork. La partie generique (cle canonique, politique d'ecrasement par date de
 commit) serait extractible si Ghost-Frame s'y interessait.
+
+---
+
+## Patch 54 -- rapporter honnêtement les échecs Lance du backfill de chunks (2026-09-22)
+
+**Symptôme :** sous upstream pur, `write_chunks` journalise et inscrit au ledger
+un échec de `chunk_vector_index.insert_many`, mais le masque à son appelant.
+`backfill_missing_embeddings_limited` incrémente alors `chunk_rows_written` pour
+tout lot généré, y compris quand Lance n'a écrit aucune ligne. Le rapport peut
+ainsi annoncer zéro échec malgré un lot de vecteurs entièrement absent de Lance.
+
+**Approche :** `write_chunks` retourne désormais `Result<()>` après l'écriture
+SQLite et l'insertion Lance ; il conserve l'inscription best-effort du ledger
+avant de retourner l'erreur Lance. Le backfill compte les lignes du lot avant
+l'appel, puis les classe comme écrites seulement sur `Ok(())` ou échouées sur
+`Err`. `failures` reste le compteur historique des événements échoués, tandis
+que les trois compteurs de lignes `chunk_rows_attempted`, `chunk_rows_written`
+et `chunk_rows_failed` sont distincts.
+
+**Extension, diagnostic de couverture :** le diagnostic admin compare, par
+locataire actif, les clés SQL éligibles `1000 * memory_id + chunk_idx` aux clés
+Lance distinctes. Il publie `expected`, `present`, `missing` et `extras`, plus
+les mémoires non vides sans chunks et les chunks sans embedding. Les lectures
+Lance optionnelles sont fournies par `VectorIndex` et son implémentation Lance.
+Une erreur de lecture, une clé invalide, un overflow ou une base de locataire
+indisponible publie `unknown`, jamais une couverture saine. La route ne retient
+aucun état, ne répare rien et ne change pas le fallback centroid.
+
+**Pourquoi pas le niveau inférieur :** aucun canal overlay ou réglage ne peut
+rendre observable une erreur avalée dans le code upstream ni comparer les
+identités de lignes entre SQLite et Lance. Le changement de signature publique
+est nécessaire pour transmettre l'information au seul appelant qui produit le
+rapport ; les chemins CRUD gardent leur comportement best-effort explicite. Le
+trait étend son contrat avec une lecture optionnelle afin que les index non
+Lance restent compatibles et signalent `unknown`.
+
+**Fichiers touchés :** `kleos-lib/src/memory/mod.rs`,
+`kleos-lib/src/memory/vector_sync.rs`, `kleos-lib/src/vector/mod.rs`,
+`kleos-lib/src/vector/lance.rs`, `kleos-server/src/routes/admin/mod.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-lib --features bundled-sqlite --lib
+memory::vector_sync::tests::backfill_reports_chunk_rows_failed_by_lance` vérifie
+qu'un `insert_many` Lance en erreur laisse `written` à zéro, incrémente les
+lignes tentées et échouées, et conserve l'entrée `chunk-insert` dans le ledger.
+Les tests `chunk_coverage` couvrent missing et extras simultanés, doublons
+Lance, déficits source, erreur de lecture, clé invalide, overflow et snapshots
+stateless. Le test Lance mesure aussi un scan de clés, et la convergence est
+vérifiée après le retour de `write_chunks`.
+
+**Condition de retrait :** retirer le patch lorsque Ghost-Frame propage le
+résultat de `write_chunks`, expose des compteurs de backfill séparant les lignes
+tentées, insérées et échouées, et fournit un diagnostic stateless de couverture
+par identité des chunks.
