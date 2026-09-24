@@ -2172,6 +2172,7 @@ hooks/full/
   mnemonic-observe.sh                  # PostToolUse, fire-and-forget vers kleos-sidecar
   user-prompt-lean.sh                  # UserPromptSubmit, context injection lean
   eidolon-supervisor-drain-pending.sh  # PreToolUse, drain /supervisor/pending (NOUVEAU 2026-05-21)
+  post-tool-kleos-cache-sync.sh        # PostToolUse Bash, sync kleos-cache apres kleos-cli store (2026-09-24)
 hooks/simple/
   session-start.sh, session-end.sh, user-prompt.sh, mnemonic-observe.sh
 ```
@@ -2225,6 +2226,63 @@ Default URL legacy `localhost:7700` supprime partout : le service standalone "Ei
 **E. README.md dans `eidolon-supervisor/`**
 
 Ajout d'un README operateur (10K) : env vars table, default rules + VOCSAP custom set 9 rules JSON copy-pastable, severity guide, architecture 3-canaux (`/supervisor/inject`, `/inbox`, `/axon/publish`), procedure de deploiement Linux/Windows/interactif, checks operationnels (SQL + curl), stubs `#[allow(dead_code)]` non implementes (`drift`, `scope`). Niveau delta upstream : additif pur sur dossier upstream, candidat PR upstream legitime.
+
+#### 2026-09-24 -- kleos-cache local avant le sidecar + sync apres `kleos-cli store` (carte a98fa828, spec_9643dae9)
+
+**Symptome sous la chaine existante** : chaque prompt paie le rappel distant (sidecar `/recall` vers kleos-server, environ 2,5 s, puis `kleos-cli context`), alors que kleos-cache repond en local en 30 a 50 ms cote serveur. Un fait stocke n'est visible dans kleos-cache qu'au tick periodique de 300 s. Et serve s'arrete seul apres 30 min d'inactivite (carte 79ffd5e8) : sans relance, une session longue perd le cache jusqu'au prochain SessionStart.
+
+**Deux niveaux de delta, a ne pas confondre** :
+
+| Fichier | Niveau | Justification |
+|---|---|---|
+| `hooks/full/user-prompt-lean.sh` | delta fork existant (Patch 12, bundle absent upstream qui n'a que `hooks/README.md`) | Aucun canal overlay (prompts, lexicons, gate-rules, schema) ne porte l'ordre des sources de rappel d'un hook poste : le choix de la source est du shell dans le hook lui-meme. |
+| `hooks/full/post-tool-kleos-cache-sync.sh` | zero delta upstream (fichier neuf dans un dossier fork-only, aucun patch de `kleos-cli` ni de kleos-server) | Le declencheur est un hook Claude Code du poste qui observe la sortie de `kleos-cli store`. |
+
+**A. `user-prompt-lean.sh`**
+
+- Le fichier du depot est d'abord realigne sur la copie installee dans `~/.claude/hooks/`, qui avait diverge (sidecar `--max-time 6`, `limit` 8, filtre de score par `recall_source`, lignes de log RECALL HIT/MISS). Sans ce realignement, recopier le fichier du depot aurait fait regresser le poste.
+- Nouvelle fonction `query_kleos_cache`, appelee avant le sidecar si `KLEOS_CACHE_TOKEN` est defini : `POST /v1/retrieve` avec `mode=local`, `space=$KLEOS_SPACE` (omis s'il contient autre chose que `[A-Za-z0-9._-]`), `top_k=3`. Corps JSON ASCII ecrit dans un fichier temporaire (`--data-binary @`), jeton passe a curl par `--config -` sur stdin (jamais dans argv), `--noproxy '*'`, `--connect-timeout 0.05`, `--max-time 0.25`.
+- Reponse 200 non vide : bloc `Relevant Kleos memories:` + ligne de mise en garde + `#id [categorie] [local] texte` (180 caracteres), le sidecar et `kleos-cli context` ne sont pas appeles. Vide, erreur HTTP ou 503 : chaine inchangee. Pas de reponse (serve arrete) : lancement en arriere-plan de `claude-sessionstart-kleos-cache.sh` (idempotent, verrou de lancement + `serve.lock`), puis chaine inchangee pour ce prompt.
+- Ecart accepte pour ce lot (decision team-lead) : les lignes `[local]` n'ont pas de `[date]`, car `/v1/retrieve` ne renvoie que `id`, `score`, `category`, `space`, `text`. `id` et `category` sont aplatis et tronques a 40 caracteres, le texte a 180, pour qu'un saut de ligne ne fabrique pas une ligne d'instruction.
+- Pas de reponse et temps de connexion nul (aucun listener) : `DOWN` et relance du launcher. Pas de reponse apres connexion (serve vivant mais au-dela de 250 ms) : `TIMEOUT`, sans relance.
+- Budget (decision operateur, remplace les 3 s de la carte) : nominal, cache HIT < 400 ms ajoutes ; repli (cache absent) plafonne a 10 s au total. Pire cas deduit des delais du hook : 0,25 s (cache) + 6 s (sidecar) + 3 s (`kleos-cli context`) = 9,25 s. Le hook n'a pas de garde-fou de duree interne : le plafond est le `timeout` de l'enregistrement `UserPromptSubmit`.
+- Log : `CACHE HIT|EMPTY|ERROR|DOWN|TIMEOUT ms=<duree de l'etape cache> http=<code> n=<lignes>` dans `~/.claude/logs/user-prompt-lean.log`.
+- Variables : `KLEOS_CACHE_TOKEN` (requis), `KLEOS_CACHE_LISTEN` (defaut `127.0.0.1:8765`), `KLEOS_SPACE`, `KLEOS_CACHE_LAUNCHER` (defaut `~/.claude/hooks/claude-sessionstart-kleos-cache.sh`, ignore si absent).
+- `KLEOS_SPACE` doit avoir la casse stockee : le filtre `space` de kleos-cache est sensible a la casse (`Kleos` ne rend pas les lignes `kleos`).
+
+**B. `post-tool-kleos-cache-sync.sh` (PostToolUse, matcher `Bash`)**
+
+- Filtre rapide en bash (`kleos-cli`, `store` et `Stored memory #` presents dans l'entree), puis python : `tool_name == Bash`, commande `kleos-cli[.exe] [options] store`, sortie `Stored memory #<n>`. Entre `kleos-cli` et `store`, seules des options (`-x`, `--xx`, avec au plus une valeur non quotee) sont admises. Un store en echec, un `echo`/`search`/`context` qui cite `store` en argument ou un autre outil ne declenchent rien. Un store fait via le MCP (`mcp__kleos__memory_store`) ne declenche pas la sync : il attend le tick periodique.
+- Le hook pose un marqueur `pending` et lance, si le verrou `worker.lock` (mkdir) est libre, un worker detache (`bash $0 --worker`, stdin/stdout/stderr rediriges) puis rend la main.
+- Le worker boucle `POST /v1/sync` tant que `pending` existe (le POST est synchrone cote serve). `skipped` / `sync already in progress` : il repose `pending`, attend 3 s et recommence, car la passe en cours a pu commencer avant le store. `not configured`, serve absent ou autre erreur : log et arret, le fait sera pris par la sync de demarrage ou le tick. Deadline 240 s (`KLEOS_CACHE_SYNC_HOOK_DEADLINE_S`), verrou perime reclame apres 450 s. Un store arrive pendant que le worker travaille est coalesce dans la passe suivante ; le marqueur est reverifie apres liberation du verrou.
+- Aucun jeton dans argv ni dans les logs ; aucune sortie stdout, donc aucune injection de contexte et pas de boucle de hooks (le worker n'est pas un outil Claude Code).
+- Etat et log : `~/.claude/session-env/kleos-cache-sync/`, `~/.claude/logs/kleos-cache-sync.log` (surchargeables par `KLEOS_CACHE_HOOK_STATE_DIR`, `KLEOS_CACHE_HOOK_LOG`).
+
+**Installation sur le poste** : les hooks de `hooks/full/` sont COPIES (pas de lien) dans `~/.claude/hooks/`. Copier `user-prompt-lean.sh`, `post-tool-kleos-cache-sync.sh` et `scripts/claude-sessionstart-kleos-cache.sh` du depot kleos-cache, puis definir `KLEOS_CACHE_TOKEN` en variable utilisateur (distincte de `KLEOS_CACHE_SYNC_KEY`). Fragment a ajouter a `~/.claude/settings.json` (non applique automatiquement) :
+
+```json
+"SessionStart": [
+  { "matcher": "", "hooks": [
+    { "type": "command", "command": "bash \"$USERPROFILE/.claude/hooks/claude-sessionstart-kleos-cache.sh\"", "timeout": 15 }
+  ] }
+],
+"UserPromptSubmit": [
+  { "matcher": "", "hooks": [
+    { "type": "command", "command": "bash \"$USERPROFILE/.claude/hooks/user-prompt-lean.sh\"", "timeout": 10 }
+  ] }
+],
+"PostToolUse": [
+  { "matcher": "Bash", "hooks": [
+    { "type": "command", "command": "bash \"$USERPROFILE/.claude/hooks/post-tool-kleos-cache-sync.sh\"", "timeout": 5 }
+  ] }
+]
+```
+
+L'entree `UserPromptSubmit` de `user-prompt-lean.sh` existe deja : seul son `timeout` passe de 15 a 10.
+
+**Tests (harnais hors depot, serve de test sur `127.0.0.1:18765` et dossier de donnees temporaire)** : trois prompts donnent trois lignes `retrieve` dans `metrics.jsonl` ; serve tue, le prompt retombe sur le sidecar et serve repond de nouveau quelques secondes plus tard ; etape cache 139 a 335 ms ; PostToolUse : 7 cas de dispatch (positif, chemin `.exe` avec options, `echo`, store en echec, `search`, autre outil, entree non JSON), jeton absent, serve absent, passe deja en cours puis reprise, coalescence de trois stores, fait reel cherchable en local 1,9 s apres le hook sans tick.
+
+**Retrait** : retirer l'appel `query_kleos_cache` et le fichier PostToolUse si kleos-cache est decommissionne ; aucune cible upstream.
 
 ### Registration cote `~/.claude/claude-config/settings.json` (etat 2026-05-21)
 
