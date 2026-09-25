@@ -1,7 +1,7 @@
 # ADR : kleos-cache, magasin vectoriel local en Rust, en remplacement de Chroma
 
 Date : 2026-09-21
-Statut : decision operateur actee (magasin local, projet separe, Rust) ; mesure de qualite soumise a decision operateur avant toute decommission Chroma
+Statut : decision operateur actee le 2026-09-25 : `kleos-cache` adopte sur la latence, Chroma conserve et arrete, pertes lexicales reelles traitees par la carte `addc6587`
 Precede par : `docs/superpowers/specs/2026-09-20-kleos-context-gateway-design.md` (POC) et `docs/superpowers/plans/2026-09-20-kleos-context-gateway-plan.md`
 Suivi par : `docs/superpowers/plans/2026-09-21-kleos-cache-plan.md`
 
@@ -36,8 +36,9 @@ Ce que la decision NE rouvre PAS (arbitre avant cette ADR, repris tel quel) :
 
 ### 2.1 Jeu de reference
 
-40 requetes, 33 memoires cibles distinctes, aucune sollicitee plus de deux fois. La stratification est de
-21 requetes sans token rare commun avec leur cible (`lexical_overlap: none`) et 19 avec (`shared`).
+40 requetes, audite en trois passes, 33 memoires cibles distinctes, aucune sollicitee plus de deux fois. La
+stratification est de 21 requetes sans token rare commun avec leur cible (`lexical_overlap: none`) et 19 avec
+(`shared`).
 
 DECISION OPERATEUR (2026-09-25) : cette stratification 21/19 n'est pas prouvable par git, car le commit unique
 `43573a6` contient les labels et les rapports du 2026-09-20. Elle est acceptee par l'operateur.
@@ -57,12 +58,40 @@ Sources versionnees du depot `kleos-cache` :
 |---|---:|---:|---:|---:|---|
 | `kleos_only-mid` | 19/39 scorees, plus `q031` en erreur | 0,441026 | 0,471347 | 2 692 ms | Reference |
 | `local_only-mid` | 23/40 | 0,451667 | 0,494220 | 35,5 ms | [-0,076923 ; +0,230769], n=39 |
-| `hybrid-mid` | 23/40 | 0,470417 | 0,505255 | 2 933 ms | [-0,025641 ; +0,179487], n=39 |
+| Fusion POC Kleos + Chroma (2026-09-20) | 23/40 | 0,470417 | 0,505255 | 2 933 ms | [-0,025641 ; +0,179487], n=39 |
+
+La ligne Fusion POC provient des sources `chroma` et `kleos` de
+`2026-09-20T211951-hybrid-mid.json`, pas de `kleos-cache`. Le mode `hybrid` de `kleos-cache` n'a pas ete
+mesure sur le jeu v2.
 
 Le `ReadTimeout` de `q031` dans `kleos_only-mid` explique la divergence avec le chiffre attendu de 20/40 : le
 rapport source ne porte aucun `hit_at_5` pour cette requete et ne compte que 19 succes sur 39 requetes scorees.
 L'analyse qualite exclut `q031` des deux bras. L'analyse disponibilite compte toute erreur explicite comme miss,
 dans l'un ou l'autre bras, afin de conserver les groupes 21/19 et l'agrege n=40 sans politique asymetrique.
+
+### 2.2.1 Mesures historiques de la fusion POC (MESURE)
+
+Le profil Kleos a 2 789 ms ci-dessous est l'ancien profil POC au meilleur budget, distinct du rapport final
+`kleos_only-mid` a 2 692 ms du tableau precedent.
+
+| Moteur | hit@5 | MRR@5 | nDCG@5 | p50 |
+|---|---:|---:|---:|---:|
+| Kleos seul, meilleur budget POC | 0,500 | 0,424 | 0,467 | 2 789 ms |
+| Index vectoriel local POC seul | 0,575 | 0,456 | 0,499 | 247 ms |
+| Fusion RRF POC k=10, poids 1,0 | 0,575 | 0,470 | 0,505 | 2 933 ms |
+
+Ventilation par recouvrement lexical, hit@5 (MESURE, `2026-09-20T211951-hybrid-mid.md` et rapports freres) :
+
+| Population | n | Kleos | Vectoriel | Fusion |
+|---|---:|---:|---:|---:|
+| Paraphrasees (`none`) | 21 | 0,143 | 0,333 | 0,238 |
+| Lexicales (`shared`) | 19 | 0,895 | 0,842 | 0,947 |
+
+Provenance sur la fusion (MESURE) : 23 requetes ont une bonne reponse dans le top-5 ; 2 viennent du vectoriel
+seul, 0 de Kleos seul, 21 des deux moteurs.
+
+Sensibilite (MESURE, balayage k dans {5,10,20,60} x poids dans {0,5;1,0;1,5}) : hit@5 reste entre 0,525 et
+0,600 sur les 12 cellules ; la cellule de reference n'est pas un optimum choisi apres coup.
 
 ### 2.3 Gain net apparié sur hit@5 (MESURE)
 
@@ -99,14 +128,34 @@ symetriquement pour le bras local et le comparateur.
 | local vs Chroma | Lexicales | 19 | 0 / 1 / 18 | -0,052632 | [-0,157895 ; +0,000000] |
 | local vs Chroma | Agrege | 40 | 1 / 1 / 38 | +0,000000 | [-0,075000 ; +0,075000] |
 
-Le critere de l'arbitrage du 2026-09-21 est conserve : NO-GO si le bootstrap montre que le gain vient d'un
-solde du type 5 gagnees / 2 perdues plutot que d'un gain net. Lecture A : si ce critere s'applique aux 40
-requetes agregees, la disponibilite observe un solde de 7 gagnees et 3 perdues. Lecture B : si le critere
-s'applique aux 21 paraphrases, qui sont la mesure de decision, le resultat est 5 gagnees, 0 perdue et 16
-egales ; l'agrege est alors le garde-fou de non-regression prevu par l'arbitrage. La mesure est soumise a
-decision operateur ; le gain de latence local reste mesure independamment.
+### 2.3.1 Intervalles apparies historiques de la fusion POC (MESURE)
 
-### 2.3.1 Examen qualitatif des pertes lexicales (MESURE)
+Les intervalles ci-dessous proviennent de 10 000 tirages bootstrap apparies avec `random.Random(0)`, sur les
+rapports v2 mid du 2026-09-20. Chaque ecart est candidat moins Kleos. `q031` est exclue de toutes les
+comparaisons : le rapport Kleos y enregistre `ReadTimeout: timed out`, alors que les rapports vectoriel et
+fusion la mesurent. Elle est `lexical_overlap: shared`, ce qui laisse 21 paraphrasees et 18 lexicales dans les
+comparaisons apparies.
+
+| Population | n | Candidat | Ecart hit@5 | IC95 hit@5 | Ecart MRR@5 | IC95 MRR@5 |
+|---|---:|---|---:|---|---:|---|
+| Toutes les reussites communes | 39 | Vectoriel POC | 0,076923 | [-0,051282 ; 0,205128] | 0,001282 | [-0,096154 ; 0,098291] |
+| Toutes les reussites communes | 39 | Fusion POC | 0,076923 | [-0,025641 ; 0,179487] | 0,015812 | [-0,010256 ; 0,045299] |
+| Paraphrasees (`none`) | 21 | Vectoriel POC | 0,190476 | [0,047619 ; 0,380952] | 0,111111 | [0,015873 ; 0,230159] |
+| Paraphrasees (`none`) | 21 | Fusion POC | 0,095238 | [0,000000 ; 0,238095] | 0,019841 | [-0,015873 ; 0,063492] |
+| Lexicales (`shared`) | 18 | Vectoriel POC | -0,055556 | [-0,222222 ; 0,111111] | -0,126852 | [-0,277778 ; -0,001852] |
+| Lexicales (`shared`) | 18 | Fusion POC | 0,055556 | [-0,111111 ; 0,222222] | 0,011111 | [-0,022222 ; 0,044444] |
+
+L'IC95 hit@5 `[-0,025641 ; +0,179487]` de la Fusion POC dans le tableau final provient de cette mesure
+historique, non d'un mode `hybrid` de `kleos-cache`.
+
+Le critere de l'arbitrage du 2026-09-21 est conserve comme lecture historique : NO-GO si le bootstrap montre que
+le gain vient d'un solde du type 5 gagnees / 2 perdues plutot que d'un gain net. Lecture A : appliquee aux 40
+requetes agregees, la disponibilite observe un solde de 7 gagnees et 3 perdues. Lecture B : appliquee aux 21
+paraphrases, elle observe 5 gagnees, 0 perdue et 16 egales ; l'agrege est alors le garde-fou de non-regression.
+Le 2026-09-25, l'operateur a adopte `kleos-cache` sur la latence, conserve Chroma, et tranche sur la pertinence
+des pertes reelles plutot que sur la lecture A ou B, devenue sans objet.
+
+### 2.3.2 Examen qualitatif des pertes lexicales (MESURE)
 
 DECISION OPERATEUR (2026-09-25) : l'operateur tranche sur la pertinence des pertes, pas sur le seul chiffre
 agrege. Les pertes locales `q004`, `q008` et `q020` contre Kleos sont reelles : cibles valides,
@@ -310,7 +359,8 @@ Au demarrage, `GET /me` (`kleos-server/src/routes/auth_keys/mod.rs:37,62-87`) ve
    (`list_page`, `list_spaces`, `whoami`, `search`), et un test verifie qu'aucune requete autre que GET ou
    `POST /memories/search` ne sort. Ce n'est pas une discipline, c'est un type.
 7. **Fusion avec Kleos dans le hook** : le hook a un budget de 3 s (`hooks/full/user-prompt-lean.sh:122`,
-   `--max-time 3`, MESURE) ; Kleos seul est a 2 789 ms de p50 et la fusion a 3 588 ms de p95. La fusion ne
+   `--max-time 3`, MESURE) ; l'ancien profil POC Kleos au meilleur budget est a 2 789 ms de p50 et la fusion a
+   3 588 ms de p95. La fusion ne
    tient pas dans le hook. **Le hook sert le mode local ; la fusion reste disponible par HTTP et outil MCP**
    pour un appel explicite. C'est un choix de produit, signale en section 8.
 
@@ -395,7 +445,7 @@ Modification unique : le constructeur `chroma_only` appelle `POST /v1/retrieve` 
 | 3 | Cout d'un passage `/list` sur LXC 121 | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
 | 4 | Taux de faux positifs du detecteur d'entropie | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
 | 5 | `GET /me` avec une cle scope lecture | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
-| 6 | Bootstrap apparie de hit@5 | MESURE : section 2.3, 10 000 tirages, graine 0 ; deux lectures du critere sont soumises a decision operateur. | 5 |
+| 6 | Bootstrap apparie de hit@5 | MESURE : section 2.3, 10 000 tirages, graine 0 ; decision prise le 2026-09-25 sur la latence et la pertinence des pertes reelles. | 5 |
 | 7 | `memories.version` bumpe-t-il a la lecture ? | Non faite, non bloquante (arbitrage operateur 2026-09-25). | Hors plan |
 | 8 | Parite locale contre Chroma sur le jeu corrige | MESURE : 23/40 dans les deux cas ; une requete gagnee et une perdue, IC95 [-0,075000 ; +0,075000]. PASS pour la parite agregee, avec ecarts par requete consignes en 2.3. | 3 |
 
@@ -414,9 +464,8 @@ Modification unique : le constructeur `chroma_only` appelle `POST /v1/retrieve` 
 
 Reserves a garder en tete :
 
-- L'ecart agrege n'est pas significatif (2.3). Si la mesure du Lot 0 (bootstrap apparie) contredit la
-  stratification, la decision "magasin local" tient toujours (latence, independance de LXC 121), mais la
-  promesse de qualite tombe a "au moins aussi bon".
+- L'ecart agrege n'est pas significatif (2.3). La decision du 2026-09-25 adopte le magasin local sur la latence
+  et traite les pertes lexicales reelles par `addc6587`, sans les presenter comme une promesse de gain de qualite.
 - Le jeu de 40 requetes est petit et audite par la meme personne qui a construit le POC. L'enrichir depuis
   l'usage reel (JSONL des requetes du hook, hash de requete par defaut) est la seule facon de le faire grandir.
 - `kleos-cache` ne remplace pas Kleos : `kleos-cli`, le sidecar et les hooks continuent d'ecrire et de lire

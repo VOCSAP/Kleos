@@ -288,11 +288,11 @@ proprement quand il est arrete ; le temps ajoute au prompt, mesure dans le log d
 
 ## Lot 5 : decision finale et decommission (1 heure)
 
-1. Mettre a jour l'ADR : tableau final `kleos_only-mid` / `local_only` / `hybrid` avec les chiffres de
-   kleos-cache, intervalles du bootstrap apparie, mesures #1 a #8 renseignees, reponses de l'operateur aux
-   questions de la section 9.
-2. `docker compose -f .../docker-compose.chroma.yml down -v` ; suppression du volume
-   `~/.local/share/kleos-chroma`.
+1. Mettre a jour l'ADR : tableau final `kleos_only-mid` / `local_only` / fusion POC, intervalles du bootstrap
+   apparie, mesures #1 a #8 renseignees ; #3, #4, #5 et #7 sont non bloquantes ; reponses finales de
+   l'operateur en section 9.
+2. Decommission annulee : Chroma est conserve, son conteneur reste arrete et son bind mount est garde. Toute
+   reprise future renvoie a l'ADR, section 10, et exige une nouvelle decision operateur explicite.
 3. Stockage Kleos categorie `decision`, importance 8, tags `kleos-cache,decision`, space `Kleos`.
 4. Mise a jour de `CLAUDE.local.md` : port, dossier de donnees, procedure de rebuild, commande de scan.
 
