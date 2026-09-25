@@ -1,7 +1,7 @@
 # ADR : kleos-cache, magasin vectoriel local en Rust, en remplacement de Chroma
 
 Date : 2026-09-21
-Statut : decision operateur actee (magasin local, projet separe, Rust) ; formalisation en attente de relecture
+Statut : decision operateur actee (magasin local, projet separe, Rust) ; mesure de qualite soumise a decision operateur avant toute decommission Chroma
 Precede par : `docs/superpowers/specs/2026-09-20-kleos-context-gateway-design.md` (POC) et `docs/superpowers/plans/2026-09-20-kleos-context-gateway-plan.md`
 Suivi par : `docs/superpowers/plans/2026-09-21-kleos-cache-plan.md`
 
@@ -36,48 +36,86 @@ Ce que la decision NE rouvre PAS (arbitre avant cette ADR, repris tel quel) :
 
 ### 2.1 Jeu de reference
 
-40 requetes, audite en trois passes, 33 memoires cibles distinctes, aucune sollicitee plus de deux fois.
-21 requetes sans token rare commun avec leur cible (`lexical_overlap: none`), 19 avec (`shared`).
+40 requetes, 33 memoires cibles distinctes, aucune sollicitee plus de deux fois. La stratification est de
+21 requetes sans token rare commun avec leur cible (`lexical_overlap: none`) et 19 avec (`shared`).
+
+DECISION OPERATEUR (2026-09-25) : cette stratification 21/19 n'est pas prouvable par git, car le commit unique
+`43573a6` contient les labels et les rapports du 2026-09-20. Elle est acceptee par l'operateur.
+
 La premiere version du jeu (`eval/queries-v1-2026-09-20.jsonl`, 40 lignes, MESURE `grep -c`) etait
 circulaire sur 35 requetes et surevaluait hit@5 d'environ 0,30 : **la baseline publiee au depart, 0,775, etait fausse.**
 
-### 2.2 Retrieval, jeu corrige (MESURE)
+### 2.2 Tableau final sur les rapports de reference (MESURE)
 
-| Moteur | hit@5 | MRR@5 | nDCG@5 | p50 |
-|---|---:|---:|---:|---:|
-| Kleos seul, meilleur budget | 0,500 | 0,424 | 0,467 | 2 789 ms |
-| Index vectoriel local seul | 0,575 | 0,456 | 0,499 | 247 ms |
-| Fusion RRF k=10, poids 1,0 (figee AVANT mesure) | 0,575 | 0,470 | 0,505 | 2 933 ms |
+Sources versionnees du depot `kleos-cache` :
+`eval/baseline/2026-09-20T193256-kleos_only-mid.json`,
+`eval/baseline/2026-09-24T121907-local_only-mid.json` et
+`eval/baseline/2026-09-20T211951-hybrid-mid.json`. Les cohortes sont lues depuis
+`eval/queries.jsonl`, pas depuis les rapports de bras.
 
-Ventilation par recouvrement lexical, hit@5 (MESURE, `2026-09-20T211951-hybrid-mid.md` et rapports freres) :
+| Profil | hit@5 | MRR@5 | nDCG@5 | p50 | IC95 hit@5 apparie vs Kleos, cas complets |
+|---|---:|---:|---:|---:|---|
+| `kleos_only-mid` | 19/39 scorees, plus `q031` en erreur | 0,441026 | 0,471347 | 2 692 ms | Reference |
+| `local_only-mid` | 23/40 | 0,451667 | 0,494220 | 35,5 ms | [-0,076923 ; +0,230769], n=39 |
+| `hybrid-mid` | 23/40 | 0,470417 | 0,505255 | 2 933 ms | [-0,025641 ; +0,179487], n=39 |
 
-| Population | n | Kleos | Vectoriel | Fusion |
-|---|---:|---:|---:|---:|
-| Paraphrasees (`none`) | 21 | 0,143 | 0,333 | 0,238 |
-| Lexicales (`shared`) | 19 | 0,895 | 0,842 | 0,947 |
+Le `ReadTimeout` de `q031` dans `kleos_only-mid` explique la divergence avec le chiffre attendu de 20/40 : le
+rapport source ne porte aucun `hit_at_5` pour cette requete et ne compte que 19 succes sur 39 requetes scorees.
+L'analyse qualite exclut `q031` des deux bras. L'analyse disponibilite compte toute erreur explicite comme miss,
+dans l'un ou l'autre bras, afin de conserver les groupes 21/19 et l'agrege n=40 sans politique asymetrique.
 
-Provenance sur la fusion (MESURE) : 23 requetes ont une bonne reponse dans le top-5 ; 2 viennent du
-vectoriel seul, 0 de Kleos seul, 21 des deux moteurs.
+### 2.3 Gain net apparié sur hit@5 (MESURE)
 
-Sensibilite (MESURE, balayage k dans {5,10,20,60} x poids dans {0,5;1,0;1,5}) : hit@5 reste entre 0,525 et
-0,600 sur les 12 cellules ; la cellule de reference n'est pas un optimum choisi apres coup.
+La commande `eval/.venv/Scripts/python.exe eval/paired_hit_gain.py` produit les artefacts versionnes
+`eval/baseline/2026-09-25-paired-hit-gain.json` et
+`eval/baseline/2026-09-25-paired-hit-gain.txt`. Elle verifie que chaque rapport porte exactement les IDs de
+`eval/queries.jsonl`, lit les sous-groupes `lexical_overlap` depuis ce jeu canonique, puis applique 10 000
+tirages bootstrap apparies, graine 0, pour `local_only - comparateur`.
 
-### 2.3 Intervalles bootstrap apparies (MESURE)
+**Qualite, cas complets.** Une erreur explicite dans l'un ou l'autre bras exclut la paire des deux bras.
 
-Les intervalles ci-dessous proviennent de 10 000 tirages bootstrap apparies avec `random.Random(0)`, sur les
-rapports v2 mid du 2026-09-20. Chaque ecart est candidat moins Kleos. `q031` est exclue de toutes les
-comparaisons : le rapport Kleos y enregistre `ReadTimeout: timed out`, alors que les rapports vectoriel et
-fusion la mesurent. Elle est `lexical_overlap: shared`, ce qui laisse 21 paraphrasees et 18 lexicales dans les
-comparaisons apparies.
+| Comparaison | Sous-groupe | n | Gagnees / perdues / egales | Ecart hit@5 | IC95 bootstrap |
+|---|---|---:|---:|---:|---|
+| local vs Kleos | Paraphrasees | 21 | 5 / 0 / 16 | +0,238095 | [+0,047619 ; +0,428571] |
+| local vs Kleos | Lexicales | 18 | 1 / 3 / 14 | -0,111111 | [-0,333333 ; +0,111111] |
+| local vs Kleos | Agrege | 39 | 6 / 3 / 30 | +0,076923 | [-0,076923 ; +0,230769] |
+| local vs Chroma | Paraphrasees | 21 | 1 / 0 / 20 | +0,047619 | [+0,000000 ; +0,142857] |
+| local vs Chroma | Lexicales | 19 | 0 / 1 / 18 | -0,052632 | [-0,157895 ; +0,000000] |
+| local vs Chroma | Agrege | 40 | 1 / 1 / 38 | +0,000000 | [-0,075000 ; +0,075000] |
 
-| Population | n | Candidat | Ecart hit@5 | IC95 hit@5 | Ecart MRR@5 | IC95 MRR@5 |
-|---|---:|---|---:|---|---:|---|
-| Toutes les reussites communes | 39 | Vectoriel | 0,076923 | [-0,051282 ; 0,205128] | 0,001282 | [-0,096154 ; 0,098291] |
-| Toutes les reussites communes | 39 | Fusion | 0,076923 | [-0,025641 ; 0,179487] | 0,015812 | [-0,010256 ; 0,045299] |
-| Paraphrasees (`none`) | 21 | Vectoriel | 0,190476 | [0,047619 ; 0,380952] | 0,111111 | [0,015873 ; 0,230159] |
-| Paraphrasees (`none`) | 21 | Fusion | 0,095238 | [0,000000 ; 0,238095] | 0,019841 | [-0,015873 ; 0,063492] |
-| Lexicales (`shared`) | 18 | Vectoriel | -0,055556 | [-0,222222 ; 0,111111] | -0,126852 | [-0,277778 ; -0,001852] |
-| Lexicales (`shared`) | 18 | Fusion | 0,055556 | [-0,111111 ; 0,222222] | 0,011111 | [-0,022222 ; 0,044444] |
+`q031`, erreur `ReadTimeout` de Kleos, est exclue du calcul local contre Kleos : 22 succes locaux contre 19
+succes Kleos sur 39 cas complets. Les identifiants de chaque categorie et les erreurs exclues sont dans les deux
+artefacts produits.
+
+**Disponibilite, toutes requetes.** Les 40 IDs canoniques sont conserves ; toute erreur explicite vaut miss,
+symetriquement pour le bras local et le comparateur.
+
+| Comparaison | Sous-groupe | n | Gagnees / perdues / egales | Ecart hit@5 | IC95 bootstrap |
+|---|---|---:|---:|---:|---|
+| local vs Kleos | Paraphrasees | 21 | 5 / 0 / 16 | +0,238095 | [+0,047619 ; +0,428571] |
+| local vs Kleos | Lexicales | 19 | 2 / 3 / 14 | -0,052632 | [-0,263158 ; +0,157895] |
+| local vs Kleos | Agrege | 40 | 7 / 3 / 30 | +0,100000 | [-0,050000 ; +0,250000] |
+| local vs Chroma | Paraphrasees | 21 | 1 / 0 / 20 | +0,047619 | [+0,000000 ; +0,142857] |
+| local vs Chroma | Lexicales | 19 | 0 / 1 / 18 | -0,052632 | [-0,157895 ; +0,000000] |
+| local vs Chroma | Agrege | 40 | 1 / 1 / 38 | +0,000000 | [-0,075000 ; +0,075000] |
+
+Le critere de l'arbitrage du 2026-09-21 est conserve : NO-GO si le bootstrap montre que le gain vient d'un
+solde du type 5 gagnees / 2 perdues plutot que d'un gain net. Lecture A : si ce critere s'applique aux 40
+requetes agregees, la disponibilite observe un solde de 7 gagnees et 3 perdues. Lecture B : si le critere
+s'applique aux 21 paraphrases, qui sont la mesure de decision, le resultat est 5 gagnees, 0 perdue et 16
+egales ; l'agrege est alors le garde-fou de non-regression prevu par l'arbitrage. La mesure est soumise a
+decision operateur ; le gain de latence local reste mesure independamment.
+
+### 2.3.1 Examen qualitatif des pertes lexicales (MESURE)
+
+DECISION OPERATEUR (2026-09-25) : l'operateur tranche sur la pertinence des pertes, pas sur le seul chiffre
+agrege. Les pertes locales `q004`, `q008` et `q020` contre Kleos sont reelles : cibles valides,
+`acceptable_ids` vides et top-5 local hors sujet (memoire Kleos #19069). Contre Chroma, la parite reste une
+requete gagnee et une perdue. La suite est la carte `addc6587`, qui ajoute un canal lexical FTS5 a
+`kleos-cache`.
+
+Defaut connu, carte `e6d5c410` : `acceptable_ids` est ignore par le harnais. Il peut sous-estimer le hit@5 en
+ignorant une reponse alternative acceptable ; ce calcul ne le corrige pas.
 
 ### 2.4 Recherche exacte vs Chroma (MESURE)
 
@@ -348,18 +386,18 @@ lignes), `queries.jsonl` (40), `queries-v1-2026-09-20.jsonl` (40, conserve comme
 Modification unique : le constructeur `chroma_only` appelle `POST /v1/retrieve` de kleos-cache au lieu de
 `chroma_index` ; le harnais ne connait plus que HTTP. Ajout : bootstrap apparie (2.3).
 
-## 7. Ce qui reste a mesurer avant de s'engager
+## 7. Mesures et gates de decision
 
-| # | Mesure | Resultat / pourquoi | Ou dans le plan |
+| # | Mesure | Resultat / gate | Lot |
 |---|---|---|---|
-| 1 | Temps de chargement des 5 227 BLOB f32 depuis SQLite au demarrage | MESURE : p50 20,896 ms, PASS (< 200 ms). Commande Criterion : `cargo bench --manifest-path C:/Users/Olivier/workspace/kleos-cache/Cargo.toml --bench index`. | Lot 1 |
-| 2 | Produit scalaire en Rust sur 5 227 x 1 024, p50 | MESURE : p50 1,865 ms, PASS (< 5 ms). Commande Criterion : `cargo bench --manifest-path C:/Users/Olivier/workspace/kleos-cache/Cargo.toml --bench index`. | Lot 1 |
-| 3 | Cout d'un passage `/list` sur LXC 121 (CPU et RSS de kleos-server pendant 6 pages de 1 000) | le LXC est sature ; si mesurable, intervalle 60 s -> 300 s, et le Patch 54 redevient une option | Lot 2 |
-| 4 | Taux de faux positifs du detecteur d'entropie sur les 5 227 documents reels | un seuil trop bas ampute le corpus ; un seuil trop haut ne corrige rien | Lot 2 |
-| 5 | `GET /me` avec une cle scope lecture : latence et champs | verification de cle au demarrage | Lot 2 |
-| 6 | Intervalle de confiance apparie (bootstrap) des ecarts vectoriel vs Kleos et fusion vs Kleos | remplace le "±0,15" estime | Lot 0 |
-| 7 | `memories.version` bumpe-t-il a la lecture ? | conditionne un futur flux de changements ; non bloquant | hors plan |
-| 8 | Parite des metriques kleos-cache vs rapport Chroma sur le jeu corrige | memes vecteurs, meme modele : ecart attendu 0 requete, tolere 1 avec explication | Lot 3 |
+| 1 | Temps de chargement des 5 227 BLOB f32 depuis SQLite au demarrage | MESURE : p50 20,896 ms, PASS (< 200 ms). Commande Criterion : `cargo bench --manifest-path C:/Users/Olivier/workspace/kleos-cache/Cargo.toml --bench index`. | 1 |
+| 2 | Produit scalaire en Rust sur 5 227 x 1 024, p50 | MESURE : p50 1,865 ms, PASS (< 5 ms). Commande Criterion : `cargo bench --manifest-path C:/Users/Olivier/workspace/kleos-cache/Cargo.toml --bench index`. | 1 |
+| 3 | Cout d'un passage `/list` sur LXC 121 | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
+| 4 | Taux de faux positifs du detecteur d'entropie | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
+| 5 | `GET /me` avec une cle scope lecture | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
+| 6 | Bootstrap apparie de hit@5 | MESURE : section 2.3, 10 000 tirages, graine 0 ; deux lectures du critere sont soumises a decision operateur. | 5 |
+| 7 | `memories.version` bumpe-t-il a la lecture ? | Non faite, non bloquante (arbitrage operateur 2026-09-25). | Hors plan |
+| 8 | Parite locale contre Chroma sur le jeu corrige | MESURE : 23/40 dans les deux cas ; une requete gagnee et une perdue, IC95 [-0,075000 ; +0,075000]. PASS pour la parite agregee, avec ecarts par requete consignes en 2.3. | 3 |
 
 ## 8. Options ecartees et reserves
 
@@ -384,13 +422,27 @@ Reserves a garder en tete :
 - `kleos-cache` ne remplace pas Kleos : `kleos-cli`, le sidecar et les hooks continuent d'ecrire et de lire
   Kleos comme aujourd'hui.
 
-## 9. Questions ouvertes pour l'operateur
+## 9. Decisions de l'operateur
 
-1. Mode par defaut du hook : `local` (propose, 3.5.7) ou `hybrid` avec budget etendu (le hook passerait de
-   3 s a 5 s et ralentirait chaque prompt de ~3 s).
-2. Intervalle de tirage : 60 s (POC) tant que la mesure #3 n'est pas faite, ou 300 s d'emblee par prudence
-   envers LXC 121.
-3. Emplacement du jeton local : fichier 0600 sous `%LOCALAPPDATA%\kleos-cache\` (propose), ou coffre `cred`
-   (plus sur, mais `cred exec` depuis un hook a deja echoue sur ce poste faute de YubiKey non interactif).
-4. Sort du prototype Python : archive tel quel sous `kleos-cache/attic/` au premier commit (propose, il n'est
-   versionne nulle part), ou depot separe en lecture seule.
+1. A1 : le hook sert `local` dans son budget de 3 s ; la fusion reste un appel explicite.
+2. A2 : le tirage est configurable a 300 s et un trigger PostToolUse le complete apres `kleos-cli store`.
+3. A3 : les deux variables d'environnement user-scope restent distinctes ; aucun fichier de jeton 0600 n'est cree.
+4. A4 : le prototype Python reste sur disque, hors git et hors `attic` ; le harnais `eval/` versionne est distinct.
+5. A5 : `kleos-cache` reste un depot neuf sur `main` et les modifications du fork restent sur `local/kleos-cache`, jamais sur `local/patches`.
+6. A6 (2026-09-25) : `kleos-cache` est adopte sur le critere de latence ; Chroma est conserve, conteneur arrete et bind mount garde.
+7. A7 (2026-09-25) : les pertes lexicales reelles `q004`, `q008` et `q020` ouvrent la carte `addc6587` pour le canal FTS5.
+
+## 10. Decommission de Chroma annulee
+
+DECISION OPERATEUR (2026-09-25) : Chroma est conserve. Le conteneur `kleos-context-gateway-chroma-1` reste arrete
+et le bind mount hote `~/.local/share/kleos-chroma` est garde. Aucune suppression n'est autorisee par cette ADR.
+
+Si une decision ulterieure relance la decommission, un GO explicite de l'operateur, donne juste avant l'operation
+irreversible, sera requis avant ces deux etapes de reference :
+
+1. Executer `docker rm kleos-context-gateway-chroma-1`.
+2. Supprimer ensuite le bind mount hote `~/.local/share/kleos-chroma`.
+
+Le compose reference n'est pas une cible : son chemin n'existe plus et le conteneur ne porte aucun volume nomme.
+La suppression du bind mount est irreversible sans copie verifiee. Aucun `docker compose down -v` ne fait partie de
+cette procedure.
