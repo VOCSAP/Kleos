@@ -48,21 +48,24 @@ circulaire sur 35 requetes et surevaluait hit@5 d'environ 0,30 : **la baseline p
 
 ### 2.2 Tableau final sur les rapports de reference (MESURE)
 
-Sources versionnees du depot `kleos-cache` :
+Sources versionnées du dépôt `kleos-cache` :
 `eval/baseline/2026-09-20T193256-kleos_only-mid.json`,
-`eval/baseline/2026-09-24T121907-local_only-mid.json` et
+`eval/baseline/2026-09-24T121907-local_only-mid.json`,
+`eval/baseline/2026-09-24T123046-hybrid-mid.json` et
 `eval/baseline/2026-09-20T211951-hybrid-mid.json`. Les cohortes sont lues depuis
 `eval/queries.jsonl`, pas depuis les rapports de bras.
 
-| Profil | hit@5 | MRR@5 | nDCG@5 | p50 | IC95 hit@5 apparie vs Kleos, cas complets |
+| Profil | hit@5 | MRR@5 | nDCG@5 | p50 | IC95 hit@5 apparié vs Kleos, cas complets |
 |---|---:|---:|---:|---:|---|
 | `kleos_only-mid` | 19/39 scorees, plus `q031` en erreur | 0,441026 | 0,471347 | 2 692 ms | Reference |
 | `local_only-mid` | 23/40 | 0,451667 | 0,494220 | 35,5 ms | [-0,076923 ; +0,230769], n=39 |
-| Fusion POC Kleos + Chroma (2026-09-20) | 23/40 | 0,470417 | 0,505255 | 2 933 ms | [-0,025641 ; +0,179487], n=39 |
+| `hybrid-mid` kleos-cache (2026-09-24) | 24/40 | 0,469583 | 0,508147 | 2 776 ms chemin critique, 35,5 ms local | [+0,000000 ; +0,230769], n=39 |
+| Fusion POC Kleos + Chroma (2026-09-20, figee AVANT mesure) | 23/40 | 0,470417 | 0,505255 | 2 933 ms | [-0,025641 ; +0,179487], n=39 |
 
-La ligne Fusion POC provient des sources `chroma` et `kleos` de
-`2026-09-20T211951-hybrid-mid.json`, pas de `kleos-cache`. Le mode `hybrid` de `kleos-cache` n'a pas ete
-mesure sur le jeu v2.
+La ligne `hybrid-mid` kleos-cache provient du rapport de sources `kleos` et `local` du
+`2026-09-24T123046-hybrid-mid.json`. Sa latence de chemin critique est le maximum par requête des deux sources
+parallèles, dont la médiane est 2 776 ms ; la médiane locale est 35,5 ms. La Fusion POC est une mesure historique
+distincte, issue des sources `chroma` et `kleos` de `2026-09-20T211951-hybrid-mid.json`.
 
 Le `ReadTimeout` de `q031` dans `kleos_only-mid` explique la divergence avec le chiffre attendu de 20/40 : le
 rapport source ne porte aucun `hit_at_5` pour cette requete et ne compte que 19 succes sur 39 requetes scorees.
@@ -108,13 +111,24 @@ tirages bootstrap apparies, graine 0, pour `local_only - comparateur`.
 | local vs Kleos | Paraphrasees | 21 | 5 / 0 / 16 | +0,238095 | [+0,047619 ; +0,428571] |
 | local vs Kleos | Lexicales | 18 | 1 / 3 / 14 | -0,111111 | [-0,333333 ; +0,111111] |
 | local vs Kleos | Agrege | 39 | 6 / 3 / 30 | +0,076923 | [-0,076923 ; +0,230769] |
+| hybrid kleos-cache vs Kleos | Paraphrasees | 21 | 4 / 0 / 17 | +0,190476 | [+0,047619 ; +0,380952] |
+| hybrid kleos-cache vs Kleos | Lexicales | 18 | 1 / 1 / 16 | +0,000000 | [-0,166667 ; +0,166667] |
+| hybrid kleos-cache vs Kleos | Agrege | 39 | 5 / 1 / 33 | +0,102564 | [+0,000000 ; +0,230769] |
 | local vs Chroma | Paraphrasees | 21 | 1 / 0 / 20 | +0,047619 | [+0,000000 ; +0,142857] |
 | local vs Chroma | Lexicales | 19 | 0 / 1 / 18 | -0,052632 | [-0,157895 ; +0,000000] |
 | local vs Chroma | Agrege | 40 | 1 / 1 / 38 | +0,000000 | [-0,075000 ; +0,075000] |
 
 `q031`, erreur `ReadTimeout` de Kleos, est exclue du calcul local contre Kleos : 22 succes locaux contre 19
-succes Kleos sur 39 cas complets. Les identifiants de chaque categorie et les erreurs exclues sont dans les deux
-artefacts produits.
+succes Kleos sur 39 cas complets. Elle est également exclue de hybrid kleos-cache contre Kleos : 23 succes
+hybrid contre 19 succes Kleos sur 39 cas complets. Les identifiants de chaque categorie et les erreurs exclues
+sont dans les deux artefacts produits.
+
+Reproduction hybrid kleos-cache contre Kleos, sans modifier `paired_hit_gain.py` :
+
+```bash
+jq '.mode = "local_only"' eval/baseline/2026-09-24T123046-hybrid-mid.json > "$LOCALAPPDATA/Temp/2026-09-24T123046-hybrid-as-local_only.json"
+eval/.venv/Scripts/python.exe eval/paired_hit_gain.py --local "$LOCALAPPDATA/Temp/2026-09-24T123046-hybrid-as-local_only.json" --output-json "$LOCALAPPDATA/Temp/2026-09-25-hybrid-vs-kleos-paired-hit-gain.json" --output-text "$LOCALAPPDATA/Temp/2026-09-25-hybrid-vs-kleos-paired-hit-gain.txt"
+```
 
 **Disponibilite, toutes requetes.** Les 40 IDs canoniques sont conserves ; toute erreur explicite vaut miss,
 symetriquement pour le bras local et le comparateur.
@@ -389,7 +403,7 @@ Deux credentials, deux roles, jamais interchangeables :
 
 | Credential | Detenu par | Sert a | Accepte comme |
 |---|---|---|---|
-| `KLEOS_CACHE_TOKEN` (64 hex, genere au premier demarrage, fichier 0600) | hook, MCP, harnais | acceder aux routes de kleos-cache | seule credential des routes |
+| `KLEOS_CACHE_TOKEN` (64 hex, variable d'environnement utilisateur) | hook, MCP, harnais | acceder aux routes de kleos-cache | seule credential des routes |
 | cle Kleos scope lecture | le tireur de sync uniquement | `/list`, `/spaces`, `/me` | jamais une credential de route |
 | Bearer Kleos de l'appelant (modes `kleos` et `hybrid` seulement) | l'appelant | relaye tel quel a `POST /memories/search`, valide par Kleos | jamais une credential de route |
 
@@ -427,9 +441,10 @@ Portage en Rust (le comportement est specifie par les tests Python existants, ex
 | `kleos_adapter.py` | 108 | `kleos.rs` | lecture seule par construction du type, pas par garde runtime |
 | `app.py` + `config.py` + `metrics.py` | 376 | `http.rs`, `config.rs` (TOML + env `KLEOS_CACHE_*`), `metrics.rs` | + jeton, + garde Host, mode `chroma_only` renomme `local` |
 
-Jete : `chroma_index.py` (et son contournement du timeout `client._server._session.timeout`), le compose
-Docker, `_sanitize_metadata` (tableaux aplatis en CSV pour Chroma), l'import circulaire
-`chroma_index -> sync_worker`, le conteneur et son volume.
+Jete : `chroma_index.py` (et son contournement du timeout `client._server._session.timeout`),
+`_sanitize_metadata` (tableaux aplatis en CSV pour Chroma) et l'import circulaire
+`chroma_index -> sync_worker`. Le fichier compose Docker est absent du disque ; le conteneur Chroma est conserve
+arrete et son bind mount est garde.
 
 Reste en Python, versionne dans `kleos-cache/eval/` : `evaluate.py` (475 lignes, `test_evaluate.py` 674
 lignes), `queries.jsonl` (40), `queries-v1-2026-09-20.jsonl` (40, conserve comme piece du biais), `reports/`.
@@ -445,7 +460,7 @@ Modification unique : le constructeur `chroma_only` appelle `POST /v1/retrieve` 
 | 3 | Cout d'un passage `/list` sur LXC 121 | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
 | 4 | Taux de faux positifs du detecteur d'entropie | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
 | 5 | `GET /me` avec une cle scope lecture | Non faite, non bloquante (arbitrage operateur 2026-09-25). | 2 |
-| 6 | Bootstrap apparie de hit@5 | MESURE : section 2.3, 10 000 tirages, graine 0 ; decision prise le 2026-09-25 sur la latence et la pertinence des pertes reelles. | 5 |
+| 6 | Bootstrap apparie de hit@5 | MESURE : section 2.3, 10 000 tirages, graine 0 ; decision prise le 2026-09-25 sur la latence et la pertinence des pertes reelles. | Lot 0 |
 | 7 | `memories.version` bumpe-t-il a la lecture ? | Non faite, non bloquante (arbitrage operateur 2026-09-25). | Hors plan |
 | 8 | Parite locale contre Chroma sur le jeu corrige | MESURE : 23/40 dans les deux cas ; une requete gagnee et une perdue, IC95 [-0,075000 ; +0,075000]. PASS pour la parite agregee, avec ecarts par requete consignes en 2.3. | 3 |
 
