@@ -56,9 +56,9 @@ Precede par : `docs/superpowers/plans/2026-09-20-kleos-context-gateway-plan.md` 
   log_queries = false
   ```
 
-- Credentials : le jeton local vit dans `%LOCALAPPDATA%\kleos-cache\token` (0600, 64 hex, cree par
-  `kleos-cache token`), jamais dans `config.toml`. La cle Kleos de lecture est lue dans `KLEOS_CACHE_SYNC_KEY`
-  par le seul processus de sync ; l'operateur la cree avec `kleos-cli api-key create --scopes read`.
+- Credentials : le jeton local de 64 hex vit dans la variable d'environnement utilisateur `KLEOS_CACHE_TOKEN`,
+  jamais dans `config.toml` ni dans un fichier. La cle Kleos de lecture est lue dans `KLEOS_CACHE_SYNC_KEY` par le
+  seul processus de sync ; l'operateur la cree avec `kleos-cli api-key create --scopes read`.
 - Chaque lot : `agent-forge spec-task` avant le code (payload via `~/.agent-forge/scratch/`), tests
   unitaires avec doubles HTTP, `kleos-cli store` du resultat en fin de lot, tag `kleos-cache`, categorie
   `state`, space `Kleos`.
@@ -266,14 +266,14 @@ renseignee.
 
 ## Lot 4 : integration poste de travail (demi-journee)
 
-1. `kleos-cache token` : genere le jeton, ecrit `token` en 0600, l'affiche une fois ; `kleos-cache export
-   <fichier>` (copie coherente via `VACUUM INTO`) et `kleos-cache import <fichier>` (refuse si
-   `embedding_identity`, `redaction_version` ou `owner_user_id` different de la configuration).
+1. Configuration : le jeton local est fourni dans la variable d'environnement utilisateur `KLEOS_CACHE_TOKEN` ;
+   `kleos-cache export <fichier>` (copie coherente via `VACUUM INTO`) et `kleos-cache import <fichier>`
+   (refuse si `embedding_identity`, `redaction_version` ou `owner_user_id` different de la configuration).
 2. Demarrage : script `scripts/start-kleos-cache.ps1` enregistre dans le Planificateur de taches Windows a
    l'ouverture de session (`serve`, journal dans le dossier de donnees), et `scripts/stop-kleos-cache.ps1`.
    Le hook ne demarre rien : s'il ne trouve pas kleos-cache, il retombe.
 3. Hook `hooks/full/user-prompt-lean.sh` (fork Kleos, delta VOCSAP existant) : avant l'appel sidecar
-   existant, `curl -sf --max-time 1 -H "Authorization: Bearer $(cat "$LOCALAPPDATA/kleos-cache/token")"
+   existant, `curl -sf --max-time 1 -H "Authorization: Bearer $KLEOS_CACHE_TOKEN"
    --data-binary "@$PAYLOAD_FILE" http://127.0.0.1:8765/v1/retrieve` avec `mode=local`,
    `space=$KLEOS_SPACE` ; payload via fichier temporaire (piege cp1252 de Git Bash) ; si vide ou en erreur,
    chaine existante inchangee (sidecar `/recall` puis `kleos-cli context`). Bloc injecte au format actuel
@@ -282,15 +282,16 @@ renseignee.
 4. Verification : trois prompts consecutifs dans une session Claude Code, `retrieve.jsonl` gagne trois lignes ;
    arret de kleos-cache, un prompt de plus, la ligne de log du hook montre le fallback sidecar.
 
-Fait quand : le jeton existe en 0600 ; `export` puis `import` dans un dossier temporaire donne le meme
-`local_count` et un `/health` identique ; le hook sert depuis kleos-cache (trois lignes JSONL) et retombe
-proprement quand il est arrete ; le temps ajoute au prompt, mesure dans le log du hook, est sous 400 ms.
+Fait quand : `KLEOS_CACHE_TOKEN` est present dans l'environnement utilisateur ; `export` puis `import` dans un
+dossier temporaire donne le meme `local_count` et un `/health` identique ; le hook sert depuis kleos-cache (trois
+lignes JSONL) et retombe proprement quand il est arrete ; le temps ajoute au prompt, mesure dans le log du hook,
+est sous 400 ms.
 
 ## Lot 5 : decision finale et decommission (1 heure)
 
-1. Mettre a jour l'ADR : tableau final `kleos_only-mid` / `local_only` / fusion POC, intervalles du bootstrap
-   apparie, mesures #1 a #8 renseignees ; #3, #4, #5 et #7 sont non bloquantes ; reponses finales de
-   l'operateur en section 9.
+1. Mettre a jour l'ADR : tableau final `kleos_only-mid` / `local_only-mid` / `hybrid-mid` avec les chiffres de
+   kleos-cache, plus la fusion POC historique distincte ; intervalles du bootstrap apparie, mesures #1 a #8
+   renseignees ; #3, #4, #5 et #7 sont non bloquantes ; reponses finales de l'operateur en section 9.
 2. Decommission annulee : Chroma est conserve, son conteneur reste arrete et son bind mount est garde. Toute
    reprise future renvoie a l'ADR, section 10, et exige une nouvelle decision operateur explicite.
 3. Stockage Kleos categorie `decision`, importance 8, tags `kleos-cache,decision`, space `Kleos`.
@@ -314,6 +315,6 @@ proprement quand il est arrete ; le temps ajoute au prompt, mesure dans le log d
 | Seuil d'entropie qui ampute le corpus | `scan --dry-run-entropy` avec des centaines de hits sur des identifiants legitimes | calibrage Lot 2, classes de caracteres >= 3, exclusion des hex purs |
 | Rapport `local_only` different du rapport Chroma de plus d'une requete | `--compare` | verifier normalisation, filtre de space, tri stable ; ne pas "ajuster" le jeu |
 | Derive du JSON de `/list` ou `/spaces` apres un merge upstream | `kleos_contract` en echec en debut de lot | mettre a jour les fixtures, puis le mapping ; ne jamais assouplir le test |
-| Jeton local lu par un autre utilisateur du poste | ACL du fichier `token` | 0600 verifie a chaque demarrage, refus de servir sinon |
+| Jeton local expose a un processus non cible | variable d'environnement utilisateur | aucune journalisation du jeton ; le hook seul consomme `KLEOS_CACHE_TOKEN` |
 | Deux instances sur le meme dossier de donnees | `SQLITE_BUSY` ou index divergent | verrou fichier `serve.lock` a l'ouverture |
 | `updated_at` bumpe par les lectures du sidecar et de `kleos-cli context` | rien : le hash l'exclut | conserver l'exclusion, la tester (`content_hash_ignores_fields_that_move_on_every_read`) |
