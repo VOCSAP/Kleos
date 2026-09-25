@@ -43,7 +43,7 @@ Precede par : `docs/superpowers/plans/2026-09-20-kleos-context-gateway-plan.md` 
   weight_local = 1.0
 
   [sync]
-  interval_s = 60
+  interval_s = 300
   page_size = 1000
   embed_batch = 32
   upsert_batch = 100
@@ -78,7 +78,7 @@ Precede par : `docs/superpowers/plans/2026-09-20-kleos-context-gateway-plan.md` 
 | `tests/unit/test_rank_fusion.py`, `test_redaction.py` | cas exportes en fixtures JSON, puis le fichier Python est archive | `kleos-cache/tests/fixtures/{fusion,redaction}.json` |
 | `src/kleos_context/{sync_worker,embedder,redaction,rank_fusion,kleos_adapter,app,config,metrics}.py` | **portes en Rust** | Lots 1 a 3 |
 | `src/kleos_context/chroma_index.py`, `docker-compose.chroma.yml`, `tests/integration/test_chroma_index.py` | **jetes** | -- |
-| Le reste du prototype | archive tel quel dans `kleos-cache/attic/kleos-context-gateway/` au premier commit (il n'est versionne nulle part : MESURE `git log` -> `fatal: not a git repository`) | Lot 0 |
+| Le reste du prototype | reste sur disque, hors git et hors `attic/` (il n'est versionne nulle part : MESURE `git log` -> `fatal: not a git repository`) | A4 |
 
 ## Lot 0 : depot, actifs d'evaluation, fixtures de contrat (demi-journee)
 

@@ -7,7 +7,7 @@ Suivi par : `docs/superpowers/plans/2026-09-21-kleos-cache-plan.md`
 
 Etiquettes utilisees dans ce document :
 
-- **MESURE** : chiffre issu des rapports du POC (`eval/reports/` du prototype) ou d'une commande lancee pendant la redaction, citee.
+- **MESURE** : chiffre issu des rapports du POC (`eval/reports/` du prototype), d'un rapport versionné de `kleos-cache/eval/baseline/`, ou d'une commande lancee pendant la redaction, citee.
 - **DEDUIT** : inference depuis le code lu, avec le `fichier:ligne`.
 - **SUPPOSE** : cru mais non verifie. Toute ligne non etiquetee se lit comme SUPPOSE.
 
@@ -66,6 +66,13 @@ La ligne `hybrid-mid` kleos-cache provient du rapport de sources `kleos` et `loc
 `2026-09-24T123046-hybrid-mid.json`. Sa latence de chemin critique est le maximum par requête des deux sources
 parallèles, dont la médiane est 2 776 ms ; la médiane locale est 35,5 ms. La Fusion POC est une mesure historique
 distincte, issue des sources `chroma` et `kleos` de `2026-09-20T211951-hybrid-mid.json`.
+
+Reproduction des p50 :
+
+```bash
+jq '[.queries[].latency_ms.local] | sort | ((.[19] + .[20]) / 2)' eval/baseline/2026-09-24T121907-local_only-mid.json
+jq '[.queries[] | ([.latency_ms.local, .latency_ms.kleos] | max)] | sort | ((.[19] + .[20]) / 2)' eval/baseline/2026-09-24T123046-hybrid-mid.json
+```
 
 Le `ReadTimeout` de `q031` dans `kleos_only-mid` explique la divergence avec le chiffre attendu de 20/40 : le
 rapport source ne porte aucun `hit_at_5` pour cette requete et ne compte que 19 succes sur 39 requetes scorees.
@@ -149,6 +156,13 @@ rapports v2 mid du 2026-09-20. Chaque ecart est candidat moins Kleos. `q031` est
 comparaisons : le rapport Kleos y enregistre `ReadTimeout: timed out`, alors que les rapports vectoriel et
 fusion la mesurent. Elle est `lexical_overlap: shared`, ce qui laisse 21 paraphrasees et 18 lexicales dans les
 comparaisons apparies.
+
+Reproduction de l'IC Fusion POC :
+
+```bash
+jq '.mode = "local_only"' eval/baseline/2026-09-20T211951-hybrid-mid.json > "$LOCALAPPDATA/Temp/2026-09-20T211951-hybrid-poc-as-local_only.json"
+eval/.venv/Scripts/python.exe eval/paired_hit_gain.py --local "$LOCALAPPDATA/Temp/2026-09-20T211951-hybrid-poc-as-local_only.json" --output-json "$LOCALAPPDATA/Temp/2026-09-25-hybrid-poc-vs-kleos-paired-hit-gain.json" --output-text "$LOCALAPPDATA/Temp/2026-09-25-hybrid-poc-vs-kleos-paired-hit-gain.txt"
+```
 
 | Population | n | Candidat | Ecart hit@5 | IC95 hit@5 | Ecart MRR@5 | IC95 MRR@5 |
 |---|---:|---|---:|---|---:|---|
@@ -391,7 +405,7 @@ kleos-cache (Rust, 127.0.0.1:8765, %LOCALAPPDATA%\kleos-cache\)
    |-- retrieve   : local | kleos | hybrid (RRF k=10, poids 1,0 / 1,0, tie-break par id)
    |-- index      : matrice f32 en memoire, produit scalaire, filtre space inclusif
    |-- store      : SQLite WAL (docs, vectors, sync_state)
-   |-- sync       : tirage /list toutes les 60 s, hash sans updated_at, redaction, garde, 2 passages avant suppression
+   |-- sync       : tirage /list toutes les 300 s configurable, hash sans updated_at, redaction, garde, 2 passages avant suppression
    |-- kleos      : client HTTP LECTURE SEULE (list_page, list_spaces, whoami, search)
    |-- embedder   : Ollama /v1/embeddings bge-m3, lots de 32, dim 1024 verifiee
    |-- redaction  : motifs du POC + entropie + bearer insensible a la casse + tags et categorie
