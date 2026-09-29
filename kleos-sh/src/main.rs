@@ -591,7 +591,19 @@ async fn main() {
         gate::GateOutcome::Deny { reason, .. } => {
             deny_and_exit(cli.claude_hook, &reason);
         }
-        gate::GateOutcome::Allow {
+        gate::GateOutcome::Ask {
+            reason, enrichment, ..
+        } if cli.claude_hook => {
+            emit_claude_decision("ask", Some(&reason), enrichment.as_deref());
+            process::exit(0);
+        }
+        gate::GateOutcome::Ask {
+            command: resolved_cmd,
+            enrichment,
+            gate_id,
+            ..
+        }
+        | gate::GateOutcome::Allow {
             command: resolved_cmd,
             enrichment,
             gate_id,
@@ -691,6 +703,16 @@ mod tests {
     #[test]
     fn build_decision_silent_allow_returns_none() {
         assert!(build_claude_decision("", None, None).is_none());
+    }
+
+    #[test]
+    fn build_decision_ask_keeps_reason_and_enrichment() {
+        let v = build_claude_decision("ask", Some("needs a human"), Some("ctx"))
+            .expect("non-empty body");
+        let h = &v["hookSpecificOutput"];
+        assert_eq!(h["permissionDecision"], "ask");
+        assert_eq!(h["permissionDecisionReason"], "needs a human");
+        assert_eq!(h["additionalContext"], "ctx");
     }
 
     #[test]
