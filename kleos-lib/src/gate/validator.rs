@@ -428,7 +428,7 @@ pub fn compile_patterns(raw: &[String]) -> CompiledPatternSet {
                 let fallback = glob_lite_to_regex(trimmed);
                 match Regex::new(&fallback) {
                     Ok(_) => {
-                        tracing::info!(
+                        tracing::debug!(
                             target: "kleos::gate::patch25",
                             "pattern {:?} regex-classified but failed compile ({}), fallback glob-lite -> {:?}",
                             trimmed,
@@ -451,7 +451,7 @@ pub fn compile_patterns(raw: &[String]) -> CompiledPatternSet {
             }
         };
         if mode == "regex-or-glob" && !is_obvious_regex(trimmed) {
-            tracing::info!(
+            tracing::debug!(
                 target: "kleos::gate::patch25",
                 "pattern {:?} loaded as glob-lite -> regex {:?}",
                 trimmed,
