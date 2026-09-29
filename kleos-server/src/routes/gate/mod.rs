@@ -13,6 +13,7 @@ use kleos_lib::gate::{
     TOOLS_REQUIRING_APPROVAL,
 };
 
+mod no_wait;
 mod types;
 use types::{CompleteBody, CompleteLatestBody, GuardBody, RespondBody};
 
@@ -493,6 +494,10 @@ async fn check_handler(
     // Note: `has_secret_placeholders` also sets `requires_approval=true` but
     // pairs it with `allowed=false`, so the outer `result.allowed` guard keeps
     // it on its own "client must resolve secrets and retry" path.
+    if result.allowed && no_wait::agent_skips_approval_wait(&body.agent) {
+        return Ok((StatusCode::CREATED, Json(json!(result))));
+    }
+
     let tool_name = body.tool_name.as_deref().unwrap_or("");
     let pattern_triggered_approval = result.requires_approval;
     if result.allowed
