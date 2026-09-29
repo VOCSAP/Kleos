@@ -10,6 +10,7 @@ pub mod axon;
 pub mod batch;
 pub mod brain;
 pub mod broca;
+pub mod claude_hooks;
 pub mod commerce;
 pub mod context;
 pub mod conversations;
