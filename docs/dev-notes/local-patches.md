@@ -3072,6 +3072,14 @@ agent-forge spec_id : `spec_0f75e1e0`.
 
 ## Patch 25 -- regex matcher + per-cascade whitelist + subcommand splitting shell-aware (2026-05-22)
 
+**Ajout 2026-09-29 :** les deux traces de classification de `compile_patterns`
+(`loaded as glob-lite` et `regex-classified but failed compile, fallback
+glob-lite`) passent de `info!` a `debug!`. Elles etaient reemises pour chaque
+pattern a chaque compilation des jeux de patterns et dominaient
+`/var/log/kleos-server.log` (576 Mo par jour). Les `warn!` des patterns
+reellement ignores restent. Pour les revoir :
+`RUST_LOG=kleos::gate::patch25=debug`. Carte roadmap `97a99007`.
+
 **Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
 
 ### Symptome motivateur
@@ -6208,3 +6216,145 @@ Le patch n'est pas un candidat PR upstream en l'etat : il repose sur le canal
 overlay VOCSAP et sur l'absence de `space` dans le catalogue, deux choix de
 fork. La partie generique (cle canonique, politique d'ecrasement par date de
 commit) serait extractible si Ghost-Frame s'y interessait.
+
+
+---
+
+## Patch 55 -- `/gate/check` ne retient plus les agents de hook ; `kleos-sh` traduit l'approbation en `ask` (2026-09-29)
+
+**Symptome :** en session Claude Code, chaque appel Bash, Write ou Edit
+coute environ 10 s. Mesure le 2026-09-29 sur le transcript JSONL d'une
+session reelle : 10,1 a 11,7 s par appel (`date -u` : 10,52 s), contre
+0,5 a 0,8 s pour Read et Grep (memoire Kleos #19607, carte roadmap
+`42251a7b`).
+
+Chaine causale :
+
+1. `check_handler` (`kleos-server/src/routes/gate/mod.rs`) entre dans
+   l'attente d'approbation en memoire des que l'outil est dans
+   `TOOLS_REQUIRING_APPROVAL` (Bash, Write, Edit, WebFetch, WebSearch).
+2. `skip_approval` est `#[serde(skip_deserializing)]` (correctif de securite
+   upstream) : un client ne peut pas s'en exempter, et `kleos-sh` ne l'envoie
+   de toute facon pas.
+3. Le Patch 21.1 ne restreint que le pont vers la TUI ; l'attente elle-meme
+   reste active pour tout Bash.
+4. Le hook PreToolUse de Claude Code est tue a son timeout (10 s) et l'outil
+   passe (fail-open). L'attente ne protege donc de rien et coute 10 s par
+   appel ; une approbation voulue (`require_approval_patterns`) est tout aussi
+   inutilisable, puisqu'il faudrait cliquer dans la TUI en moins de 10 s.
+
+**Approche :** la decision de ne pas attendre est prise **cote serveur**, par
+une liste d'agents posee par l'operateur, `KLEOS_GATE_NO_WAIT_AGENTS` (liste
+separee par des virgules, casse et espaces ignores). Pour un agent liste et un
+resultat autorise, le handler rend immediatement le resultat, avec
+`requires_approval` tel que calcule par les patterns. Cote client,
+`kleos-sh --claude-hook` traduit `allowed && requires_approval` en
+`permissionDecision: "ask"` : l'approbation passe par l'invite native de
+Claude Code, qui n'a pas de timeout. Les refus (patterns bloques, dangereux,
+brain, DNS SSH) sont decides avant ce point et restent des refus.
+
+Niveau **additif + chirurgical** : un module neuf (`routes/gate/no_wait.rs`)
+et trois lignes dans le handler, juste avant le bloc d'attente. Le niveau
+inferieur ne suffit pas : aucune variable d'environnement existante ne
+desactive l'attente, et baisser le timeout client
+(`KLEOS_SH_APPROVAL_TIMEOUT_SECS=2`, palliatif pose le 2026-09-29) laisse le
+serveur ouvrir une attente que personne ne traitera.
+
+Pourquoi pas un champ de requete : c'est exactement ce que le
+`skip_deserializing` upstream interdit, a raison. La liste serveur garde la
+decision chez l'operateur.
+
+Contrainte a connaitre : un agent liste qui utilise aussi `kleos-sh` en mode
+exec (`-c`) execute une commande `require_approval` sans approbation humaine,
+puisque le mode exec traite `Ask` comme `Allow` (comportement inchange apres
+une vraie approbation, ou le serveur rend aussi `requires_approval=true`). Ne
+lister que des agents de hook.
+
+Les lignes `gate_requests` creees en `pending_approval` pour un agent liste ne
+sont plus resolues par personne ; elles restent en l'etat.
+
+**Fichiers touches :**
+- `kleos-server/src/routes/gate/no_wait.rs` (neuf) et
+  `kleos-server/src/routes/gate/mod.rs` (`mod no_wait;` + early return).
+- `kleos-sh/src/gate.rs` : variante `GateOutcome::Ask`, lecture de
+  `requires_approval` (le `#[allow(dead_code)]` tombe).
+- `kleos-sh/src/main.rs` : `ask` en mode hook, `Allow` sinon.
+
+**Tests :** `no_wait::tests` (liste vide, casse et espaces, agent non liste ou
+vide, pas de correspondance par prefixe) ;
+`build_decision_ask_keeps_reason_and_enrichment` dans `kleos-sh`.
+
+**Deploiement :** poser `KLEOS_GATE_NO_WAIT_AGENTS=claude-code` dans
+`/etc/kleos/kleos.env`, redeployer `kleos-server`, puis installer le nouveau
+`kleos-sh.exe`. Sans la variable, le serveur garde le comportement upstream.
+
+**Conditions de retrait :** upstream offre un moyen, cote serveur, de ne pas
+retenir les requetes d'un hook (ou retire `TOOLS_REQUIRING_APPROVAL` de la
+condition d'attente).
+
+
+---
+
+## Patch 56 -- `kleos-sh` Windows : `reqwest` en processus au lieu de `curl.exe` (2026-09-29)
+
+**Symptome :** chaque `/gate/check` lance un processus `curl.exe` sous
+Windows. Carte roadmap `0e638409`.
+
+**Origine du contournement :** en mai 2026, `reqwest` expirait sur ce poste ;
+l'historique du diagnostic (tentatives 1 a 7 dans l'ancien commentaire de
+`gate.rs`) a fini par attribuer la perte des paquets de retour a une regle
+OPNSense sur les ports source bas, corrigee le 2026-05-12. Les echecs de
+`reqwest` datent d'avant cette correction.
+
+**Approche :** une seule `send_request` pour toutes les plateformes, avec le
+client `reqwest` deja construit par `main.rs` et un timeout par requete lu dans
+`KLEOS_SH_APPROVAL_TIMEOUT_SECS` (12 s par defaut, comme `--max-time` avant).
+
+**Mesures (2026-09-29, poste Windows en Wi-Fi, serveur de production) :**
+- 20 appels sur un payload Read : 20 reponses, aucune erreur.
+- Refus par pattern, 5 appels : `permissionDecision: deny` a chaque fois, donc
+  le serveur est bien atteint (le hook fail-open ne le prouverait pas).
+- Refus, 10 appels : mediane d'environ 80 ms contre environ 170 ms avec
+  `curl.exe`.
+
+**Fichiers touches :** `kleos-sh/src/gate.rs`.
+
+**Conditions de retrait :** candidat PR upstream (le contournement curl n'est
+utile qu'a un poste derriere ce routeur).
+
+
+---
+
+## Patch 57 -- endpoint `POST /hooks/claude/pre-tool-use` pour un hook Claude Code `type: "http"` (2026-09-29)
+
+**Symptome :** le drain du supervisor (`claude-hooks
+eidolon-supervisor-drain-pending`) lance un processus par appel d'outil, pour
+une requete `/supervisor/pending?wait=0` qui coute 1,1 ms au serveur en
+loopback. Mesure client : 20,6 a 21 ms, dont environ 6 ms de processus et le
+reste en allers-retours Wi-Fi sans keep-alive. Carte roadmap `81301429`.
+
+**Approche :** Claude Code sait appeler un hook `type: "http"` (sonde du
+2026-09-29, memoire Kleos #19608 : POST axios en keep-alive, corps identique au
+stdin, en-tete `Authorization` interpole via `allowedEnvVars`, 200 +
+`permissionDecision: deny` bloque, serveur injoignable = l'outil passe). Le
+serveur recoit donc directement l'evenement PreToolUse, reclame les injections
+de la session avec la meme requete que `/supervisor/pending` (meme colonne
+`claimed_at`, donc pas de double livraison), et repond au format hook : 200
+vide si rien, `additionalContext` pour les avertissements, `deny` des qu'une
+injection est `critical`. Rendu identique a celui du hook Rust.
+
+Niveau **additif** : un module de routes neuf, une ligne `pub mod` et une ligne
+`.merge(...)` dans des fichiers upstream.
+
+**Cote client (apres deploiement) :** remplacer l'entree
+`eidolon-supervisor-drain-pending` de `settings.json` par
+`{"type": "http", "url": "http://192.168.10.21:4200/hooks/claude/pre-tool-use",
+"headers": {"Authorization": "Bearer $KLEOS_API_KEY"}, "allowedEnvVars":
+["KLEOS_API_KEY"], "timeout": 3}`.
+
+**Tests :** `claude_hooks::tests` (rien a signaler, avertissements en contexte
+avec echappement, un `critical` en n'importe quelle casse refuse avec toutes les
+lignes).
+
+**Conditions de retrait :** upstream expose son propre point d'entree pour les
+hooks http de Claude Code.
