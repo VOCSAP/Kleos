@@ -151,6 +151,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::forge::router())
         .merge(routes::gate::router())
         .merge(routes::supervisor::router())
+        .merge(routes::claude_hooks::router())
         .merge(routes::growth::router())
         .merge(routes::sessions::router())
         .merge(routes::agents::router())
