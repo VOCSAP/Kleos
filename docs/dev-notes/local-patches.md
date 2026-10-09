@@ -6358,3 +6358,41 @@ lignes).
 
 **Conditions de retrait :** upstream expose son propre point d'entree pour les
 hooks http de Claude Code.
+
+## Patch 58 -- `intelligence::llm::call_llm` injecte `think` + `reasoning_effort` (2026-10-09)
+
+**Symptome sous upstream pur :** sur un endpoint Ollama OpenAI-compat
+(`/v1/chat/completions`) avec `KLEOS_LLM_THINK=0`, les appels de `call_llm`
+(growth `max_tokens` 300, decomposition 512, juge Thymus 1024) reviennent avec
+`content` vide : qwen3 raisonne par defaut et le reasoning consomme tout le
+budget. Mesure de l'etude A/B `kleos-shadow` (586 paires, 2026-10-09, LXC 121) :
+87 % de contenu vide, 12 % de JSON valide, dont 585 appels `growth_reflection`.
+La croissance etait donc quasi inoperante.
+
+**Cause :** `call_llm` serialise une struct typee `OpenAiRequest` sans les champs
+de raisonnement et n'appelait pas `inject_openai_compat_reasoning`. C'etait le
+seul site LLM de `kleos-lib` hors du helper du Patch 14c (broca via
+`call_llm_endpoint`, `LocalModelClient`, Loom, Atoms l'appellent tous). Ollama
+ignore `think` sur l'endpoint OpenAI-compat et ne lit que `reasoning_effort`
+(ollama#14820), d'ou l'injection des deux champs par le helper.
+
+**Approche :** niveau **chirurgical**, 3 lignes : le body est converti en
+`serde_json::Value` puis passe par le helper existant. Niveau d'en dessous
+(canal overlay) impossible : le body est construit en Rust, aucun overlay ne le
+couvre. Niveau d'au-dessus (ajouter les champs a la struct) refuse : il
+dupliquerait la logique `KLEOS_LLM_THINK` hors du helper.
+
+**Fichiers :** `kleos-lib/src/intelligence/llm.rs`.
+
+**Tests :** `intelligence::llm::tests::call_llm_injects_reasoning_setting`
+(serveur axum local, verifie `think=false` et `reasoning_effort="none"` dans le
+body recu). Le test existant `test_is_llm_available_default` recoit
+`#[serial_test::serial(llm_env)]` pour ne pas concurrencer le nouveau test sur
+`KLEOS_LLM_URL`.
+
+**Hors perimetre, non corrige :** `kleos-ingest/src/summarizer.rs` construit son
+propre body vers un endpoint Ollama sans injection ; il est dans une autre crate
+(le helper est `pub(crate)`) et son modele par defaut (`qwen2.5:3b`) ne raisonne
+pas.
+
+**Conditions de retrait :** upstream applique `think_setting()` dans `call_llm`.
