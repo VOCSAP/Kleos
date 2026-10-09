@@ -113,6 +113,10 @@ pub async fn call_llm(
         stream: false,
     };
 
+    let mut body = serde_json::to_value(&body)
+        .map_err(|e| format!("LLM request serialisation error: {}", e))?;
+    crate::llm::inject_openai_compat_reasoning(&mut body);
+
     let mut req = LLM_CLIENT.post(&url).json(&body);
     if let Some(key) = api_key {
         req = req.header("Authorization", format!("Bearer {}", key));
@@ -240,8 +244,52 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Verifies the request body carries the thinking-mode fields so Ollama's
+    /// OpenAI-compat endpoint does not spend max_tokens on reasoning.
+    #[tokio::test]
+    #[serial_test::serial(llm_env)]
+    async fn call_llm_injects_reasoning_setting() {
+        use std::sync::{Arc, Mutex};
+
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let sink = captured.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move |axum::Json(req): axum::Json<serde_json::Value>| {
+                let sink = sink.clone();
+                async move {
+                    *sink.lock().unwrap() = Some(req);
+                    axum::Json(serde_json::json!({
+                        "choices": [{ "message": { "content": "{}" } }]
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        std::env::set_var(
+            "KLEOS_LLM_URL",
+            format!("http://{addr}/v1/chat/completions"),
+        );
+        std::env::set_var("KLEOS_LLM_THINK", "0");
+        let result = call_llm("sys", "user", None).await;
+        std::env::remove_var("KLEOS_LLM_URL");
+        std::env::remove_var("KLEOS_LLM_THINK");
+
+        assert_eq!(result.as_deref(), Ok("{}"));
+        let body = captured.lock().unwrap().take().expect("request captured");
+        assert_eq!(body["think"], serde_json::json!(false));
+        assert_eq!(body["reasoning_effort"], serde_json::json!("none"));
+        assert_eq!(body["max_tokens"], serde_json::json!(1024));
+    }
+
     /// Verifies the availability check is false when no URL is configured.
     #[test]
+    #[serial_test::serial(llm_env)]
     fn test_is_llm_available_default() {
         std::env::remove_var("KLEOS_LLM_URL");
         std::env::remove_var("ENGRAM_LLM_URL");
