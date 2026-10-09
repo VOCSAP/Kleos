@@ -6382,7 +6382,8 @@ ignore `think` sur l'endpoint OpenAI-compat et ne lit que `reasoning_effort`
 couvre. Niveau d'au-dessus (ajouter les champs a la struct) refuse : il
 dupliquerait la logique `KLEOS_LLM_THINK` hors du helper.
 
-**Fichiers :** `kleos-lib/src/intelligence/llm.rs`.
+**Fichiers :** `kleos-lib/src/intelligence/llm.rs`, `kleos-lib/src/llm/mod.rs`
+(visibilite du helper), `kleos-ingest/src/summarizer.rs`.
 
 **Tests :** `intelligence::llm::tests::call_llm_injects_reasoning_setting`
 (serveur axum local, verifie `think=false` et `reasoning_effort="none"` dans le
@@ -6390,9 +6391,14 @@ body recu). Le test existant `test_is_llm_available_default` recoit
 `#[serial_test::serial(llm_env)]` pour ne pas concurrencer le nouveau test sur
 `KLEOS_LLM_URL`.
 
-**Hors perimetre, non corrige :** `kleos-ingest/src/summarizer.rs` construit son
-propre body vers un endpoint Ollama sans injection ; il est dans une autre crate
-(le helper est `pub(crate)`) et son modele par defaut (`qwen2.5:3b`) ne raisonne
-pas.
+**Second site, meme cause :** `kleos-ingest/src/summarizer.rs` construisait son
+propre body vers un endpoint Ollama sans injection (resume de session,
+`max_tokens` 300). Les modeles de production acceptent `think`, donc il est
+couvert aussi. Comme il vit dans une autre crate, `inject_openai_compat_reasoning`
+passe de `pub(crate)` a `pub` (un mot dans `kleos-lib/src/llm/mod.rs`) plutot que
+de dupliquer le mapping `think` -> `reasoning_effort`. Le service d'ingest lit
+`KLEOS_LLM_THINK` dans son propre environnement : il faut le poser la ou il
+tourne. Verification : `cargo check -p kleos-ingest` sous WSL (le crate ne
+compile pas sous Windows, `watcher.rs` est Unix-only).
 
 **Conditions de retrait :** upstream applique `think_setting()` dans `call_llm`.

@@ -59,7 +59,7 @@ pub fn think_setting() -> Option<bool> {
 ///
 /// Idempotent: only inserts keys when absent, so a value already set by the
 /// caller is preserved. No-op on non-object JSON values.
-pub(crate) fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
+pub fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
     inject_reasoning_setting(body, think_setting());
 }
 
