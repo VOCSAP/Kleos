@@ -181,14 +181,18 @@ enum Commands {
         /// Category to assign
         #[arg(short, long, default_value = "general")]
         category: String,
-        /// Patch 33.2: target space for the ingested memories. Defaults to
-        /// $KLEOS_SPACE or the cwd-detected project name, like `store`.
+        /// Patch 33.2: scope the ingested memories to a named space (resolved
+        /// or created on the server). Defaults to $KLEOS_SPACE env var or the
+        /// cwd-detected project name; with neither, the server uses the
+        /// `default` space (never unscoped). Use `--no-space` to force the
+        /// cross-project bucket.
         #[arg(long)]
         space: Option<String>,
-        /// Patch 33.2: bypass name resolution and use an explicit space id.
+        /// Patch 33.2: bypass name resolution and use an explicit numeric id.
         #[arg(long)]
         space_id: Option<i64>,
-        /// Patch 33.2: force the cross-project (`default`) bucket.
+        /// Patch 33.2: force the cross-project (`default`) bucket regardless
+        /// of the marker, env var or cwd-detected name.
         #[arg(long, default_value_t = false)]
         no_space: bool,
     },
