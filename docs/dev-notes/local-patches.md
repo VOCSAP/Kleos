@@ -4117,7 +4117,8 @@ upstream ne recoivent que des appels de quelques lignes.
 | `kleos-server/src/routes/prompts/{mod,types}.rs` | resolution + 4 sections (upstream ; remplace le commentaire Patch 33 "follow-up") |
 | `kleos-client/src/routes.rs` | 5 schemas JSON (upstream) |
 | `kleos-sidecar/src/routes.rs` | 3 champs `RecallBody` + relai (upstream) |
-| `kleos-cli/src/hook.rs`, `kleos-cli/src/main.rs` | `hook_space` + flags `ingest` (upstream) |
+| `kleos-cli/src/hook.rs`, `kleos-cli/src/main.rs` | `hook_space` + flags `ingest` + textes d'aide (upstream) |
+| `docs/KLEOS_OPERATIONS_MANUAL.md` | sections `context`, `ingest`, `hook session-start`, `hook user-prompt` (upstream, doc) |
 | `hooks/full/session-start-kleos.sh`, `hooks/full/user-prompt-lean.sh` | VOCSAP |
 
 **Tests :**

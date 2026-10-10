@@ -117,10 +117,14 @@ Use for:
 
 - Fast recall before asking a human, opening a broad investigation, or editing.
 
-#### `kleos-cli context QUERY [--limit N]`
+#### `kleos-cli context QUERY [--limit N] [--space NAME | --space-id N | --no-space] [--include-unscoped BOOL]`
 
 - Calls `POST /recall` with both `query` and `context`.
 - Returns richer JSON context than `search`.
+- Scoped to a space resolved as `--space-id` > `--space` > `$KLEOS_SPACE` >
+  the `.kleos-space` marker / git root name of the cwd. A scoped read also
+  returns the `default` space and unscoped rows unless
+  `--include-unscoped false`.
 
 Use for:
 
@@ -158,7 +162,7 @@ Use for:
 
 - Review loops and reinforcement passes.
 
-#### `kleos-cli ingest [--text TEXT | --file PATH] [--mode raw|extract] [--source SRC] [--category CAT]`
+#### `kleos-cli ingest [--text TEXT | --file PATH] [--mode raw|extract] [--source SRC] [--category CAT] [--space NAME | --space-id N | --no-space]`
 
 How it works:
 
@@ -167,6 +171,10 @@ How it works:
   `POST /ingest/upload/init`, repeated `POST /ingest/upload/chunk`,
   then `POST /ingest/upload/complete`.
 - Upload chunks are 1 MiB and hashed with SHA-256.
+- The target space is resolved like `store` (`--space-id` > `--space` >
+  `$KLEOS_SPACE` > cwd marker / git root name). When nothing resolves, the
+  server files the memories in the `default` space; ingested memories are
+  never left unscoped.
 
 Use for:
 
@@ -483,11 +491,16 @@ Use for:
 
 - Registers session start with `POST /activity`.
 - Fetches growth context from `/growth/materialize`.
+- Fetches the living prompt from `POST /prompt/generate`, scoped to the
+  project space (`$KLEOS_SPACE`, else the `.kleos-space` marker / git root
+  name of the hook's cwd).
 - Emits Claude hook JSON on stdout.
 
 #### `kleos-cli hook user-prompt`
 
 - Reads Claude hook JSON from stdin.
+- Recalls memories through the sidecar `/recall`, scoped to the project space
+  (same resolution as `session-start`).
 - Checks supervisor pending injections through `/supervisor/pending`.
 - Emits deny if a supervisor violation is pending; otherwise no output.
 

@@ -17,9 +17,9 @@ use crate::Client;
 /// CLI subcommands for each Claude Code hook event.
 #[derive(Subcommand)]
 pub enum HookCommands {
-    /// SessionStart hook -- registers session, fetches context
+    /// SessionStart hook -- registers session, fetches context (scoped to the project space)
     SessionStart,
-    /// UserPromptSubmit hook -- drains supervisor, injects mandatory rules
+    /// UserPromptSubmit hook -- drains supervisor, injects mandatory rules, recalls memories (scoped to the project space)
     UserPrompt,
     /// Stop hook -- records session end
     Stop,
