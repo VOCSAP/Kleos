@@ -49,4 +49,15 @@ pub(super) struct GeneratePromptRequest {
     /// Server clamps to 1..=30; defaults to 10.
     #[serde(default)]
     pub activity_limit: Option<usize>,
+    /// Patch 33.2: scope the memory, personality, brain and growth sections
+    /// to this space id. Absent with `space` -> no filter (upstream behaviour).
+    #[serde(default)]
+    pub space_id: Option<i64>,
+    /// Patch 33.2: free-form space name, resolved server-side.
+    #[serde(default)]
+    pub space: Option<String>,
+    /// Patch 33.2: also include the user's default space and legacy NULL rows
+    /// when scoped. Absent -> `true`, the documented default (Patch 49).
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
 }

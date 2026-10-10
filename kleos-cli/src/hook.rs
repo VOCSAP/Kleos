@@ -351,6 +351,21 @@ fn hook_cwd(input: &Value) -> Option<String> {
         })
 }
 
+/// Patch 33.2 -- the project space for this hook invocation, with the same
+/// precedence as `space::determine_space_for_request` minus the CLI flags:
+/// `$KLEOS_SPACE`, then the marker / git-root resolution from the hook's cwd
+/// (read-only, never writes the marker). `None` leaves the server unfiltered.
+fn hook_space(input: &Value) -> Option<String> {
+    if let Ok(env) = std::env::var("KLEOS_SPACE") {
+        let trimmed = env.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    let cwd = hook_cwd(input)?;
+    crate::space::resolve_project_name(std::path::Path::new(&cwd))
+}
+
 /// Legacy fixed bootstrap query, kept as the fallback when no cwd is available.
 const LEGACY_BOOTSTRAP_QUERY: &str =
     "session-bootstrap agent-rules infrastructure active-tasks recent-decisions";
@@ -856,20 +871,21 @@ async fn handle_session_start(client: &Client, input: &Value) {
     // server. This is the primary content -- the Gemini hook already uses this path;
     // the Claude hook previously only carried policy rules + growth, leaving the
     // block empty whenever the operator had no mandatory rules configured.
+    let mut prompt_body = json!({
+        "agent": agent,
+        "task": bootstrap_task_query(input),
+        "include_brain": true,
+        // Growth context is appended separately from /growth/materialize
+        // below; include_growth=true here duplicated it (memory #27946).
+        "include_growth": false,
+        "include_personality": true,
+    });
+    // Patch 33.2: scope the living prompt to the project space.
+    if let Some(space) = hook_space(input) {
+        prompt_body["space"] = json!(space);
+    }
     let living_text = match client
-        .post_with_timeout(
-            "/prompt/generate",
-            json!({
-                "agent": agent,
-                "task": bootstrap_task_query(input),
-                "include_brain": true,
-                // Growth context is appended separately from /growth/materialize
-                // below; include_growth=true here duplicated it (memory #27946).
-                "include_growth": false,
-                "include_personality": true,
-            }),
-            DEFAULT_TIMEOUT,
-        )
+        .post_with_timeout("/prompt/generate", prompt_body, DEFAULT_TIMEOUT)
         .await
     {
         Ok(v) => v
@@ -937,7 +953,7 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 .unwrap_or(800);
 
             let recall_message = contextual_recall_message(input, user_message, max_query_chars);
-            let recall_body = json!({
+            let mut recall_body = json!({
                 "message": recall_message,
                 "budget": budget,
                 "context_turns": context_turns,
@@ -947,6 +963,10 @@ async fn handle_user_prompt(client: &Client, input: &Value) {
                 "cwd": hook_cwd(input),
                 "may_modify_repo": false,
             });
+            // Patch 33.2: the sidecar forwards the space to Kleos /search.
+            if let Some(space) = hook_space(input) {
+                recall_body["space"] = json!(space);
+            }
 
             sidecar_post("/recall", &recall_body, SIDECAR_RECALL_TIMEOUT)
                 .await
@@ -1397,6 +1417,22 @@ mod tests {
         let long = format!("HTTP 500: {}", "é".repeat(GATE_FAILURE_DETAIL_MAX * 2));
         let d = describe_gate_failure(&long);
         assert!(d.contains("truncated"), "{d}");
+    }
+
+    #[test]
+    /// Patch 33.2: the hook space comes from the `.kleos-space` marker in the
+    /// hook's cwd (or `$KLEOS_SPACE` when the environment sets it).
+    fn test_hook_space_reads_marker_from_hook_cwd() {
+        let dir = std::env::temp_dir().join(format!("kleos-hook-space-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join(".kleos-space"), "Hook Space Probe\n").unwrap();
+        let input = serde_json::json!({ "cwd": dir.to_string_lossy() });
+        let expected = match std::env::var("KLEOS_SPACE") {
+            Ok(env) if !env.trim().is_empty() => env.trim().to_string(),
+            _ => "hookspaceprobe".to_string(),
+        };
+        assert_eq!(hook_space(&input).as_deref(), Some(expected.as_str()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

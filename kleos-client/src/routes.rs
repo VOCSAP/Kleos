@@ -709,7 +709,7 @@ pub static ROUTES: &[Route] = &[
         "/prompt/generate",
         "Pack memories into a prompt for a given task.",
         ["context.generate_prompt"],
-        r#"{"type":"object","properties":{"task":{"type":"string"},"format":{"type":"string"},"limit":{"type":"integer"}},"required":["task"]}"#
+        r#"{"type":"object","properties":{"task":{"type":"string"},"format":{"type":"string"},"limit":{"type":"integer"},"space":{"type":"string","description":"Scope to this space (Patch 33)"},"space_id":{"type":"integer"},"include_unscoped":{"type":"boolean","description":"Also include the default space and legacy unscoped rows (default true)"}},"required":["task"]}"#
     ),
     route!(
         Post,
@@ -752,7 +752,7 @@ pub static ROUTES: &[Route] = &[
         "ingestion.text",
         "/ingest",
         "Ingest raw text into the memory pipeline.",
-        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"title":{"type":"string"},"source":{"type":"string"},"entity_ids":{"type":"array","items":{"type":"integer"}},"project_ids":{"type":"array","items":{"type":"integer"}},"episode_id":{"type":"integer"}},"required":["text"]}"#
+        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"title":{"type":"string"},"source":{"type":"string"},"entity_ids":{"type":"array","items":{"type":"integer"}},"project_ids":{"type":"array","items":{"type":"integer"}},"episode_id":{"type":"integer"},"space":{"type":"string","description":"Target space name (Patch 33); defaults to the user's default space"},"space_id":{"type":"integer"}},"required":["text"]}"#
     ),
     route!(
         Post,
@@ -760,7 +760,7 @@ pub static ROUTES: &[Route] = &[
         "ingestion.bulk",
         "/import/bulk",
         "Bulk import of memories from a structured payload.",
-        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"format":{"type":"string"},"mode":{"type":"string"},"source":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"format":{"type":"string"},"mode":{"type":"string"},"source":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"},"space":{"type":"string","description":"Target space name (Patch 33); defaults to the user's default space"},"space_id":{"type":"integer"}}}"#
     ),
     route!(
         Post,
@@ -792,7 +792,7 @@ pub static ROUTES: &[Route] = &[
         "ingestion.upload_complete",
         "/ingest/upload/complete",
         "Finalise a chunked upload.",
-        r#"{"type":"object","properties":{"upload_id":{"type":"string"},"total_chunks":{"type":"integer"},"final_sha256":{"type":"string"},"mode":{"type":"string"},"format":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"}},"required":["upload_id"]}"#
+        r#"{"type":"object","properties":{"upload_id":{"type":"string"},"total_chunks":{"type":"integer"},"final_sha256":{"type":"string"},"mode":{"type":"string"},"format":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"},"space":{"type":"string","description":"Target space name (Patch 33); defaults to the user's default space"},"space_id":{"type":"integer"}},"required":["upload_id"]}"#
     ),
     route!(
         Post,
@@ -1586,7 +1586,7 @@ pub static ROUTES: &[Route] = &[
         "/context",
         "Build an 8-layer context bundle for a task.",
         ["context.assemble_context", "memory_context"],
-        r#"{"type":"object","properties":{"query":{"type":"string"},"max_tokens":{"type":"integer"},"model_id":{"type":"string"},"source":{"type":"string"},"session":{"type":"string"}},"required":["query"]}"#
+        r#"{"type":"object","properties":{"query":{"type":"string"},"max_tokens":{"type":"integer"},"model_id":{"type":"string"},"source":{"type":"string"},"session":{"type":"string"},"space":{"type":"string","description":"Scope to this space (Patch 33)"},"space_id":{"type":"integer"},"include_unscoped":{"type":"boolean","description":"Also include the default space and legacy unscoped rows (default true)"}},"required":["query"]}"#
     ),
     route!(
         Post,

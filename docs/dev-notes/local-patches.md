@@ -4051,6 +4051,97 @@ option qui supprime la divergence a la source, incertain qu'upstream le veuille
 
 ---
 
+## Patch 33.2 -- space sur /ingest, /context, /prompt/generate + hooks (2026-10-10)
+
+**Symptome sous Patch 33 seul :** trois surfaces violaient le contrat que Patch 33
+s'est fixe (partition souple : lecture scopee = space courant + `default` + NULL,
+ecriture jamais NULL).
+
+- `/ingest`, `/ingest/stream`, `/ingest/upload/complete`, `/import/bulk` codaient
+  `space_id: None` en dur (`routes/ingestion/mod.rs`) : tout document ingere
+  arrivait en NULL, donc visible dans chaque recall scope via la clause inclusive.
+- `/context` (`ContextOptions`) n'avait aucun parametre space.
+- `/prompt/generate` n'avait aucun parametre space ; le commentaire de l'appel
+  growth reportait explicitement le scoping a "un patch ulterieur".
+- Les hooks ne posaient pas le space sur leurs chemins principaux :
+  `session-start-kleos.sh` et `kleos-cli hook session-start` -> `/prompt/generate`,
+  `user-prompt-lean.sh` et `kleos-cli hook user-prompt` -> sidecar `/recall` ->
+  `/search` (le sidecar ne relayait aucun space). Seul le fallback
+  `kleos-cli context` scopait.
+
+**Approche :** meme contrat que `/search` (Patch 33 + 49), applique aux trois routes.
+
+- *Ecriture* (`/ingest` et cousins) : `normalize_space_input` (absent -> `default`,
+  jamais NULL ; `space_id` d'un autre user -> 400).
+- *Lecture* (`/context`, `/prompt/generate`) : `resolve_space_filter` (absent ->
+  aucun filtre, comportement upstream) ; `include_unscoped` absent -> `true`.
+- Nouveaux helpers dans le module VOCSAP `kleos_lib::space` : `SpaceScope`
+  (semantique stricte / inclusive identique au post-filtre de `hybrid_search`),
+  `memory_space_ids`, `retain_in_scope` (fail-closed si la lecture des space_id
+  echoue).
+- `/context` : couche semantique via `SearchRequest.space_id/include_unscoped` ;
+  statiques et recentes filtrees sur `Memory.space_id` (recentes : sur-fetch 50
+  puis 5 premieres dans le scope) ; liees filtrees par `retain_in_scope`. Les
+  couches evolution / episodes / structured_facts derivent des blocs deja
+  scopes. `current_state`, `preferences`, `working_memory` ne sont pas des
+  memoires et ne sont pas scopees.
+- `/prompt/generate` : sections memoires et personnalite via `SearchRequest`,
+  growth via `list_observations` (signature Patch 33 existante), brain par
+  `retain_in_scope` sur les 3 requetes Hopfield (substrat global, Patch 36).
+- Sidecar `/recall` : accepte `space`, `space_id`, `include_unscoped` et les
+  relaie a `/search` ; absents -> rien n'est ajoute.
+- Hooks : `session-start-kleos.sh` ajoute `KLEOS_SPACE` au corps de
+  `/prompt/generate` ; `user-prompt-lean.sh` resout le space (`$KLEOS_SPACE`
+  puis marker / racine git, lecture seule) et l'envoie au sidecar ;
+  `kleos-cli hook` fait de meme (`hook_space`) pour `/prompt/generate` et
+  `/recall`. `kleos-cli ingest` gagne `--space`, `--space-id`, `--no-space`.
+- Schemas MCP (`kleos-client/src/routes.rs`) : `space`, `space_id`
+  (+ `include_unscoped` en lecture) declares sur `prompts.generate`,
+  `ingestion.text`, `ingestion.bulk`, `ingestion.upload_complete`,
+  `context.build`. L'injection automatique du space de session par
+  `kleos-mcp` (Patch 33) couvre donc ces outils sans modification.
+
+**Pourquoi pas le niveau inferieur :** aucun canal overlay ne porte un filtre de
+requete ; le scoping doit etre applique la ou les memoires sont lues. Les helpers
+vont dans `kleos_lib::space` (module VOCSAP, zero delta upstream) ; les sites
+upstream ne recoivent que des appels de quelques lignes.
+
+**Fichiers :**
+
+| Fichier | Nature |
+|---|---|
+| `kleos-lib/src/space.rs` | additif (module VOCSAP) |
+| `kleos-lib/src/context/types.rs` | 3 champs `ContextOptions` (upstream) |
+| `kleos-lib/src/context/mod.rs` | resolution du scope + 4 points de filtre (upstream, chirurgical) |
+| `kleos-server/src/routes/ingestion/{mod,types}.rs` | 4 resolutions + 2 champs x3 structs (upstream) |
+| `kleos-server/src/routes/prompts/{mod,types}.rs` | resolution + 4 sections (upstream ; remplace le commentaire Patch 33 "follow-up") |
+| `kleos-client/src/routes.rs` | 5 schemas JSON (upstream) |
+| `kleos-sidecar/src/routes.rs` | 3 champs `RecallBody` + relai (upstream) |
+| `kleos-cli/src/hook.rs`, `kleos-cli/src/main.rs` | `hook_space` + flags `ingest` (upstream) |
+| `hooks/full/session-start-kleos.sh`, `hooks/full/user-prompt-lean.sh` | VOCSAP |
+
+**Tests :**
+
+- `kleos-lib` `space::tests` : `scope_allows_strict_and_inclusive`,
+  `search_filter_maps_scope`, `retain_in_scope_filters_by_memory_space`.
+- `kleos-server/tests/spaces_ingest_context_prompt.rs` (nouveau) : ingest dans le
+  space demande ; ingest sans space -> `default` (pas NULL) ; `space_id` etranger
+  -> 400 ; `/context` et `/prompt/generate` scopes strict sans fuite, et sans
+  space les deux projets restent visibles.
+- `kleos-sidecar/tests/recall_space.rs` (nouveau) : relai du space a `/search`,
+  rien d'ajoute quand le space est absent ou vide.
+- `kleos-cli` `hook::tests::test_hook_space_reads_marker_from_hook_cwd`.
+
+**Hors perimetre (restent en NULL) :** `/import/json`, `/import/mem0`,
+`/import/supermemory` font des INSERT bruts sans `space_id` ; a traiter si ces
+imports servent encore.
+
+**Conditions de retrait :** si upstream ajoute un scoping par space sur ces routes,
+reprendre leur version et retirer les sites marques "Patch 33.2" ; les helpers de
+`kleos_lib::space` restent utilisables par Patch 33/36.
+
+---
+
 ## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)
 
 ### Symptome
