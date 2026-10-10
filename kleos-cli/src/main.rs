@@ -181,6 +181,16 @@ enum Commands {
         /// Category to assign
         #[arg(short, long, default_value = "general")]
         category: String,
+        /// Patch 33.2: target space for the ingested memories. Defaults to
+        /// $KLEOS_SPACE or the cwd-detected project name, like `store`.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33.2: bypass name resolution and use an explicit space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33.2: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
     },
     /// Surface memories most in need of reinforcement for a topic
     RecallDue {
@@ -1659,8 +1669,13 @@ async fn main() {
             mode,
             source,
             category,
+            space,
+            space_id,
+            no_space,
         } => {
-            handle_ingest(&client, text, file, mode, source, category).await;
+            let target_space =
+                space::determine_space_for_request(*no_space, space.as_deref(), *space_id);
+            handle_ingest(&client, text, file, mode, source, category, target_space).await;
         }
 
         Commands::Health => match client.get("/health").await {
@@ -2363,6 +2378,7 @@ async fn handle_ingest(
     mode: &str,
     source: &Option<String>,
     category: &str,
+    target_space: (Option<i64>, Option<String>),
 ) {
     // Prefer --file when given; fall back to --text; error otherwise.
     let (raw_bytes, is_binary, source_label) = match (file, text) {
@@ -2400,12 +2416,13 @@ async fn handle_ingest(
     if !is_binary {
         // Hot path: POST /ingest with the decoded string body.
         let text_body = String::from_utf8(raw_bytes).expect("utf8 verified above");
-        let body = json!({
+        let mut body = json!({
             "text": text_body,
             "mode": mode,
             "source": source_label,
             "category": category,
         });
+        space::inject_space_into_body(&mut body, target_space.0, target_space.1);
         match client.post("/ingest", body).await {
             Ok(v) => {
                 if let Some(id) = value_as_string(v.get("job_id")) {
@@ -2492,13 +2509,14 @@ async fn handle_ingest(
         }
     }
     let final_hash = format!("{:x}", full_hasher.finalize());
-    let complete_body = json!({
+    let mut complete_body = json!({
         "upload_id": upload_id,
         "total_chunks": total_chunks as i64,
         "final_sha256": final_hash,
         "mode": mode,
         "category": category,
     });
+    space::inject_space_into_body(&mut complete_body, target_space.0, target_space.1);
     match client.post("/ingest/upload/complete", complete_body).await {
         Ok(v) => {
             let memories = v
