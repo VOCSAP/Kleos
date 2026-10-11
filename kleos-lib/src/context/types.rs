@@ -178,6 +178,14 @@ pub struct ContextOptions {
     pub semantic_limit: Option<usize>,
     pub source: Option<String>,
     pub session: Option<String>,
+    /// Patch 33.2: scope memory layers to this space (resolved by the route
+    /// from `space_id` / `space`). `None` keeps upstream "no space filter".
+    pub space_id: Option<i64>,
+    /// Patch 33.2: free-form space name, resolved to `space_id` by the route.
+    pub space: Option<String>,
+    /// Patch 33.2: also include the user's default space and legacy NULL rows
+    /// when scoped. `None` means `true`, the documented HTTP default (Patch 49).
+    pub include_unscoped: Option<bool>,
 }
 
 /// The assembled context result.

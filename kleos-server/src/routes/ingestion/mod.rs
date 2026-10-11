@@ -425,13 +425,22 @@ async fn upload_complete(
                 .and_then(|f| f.rsplit_once('.').map(|(_, ext)| ext))
                 .and_then(|ext| ext.parse().ok())
         });
+    // Patch 33.2: resolve the target space; absent -> the user's `default`
+    // space, so ingested memories are never written with space_id = NULL.
+    let space_id = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
     let options = IngestOptions {
         mode,
         format,
         source: session.source.clone(),
         category: body.category.unwrap_or_else(|| "general".to_string()),
         user_id: auth.effective_user_id(),
-        space_id: None,
+        space_id: Some(space_id),
         project_id: body.project_id,
         episode_id: body.episode_id,
         entity_ids: None,
@@ -634,13 +643,22 @@ async fn import_bulk(
             }
         })
         .unwrap_or(IngestMode::Extract);
+    // Patch 33.2: resolve the target space; absent -> the user's `default`
+    // space, so ingested memories are never written with space_id = NULL.
+    let space_id = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
     let options = IngestOptions {
         mode,
         format,
         source: body.source.unwrap_or_else(|| "import".to_string()),
         category: body.category.unwrap_or_else(|| "general".to_string()),
         user_id: auth.effective_user_id(),
-        space_id: None,
+        space_id: Some(space_id),
         project_id: body.project_id,
         episode_id: body.episode_id,
         entity_ids: None,
@@ -989,13 +1007,22 @@ async fn ingest_text(
             )));
         }
     }
+    // Patch 33.2: resolve the target space; absent -> the user's `default`
+    // space, so ingested memories are never written with space_id = NULL.
+    let space_id = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
     let options = IngestOptions {
         mode: IngestMode::Raw,
         format: None,
         source: ingest_source.clone(),
         category: "general".to_string(),
         user_id: auth.effective_user_id(),
-        space_id: None,
+        space_id: Some(space_id),
         project_id: None,
         episode_id: body.episode_id,
         entity_ids: body.entity_ids.clone(),
@@ -1053,13 +1080,22 @@ async fn ingest_text_stream(
         t.replace(char::from(10u8), " ")
     });
 
+    // Patch 33.2: resolve the target space; absent -> the user's `default`
+    // space, so ingested memories are never written with space_id = NULL.
+    let space_id = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
     let options = IngestOptions {
         mode: IngestMode::Raw,
         format: None,
         source: ingest_source,
         category: "general".to_string(),
         user_id: auth.effective_user_id(),
-        space_id: None,
+        space_id: Some(space_id),
         project_id: None,
         episode_id: body.episode_id,
         entity_ids: body.entity_ids.clone(),
