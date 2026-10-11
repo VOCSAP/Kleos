@@ -318,9 +318,15 @@ ensure_kleos_sidecar_running || log "kleos-sidecar: ensure-running block raised 
 
 # --- 1. Call Eidolon /prompt/generate for brain-aware context ---
 PROMPT_RESULT=""
-PROMPT_RESPONSE=$(eidolon_call POST "/prompt/generate" \
-  '{"task":"session-bootstrap agent-rules infrastructure active-tasks recent-decisions","agent":"claude-code"}' \
-  8 || echo "")
+# Patch 33.2 -- scope the bootstrap prompt to the project space resolved
+# above (KLEOS_SPACE). No space -> no filter (upstream behaviour).
+PROMPT_BODY='{"task":"session-bootstrap agent-rules infrastructure active-tasks recent-decisions","agent":"claude-code"'
+if [ -n "${KLEOS_SPACE:-}" ]; then
+  ESCAPED_SPACE=$(python3 -c "import sys,json; print(json.dumps(sys.argv[1]))" "$KLEOS_SPACE" 2>/dev/null || echo "")
+  [ -n "$ESCAPED_SPACE" ] && PROMPT_BODY="$PROMPT_BODY,\"space\":$ESCAPED_SPACE"
+fi
+PROMPT_BODY="$PROMPT_BODY}"
+PROMPT_RESPONSE=$(eidolon_call POST "/prompt/generate" "$PROMPT_BODY" 8 || echo "")
 
 if [ -n "$PROMPT_RESPONSE" ]; then
   PROMPT_RESULT=$(python3 -c "

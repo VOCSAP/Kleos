@@ -483,11 +483,16 @@ Use for:
 
 - Registers session start with `POST /activity`.
 - Fetches growth context from `/growth/materialize`.
+- Fetches the living prompt from `POST /prompt/generate`, scoped to the
+  project space (`$KLEOS_SPACE`, else the `.kleos-space` marker / git root
+  name of the hook's cwd).
 - Emits Claude hook JSON on stdout.
 
 #### `kleos-cli hook user-prompt`
 
 - Reads Claude hook JSON from stdin.
+- Recalls memories through the sidecar `/recall`, scoped to the project space
+  (same resolution as `session-start`).
 - Checks supervisor pending injections through `/supervisor/pending`.
 - Emits deny if a supervisor violation is pending; otherwise no output.
 
