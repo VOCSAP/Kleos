@@ -4051,6 +4051,32 @@ option qui supprime la divergence a la source, incertain qu'upstream le veuille
 
 ---
 
+## Patch 33.2 (volet hooks) -- space sur /prompt/generate et /recall depuis les hooks (2026-10-11)
+
+**Origine :** volet client de Patch 33.2, repris de la branche
+`claude/grimoire-agent-memory-rxqqta` (commit `d9460c7b`) sans le volet serveur
+(`/ingest`, `/context`, `/prompt/generate`, relai sidecar), qui reste sur la branche.
+
+**Changement :** `kleos-cli hook session-start` et `hooks/full/session-start-kleos.sh`
+ajoutent le space du projet au corps de `/prompt/generate` ; `kleos-cli hook
+user-prompt` et `hooks/full/user-prompt-lean.sh` l'ajoutent au corps du sidecar
+`/recall`. Resolution : `$KLEOS_SPACE`, puis marker `.kleos-space` / racine git du
+cwd, en lecture seule (`hook_space`).
+
+**Effet tant que le volet serveur n'est pas deploye :** aucun. Ni le sidecar ni
+`/prompt/generate` ne refusent un champ inconnu ; le champ est ignore.
+
+**Fichiers :** `kleos-cli/src/hook.rs` (upstream, chirurgical),
+`hooks/full/{session-start-kleos,user-prompt-lean}.sh` (VOCSAP),
+`docs/KLEOS_OPERATIONS_MANUAL.md` (sections `hook session-start` / `hook user-prompt`).
+
+**Test :** `hook::tests::test_hook_space_reads_marker_from_hook_cwd`.
+
+**Conditions de retrait :** fusion de la branche complete (la section Patch 33.2
+de la branche remplace celle-ci), ou scoping par space des hooks cote upstream.
+
+---
+
 ## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)
 
 ### Symptome

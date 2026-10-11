@@ -113,6 +113,16 @@ touch "$CONSENT_STAMP" 2>/dev/null || true
 # ---- Best-effort memory recall (via Mnemonic sidecar, fallback to direct Engram) ----
 ENGRAM_CONTEXT=""
 
+# Patch 33.2 -- scope the sidecar recall to the project space, with the same
+# precedence as the kleos-cli fallback below: $KLEOS_SPACE, then the
+# read-only marker / git-root resolution (never writes the marker).
+RECALL_SPACE="${KLEOS_SPACE:-}"
+if [ -z "$RECALL_SPACE" ] && [ -f "$HOME_DIR/.claude/hooks/lib-kleos-space.sh" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME_DIR/.claude/hooks/lib-kleos-space.sh"
+  RECALL_SPACE="$(resolve_project_name "$PWD" 2>/dev/null || true)"
+fi
+
 if [ ${#USER_MSG} -gt 10 ]; then
   # Try sidecar recall first (fast, localhost). Requires KLEOS_SIDECAR_TOKEN
   # Bearer when the sidecar is configured with a shared secret. Also requires
@@ -124,7 +134,12 @@ if [ ${#USER_MSG} -gt 10 ]; then
   if [ -n "$SIDECAR_TOKEN" ]; then
     RECALL_ARGS+=(-H "Authorization: Bearer $SIDECAR_TOKEN")
   fi
-  RECALL_ARGS+=(-d "{\"message\":$ESCAPED_MSG,\"limit\":3}")
+  if [ -n "$RECALL_SPACE" ]; then
+    ESCAPED_SPACE=$(python3 -c "import sys,json; print(json.dumps(sys.argv[1]))" "$RECALL_SPACE" 2>/dev/null || echo "\"\"")
+    RECALL_ARGS+=(-d "{\"message\":$ESCAPED_MSG,\"limit\":3,\"space\":$ESCAPED_SPACE}")
+  else
+    RECALL_ARGS+=(-d "{\"message\":$ESCAPED_MSG,\"limit\":3}")
+  fi
   RECALL_RAW=$(curl "${RECALL_ARGS[@]}" 2>/dev/null || echo "")
 
   if [ -n "$RECALL_RAW" ]; then
