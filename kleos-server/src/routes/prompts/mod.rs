@@ -13,6 +13,7 @@ use kleos_lib::prompts::{
     build_living_prompt, scrub_credentials, ContradictionInfo, MemorySummary,
 };
 use kleos_lib::services::brain::BrainQueryOptions;
+use kleos_lib::space::SpaceScope;
 use kleos_lib::EngError;
 
 use crate::error::AppError;
@@ -224,6 +225,28 @@ async fn post_prompt_generate(
     let include_activity = body.include_activity.unwrap_or(false);
     let activity_limit = body.activity_limit.unwrap_or(10).clamp(1, 30);
 
+    // Patch 33.2: optional space scope, resolved once for every section.
+    let space_scope = match kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?
+    {
+        Some(sid) => Some(
+            SpaceScope::new(
+                &db,
+                auth.effective_user_id(),
+                sid,
+                body.include_unscoped.unwrap_or(true),
+            )
+            .await,
+        ),
+        None => None,
+    };
+    let (scope_space_id, scope_include_unscoped) = SpaceScope::search_filter(space_scope.as_ref());
+
     let mut sources: Vec<Value> = Vec::new();
     let mut sections: Vec<String> = Vec::new();
 
@@ -260,6 +283,8 @@ async fn post_prompt_generate(
             limit: Some(3),
             user_id: Some(auth.effective_user_id()),
             category: Some("personality".into()),
+            space_id: scope_space_id,
+            include_unscoped: scope_include_unscoped,
             ..Default::default()
         };
         if let Ok(results) = hybrid_search(&db, personality_req).await {
@@ -299,6 +324,8 @@ async fn post_prompt_generate(
             embedding: embed_query(&recall_query).await,
             limit: Some(memory_limit),
             user_id: Some(auth.effective_user_id()),
+            space_id: scope_space_id,
+            include_unscoped: scope_include_unscoped,
             ..Default::default()
         };
         let results = hybrid_search(&db, memory_req).await?;
@@ -366,7 +393,7 @@ async fn post_prompt_generate(
                         beta: None,
                         spread_hops: None,
                     };
-                    let task_result = brain
+                    let mut task_result = brain
                         .query(
                             embedder.as_ref(),
                             task,
@@ -383,7 +410,7 @@ async fn post_prompt_generate(
                         beta: None,
                         spread_hops: None,
                     };
-                    let infra_result = brain
+                    let mut infra_result = brain
                         .query(
                             embedder.as_ref(),
                             "server infrastructure deployment SSH configuration",
@@ -401,7 +428,7 @@ async fn post_prompt_generate(
                         beta: None,
                         spread_hops: None,
                     };
-                    let failure_result = brain
+                    let mut failure_result = brain
                         .query(
                             embedder.as_ref(),
                             &failure_query,
@@ -410,6 +437,19 @@ async fn post_prompt_generate(
                         )
                         .await
                         .unwrap_or_default();
+
+                    // Patch 33.2: the Hopfield substrate is global (Patch 36);
+                    // scope its activations after the fact.
+                    for result in [&mut task_result, &mut infra_result, &mut failure_result] {
+                        kleos_lib::space::retain_in_scope(
+                            &db,
+                            auth.effective_user_id(),
+                            space_scope.as_ref(),
+                            &mut result.activated,
+                            |m| m.id,
+                        )
+                        .await;
+                    }
 
                     // Convert brain results into MemorySummary lists
                     let task_memories: Vec<MemorySummary> = task_result
@@ -491,14 +531,19 @@ async fn post_prompt_generate(
     if include_growth {
         // 727d97fc merge -- align on the unified list_observations signature
         // (db, limit, space_id, include_unscoped, user_id):
-        //  - Patch 33: pass None/None for the space filter to preserve upstream
-        //    behaviour (prompts compose observations from all spaces of the
-        //    tenant; scoping at the prompts layer is left to a follow-up patch).
+        //  - Patch 33.2: pass the request's space scope (None/None when the
+        //    caller sends no space, preserving upstream behaviour).
         //  - upstream #70/#93: use effective_user_id() so that under delegation
         //    (act_as set) the growth observations are pulled from the delegated
         //    tenant, not the delegator's, like every other fetch in this handler.
-        if let Ok(observations) =
-            list_observations(&db, growth_limit, None, None, auth.effective_user_id()).await
+        if let Ok(observations) = list_observations(
+            &db,
+            growth_limit,
+            scope_space_id,
+            scope_include_unscoped,
+            auth.effective_user_id(),
+        )
+        .await
         {
             if !observations.is_empty() {
                 let mut buf = String::from("## Growth Observations\n");

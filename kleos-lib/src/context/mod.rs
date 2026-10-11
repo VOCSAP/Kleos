@@ -527,6 +527,22 @@ async fn assemble_context_inner(
     // cosine) and therefore carry different defaults. An explicit
     // `opts.min_relevance` still overrides both arms.
     let min_relevance_opt = opts.min_relevance;
+    // Patch 33.2: optional space scope for every memory-backed layer.
+    let space_scope =
+        match crate::space::resolve_space_filter(db, user_id, opts.space_id, opts.space.as_deref())
+            .await?
+        {
+            Some(sid) => Some(
+                crate::space::SpaceScope::new(
+                    db,
+                    user_id,
+                    sid,
+                    opts.include_unscoped.unwrap_or(true),
+                )
+                .await,
+            ),
+            None => None,
+        };
 
     let truncate = |content: &str| truncate_to_token_budget(content, max_memory_tokens);
 
@@ -557,6 +573,9 @@ async fn assemble_context_inner(
         });
         if let Some(ref sf) = source_filter {
             statics.retain(|s| s.source.contains(sf.as_str()));
+        }
+        if let Some(ref scope) = space_scope {
+            statics.retain(|s| scope.allows(s.space_id));
         }
 
         // Score by cosine similarity when embedding provider is available; fall back to source_count.
@@ -649,6 +668,9 @@ async fn assemble_context_inner(
 
     // ---- Phase 2: Semantic search ----
     let t_search = Instant::now();
+    // Patch 33.2: hybrid_search's post-filter applies the same scope.
+    let (scope_space_id, scope_include_unscoped) =
+        crate::space::SpaceScope::search_filter(space_scope.as_ref());
     let search_req = SearchRequest {
         query: opts.query.clone(),
         embedding: query_emb,
@@ -657,6 +679,8 @@ async fn assemble_context_inner(
         user_id: Some(user_id),
         include_forgotten: Some(false),
         exclude_consolidated: Some(true),
+        space_id: scope_space_id,
+        include_unscoped: scope_include_unscoped,
         ..Default::default()
     };
     // A failed semantic search must be observable: silently defaulting to an
@@ -979,10 +1003,13 @@ async fn assemble_context_inner(
             if used_tokens >= (token_budget as f64 * 0.85) as usize {
                 break;
             }
-            let linked = get_links(db, sid, user_id).await.unwrap_or_else(|e| {
+            let mut linked = get_links(db, sid, user_id).await.unwrap_or_else(|e| {
                 tracing::warn!(sid, "context assembly: link expansion failed: {e}");
                 Default::default()
             });
+            // Patch 33.2: a link may point into another space.
+            crate::space::retain_in_scope(db, user_id, space_scope.as_ref(), &mut linked, |l| l.id)
+                .await;
             for l in &linked {
                 if seen_ids.contains(&l.id) || l.is_forgotten {
                     continue;
@@ -1052,12 +1079,19 @@ async fn assemble_context_inner(
     let t_recent = Instant::now();
     let recent_ceiling = (token_budget as f64 * 0.93) as usize;
     if flags.include_recent && used_tokens < recent_ceiling {
-        let recent = get_recent_dynamic(db, user_id, 5)
+        // Patch 33.2: when scoped, over-fetch so the 5 most recent in-scope rows
+        // survive the filter.
+        let recent_fetch = if space_scope.is_some() { 50 } else { 5 };
+        let mut recent = get_recent_dynamic(db, user_id, recent_fetch)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!("context assembly: recent-memory fetch failed: {e}");
                 Default::default()
             });
+        if let Some(ref scope) = space_scope {
+            recent.retain(|r| scope.allows(r.space_id));
+            recent.truncate(5);
+        }
         for r in &recent {
             if seen_ids.contains(&r.id) {
                 continue;

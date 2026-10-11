@@ -639,6 +639,13 @@ struct RecallBody {
     pub may_modify_repo: bool,
     /// Optional per-request override for the code-only token allowance.
     pub code_max_tokens: Option<usize>,
+    /// Patch 33.2: space scope forwarded to Kleos `/search` (name or id).
+    #[serde(default)]
+    pub space: Option<String>,
+    #[serde(default)]
+    pub space_id: Option<i64>,
+    #[serde(default)]
+    pub include_unscoped: Option<bool>,
 }
 
 /// Returns the default maximum number of memories to recall.
@@ -1024,13 +1031,24 @@ async fn recall(
         }
     };
 
-    let search_req = json!({
+    let mut search_req = json!({
         "query": combined_query,
         "limit": body.limit.min(100),
         "include_forgotten": false,
         "latest_only": true,
         "budget": body.budget,
     });
+    // Patch 33.2: forward the caller's space scope; absent keys keep the
+    // server default (no filter / inclusive).
+    if let Some(space) = body.space.as_deref().filter(|s| !s.trim().is_empty()) {
+        search_req["space"] = json!(space);
+    }
+    if let Some(space_id) = body.space_id {
+        search_req["space_id"] = json!(space_id);
+    }
+    if let Some(include_unscoped) = body.include_unscoped {
+        search_req["include_unscoped"] = json!(include_unscoped);
+    }
 
     let (results_arr, memory_error) = match post_with_fallback(
         &state,

@@ -60,6 +60,12 @@ pub(super) struct UploadCompleteBody {
     pub category: Option<String>,
     pub project_id: Option<i64>,
     pub episode_id: Option<i64>,
+    /// Patch 33.2: target space id for the ingested memories.
+    pub space_id: Option<i64>,
+    /// Patch 33.2: target space name (resolved or created server-side).
+    /// Absent both -> the user's `default` space, never NULL.
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -77,6 +83,12 @@ pub(super) struct ImportBulkBody {
     pub category: Option<String>,
     pub project_id: Option<i64>,
     pub episode_id: Option<i64>,
+    /// Patch 33.2: target space id for the ingested memories.
+    pub space_id: Option<i64>,
+    /// Patch 33.2: target space name (resolved or created server-side).
+    /// Absent both -> the user's `default` space, never NULL.
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,4 +121,10 @@ pub(super) struct IngestBody {
     #[allow(dead_code)]
     pub project_ids: Option<Vec<i64>>,
     pub episode_id: Option<i64>,
+    /// Patch 33.2: target space id for the ingested memories.
+    pub space_id: Option<i64>,
+    /// Patch 33.2: target space name (resolved or created server-side).
+    /// Absent both -> the user's `default` space, never NULL.
+    #[serde(default)]
+    pub space: Option<String>,
 }
