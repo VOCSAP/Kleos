@@ -285,7 +285,7 @@ pub async fn run_broker(
     }
     let encryption_key = resolve_db_encryption_key(&encryption_config)
         .map_err(|_| BrokerStartError::Initialization)?;
-    let db = Database::connect_encrypted(db_path, encryption_key)
+    let db = Database::connect_existing_read_only_encrypted(db_path, encryption_key)
         .await
         .map_err(|_| BrokerStartError::Initialization)?;
     let state = broker::BrokerState::new(db, master_key, policy, client_uid);

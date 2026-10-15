@@ -131,9 +131,17 @@ impl StartError {
         }
     }
 
+    #[cfg(unix)]
     fn internal(message: impl Into<String>) -> Self {
         Self {
             code: 70,
+            message: message.into(),
+        }
+    }
+
+    fn server(message: impl Into<String>) -> Self {
+        Self {
+            code: 1,
             message: message.into(),
         }
     }
@@ -164,7 +172,7 @@ async fn run(args: Args, listen_explicit: bool) -> Result<(), StartError> {
                 kleos_credd::build_router,
             )
             .await
-            .map_err(|error| StartError::internal(error.to_string()))
+            .map_err(|error| StartError::server(error.to_string()))
         }
         Mode::Broker => run_broker(args, listen_explicit).await,
     }

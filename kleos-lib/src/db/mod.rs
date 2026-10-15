@@ -64,6 +64,51 @@ impl Database {
         Self::connect_with_config(&config, key).await
     }
 
+    /// Open an existing credential vault without performing database maintenance.
+    pub async fn connect_existing_read_only_encrypted(
+        db_path: &str,
+        encryption_key: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        let path = std::path::Path::new(db_path);
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            EngError::DatabaseMessage(format!(
+                "broker vault is not an existing regular file: {error}"
+            ))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(EngError::DatabaseMessage(
+                "broker vault is not an existing regular file".to_owned(),
+            ));
+        }
+        let canonical_path = std::fs::canonicalize(path).map_err(|error| {
+            EngError::DatabaseMessage(format!("failed to canonicalize broker vault: {error}"))
+        })?;
+        let mut uri = url::Url::from_file_path(&canonical_path).map_err(|_| {
+            EngError::DatabaseMessage("failed to construct broker vault URI".to_owned())
+        })?;
+        uri.query_pairs_mut().append_pair("mode", "ro");
+
+        let config = Config::from_env();
+        let pools =
+            DatabasePools::new_read_only(uri.as_str(), DbPoolConfig::default(), encryption_key)
+                .await?;
+        let db = Self {
+            db_path: canonical_path.to_string_lossy().into_owned(),
+            pools,
+            vector_index: None,
+            chunk_vector_index: None,
+            pagerank_notify: Arc::new(tokio::sync::Notify::new()),
+            use_chunk_vector_search: config.use_chunk_vector_search,
+            facts_channel_enabled: config.facts_channel_enabled,
+            embedding_chunk_max_chars: config.embedding_chunk_max_chars,
+            embedding_chunk_overlap: config.embedding_chunk_overlap,
+            embedding_chunk_max_chunks: config.embedding_chunk_max_chunks,
+            is_tenant: false,
+        };
+        db.validate_credential_schema().await?;
+        Ok(db)
+    }
+
     /// Connect using an explicit `Config` (encryption key optional).
     pub async fn connect_with_config(
         config: &Config,
@@ -307,6 +352,20 @@ impl Database {
         .await
     }
 
+    async fn validate_credential_schema(&self) -> Result<()> {
+        self.read(|conn| {
+            conn.prepare(
+                "SELECT id, user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at
+                 FROM cred_secrets WHERE 0",
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            EngError::DatabaseMessage(format!("broker vault credential schema validation failed: {error}"))
+        })
+    }
+
     /// Returns true if this is a tenant shard database.
     pub fn is_tenant(&self) -> bool {
         self.is_tenant
@@ -492,5 +551,70 @@ mod converge_boot_tests {
             second.is_empty(),
             "tenant converge not idempotent: {second:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod broker_readonly_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn create_cred_schema(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cred_secrets (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                secret_type TEXT NOT NULL,
+                encrypted_data BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+    }
+
+    fn digest(path: &std::path::Path) -> [u8; 32] {
+        Sha256::digest(std::fs::read(path).unwrap()).into()
+    }
+
+    #[tokio::test]
+    async fn broker_readonly_open_preserves_existing_vault_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cred.db");
+        create_cred_schema(&path);
+        let before = digest(&path);
+
+        let db = Database::connect_existing_read_only_encrypted(path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        db.read(|conn| {
+            conn.query_row("SELECT count(*) FROM cred_secrets", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|_| ())
+            .map_err(Into::into)
+        })
+        .await
+        .unwrap();
+        drop(db);
+
+        assert_eq!(digest(&path), before);
+    }
+
+    #[tokio::test]
+    async fn broker_readonly_open_rejects_missing_vault_without_creating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.db");
+
+        assert!(
+            Database::connect_existing_read_only_encrypted(path.to_str().unwrap(), None)
+                .await
+                .is_err()
+        );
+        assert!(!path.exists());
     }
 }

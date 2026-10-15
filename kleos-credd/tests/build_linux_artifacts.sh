@@ -1,31 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+readonly CRED_1_8_SHA256=85af63d5a56b27b0469a38ac12b8f941c88ad9a4d3128e791e505b33b458c266
+
 : "${DEPLOYED_CRED_1_8:?set DEPLOYED_CRED_1_8 to the deployed Linux cred 1.8.0 binary}"
 : "${OUT_DIR:?set OUT_DIR to Local-Firewall/config/openclaw/openclaw-config/bin}"
 
-command -v cargo >/dev/null || { printf 'missing cargo\n' >&2; exit 78; }
-command -v file >/dev/null || { printf 'missing file\n' >&2; exit 78; }
-command -v ldd >/dev/null || { printf 'missing ldd\n' >&2; exit 78; }
-command -v sha256sum >/dev/null || { printf 'missing sha256sum\n' >&2; exit 78; }
+for command in cargo file ldd node python3 realpath sha256sum; do
+  command -v "$command" >/dev/null || {
+    printf 'missing required command: %s\n' "$command" >&2
+    exit 78
+  }
+done
 
-file "$DEPLOYED_CRED_1_8" | grep -q 'ELF 64-bit.*x86-64' || {
-  printf 'deployed cred 1.8.0 is not Linux x86_64\n' >&2
+mkdir -p "$OUT_DIR"
+out_dir=$(realpath -e "$OUT_DIR")
+deployed_cred=$(realpath -e "$DEPLOYED_CRED_1_8") || {
+  printf 'deployed cred 1.8.0 does not exist\n' >&2
   exit 78
 }
-ldd "$DEPLOYED_CRED_1_8" | grep -q 'libc\.so\.6' || {
-  printf 'deployed cred 1.8.0 is not a glibc-linked binary\n' >&2
+out_cred=$(realpath -m "$out_dir/cred")
+[[ "$deployed_cred" != "$out_cred" ]] || {
+  printf 'deployed cred 1.8.0 must not be the delivery target\n' >&2
   exit 78
 }
+
+deployed_hash=$(sha256sum "$deployed_cred")
+[[ ${deployed_hash%% *} == "$CRED_1_8_SHA256" ]] || {
+  printf 'deployed cred 1.8.0 checksum does not match the pinned release\n' >&2
+  exit 78
+}
+
+validate_binary() {
+  local binary=$1
+  file "$binary" | grep -q 'ELF 64-bit.*x86-64' || {
+    printf '%s is not Linux x86_64\n' "$binary" >&2
+    return 78
+  }
+}
+
+ldd_dependencies() {
+  local binary=$1
+  local dependencies
+  dependencies=$(ldd "$binary") || {
+    printf 'ldd failed for %s\n' "$binary" >&2
+    return 78
+  }
+  [[ "$dependencies" != *'not found'* ]] || {
+    printf 'ldd reported a missing dependency for %s\n' "$binary" >&2
+    return 78
+  }
+  [[ "$dependencies" == *'libc.so.6'* ]] || {
+    printf '%s is not a glibc-linked binary\n' "$binary" >&2
+    return 78
+  }
+  printf '%s' "$dependencies" | tr '\n' ';'
+}
+
+validate_binary "$deployed_cred"
+ldd_dependencies "$deployed_cred" >/dev/null
 
 cargo build --release --target x86_64-unknown-linux-gnu \
   -p kleos-cred --bin cred \
   -p kleos-credd --bin kleos-credd
 
+stage_dir=$(mktemp -d "$out_dir/.cred-broker-stage.XXXXXX")
+trap 'rm -rf "$stage_dir"' EXIT
 source_dir=target/x86_64-unknown-linux-gnu/release
-mkdir -p "$OUT_DIR"
-install -m 0755 "$source_dir/cred" "$OUT_DIR/cred"
-install -m 0755 "$source_dir/kleos-credd" "$OUT_DIR/kleos-credd"
+install -m 0755 "$source_dir/cred" "$stage_dir/cred"
+install -m 0755 "$source_dir/kleos-credd" "$stage_dir/kleos-credd"
+
+validate_binary "$stage_dir/cred"
+validate_binary "$stage_dir/kleos-credd"
+cred_dependencies=$(ldd_dependencies "$stage_dir/cred")
+credd_dependencies=$(ldd_dependencies "$stage_dir/kleos-credd")
+cred_hash=$(sha256sum "$stage_dir/cred")
+credd_hash=$(sha256sum "$stage_dir/kleos-credd")
 
 commit=$(git rev-parse HEAD)
 if git diff --quiet && git diff --cached --quiet; then
@@ -43,13 +93,21 @@ version=$(cargo metadata --no-deps --format-version 1 | \
   printf 'builder=%s\n' "$(uname -srmo)"
   printf 'toolchain=%s\n' "$(rustc --version)"
   printf 'target=x86_64-unknown-linux-gnu\n'
-  printf 'compatibility=glibc Debian bookworm, aligned after ldd DEPLOYED_CRED_1_8 check\n'
-  printf 'dynamic_dependencies_cred:\n'
-  ldd "$OUT_DIR/cred"
-  printf 'dynamic_dependencies_kleos-credd:\n'
-  ldd "$OUT_DIR/kleos-credd"
-  printf 'sha256:\n'
-  sha256sum "$OUT_DIR/cred" "$OUT_DIR/kleos-credd"
-} > "$OUT_DIR/cred-broker-manifest.txt"
+  printf 'dynamic_dependencies=cred:%s;kleos-credd:%s\n' "$cred_dependencies" "$credd_dependencies"
+  printf 'sha256 %s  cred\n' "${cred_hash%% *}"
+  printf 'sha256 %s  kleos-credd\n' "${credd_hash%% *}"
+} > "$stage_dir/cred-broker-manifest.txt"
 
-printf 'wrote %s\n' "$OUT_DIR/cred-broker-manifest.txt"
+verifier="$(dirname "$out_dir")/verify-cred-broker-delivery.mjs"
+[[ -f "$verifier" ]] || {
+  printf 'missing delivery verifier: %s\n' "$verifier" >&2
+  exit 78
+}
+node "$verifier" "$stage_dir/cred-broker-manifest.txt"
+
+mv -f "$stage_dir/cred" "$out_dir/cred"
+mv -f "$stage_dir/kleos-credd" "$out_dir/kleos-credd"
+mv -f "$stage_dir/cred-broker-manifest.txt" "$out_dir/cred-broker-manifest.txt"
+rmdir "$stage_dir"
+trap - EXIT
+printf 'wrote %s\n' "$out_dir/cred-broker-manifest.txt"

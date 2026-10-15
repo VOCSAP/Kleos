@@ -369,6 +369,9 @@ async fn resolve(
     if peer.uid != state.client_uid {
         return Err(BrokerError::denied());
     }
+    if request.uri().query().is_some() {
+        return Err(BrokerError::invalid_request());
+    }
     let _permit = state.require_permit()?;
     require_json(request.headers())?;
     let bytes = to_bytes(request.into_body(), REQUEST_LIMIT_BYTES)
@@ -691,5 +694,32 @@ mod tests {
         assert!(parse_policy_selector("memory-hub/api-key@field.with.dot").is_none());
         assert!(parse_policy_selector("memory-hub/api-key@*").is_none());
         assert!(parse_policy_selector("memory-hub/api-key/extra").is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_a_query_before_reading_the_body() {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let state = BrokerState::new(
+            Database::connect_memory().await.unwrap(),
+            [0; KEY_SIZE],
+            Policy {
+                selectors: BTreeSet::new(),
+            },
+            10001,
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/resolve?unexpected=true")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(vec![b'x'; REQUEST_LIMIT_BYTES + 1]))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(PeerIdentity { uid: 10001, pid: 1 });
+
+        let response = router(state).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
