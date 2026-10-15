@@ -46,6 +46,18 @@ script_dir=$(dirname "$(realpath -e "$0")")
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 chmod 711 "$root"
+readonly root_path=/usr/sbin:/usr/bin:/sbin:/bin
+readonly root_env=/usr/bin/env
+readonly root_bash=/usr/bin/bash
+readonly root_sudo=/usr/bin/sudo
+[[ -x "$root_env" && -x "$root_bash" && -x "$root_sudo" ]] || {
+  printf 'required system binaries are unavailable\n' >&2
+  exit 78
+}
+umask 077
+isolated_home="$root/home"
+isolated_config="$root/config"
+install -d -m 755 "$isolated_home" "$isolated_config"
 
 run_gate() {
   local name=$1
@@ -61,6 +73,8 @@ run_gate() {
 }
 
 run_gate 'vault-1.8' env -i PATH="$PATH" \
+  HOME="$isolated_home" \
+  XDG_CONFIG_HOME="$isolated_config" \
   CRED_1_8_BIN="$cred_1_8_bin" \
   NEW_CRED_BIN="$new_cred_bin" \
   NEW_CREDD_BIN="$new_credd_bin" \
@@ -71,7 +85,6 @@ fixture_config="$fixture_home/.config"
 keyfile="$root/master.key"
 db_path="$fixture_config/cred/cred.db"
 policy="$root/policy.toml"
-umask 077
 mkdir -p "$fixture_config"
 openssl rand -hex 32 > "$keyfile"
 recovery_passphrase=$(openssl rand -hex 24)
@@ -113,15 +126,20 @@ POLICY
 chmod 0644 "$policy"
 
 printf 'running SO_PEERCRED gate via sudo\n'
-run_gate 'SO_PEERCRED' sudo env -i PATH="$PATH" \
+run_gate 'SO_PEERCRED' "$root_sudo" "$root_env" -i PATH="$root_path" \
+  HOME="$isolated_home" \
+  XDG_CONFIG_HOME="$isolated_config" \
   BROKER_BIN="$new_credd_bin" \
   CLIENT_BIN="$new_cred_bin" \
   KEYFILE="$keyfile" \
   DB_PATH="$db_path" \
   POLICY="$policy" \
-  bash "$script_dir/broker_so_peercred_gate.sh"
+  "$root_bash" "$script_dir/broker_so_peercred_gate.sh"
 
-run_gate 'client' env -i PATH="$PATH" CLIENT_BIN="$new_cred_bin" \
+run_gate 'client' env -i PATH="$PATH" \
+  HOME="$isolated_home" \
+  XDG_CONFIG_HOME="$isolated_config" \
+  CLIENT_BIN="$new_cred_bin" \
   bash "$script_dir/broker_client_gate.sh"
 
 printf 'ALL GATES PASSED\n'
