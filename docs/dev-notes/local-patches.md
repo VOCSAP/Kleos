@@ -6518,18 +6518,33 @@ s'active que par `CRED_BROKER_SOCKET` ou `--auth-mode broker`
 aucune dependance ; les ajouts `kleos-lib` sont des fonctions nouvelles,
 `connect_encrypted` et `DatabasePools::new` sont inchanges.
 
+**Feature `piv` de `kleos-credd` :** `kleos-lib/piv` (crate `yubikey`, donc
+`pcsc`) faisait lier `libpcsclite.so.1` au binaire Linux, absent de l'image
+cred-broker minimale (image node de base, sans apt). `kleos-credd` porte
+desormais sa propre feature `piv`, active par defaut et transmise a
+`kleos-lib/piv` : les builds existants sont inchanges. La livraison broker
+(`build_linux_artifacts.sh`) construit `kleos-credd` avec
+`--no-default-features`, dans une invocation cargo separee de `cred`, et
+refuse un binaire qui lie `libpcsclite` ; le mode broker n'utilise que la
+keyfile. Sans la feature, `RequestSigner::from_env_or_file` saute le tier
+YubiKey (gating interne a `kleos-lib`), aucune source credd n'est gatee. Le
+script refuse aussi un arbre modifie : construire depuis un worktree propre
+(`git worktree add --detach /tmp/kleos-clean <commit>`).
+
 **Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
 `kleos-credd/src/server.rs`, `kleos-credd/src/peercred.rs`,
 `kleos-credd/src/lib.rs`, `kleos-credd/Cargo.toml`, `Cargo.lock`,
 `kleos-cred/src/bin/cred.rs`, `kleos-lib/src/db/mod.rs`
 (`connect_existing_read_only_encrypted`), `kleos-lib/src/db/pool.rs`
-(`new_read_only`), `kleos-credd/tests/*.sh`, `broker_fake_server.mjs`,
+(`new_read_only`), `kleos-credd/tests/*.sh` (dont
+`build_linux_artifacts.sh`), `broker_fake_server.mjs`,
 `kleos-credd/tests/fixtures/broker/`.
 
 **Commits :** `2f18720a` (broker), `19c466c1` (gate SO_PEERCRED), `0d3f6e1b`
 (durcissement livraison, ouverture lecture seule), `88dd5e17`, `c4246c5a`,
 `d3a8d3fb`, `ebba10ff` (wrapper des gates operateur), `fd61acd5` (compilation
-Linux du code `cfg(unix)`).
+Linux du code `cfg(unix)`), `d9f74946` (feature `piv` opt-out, livraison sans
+`libpcsclite`).
 
 **Tests :** tests unitaires de politique et validation protocolaire dans le
 module broker, plus gates Linux sur faux coffre cred1.8 et UID SO_PEERCRED
