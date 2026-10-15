@@ -60,14 +60,38 @@ CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
   setpriv --reuid 10001 --regid 10001 --clear-groups \
   "$CLIENT_BIN" list >/dev/null
 
-set +e
-CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
-  setpriv --reuid 10003 --regid 10003 --clear-groups \
-  "$CLIENT_BIN" list >/dev/null 2>&1
-status=$?
-set -e
-[[ $status == 77 ]] || {
-  printf 'unauthorised UID returned %s, expected 77\n' "$status" >&2
-  exit 1
+expect_exit() {
+  local expected=$1
+  local label=$2
+  shift 2
+  set +e
+  "$@" >/dev/null 2>&1
+  local status=$?
+  set -e
+  [[ $status == "$expected" ]] || {
+    printf '%s returned %s, expected %s\n' "$label" "$status" "$expected" >&2
+    exit 1
+  }
 }
+
+expect_exit 77 'unauthorised UID' \
+  env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+  setpriv --reuid 10003 --regid 10003 --groups 10001 \
+  "$CLIENT_BIN" list
+
+expect_exit 77 'broker UID entries' \
+  env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+  setpriv --reuid 10002 --regid 10002 --groups 10001 \
+  "$CLIENT_BIN" list
+
+expect_exit 77 'broker UID resolve' \
+  env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+  setpriv --reuid 10002 --regid 10002 --groups 10001 \
+  "$CLIENT_BIN" exec smtp api-key -- true
+
+expect_exit 69 'UID outside socket group' \
+  env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+  setpriv --reuid 10003 --regid 10003 --clear-groups \
+  "$CLIENT_BIN" list
+
 printf 'SO_PEERCRED cross-UID gate passed\n'
