@@ -1,5 +1,8 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 set -euo pipefail
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+hash -r
 
 usage() {
   cat >&2 <<'USAGE'
