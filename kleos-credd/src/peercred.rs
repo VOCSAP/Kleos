@@ -16,14 +16,21 @@ pub struct PeerIdentity {
 
 impl PeerIdentity {
     /// True when the peer runs as the same effective user as this daemon.
+    #[cfg(unix)]
     pub fn is_local_owner(&self) -> bool {
         self.uid == nix::unistd::geteuid().as_raw()
+    }
+
+    #[cfg(not(unix))]
+    pub fn is_local_owner(&self) -> bool {
+        false
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn same_uid_is_authorized() {
         let me = nix::unistd::geteuid().as_raw();

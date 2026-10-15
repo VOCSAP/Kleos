@@ -6494,3 +6494,31 @@ tourne. Verification : `cargo check -p kleos-ingest` sous WSL (le crate ne
 compile pas sous Windows, `watcher.rs` est Unix-only).
 
 **Conditions de retrait :** upstream applique `think_setting()` dans `call_llm`.
+
+## Patch 59 -- broker Unix `cred` isole pour OpenClaw (2026-10-15)
+
+**Symptome sous upstream pur :** `cred exec` ouvre le coffre local et peut faire
+un fallback HTTP vers le routeur credd historique, tandis que le daemon expose
+un routeur d'administration TCP ou Unix protege par bearer. Un processus
+OpenClaw ayant le coffre monte peut donc lire au-dela des references dont il a
+besoin.
+
+**Approche :** ajouter un routeur broker distinct, avec trois routes HTTP JSON
+v1 sur Unix socket, politique TOML fail-closed et identite `SO_PEERCRED`. Le
+mode broker du client ne connait que `exec` et `list` et utilise uniquement
+`CRED_BROKER_SOCKET`; il ne charge ni DB, ni cle, ni configuration de
+chiffrement, et ne consulte jamais `CREDD_URL`. Le listener historique et son
+routeur restent inchanges.
+
+**Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
+`kleos-credd/src/server.rs`, `kleos-credd/src/peercred.rs`,
+`kleos-credd/Cargo.toml`, `kleos-cred/src/bin/cred.rs`.
+
+**Tests :** tests unitaires de politique et validation protocolaire dans le
+module broker, plus gates Linux sur faux coffre cred1.8 et UID SO_PEERCRED
+cross-conteneur. Les derniers sont des prerequis de livraison et sont executes
+par l'operateur, car l'environnement Windows de developpement ne contient pas
+de toolchain Linux.
+
+**Conditions de retrait :** upstream fournit une interface broker Unix avec
+politique de references stricte et client sans fallback local ou distant.
