@@ -580,11 +580,7 @@ pub async fn listen(socket_path: &Path, client_group: u32, app: Router) -> anyho
                         request.extensions_mut().insert(peer);
                     }
                     let app = app.clone();
-                    async move {
-                        Ok::<_, std::convert::Infallible>(
-                            app.oneshot(request.map(axum::body::Body::new)).await,
-                        )
-                    }
+                    async move { app.oneshot(request.map(axum::body::Body::new)).await }
                 });
             let mut builder = hyper::server::conn::http1::Builder::new();
             builder.timer(hyper_util::rt::TokioTimer::new());

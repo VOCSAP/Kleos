@@ -1329,7 +1329,7 @@ async fn read_broker_response(
 
 #[cfg(unix)]
 fn broker_status_error(status: reqwest::StatusCode, body: &[u8]) -> BrokerClientError {
-    let parsed: BrokerErrorResponse = match serde_json::from_slice(body) {
+    let parsed = match serde_json::from_slice::<BrokerErrorResponse>(body) {
         Ok(parsed) if parsed.protocol == BROKER_PROTOCOL_VERSION => parsed,
         _ => return BrokerClientError::new(65),
     };
