@@ -5,7 +5,9 @@ set -euo pipefail
 : "${NEW_CRED_BIN:?set NEW_CRED_BIN to the new Linux cred binary}"
 : "${NEW_CREDD_BIN:?set NEW_CREDD_BIN to the new Linux kleos-credd binary}"
 
-for command in expect openssl sqlite3; do
+readonly CRED_1_8_SHA256=85af63d5a56b27b0469a38ac12b8f941c88ad9a4d3128e791e505b33b458c266
+
+for command in expect openssl sha256sum sqlite3; do
   command -v "$command" >/dev/null || {
     printf 'missing required command: %s\n' "$command" >&2
     exit 78
@@ -31,6 +33,16 @@ umask 077
 openssl rand -hex 32 > "$KEYFILE"
 export RECOVERY_PASSPHRASE
 RECOVERY_PASSPHRASE=$(openssl rand -hex 24)
+
+cred_1_8_hash=$(sha256sum "$CRED_1_8_BIN")
+[[ ${cred_1_8_hash%% *} == "$CRED_1_8_SHA256" ]] || {
+  printf 'cred 1.8.0 checksum does not match the pinned release\n' >&2
+  exit 78
+}
+[[ ! "$CRED_1_8_BIN" -ef "$NEW_CRED_BIN" ]] || {
+  printf 'cred 1.8.0 binary must not share an inode with the new cred binary\n' >&2
+  exit 78
+}
 
 expect <<'EXPECT'
 set timeout 30

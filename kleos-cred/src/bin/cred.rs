@@ -1262,6 +1262,7 @@ async fn broker_resolve(
             .await
             .map_err(|_| BrokerClientError::new(69))?;
         let (status, body) = read_broker_response(response).await?;
+        let body = Zeroizing::new(body);
         if status != reqwest::StatusCode::OK {
             return Err(broker_status_error(status, &body));
         }
