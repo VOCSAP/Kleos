@@ -6508,17 +6508,36 @@ v1 sur Unix socket, politique TOML fail-closed et identite `SO_PEERCRED`. Le
 mode broker du client ne connait que `exec` et `list` et utilise uniquement
 `CRED_BROKER_SOCKET`; il ne charge ni DB, ni cle, ni configuration de
 chiffrement, et ne consulte jamais `CREDD_URL`. Le listener historique et son
-routeur restent inchanges.
+routeur restent inchanges. Le broker ouvre le coffre en lecture seule
+(`mode=ro`), sans migration, converge ni rekey.
+
+**Effet sur `cred` Windows :** aucun sans declencheur. Le mode broker ne
+s'active que par `CRED_BROKER_SOCKET` ou `--auth-mode broker`
+(`CRED_AUTH_MODE=broker`) ; sous Windows il echoue toujours (code 78 pour
+`exec`/`list`, 77 sinon) sans ouvrir le coffre. Le binaire `cred` ne gagne
+aucune dependance ; les ajouts `kleos-lib` sont des fonctions nouvelles,
+`connect_encrypted` et `DatabasePools::new` sont inchanges.
 
 **Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
 `kleos-credd/src/server.rs`, `kleos-credd/src/peercred.rs`,
-`kleos-credd/Cargo.toml`, `kleos-cred/src/bin/cred.rs`.
+`kleos-credd/src/lib.rs`, `kleos-credd/Cargo.toml`, `Cargo.lock`,
+`kleos-cred/src/bin/cred.rs`, `kleos-lib/src/db/mod.rs`
+(`connect_existing_read_only_encrypted`), `kleos-lib/src/db/pool.rs`
+(`new_read_only`), `kleos-credd/tests/*.sh`, `broker_fake_server.mjs`,
+`kleos-credd/tests/fixtures/broker/`.
+
+**Commits :** `2f18720a` (broker), `19c466c1` (gate SO_PEERCRED), `0d3f6e1b`
+(durcissement livraison, ouverture lecture seule), `88dd5e17`, `c4246c5a`,
+`d3a8d3fb`, `ebba10ff` (wrapper des gates operateur), `fd61acd5` (compilation
+Linux du code `cfg(unix)`).
 
 **Tests :** tests unitaires de politique et validation protocolaire dans le
 module broker, plus gates Linux sur faux coffre cred1.8 et UID SO_PEERCRED
-cross-conteneur. Les derniers sont des prerequis de livraison et sont executes
-par l'operateur, car l'environnement Windows de developpement ne contient pas
-de toolchain Linux.
+cross-conteneur, executes par l'operateur (`run_operator_gates.sh`, sudo).
+Le code `cfg(unix)` ne compile pas sous Windows : le verifier sous WSL avant
+revue, `wsl --cd /mnt/c/Users/Olivier/workspace/Kleos --
+/home/nemo/.cargo/bin/cargo check --target x86_64-unknown-linux-gnu
+--target-dir /home/nemo/.cache/kleos-target-linux -p kleos-credd -p kleos-cred --all-targets`.
 
 **Conditions de retrait :** upstream fournit une interface broker Unix avec
 politique de references stricte et client sans fallback local ou distant.
