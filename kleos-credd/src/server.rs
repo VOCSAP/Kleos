@@ -1,5 +1,7 @@
 //! HTTP server setup for credd.
 
+#[cfg(unix)]
+use std::path::Path;
 use std::path::PathBuf;
 
 use axum::Router;
@@ -10,14 +12,25 @@ use kleos_lib::db::migrations::run_migrations;
 use kleos_lib::db::Database;
 use zeroize::Zeroizing;
 
+#[cfg(unix)]
+use crate::broker;
+use crate::broker::BrokerConfigError;
 use crate::build_router;
 use crate::listener;
 use crate::state::AppState;
 
+#[derive(Debug, thiserror::Error)]
+pub enum BrokerStartError {
+    #[error(transparent)]
+    Config(#[from] BrokerConfigError),
+    #[error("broker initialization failed")]
+    Initialization,
+}
+
 /// Build the master encryption key from credd auth-mode inputs.
 ///
 /// Supported modes are `yubikey` (default), `password`, and `keyfile`.
-fn resolve_master_key(
+pub(crate) fn resolve_master_key(
     auth_mode: &str,
     master_password: Option<String>,
     keyfile: Option<PathBuf>,
@@ -82,7 +95,7 @@ fn resolve_master_key(
 }
 
 /// Resolve optional at-rest DB encryption key using the legacy credd path.
-fn resolve_db_encryption_key(enc_config: &Config) -> anyhow::Result<Option<[u8; 32]>> {
+pub(crate) fn resolve_db_encryption_key(enc_config: &Config) -> anyhow::Result<Option<[u8; 32]>> {
     match enc_config.encryption.mode {
         EncryptionMode::None => Ok(None),
         EncryptionMode::Yubikey => {
@@ -240,4 +253,44 @@ pub async fn run(
         build_router,
     )
     .await
+}
+
+#[cfg(unix)]
+pub async fn run_broker(
+    socket_path: &Path,
+    policy_path: &Path,
+    client_uid: u32,
+    auth_mode: &str,
+    keyfile: Option<PathBuf>,
+    db_path: &str,
+) -> Result<(), BrokerStartError> {
+    let policy = broker::Policy::from_file(policy_path)?;
+    if auth_mode != "keyfile" {
+        return Err(BrokerConfigError::InvalidAuthMode.into());
+    }
+    if !socket_path.is_absolute() {
+        return Err(BrokerConfigError::InvalidSocket.into());
+    }
+    let keyfile = keyfile.ok_or(BrokerConfigError::MissingKeyfile)?;
+    let master_key = resolve_master_key(auth_mode, None, Some(keyfile))
+        .map_err(|_| BrokerStartError::Initialization)?;
+    let mut encryption_config = Config::from_env();
+    if std::env::var("ENGRAM_ENCRYPTION_MODE").is_err() {
+        if let Some(mode) = kleos_cred::encryption::read_persisted_encryption_mode() {
+            encryption_config.encryption.mode = mode;
+        }
+    }
+    if encryption_config.encryption.mode == EncryptionMode::Yubikey {
+        return Err(BrokerStartError::Initialization);
+    }
+    let encryption_key = resolve_db_encryption_key(&encryption_config)
+        .map_err(|_| BrokerStartError::Initialization)?;
+    let db = Database::connect_encrypted(db_path, encryption_key)
+        .await
+        .map_err(|_| BrokerStartError::Initialization)?;
+    let state = broker::BrokerState::new(db, master_key, policy, client_uid);
+    let app = broker::router(state);
+    broker::listen(socket_path, client_uid, app)
+        .await
+        .map_err(|_| BrokerStartError::Initialization)
 }

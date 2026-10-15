@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod bootstrap;
+pub mod broker;
 pub mod handlers;
 pub mod listener;
 pub mod peercred;

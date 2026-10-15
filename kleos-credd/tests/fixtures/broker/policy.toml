@@ -1,0 +1,9 @@
+version = 1
+
+[tools]
+mail = ["smtp/api-key", "resend/api-key"]
+kleos = ["kleos/api-key"]
+grafana = ["grafana/api-key"]
+opnsense = ["opnsense-key/api-key", "opnsense-secret/api-key"]
+github = ["github/api-key"]
+docker-inspect = ["docker-inspect/api-key"]
