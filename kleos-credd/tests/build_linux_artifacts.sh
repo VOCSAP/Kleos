@@ -13,6 +13,12 @@ for command in cargo file ldd node python3 realpath sha256sum; do
   }
 done
 
+git diff --quiet && git diff --cached --quiet || {
+  printf 'working tree has uncommitted changes; build from a clean worktree:\n' >&2
+  printf '  git worktree add /tmp/kleos-clean <commit> && cd /tmp/kleos-clean\n' >&2
+  exit 78
+}
+
 mkdir -p "$OUT_DIR"
 out_dir=$(realpath -e "$OUT_DIR")
 deployed_cred=$(realpath -e "$DEPLOYED_CRED_1_8") || {
@@ -61,8 +67,10 @@ validate_binary "$deployed_cred"
 ldd_dependencies "$deployed_cred" >/dev/null
 
 cargo build --release --target x86_64-unknown-linux-gnu \
-  -p kleos-cred --bin cred \
-  -p kleos-credd --bin kleos-credd
+  -p kleos-cred --bin cred
+# Separate invocation so feature unification cannot re-enable piv.
+cargo build --release --target x86_64-unknown-linux-gnu \
+  -p kleos-credd --bin kleos-credd --no-default-features
 
 stage_dir=$(mktemp -d "$out_dir/.cred-broker-stage.XXXXXX")
 trap 'rm -rf "$stage_dir"' EXIT
@@ -74,6 +82,10 @@ validate_binary "$stage_dir/cred"
 validate_binary "$stage_dir/kleos-credd"
 cred_dependencies=$(ldd_dependencies "$stage_dir/cred")
 credd_dependencies=$(ldd_dependencies "$stage_dir/kleos-credd")
+[[ "$credd_dependencies" != *'libpcsclite'* ]] || {
+  printf 'kleos-credd links libpcsclite; the broker image has no PC/SC library\n' >&2
+  exit 78
+}
 cred_hash=$(sha256sum "$stage_dir/cred")
 credd_hash=$(sha256sum "$stage_dir/kleos-credd")
 
