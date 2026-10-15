@@ -6530,6 +6530,19 @@ keyfile. Sans la feature, `RequestSigner::from_env_or_file` saute le tier
 YubiKey (gating interne a `kleos-lib`), aucune source credd n'est gatee. Le
 script refuse aussi un arbre modifie : construire depuis un worktree propre
 (`git worktree add --detach /tmp/kleos-clean <commit>`).
+Consequence de l'invocation separee : le `cred` livre est construit seul, avec
+`kleos-lib` en `{sqlcipher}`, alors qu'un build commun l'unifiait avec les
+features de `kleos-credd` (`{piv, ml, brain_hopfield}`). Aucun effet
+fonctionnel attendu : `ml` ne gate que les index vectoriels, que `cred`
+n'utilise pas.
+
+**Garde du script de livraison :** il exige un `git status --porcelain` vide
+(fichiers non suivis compris, sous-modules exclus car aucun n'est compile dans
+`cred` ni `kleos-credd`), refuse un `.cargo/config.toml` ou `.cargo/config` a
+la racine du depot (ignore par git, il peut porter `rustflags`, `[patch]`,
+`[env]`), construit avec `--locked` et copie les binaires depuis le
+`target_directory` rapporte par `cargo metadata`, qui suit `CARGO_TARGET_DIR`
+et un `target-dir` de configuration.
 
 **Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
 `kleos-credd/src/server.rs`, `kleos-credd/src/peercred.rs`,

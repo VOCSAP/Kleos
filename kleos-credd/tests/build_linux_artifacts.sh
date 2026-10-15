@@ -13,11 +13,26 @@ for command in cargo file ldd node python3 realpath sha256sum; do
   }
 done
 
-git diff --quiet && git diff --cached --quiet || {
-  printf 'working tree has uncommitted changes; build from a clean worktree:\n' >&2
-  printf '  git worktree add /tmp/kleos-clean <commit> && cd /tmp/kleos-clean\n' >&2
+# Submodules are excluded: none of them is compiled into cred or kleos-credd.
+tree_status() {
+  git status --porcelain --ignore-submodules=all
+}
+
+repo_root=$(git rev-parse --show-toplevel) && status=$(tree_status) || {
+  printf 'git status failed; run this script from the root of a Kleos worktree\n' >&2
   exit 78
 }
+[[ -z "$status" ]] || {
+  printf 'working tree has uncommitted or untracked changes; build from a clean worktree:\n' >&2
+  printf '  git worktree add --detach /tmp/kleos-clean <commit> && cd /tmp/kleos-clean\n' >&2
+  exit 78
+}
+for config in "$repo_root/.cargo/config.toml" "$repo_root/.cargo/config"; do
+  [[ ! -e "$config" ]] || {
+    printf '%s can change the build outside git; remove it or build from a fresh worktree\n' "$config" >&2
+    exit 78
+  }
+done
 
 mkdir -p "$OUT_DIR"
 out_dir=$(realpath -e "$OUT_DIR")
@@ -66,15 +81,19 @@ ldd_dependencies() {
 validate_binary "$deployed_cred"
 ldd_dependencies "$deployed_cred" >/dev/null
 
-cargo build --release --target x86_64-unknown-linux-gnu \
+metadata=$(cargo metadata --no-deps --format-version 1)
+target_dir=$(printf '%s' "$metadata" | \
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')
+
+cargo build --locked --release --target x86_64-unknown-linux-gnu \
   -p kleos-cred --bin cred
 # Separate invocation so feature unification cannot re-enable piv.
-cargo build --release --target x86_64-unknown-linux-gnu \
+cargo build --locked --release --target x86_64-unknown-linux-gnu \
   -p kleos-credd --bin kleos-credd --no-default-features
 
 stage_dir=$(mktemp -d "$out_dir/.cred-broker-stage.XXXXXX")
 trap 'rm -rf "$stage_dir"' EXIT
-source_dir=target/x86_64-unknown-linux-gnu/release
+source_dir=$target_dir/x86_64-unknown-linux-gnu/release
 install -m 0755 "$source_dir/cred" "$stage_dir/cred"
 install -m 0755 "$source_dir/kleos-credd" "$stage_dir/kleos-credd"
 
@@ -90,12 +109,12 @@ cred_hash=$(sha256sum "$stage_dir/cred")
 credd_hash=$(sha256sum "$stage_dir/kleos-credd")
 
 commit=$(git rev-parse HEAD)
-if git diff --quiet && git diff --cached --quiet; then
+if [[ -z "$(tree_status)" ]]; then
   dirty=false
 else
   dirty=true
 fi
-version=$(cargo metadata --no-deps --format-version 1 | \
+version=$(printf '%s' "$metadata" | \
   python3 -c 'import json, sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "kleos-credd"))')
 {
   printf 'git_commit=%s\n' "$commit"
