@@ -14,8 +14,14 @@ path = "src/lib.rs"
 name = "kleos-credd"
 path = "src/main.rs"
 
+[features]
+default = ["piv"]
+# YubiKey PIV request signing; links libpcsclite. The cred-broker delivery
+# build disables it because the broker image has no PC/SC library.
+piv = ["kleos-lib/piv"]
+
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.10.0", features = ["sqlcipher", "piv"] }
+kleos-lib = { path = "../kleos-lib", version = "1.10.0", features = ["sqlcipher"] }
 kleos-cred = { path = "../kleos-cred", version = "1.10.0" }
 
 # Web framework
