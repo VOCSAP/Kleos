@@ -6548,6 +6548,18 @@ la racine du depot (ignore par git, il peut porter `rustflags`, `[patch]`,
 `target_directory` rapporte par `cargo metadata`, qui suit `CARGO_TARGET_DIR`
 et un `target-dir` de configuration.
 
+**Bornes de connexion du broker :** `broker::MAX_CONNECTIONS` (128) borne les
+connexions ouvertes simultanement. Le slot est pris avant `accept()` : au-dela
+de la borne, une connexion reste dans le backlog du noyau (aucun descripteur
+consomme, ni refus ni fermeture) et est servie des qu'un slot se libere, soit
+a la fermeture de la connexion. Les 16 resolutions simultanees (503 au-dela) et
+le `header_read_timeout` de 5 s sont inchanges. Une erreur `accept()` par
+manque de ressources (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`, `ECONNABORTED`)
+n'est pas fatale : journalisee (errno seul), backoff de 100 ms, nouvelle
+tentative, les connexions deja acceptees restent servies. Toute autre erreur
+`accept()` reste fatale. 128 sockets plus les descripteurs propres du daemon
+tiennent sous `nofile=256` ; le compose du sidecar doit viser `nofile >= 1024`.
+
 **Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
 `kleos-credd/src/server.rs`, `kleos-credd/src/peercred.rs`,
 `kleos-credd/src/lib.rs`, `kleos-credd/Cargo.toml`, `Cargo.lock`,
