@@ -2009,12 +2009,20 @@ mod real_binary {
             "the broker must start inside its descriptor limit, holds {descriptors_before}"
         );
 
-        let after_first = flood_round(&mut broker, limit).await;
-        let after_second = flood_round(&mut broker, limit).await;
+        let mut series = vec![descriptors_before];
+        let mut stable = false;
+        for _ in 0..8 {
+            let after = flood_round(&mut broker, limit).await;
+            let previous = *series.last().unwrap();
+            series.push(after);
+            if series.len() > 2 && after <= previous + 1 {
+                stable = true;
+                break;
+            }
+        }
         assert!(
-            after_second <= after_first + 3,
-            "descriptors leaked: {descriptors_before} at start, {after_first} after the first flood, \
-             {after_second} after the second"
+            stable,
+            "the descriptor count keeps growing flood after flood: {series:?}"
         );
         let logs = broker.logs().await;
         assert!(
@@ -2042,6 +2050,8 @@ mod real_binary {
         )
         .await;
         let accepted_before = accepted(&trace);
+        let traced_pid = traced_broker_pid(&broker);
+        let descriptors_before = fd_count(traced_pid);
 
         let mut held = open_held(&mut broker, CONTRACT_MAX_CONNECTIONS + 72);
         observe(&mut broker, &mut held, Duration::from_secs(3)).await;
@@ -2081,7 +2091,36 @@ mod real_binary {
             "every connection that waited must be answered once slots are freed"
         );
         assert_nothing_leaked(&held);
+        drop(held);
+
+        let mut settled = fd_count(traced_pid);
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let current = fd_count(traced_pid);
+            if current == settled {
+                break;
+            }
+            settled = current;
+        }
+        let database_allowance = 16 * 4;
+        assert!(
+            settled <= descriptors_before + database_allowance,
+            "descriptors leaked by the connections: {descriptors_before} before, {settled} after \
+             every connection was closed"
+        );
         kill_traced_broker(&mut broker);
+    }
+
+    fn traced_broker_pid(tracer: &Broker) -> u32 {
+        let output = Command::new("pgrep")
+            .args(["-P", &tracer.child.id().to_string()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .and_then(|line| line.trim().parse().ok())
+            .expect("the traced broker process was not found")
     }
 
     fn require_strace() {
