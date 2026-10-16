@@ -116,7 +116,12 @@ fn valid_component(value: &str, max_len: usize, field: bool) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    if value.len() > max_len || !first.is_ascii_alphanumeric() && !(field && first == '_') {
+    let valid_first = if field {
+        first.is_ascii_alphabetic() || first == '_'
+    } else {
+        first.is_ascii_alphanumeric()
+    };
+    if value.len() > max_len || !valid_first {
         return false;
     }
     chars.all(|character| {
@@ -690,6 +695,61 @@ mod tests {
         assert!(parse_policy_selector("memory-hub/api-key@field.with.dot").is_none());
         assert!(parse_policy_selector("memory-hub/api-key@*").is_none());
         assert!(parse_policy_selector("memory-hub/api-key/extra").is_none());
+    }
+
+    #[test]
+    fn field_grammar_forbids_a_leading_digit_while_service_and_key_allow_one() {
+        assert!(parse_policy_selector("svc/key@1abc").is_none());
+        assert!(parse_policy_selector("svc/key@_abc1").is_some());
+        assert!(parse_policy_selector("1svc/1key").is_some());
+        assert!(!valid_component("1abc", 64, true));
+        assert!(valid_component("a1bc", 64, true));
+    }
+
+    #[test]
+    fn policy_rejects_a_field_selector_with_a_leading_digit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.toml");
+        std::fs::write(&path, "version = 1\n[tools]\na = [\"svc/key@1abc\"]\n").unwrap();
+        assert!(matches!(
+            Policy::from_file(&path),
+            Err(BrokerConfigError::InvalidPolicy)
+        ));
+    }
+
+    async fn resolve_reply(body: &str) -> (StatusCode, String) {
+        use axum::{body::Body, http::Request};
+        use tower::ServiceExt;
+
+        let state = BrokerState::new(
+            Database::connect_memory().await.unwrap(),
+            [0; KEY_SIZE],
+            Policy {
+                selectors: BTreeSet::new(),
+            },
+            10001,
+        );
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/v1/resolve")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(PeerIdentity { uid: 10001, pid: 1 });
+        let response = router(state).oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn resolve_refuses_a_field_with_a_leading_digit_as_invalid_request() {
+        let (status, body) =
+            resolve_reply(r#"{"protocol":1,"service":"s","key":"k","field":"1abc"}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("INVALID_REQUEST"), "{body}");
     }
 
     #[tokio::test]
