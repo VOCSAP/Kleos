@@ -56,9 +56,17 @@ stat -c '%u:%g %a' "$socket" | grep -qx '10002:10001 660' || {
   exit 1
 }
 
-CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+listing=$(CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
   setpriv --reuid 10001 --regid 10001 --clear-groups \
-  "$CLIENT_BIN" list >/dev/null
+  "$CLIENT_BIN" list)
+if [[ -n ${EXPECT_LISTED:-} ]]; then
+  listed=$(printf '%s\n' "$listing" | awk 'NR > 2 { print $1 "/" $2 }' | sort)
+  expected=$(printf '%s\n' $EXPECT_LISTED | sort)
+  [[ $listed == "$expected" ]] || {
+    printf 'authorised UID listed [%s], expected [%s]\n' "$listed" "$expected" >&2
+    exit 1
+  }
+fi
 
 expect_exit() {
   local expected=$1
@@ -74,10 +82,23 @@ expect_exit() {
   }
 }
 
+if [[ -n ${EXPECT_RESOLVE:-} ]]; then
+  read -r -a resolve_reference <<<"$EXPECT_RESOLVE"
+  expect_exit 0 'authorised UID resolve' \
+    env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+    setpriv --reuid 10001 --regid 10001 --clear-groups \
+    "$CLIENT_BIN" exec "${resolve_reference[@]}" --stdin -- sh -c 'test -n "$(cat)"'
+fi
+
 expect_exit 77 'unauthorised UID' \
   env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
   setpriv --reuid 10003 --regid 10003 --groups 10001 \
   "$CLIENT_BIN" list
+
+expect_exit 77 'unauthorised UID resolve' \
+  env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
+  setpriv --reuid 10003 --regid 10003 --groups 10001 \
+  "$CLIENT_BIN" exec smtp api-key -- true
 
 expect_exit 77 'broker UID entries' \
   env CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \

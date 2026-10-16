@@ -1,7 +1,8 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync, unlinkSync } from "node:fs";
 import net from "node:net";
 
 const socketPath = process.argv[2];
+const requestLog = process.argv[3];
 if (!socketPath) {
   process.exit(78);
 }
@@ -51,6 +52,9 @@ function error(socket, status, code) {
 
 function respond(socket, headers, body) {
   const requestLine = headers.split("\r\n", 1)[0];
+  if (requestLog) {
+    appendFileSync(requestLog, `${requestLine}\n`);
+  }
   if (requestLine.includes("/v1/entries")) {
     send(socket, "200 OK", JSON.stringify({
       protocol: 1,
@@ -64,6 +68,14 @@ function respond(socket, headers, body) {
     service = JSON.parse(body.toString("utf8")).service;
   } catch {
     error(socket, "400 Bad Request", "INVALID_REQUEST");
+    return;
+  }
+
+  if (typeof service === "string" && service.startsWith("echo-")) {
+    send(socket, "200 OK", JSON.stringify({
+      protocol: 1,
+      value: `ECHO_VALUE_${service.slice(5)}`,
+    }));
     return;
   }
 
