@@ -6514,7 +6514,11 @@ routeur restent inchanges. Le broker ouvre le coffre en lecture seule
 **Effet sur `cred` Windows :** aucun sans declencheur. Le mode broker ne
 s'active que par `CRED_BROKER_SOCKET` ou `--auth-mode broker`
 (`CRED_AUTH_MODE=broker`) ; sous Windows il echoue toujours (code 78 pour
-`exec`/`list`, 77 sinon) sans ouvrir le coffre. Le binaire `cred` ne gagne
+`exec`/`list`, 77 sinon) sans ouvrir le coffre. La seule presence de
+`CRED_BROKER_SOCKET` suffit tant qu'aucun mode d'authentification n'est fourni
+(la valeur par defaut clap `yubikey` n'est pas un choix explicite, distinction
+par `ValueSource`) ; un `--auth-mode` ou `CRED_AUTH_MODE` explicite autre que
+`broker` (`keyfile`, `password`, `yubikey`) donne 78. Le binaire `cred` ne gagne
 aucune dependance ; les ajouts `kleos-lib` sont des fonctions nouvelles,
 `connect_encrypted` et `DatabasePools::new` sont inchanges.
 
