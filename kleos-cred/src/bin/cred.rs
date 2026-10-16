@@ -1185,9 +1185,6 @@ async fn run_broker_client(
     if cli.auth_mode != "broker" && auth_mode_explicit {
         return Err(BrokerClientError::new(78));
     }
-    if cli.auth_mode != "broker" {
-        return Err(BrokerClientError::new(78));
-    }
     if cli.master_password.is_some() || cli.keyfile.is_some() {
         return Err(BrokerClientError::new(78));
     }
@@ -3897,6 +3894,58 @@ mod user_id_migration_tests {
             "the colliding legacy key stays parked at uid=0"
         );
         assert_eq!(count_agent_keys(&db, 1).await, 2);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod broker_selection_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> (Cli, bool) {
+        let matches = Cli::command().get_matches_from(args);
+        let explicit = matches.value_source("auth_mode") != Some(ValueSource::DefaultValue);
+        (
+            Cli::from_arg_matches(&matches).expect("valid arguments"),
+            explicit,
+        )
+    }
+
+    async fn broker_exit_code(args: &[&str]) -> Option<i32> {
+        let (cli, explicit) = parse(args);
+        run_broker_client(cli, explicit).await.err().map(|e| e.code)
+    }
+
+    #[tokio::test]
+    async fn broker_socket_alone_selects_broker_mode_and_explicit_local_modes_conflict() {
+        std::env::remove_var("CRED_AUTH_MODE");
+        std::env::remove_var("CRED_KEYFILE");
+        std::env::remove_var("CRED_MASTER_PASSWORD");
+        std::env::set_var("CRED_BROKER_SOCKET", "/nonexistent-broker-dir/cred.sock");
+
+        assert_eq!(
+            broker_exit_code(&["cred", "list"]).await,
+            Some(69),
+            "default auth mode must reach the transport, not be refused as a conflict"
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "broker", "list"]).await,
+            Some(69)
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "keyfile", "list"]).await,
+            Some(78)
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "password", "list"]).await,
+            Some(78)
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "yubikey", "list"]).await,
+            Some(78),
+            "an explicit yubikey choice is a local authentication option"
+        );
+
+        std::env::remove_var("CRED_BROKER_SOCKET");
     }
 }
 
