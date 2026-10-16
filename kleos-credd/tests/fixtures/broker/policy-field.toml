@@ -1,0 +1,7 @@
+version = 1
+
+[tools]
+account = ["account-demo/login@username"]
+ssh = ["ssh-demo/test-host@private_key"]
+endpoint = ["endpoint-demo/api-key@endpoint"]
+bare-login = ["account-demo/login"]

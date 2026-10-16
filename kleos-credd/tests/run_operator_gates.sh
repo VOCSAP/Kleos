@@ -18,7 +18,7 @@ if [[ $# != 2 ]]; then
   exit 78
 fi
 
-for command in env expect install mktemp node openssl readlink realpath setpriv sha256sum sqlite3 stat sudo; do
+for command in env expect install mktemp node openssl pgrep pkill ps readlink realpath setpriv setsid sha256sum sort sqlite3 stat strace sudo timeout; do
   command -v "$command" >/dev/null || {
     printf 'missing required command: %s\n' "$command" >&2
     usage
@@ -127,11 +127,33 @@ fi
   printf 'GATE FAILED: SO_PEERCRED\n' >&2
   exit 70
 }
+store_fixture() {
+  "$root_env" -i PATH="$root_path" TEST_HOME="$fixture_home" TEST_CONFIG="$fixture_config" \
+    CRED_1_8_BIN="$cred_1_8_bin" KEYFILE="$keyfile" SERVICE="$1" ENTRY_KEY="$2" \
+    VALUE="$(openssl rand -hex 24)" "$root_expect" <<'EXPECT'
+set timeout 20
+log_user 0
+spawn /usr/bin/env -i PATH=$env(PATH) HOME=$env(TEST_HOME) XDG_CONFIG_HOME=$env(TEST_CONFIG) $env(CRED_1_8_BIN) --auth-mode keyfile --keyfile $env(KEYFILE) store $env(SERVICE) $env(ENTRY_KEY)
+expect "api key:"
+send -- "$env(VALUE)\r"
+expect "endpoint (optional):"
+send -- "\r"
+expect eof
+EXPECT
+}
+store_fixture smtp api-key || {
+  printf 'GATE FAILED: SO_PEERCRED\n' >&2
+  exit 70
+}
+store_fixture github token || {
+  printf 'GATE FAILED: SO_PEERCRED\n' >&2
+  exit 70
+}
 cat > "$policy" <<'POLICY'
 version = 1
 
 [tools]
-mail = ["smtp/api-key"]
+mail = ["smtp/api-key", "absent/api-key"]
 POLICY
 chmod 0644 "$policy"
 
@@ -144,6 +166,8 @@ run_gate 'SO_PEERCRED' "$root_sudo" "$root_env" -i PATH="$root_path" \
   KEYFILE="$keyfile" \
   DB_PATH="$db_path" \
   POLICY="$policy" \
+  EXPECT_LISTED='smtp/api-key' \
+  EXPECT_RESOLVE='smtp api-key' \
   "$root_bash" "$script_dir/broker_so_peercred_gate.sh"
 
 run_gate 'client' "$root_env" -i PATH="$root_path" \
@@ -151,5 +175,11 @@ run_gate 'client' "$root_env" -i PATH="$root_path" \
   XDG_CONFIG_HOME="$isolated_config" \
   CLIENT_BIN="$new_cred_bin" \
   "$root_bash" "$script_dir/broker_client_gate.sh"
+
+run_gate 'client-acceptance' "$root_env" -i PATH="$root_path" \
+  HOME="$isolated_home" \
+  XDG_CONFIG_HOME="$isolated_config" \
+  CLIENT_BIN="$new_cred_bin" \
+  "$root_bash" "$script_dir/broker_client_acceptance_gate.sh"
 
 printf 'ALL GATES PASSED\n'
