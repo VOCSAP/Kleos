@@ -569,6 +569,18 @@ async fn resolve_rejects_malformed_requests_with_invalid_request() {
             json!({"protocol":1,"service":"*","key":"api-key","field":null}).to_string(),
         ),
         (
+            "service with an inner wildcard",
+            json!({"protocol":1,"service":"sm*tp","key":"api-key","field":null}).to_string(),
+        ),
+        (
+            "key with a trailing wildcard",
+            json!({"protocol":1,"service":"smtp","key":"api-*","field":null}).to_string(),
+        ),
+        (
+            "key with a glob class",
+            json!({"protocol":1,"service":"smtp","key":"ap[i]-key","field":null}).to_string(),
+        ),
+        (
             "service leading dash",
             json!({"protocol":1,"service":"-smtp","key":"api-key","field":null}).to_string(),
         ),
@@ -908,7 +920,9 @@ async fn the_seventeenth_concurrent_resolution_is_refused_and_stalled_ones_time_
                 uid: AUTHORISED_UID,
                 pid: 1,
             });
-            router.oneshot(request).await.unwrap().status()
+            let issued = tokio::time::Instant::now();
+            let status = router.oneshot(request).await.unwrap().status();
+            (status, issued.elapsed())
         }));
     }
     for _ in 0..64 {
@@ -934,13 +948,13 @@ async fn the_seventeenth_concurrent_resolution_is_refused_and_stalled_ones_time_
         "the refusal must be immediate, not a timeout"
     );
     for task in stalled {
-        assert_eq!(task.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+        let (status, elapsed) = task.await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            elapsed >= Duration::from_secs(3) && elapsed <= Duration::from_secs(4),
+            "a stalled request must be cut off after three seconds, took {elapsed:?}"
+        );
     }
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(5),
-        "stalled requests must be cut off after three seconds, took {elapsed:?}"
-    );
 
     let recovered = send(
         &router,
@@ -1241,6 +1255,11 @@ fn policy_rejects_every_malformed_selector() {
         ".github/api-key",
         "github/api-key@field-name",
         "github/api-key@field.name",
+        "git*hub/api-key",
+        "github/api-*",
+        "github/api-key*",
+        "github/ap?-key",
+        "github/ap[i]-key",
         long_service.as_str(),
         long_field.as_str(),
     ];
@@ -1366,13 +1385,33 @@ mod real_binary {
 
     const BIN: &str = env!("CARGO_BIN_EXE_kleos-credd");
 
+    fn output_within(command: &mut Command) -> std::process::Output {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn kleos-credd");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                return child.wait_with_output().unwrap();
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("kleos-credd was still running after 20 s: a refused start must exit");
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     fn credd(args: &[&str]) -> std::process::Output {
-        Command::new(BIN)
-            .args(args)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .output()
-            .expect("spawn kleos-credd")
+        output_within(
+            Command::new(BIN)
+                .args(args)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin"),
+        )
     }
 
     fn exit_code(output: &std::process::Output) -> i32 {
@@ -1824,13 +1863,13 @@ mod real_binary {
             "--broker-socket",
             socket.to_str().unwrap(),
         ];
-        let tcp_env = Command::new(BIN)
-            .args(base)
-            .env_clear()
-            .env("PATH", "/usr/bin:/bin")
-            .env("CREDD_BIND", "127.0.0.1:4400")
-            .output()
-            .unwrap();
+        let tcp_env = output_within(
+            Command::new(BIN)
+                .args(base)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("CREDD_BIND", "127.0.0.1:4400"),
+        );
 
         assert_eq!(exit_code(&credd(&with_listen)), 78, "explicit --listen");
         assert_eq!(exit_code(&credd(&with_password)), 78, "--master-password");
@@ -1854,9 +1893,7 @@ mod real_binary {
         fs::write(&decoy_db, "sentinel").unwrap();
         let policy = dir.path().join("policy.toml");
         fs::write(&policy, "version = 1\n[tools]\nt = [\"github/*\"]\n").unwrap();
-        let output = broker_command(dir.path(), &policy, &decoy_db, &socket)
-            .output()
-            .unwrap();
+        let output = output_within(&mut broker_command(dir.path(), &policy, &decoy_db, &socket));
 
         assert_eq!(exit_code(&output), 78, "{:?}", output);
         assert!(!socket.exists());
@@ -1870,16 +1907,22 @@ mod real_binary {
         let db_path = build_vault(dir.path(), &standard_seeds()).await;
         let socket = dir.path().join("cred.sock");
         fs::write(&socket, "keep me").unwrap();
-        let regular = broker_command(dir.path(), &fixture("policy.toml"), &db_path, &socket)
-            .output()
-            .unwrap();
+        let regular = output_within(&mut broker_command(
+            dir.path(),
+            &fixture("policy.toml"),
+            &db_path,
+            &socket,
+        ));
         fs::remove_file(&socket).unwrap();
         let target = dir.path().join("target.txt");
         fs::write(&target, "keep me too").unwrap();
         std::os::unix::fs::symlink(&target, &socket).unwrap();
-        let symlink = broker_command(dir.path(), &fixture("policy.toml"), &db_path, &socket)
-            .output()
-            .unwrap();
+        let symlink = output_within(&mut broker_command(
+            dir.path(),
+            &fixture("policy.toml"),
+            &db_path,
+            &socket,
+        ));
 
         assert_eq!(exit_code(&regular), 70, "{:?}", regular);
         assert_eq!(exit_code(&symlink), 70, "{:?}", symlink);
@@ -1895,14 +1938,12 @@ mod real_binary {
         let broker = start(&fixture("policy.toml"), &standard_seeds()).await;
         let inode_before = fs::metadata(&broker.socket).unwrap().ino();
         let db_path = broker.dir.path().join("vault/cred.db");
-        let second = broker_command(
+        let second = output_within(&mut broker_command(
             broker.dir.path(),
             &fixture("policy.toml"),
             &db_path,
             &broker.socket,
-        )
-        .output()
-        .unwrap();
+        ));
 
         assert_ne!(exit_code(&second), 0, "{:?}", second);
         assert_eq!(fs::metadata(&broker.socket).unwrap().ino(), inode_before);
