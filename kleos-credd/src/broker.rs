@@ -576,15 +576,23 @@ pub async fn listen(socket_path: &Path, client_group: u32, app: Router) -> anyho
 }
 
 #[cfg(unix)]
-fn is_transient_accept_error(error: &std::io::Error) -> bool {
+#[derive(Debug, PartialEq)]
+enum AcceptFailure {
+    AbortedConnection,
+    ResourceExhausted,
+}
+
+#[cfg(unix)]
+fn classify_accept_error(error: &std::io::Error) -> Option<AcceptFailure> {
     use nix::errno::Errno;
 
-    matches!(
-        error.raw_os_error().map(Errno::from_raw),
-        Some(
-            Errno::EMFILE | Errno::ENFILE | Errno::ENOBUFS | Errno::ENOMEM | Errno::ECONNABORTED
-        )
-    )
+    match error.raw_os_error().map(Errno::from_raw)? {
+        Errno::ECONNABORTED => Some(AcceptFailure::AbortedConnection),
+        Errno::EMFILE | Errno::ENFILE | Errno::ENOBUFS | Errno::ENOMEM => {
+            Some(AcceptFailure::ResourceExhausted)
+        }
+        _ => None,
+    }
 }
 
 // The slot is taken before accept(): a connection over the bound stays in the
@@ -596,16 +604,32 @@ async fn serve_connections(
     max_connections: usize,
 ) -> anyhow::Result<()> {
     let slots = Arc::new(Semaphore::new(max_connections));
+    let mut exhausted = false;
     loop {
         let slot = slots.clone().acquire_owned().await?;
         let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
-            Err(error) if is_transient_accept_error(&error) => {
-                tracing::warn!(errno = ?error.raw_os_error(), "broker accept failed, retrying");
-                tokio::time::sleep(ACCEPT_BACKOFF).await;
-                continue;
+            Ok((stream, _)) => {
+                if exhausted {
+                    tracing::info!("broker accept recovered");
+                    exhausted = false;
+                }
+                stream
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => match classify_accept_error(&error) {
+                Some(AcceptFailure::AbortedConnection) => continue,
+                Some(AcceptFailure::ResourceExhausted) => {
+                    if !exhausted {
+                        tracing::warn!(
+                            errno = ?error.raw_os_error(),
+                            "broker accept failed, retrying"
+                        );
+                        exhausted = true;
+                    }
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                    continue;
+                }
+                None => return Err(error.into()),
+            },
         };
         let peer = stream.peer_cred().ok().map(|credentials| PeerIdentity {
             uid: credentials.uid(),
@@ -839,24 +863,30 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn accept_errors_from_exhausted_resources_are_transient_and_others_are_not() {
+    fn accept_errors_are_classified_by_errno() {
         use nix::errno::Errno;
 
-        for errno in [
-            Errno::EMFILE,
-            Errno::ENFILE,
-            Errno::ENOBUFS,
-            Errno::ENOMEM,
-            Errno::ECONNABORTED,
-        ] {
+        for errno in [Errno::EMFILE, Errno::ENFILE, Errno::ENOBUFS, Errno::ENOMEM] {
             let error = std::io::Error::from_raw_os_error(errno as i32);
-            assert!(is_transient_accept_error(&error), "{errno}");
+            assert_eq!(
+                classify_accept_error(&error),
+                Some(AcceptFailure::ResourceExhausted),
+                "{errno}"
+            );
         }
+        let aborted = std::io::Error::from_raw_os_error(Errno::ECONNABORTED as i32);
+        assert_eq!(
+            classify_accept_error(&aborted),
+            Some(AcceptFailure::AbortedConnection)
+        );
         for errno in [Errno::EBADF, Errno::EINVAL] {
             let error = std::io::Error::from_raw_os_error(errno as i32);
-            assert!(!is_transient_accept_error(&error), "{errno}");
+            assert_eq!(classify_accept_error(&error), None, "{errno}");
         }
-        assert!(!is_transient_accept_error(&std::io::Error::other("no errno")));
+        assert_eq!(
+            classify_accept_error(&std::io::Error::other("no errno")),
+            None
+        );
     }
 
     #[cfg(unix)]
