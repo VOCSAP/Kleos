@@ -60,7 +60,7 @@ listing=$(CRED_AUTH_MODE=broker CRED_BROKER_SOCKET="$socket" \
   setpriv --reuid 10001 --regid 10001 --clear-groups \
   "$CLIENT_BIN" list)
 if [[ -n ${EXPECT_LISTED:-} ]]; then
-  listed=$(printf '%s\n' "$listing" | awk 'NR > 2 { print $1 "/" $2 }' | sort)
+  listed=$(printf '%s\n' "$listing" | awk 'NR > 2 && NF == 3 { print $1 "/" $2 }' | sort)
   expected=$(printf '%s\n' $EXPECT_LISTED | sort)
   [[ $listed == "$expected" ]] || {
     printf 'authorised UID listed [%s], expected [%s]\n' "$listed" "$expected" >&2
