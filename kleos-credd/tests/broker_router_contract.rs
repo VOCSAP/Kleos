@@ -936,9 +936,10 @@ async fn the_seventeenth_concurrent_resolution_is_refused_and_stalled_ones_time_
     for task in stalled {
         assert_eq!(task.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
     }
+    let elapsed = started.elapsed();
     assert!(
-        started.elapsed() >= Duration::from_secs(3),
-        "stalled requests must be cut off after three seconds"
+        elapsed >= Duration::from_secs(3) && elapsed < Duration::from_secs(5),
+        "stalled requests must be cut off after three seconds, took {elapsed:?}"
     );
 
     let recovered = send(
@@ -1450,10 +1451,30 @@ mod real_binary {
     }
 
     fn broker_command(dir: &Path, policy: &Path, db_path: &Path, socket: &Path) -> Command {
+        broker_command_with(dir, policy, db_path, socket, None)
+    }
+
+    fn broker_command_with(
+        dir: &Path,
+        policy: &Path,
+        db_path: &Path,
+        socket: &Path,
+        trace: Option<&Path>,
+    ) -> Command {
         let keyfile = dir.join("master.key");
         fs::write(&keyfile, format!("{}\n", master_hex())).unwrap();
         fs::set_permissions(&keyfile, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut command = Command::new(BIN);
+        let mut command = match trace {
+            Some(trace) => {
+                let mut command = Command::new("strace");
+                command
+                    .args(["-f", "-qq", "-e", "trace=execve,network", "-o"])
+                    .arg(trace)
+                    .arg(BIN);
+                command
+            }
+            None => Command::new(BIN),
+        };
         command
             .args(["--mode", "broker", "--broker-socket"])
             .arg(socket)
@@ -1473,11 +1494,15 @@ mod real_binary {
     }
 
     async fn start(policy: &Path, seeds: &[Seed]) -> Broker {
+        start_with(policy, seeds, None).await
+    }
+
+    async fn start_with(policy: &Path, seeds: &[Seed], trace: Option<&Path>) -> Broker {
         require_group_matching_uid();
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("cred.sock");
         let db_path = build_vault(dir.path(), seeds).await;
-        let mut command = broker_command(dir.path(), policy, &db_path, &socket);
+        let mut command = broker_command_with(dir.path(), policy, &db_path, &socket, trace);
         command
             .stdout(Stdio::from(
                 fs::File::create(dir.path().join("broker.stdout")).unwrap(),
@@ -1642,6 +1667,74 @@ mod real_binary {
                 .iter()
                 .any(|body| body == &error_envelope("INTERNAL")),
             "the undecryptable entry must surface as the opaque INTERNAL envelope: {bodies:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn serving_requests_never_spawns_a_process_nor_opens_an_inet_socket() {
+        assert!(
+            Command::new("strace")
+                .arg("-V")
+                .output()
+                .is_ok_and(|output| output.status.success()),
+            "this test traces the broker with strace; install it on the Linux test host"
+        );
+        let trace_dir = tempfile::tempdir().unwrap();
+        let trace = trace_dir.path().join("broker.trace");
+        let mut broker = start_with(&fixture("policy.toml"), &standard_seeds(), Some(&trace)).await;
+        let client = broker.client();
+        let bearer = format!("Bearer {}", master_hex());
+
+        for (service, key) in [
+            ("smtp", "api-key"),
+            ("github", "token"),
+            ("nowhere", "none"),
+        ] {
+            client
+                .post("http://cred-broker/v1/resolve")
+                .header(header::CONTENT_TYPE.as_str(), "application/json")
+                .body(json!({"protocol":1,"service":service,"key":key,"field":null}).to_string())
+                .send()
+                .await
+                .unwrap();
+        }
+        for path in ["/v1/entries", "/healthz", "/resolve/raw", "/export"] {
+            client
+                .get(format!("http://cred-broker{path}"))
+                .header(header::AUTHORIZATION.as_str(), bearer.as_str())
+                .send()
+                .await
+                .unwrap();
+            client
+                .get(format!("http://cred-broker{path}"))
+                .send()
+                .await
+                .unwrap();
+        }
+        let tracer_pid = broker.child.id().to_string();
+        let killed = Command::new("pkill")
+            .args(["-KILL", "-P", &tracer_pid])
+            .status()
+            .unwrap();
+        assert!(killed.success(), "the traced broker process was not found");
+        broker.child.wait().unwrap();
+
+        let trace_text = fs::read_to_string(&trace).unwrap();
+        let spawns = trace_text
+            .lines()
+            .filter(|line| line.contains("execve("))
+            .count();
+        assert_eq!(
+            spawns, 1,
+            "only the broker's own exec is allowed, trace: {trace_text}"
+        );
+        assert!(
+            trace_text.contains("AF_UNIX"),
+            "the trace must show the Unix socket activity, otherwise it observed nothing: {trace_text}"
+        );
+        assert!(
+            !trace_text.contains("AF_INET"),
+            "the broker opened an inet socket: {trace_text}"
         );
     }
 
