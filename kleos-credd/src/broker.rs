@@ -304,7 +304,7 @@ impl NullableField {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResolveRequest {
-    protocol: u8,
+    protocol: i64,
     service: String,
     key: String,
     field: NullableField,
@@ -384,7 +384,7 @@ async fn resolve(
         .map_err(|_| BrokerError::too_large())?;
     let input: ResolveRequest =
         serde_json::from_slice(&bytes).map_err(|_| BrokerError::invalid_request())?;
-    if input.protocol != PROTOCOL_VERSION {
+    if input.protocol != i64::from(PROTOCOL_VERSION) {
         return Err(BrokerError::unsupported_protocol());
     }
     if !valid_component(&input.service, 128, false)
@@ -748,6 +748,26 @@ mod tests {
     async fn resolve_refuses_a_field_with_a_leading_digit_as_invalid_request() {
         let (status, body) =
             resolve_reply(r#"{"protocol":1,"service":"s","key":"k","field":"1abc"}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains("INVALID_REQUEST"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn resolve_names_every_integer_protocol_other_than_one_unsupported() {
+        for protocol in ["0", "2", "256", "4294967296", "-1"] {
+            let body = format!(
+                r#"{{"protocol":{protocol},"service":"s","key":"k","field":null}}"#
+            );
+            let (status, text) = resolve_reply(&body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "protocol {protocol}");
+            assert!(text.contains("UNSUPPORTED_PROTOCOL"), "protocol {protocol}: {text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_keeps_a_non_integer_protocol_invalid_request() {
+        let (status, body) =
+            resolve_reply(r#"{"protocol":"1","service":"s","key":"k","field":null}"#).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.contains("INVALID_REQUEST"), "{body}");
     }
