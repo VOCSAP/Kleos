@@ -6551,13 +6551,14 @@ et un `target-dir` de configuration.
 **Bornes de connexion du broker :** `broker::MAX_CONNECTIONS` (128) borne les
 connexions ouvertes simultanement. Le slot est pris avant `accept()` : au-dela
 de la borne, une connexion reste dans le backlog du noyau (aucun descripteur
-consomme, ni refus ni fermeture) et est servie des qu'un slot se libere, soit
-a la fermeture de la connexion. Les 16 resolutions simultanees (503 au-dela) et
-le `header_read_timeout` de 5 s sont inchanges. Une erreur `accept()` par
-manque de ressources (`EMFILE`, `ENFILE`, `ENOBUFS`, `ENOMEM`, `ECONNABORTED`)
-n'est pas fatale : journalisee (errno seul), backoff de 100 ms, nouvelle
-tentative, les connexions deja acceptees restent servies. Toute autre erreur
-`accept()` reste fatale. 128 sockets plus les descripteurs propres du daemon
+consomme) et est servie a la fermeture d'une connexion ou au bout du
+`header_read_timeout` de 5 s ; au-dela du backlog noyau, `connect` est refuse
+(client 69). Les 16 resolutions simultanees (503 au-dela) sont inchangees. Une
+erreur `accept()` par manque de ressources (`EMFILE`, `ENFILE`, `ENOBUFS`,
+`ENOMEM`) n'est pas fatale : journalisee (errno seul) au premier echec puis au
+retour a la normale, backoff de 100 ms, nouvelle tentative, les connexions deja
+acceptees restent servies. `ECONNABORTED` (connexion avortee par le client) est
+ignoree sans pause ni journal. Toute autre erreur `accept()` reste fatale. 128 sockets plus les descripteurs propres du daemon
 tiennent sous `nofile=256` ; le compose du sidecar doit viser `nofile >= 1024`.
 
 **Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
