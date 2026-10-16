@@ -28,6 +28,9 @@ pub const RESPONSE_LIMIT_BYTES: usize = 512 * 1024;
 pub const VALUE_LIMIT_BYTES: usize = 64 * 1024;
 pub const MAX_POLICY_REFERENCES: usize = 256;
 pub const MAX_CONCURRENT_REQUESTS: usize = 16;
+pub const MAX_CONNECTIONS: usize = 128;
+#[cfg(unix)]
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Selector {
@@ -569,8 +572,41 @@ pub async fn listen(socket_path: &Path, client_group: u32, app: Router) -> anyho
         anyhow::bail!("broker socket ownership or mode is invalid");
     }
 
+    serve_connections(listener, app, MAX_CONNECTIONS).await
+}
+
+#[cfg(unix)]
+fn is_transient_accept_error(error: &std::io::Error) -> bool {
+    use nix::errno::Errno;
+
+    matches!(
+        error.raw_os_error().map(Errno::from_raw),
+        Some(
+            Errno::EMFILE | Errno::ENFILE | Errno::ENOBUFS | Errno::ENOMEM | Errno::ECONNABORTED
+        )
+    )
+}
+
+// The slot is taken before accept(): a connection over the bound stays in the
+// kernel backlog and costs no file descriptor.
+#[cfg(unix)]
+async fn serve_connections(
+    listener: tokio::net::UnixListener,
+    app: Router,
+    max_connections: usize,
+) -> anyhow::Result<()> {
+    let slots = Arc::new(Semaphore::new(max_connections));
     loop {
-        let (stream, _) = listener.accept().await?;
+        let slot = slots.clone().acquire_owned().await?;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(error) if is_transient_accept_error(&error) => {
+                tracing::warn!(errno = ?error.raw_os_error(), "broker accept failed, retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
         let peer = stream.peer_cred().ok().map(|credentials| PeerIdentity {
             uid: credentials.uid(),
             pid: credentials.pid().unwrap_or(0),
@@ -578,6 +614,8 @@ pub async fn listen(socket_path: &Path, client_group: u32, app: Router) -> anyho
         let app = app.clone();
         tokio::spawn(async move {
             use tower::ServiceExt;
+
+            let _slot = slot;
 
             let service =
                 tower::service_fn(move |mut request: hyper::Request<hyper::body::Incoming>| {
@@ -797,5 +835,68 @@ mod tests {
 
         let response = router(state).oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn accept_errors_from_exhausted_resources_are_transient_and_others_are_not() {
+        use nix::errno::Errno;
+
+        for errno in [
+            Errno::EMFILE,
+            Errno::ENFILE,
+            Errno::ENOBUFS,
+            Errno::ENOMEM,
+            Errno::ECONNABORTED,
+        ] {
+            let error = std::io::Error::from_raw_os_error(errno as i32);
+            assert!(is_transient_accept_error(&error), "{errno}");
+        }
+        for errno in [Errno::EBADF, Errno::EINVAL] {
+            let error = std::io::Error::from_raw_os_error(errno as i32);
+            assert!(!is_transient_accept_error(&error), "{errno}");
+        }
+        assert!(!is_transient_accept_error(&std::io::Error::other("no errno")));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connection_over_the_bound_waits_for_a_free_slot() {
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::{UnixListener, UnixStream},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let app = Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+        let server = tokio::spawn(serve_connections(listener, app, 2));
+
+        let first = UnixStream::connect(&path).await.unwrap();
+        let second = UnixStream::connect(&path).await.unwrap();
+        let mut third = UnixStream::connect(&path).await.unwrap();
+        third
+            .write_all(b"GET /ping HTTP/1.1\r\nhost: t\r\nconnection: close\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut reply = Vec::new();
+        let early = tokio::time::timeout(
+            Duration::from_millis(500),
+            third.read_to_end(&mut reply),
+        )
+        .await;
+        assert!(early.is_err(), "served while both slots were held");
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(2), third.read_to_end(&mut reply))
+            .await
+            .expect("not served after a slot was released")
+            .unwrap();
+        assert!(String::from_utf8_lossy(&reply).contains("pong"));
+
+        drop(second);
+        server.abort();
     }
 }
