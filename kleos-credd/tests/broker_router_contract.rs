@@ -1490,7 +1490,23 @@ mod real_binary {
     }
 
     fn broker_command(dir: &Path, policy: &Path, db_path: &Path, socket: &Path) -> Command {
-        broker_command_with(dir, policy, db_path, socket, None)
+        broker_command_with(dir, policy, db_path, socket, &[])
+    }
+
+    fn strace_wrapper(trace: &Path, traced_calls: &str, inject: Option<&str>) -> Vec<String> {
+        let mut wrapper: Vec<String> = ["strace", "-f", "-qq", "-e", traced_calls]
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect();
+        if let Some(inject) = inject {
+            wrapper.extend(["-e".to_owned(), inject.to_owned()]);
+        }
+        wrapper.extend(["-o".to_owned(), trace.display().to_string()]);
+        wrapper
+    }
+
+    fn prlimit_wrapper(limit: u64) -> Vec<String> {
+        vec!["prlimit".to_owned(), format!("--nofile={limit}:{limit}")]
     }
 
     fn broker_command_with(
@@ -1498,18 +1514,15 @@ mod real_binary {
         policy: &Path,
         db_path: &Path,
         socket: &Path,
-        trace: Option<&Path>,
+        wrapper: &[String],
     ) -> Command {
         let keyfile = dir.join("master.key");
         fs::write(&keyfile, format!("{}\n", master_hex())).unwrap();
         fs::set_permissions(&keyfile, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut command = match trace {
-            Some(trace) => {
-                let mut command = Command::new("strace");
-                command
-                    .args(["-f", "-qq", "-e", "trace=execve,network", "-o"])
-                    .arg(trace)
-                    .arg(BIN);
+        let mut command = match wrapper.split_first() {
+            Some((program, arguments)) => {
+                let mut command = Command::new(program);
+                command.args(arguments).arg(BIN);
                 command
             }
             None => Command::new(BIN),
@@ -1533,30 +1546,14 @@ mod real_binary {
     }
 
     async fn start(policy: &Path, seeds: &[Seed]) -> Broker {
-        start_with(policy, seeds, None).await
+        start_with(policy, seeds, &[]).await
     }
 
-    async fn start_with(policy: &Path, seeds: &[Seed], trace: Option<&Path>) -> Broker {
-        require_group_matching_uid();
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("cred.sock");
-        let db_path = build_vault(dir.path(), seeds).await;
-        let mut command = broker_command_with(dir.path(), policy, &db_path, &socket, trace);
-        command
-            .stdout(Stdio::from(
-                fs::File::create(dir.path().join("broker.stdout")).unwrap(),
-            ))
-            .stderr(Stdio::from(
-                fs::File::create(dir.path().join("broker.stderr")).unwrap(),
-            ));
-        let child = command.spawn().expect("spawn broker");
-        let mut broker = Broker { child, dir, socket };
+    async fn start_with(policy: &Path, seeds: &[Seed], wrapper: &[String]) -> Broker {
+        let mut broker = spawn_with(policy, seeds, wrapper).await;
         let client = broker.client();
         for _ in 0..200 {
-            if let Some(status) = broker.child.try_wait().unwrap() {
-                let stderr = fs::read_to_string(broker.stderr_path()).unwrap_or_default();
-                panic!("broker exited early with {status}: {stderr}");
-            }
+            fail_if_exited(&mut broker, "before it became healthy");
             if broker.socket.exists()
                 && client
                     .get("http://cred-broker/healthz")
@@ -1569,6 +1566,34 @@ mod real_binary {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("broker never became healthy");
+    }
+
+    async fn spawn_with(policy: &Path, seeds: &[Seed], wrapper: &[String]) -> Broker {
+        require_group_matching_uid();
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("cred.sock");
+        let db_path = build_vault(dir.path(), seeds).await;
+        let mut command = broker_command_with(dir.path(), policy, &db_path, &socket, wrapper);
+        command
+            .stdout(Stdio::from(
+                fs::File::create(dir.path().join("broker.stdout")).unwrap(),
+            ))
+            .stderr(Stdio::from(
+                fs::File::create(dir.path().join("broker.stderr")).unwrap(),
+            ));
+        let child = command.spawn().expect("spawn broker");
+        Broker { child, dir, socket }
+    }
+
+    async fn wait_for_socket(broker: &mut Broker) {
+        for _ in 0..400 {
+            fail_if_exited(broker, "before binding its socket");
+            if broker.socket.exists() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("the broker never bound its socket");
     }
 
     async fn get_text(client: &reqwest::Client, path: &str) -> (u16, String) {
@@ -1720,7 +1745,12 @@ mod real_binary {
         );
         let trace_dir = tempfile::tempdir().unwrap();
         let trace = trace_dir.path().join("broker.trace");
-        let mut broker = start_with(&fixture("policy.toml"), &standard_seeds(), Some(&trace)).await;
+        let mut broker = start_with(
+            &fixture("policy.toml"),
+            &standard_seeds(),
+            &strace_wrapper(&trace, "trace=execve,network", None),
+        )
+        .await;
         let client = broker.client();
         let bearer = format!("Bearer {}", master_hex());
 
@@ -1774,6 +1804,405 @@ mod real_binary {
         assert!(
             !trace_text.contains("AF_INET"),
             "the broker opened an inet socket: {trace_text}"
+        );
+    }
+
+    const CONTRACT_MAX_CONNECTIONS: usize = 128;
+
+    struct Held {
+        stream: std::os::unix::net::UnixStream,
+        received: Vec<u8>,
+        closed: bool,
+    }
+
+    impl Held {
+        fn status(&self) -> Option<u16> {
+            let head = self.received.get(..12)?;
+            std::str::from_utf8(head).ok()?.strip_prefix("HTTP/1.1 ")?[..3]
+                .parse()
+                .ok()
+        }
+    }
+
+    fn flood_request() -> Vec<u8> {
+        let body = golden("resolve-request.json");
+        format!(
+            "POST /v1/resolve HTTP/1.1\r\nHost: cred-broker\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn open_held(broker: &mut Broker, count: usize) -> Vec<Held> {
+        use std::io::Write;
+
+        let request = flood_request();
+        let mut held = Vec::new();
+        for index in 0..count {
+            let opened =
+                std::os::unix::net::UnixStream::connect(&broker.socket).and_then(|mut stream| {
+                    stream.write_all(&request)?;
+                    stream.set_nonblocking(true)?;
+                    Ok(stream)
+                });
+            match opened {
+                Ok(stream) => held.push(Held {
+                    stream,
+                    received: Vec::new(),
+                    closed: false,
+                }),
+                Err(error) => {
+                    for _ in 0..100 {
+                        fail_if_exited(
+                            broker,
+                            &format!("when connection {index} failed ({error})"),
+                        );
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    panic!("connection {index} failed although the broker is running: {error}");
+                }
+            }
+        }
+        held
+    }
+
+    fn pump(held: &mut [Held]) {
+        use std::io::Read;
+
+        let mut buffer = [0u8; 4096];
+        for connection in held.iter_mut().filter(|connection| !connection.closed) {
+            loop {
+                match connection.stream.read(&mut buffer) {
+                    Ok(0) => {
+                        connection.closed = true;
+                        break;
+                    }
+                    Ok(read) => connection.received.extend_from_slice(&buffer[..read]),
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        connection.closed = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    fn fail_if_exited(broker: &mut Broker, context: &str) {
+        if let Some(status) = broker.child.try_wait().unwrap() {
+            let stderr = fs::read_to_string(broker.stderr_path()).unwrap_or_default();
+            panic!("the broker exited with {status} {context}: {stderr}");
+        }
+    }
+
+    async fn observe(broker: &mut Broker, held: &mut [Held], window: Duration) {
+        let deadline = std::time::Instant::now() + window;
+        while std::time::Instant::now() < deadline {
+            fail_if_exited(broker, "while connections were held open");
+            pump(held);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        pump(held);
+        fail_if_exited(broker, "while connections were held open");
+    }
+
+    fn answered(held: &[Held]) -> usize {
+        held.iter()
+            .filter(|connection| connection.status().is_some())
+            .count()
+    }
+
+    fn succeeded(held: &[Held]) -> usize {
+        held.iter()
+            .filter(|connection| connection.status() == Some(200))
+            .count()
+    }
+
+    fn assert_nothing_leaked(held: &[Held]) {
+        for (index, connection) in held.iter().enumerate() {
+            let text = String::from_utf8_lossy(&connection.received);
+            assert!(
+                connection.received.is_empty()
+                    || text.starts_with("HTTP/1.1 200")
+                    || text.starts_with("HTTP/1.1 503")
+                    || (text.starts_with("HTTP/1.1 500")
+                        && text.ends_with(&error_envelope("INTERNAL"))),
+                "connection {index} received an unexpected answer: {text}"
+            );
+            for needle in [master_hex(), UNAUTHORISED_VALUE.to_owned()] {
+                assert!(
+                    !text.contains(&needle),
+                    "connection {index} leaked {needle}: {text}"
+                );
+            }
+        }
+    }
+
+    fn fd_count(pid: u32) -> usize {
+        fs::read_dir(format!("/proc/{pid}/fd"))
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+
+    async fn resolves_with_200(broker: &Broker) -> bool {
+        broker
+            .client()
+            .post("http://cred-broker/v1/resolve")
+            .header(header::CONTENT_TYPE.as_str(), "application/json")
+            .body(golden("resolve-request.json"))
+            .send()
+            .await
+            .is_ok_and(|response| response.status().as_u16() == 200)
+    }
+
+    async fn flood_round(broker: &mut Broker, limit: u64) -> usize {
+        let pid = broker.child.id();
+        let mut held = open_held(broker, 200);
+        observe(broker, &mut held, Duration::from_secs(3)).await;
+
+        let served = answered(&held);
+        assert!(
+            served <= limit as usize,
+            "{served} connections were answered under a limit of {limit} descriptors"
+        );
+        assert_nothing_leaked(&held);
+        drop(held);
+
+        let mut recovered = false;
+        for _ in 0..400 {
+            fail_if_exited(broker, "while recovering from the flood");
+            if resolves_with_200(broker).await {
+                recovered = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            recovered,
+            "a valid resolution must succeed once the connections are closed"
+        );
+        let mut settled = fd_count(pid);
+        for _ in 0..200 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let current = fd_count(pid);
+            if current == settled {
+                break;
+            }
+            settled = current;
+        }
+        settled
+    }
+
+    #[tokio::test]
+    async fn a_connection_flood_beyond_the_descriptor_limit_keeps_the_broker_alive_and_leak_free() {
+        let limit = 64;
+        let mut broker = start_with(
+            &fixture("policy.toml"),
+            &standard_seeds(),
+            &prlimit_wrapper(limit),
+        )
+        .await;
+        let pid = broker.child.id();
+        let descriptors_before = fd_count(pid);
+        assert!(
+            descriptors_before < limit as usize,
+            "the broker must start inside its descriptor limit, holds {descriptors_before}"
+        );
+
+        let after_first = flood_round(&mut broker, limit).await;
+        let after_second = flood_round(&mut broker, limit).await;
+        assert!(
+            after_second <= after_first + 3,
+            "descriptors leaked: {descriptors_before} at start, {after_first} after the first flood, \
+             {after_second} after the second"
+        );
+        let logs = broker.logs().await;
+        assert!(
+            !logs.contains(&master_hex()) && !logs.contains(UNAUTHORISED_VALUE),
+            "the flood leaked a secret into the logs: {logs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connections_beyond_the_bound_wait_and_are_served_once_slots_are_freed() {
+        require_strace();
+        let trace_dir = tempfile::tempdir().unwrap();
+        let trace = trace_dir.path().join("accept.trace");
+        let accepted = |trace: &Path| {
+            fs::read_to_string(trace)
+                .unwrap_or_default()
+                .lines()
+                .filter(|line| line.contains("accept4(") && !line.contains("= -1"))
+                .count()
+        };
+        let mut broker = start_with(
+            &fixture("policy.toml"),
+            &standard_seeds(),
+            &strace_wrapper(&trace, "trace=accept4", None),
+        )
+        .await;
+        let accepted_before = accepted(&trace);
+
+        let mut held = open_held(&mut broker, CONTRACT_MAX_CONNECTIONS + 72);
+        observe(&mut broker, &mut held, Duration::from_secs(3)).await;
+
+        let accepted_during = accepted(&trace) - accepted_before;
+        assert_eq!(
+            accepted_during,
+            CONTRACT_MAX_CONNECTIONS,
+            "the {}th connection must wait in the kernel backlog, not be accepted",
+            CONTRACT_MAX_CONNECTIONS + 1
+        );
+
+        let served = answered(&held);
+        assert!(
+            served > 0 && served <= CONTRACT_MAX_CONNECTIONS,
+            "{served} connections were answered while {} were open at once",
+            held.len()
+        );
+        assert!(
+            succeeded(&held) > 0,
+            "no resolution succeeded during the flood"
+        );
+        assert_nothing_leaked(&held);
+        let waiting = held.len() - served;
+        held.retain(|connection| connection.status().is_none());
+        assert_eq!(held.len(), waiting);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while answered(&held) < held.len() && std::time::Instant::now() < deadline {
+            fail_if_exited(&mut broker, "while the waiting connections were drained");
+            pump(&mut held);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            answered(&held),
+            held.len(),
+            "every connection that waited must be answered once slots are freed"
+        );
+        assert_nothing_leaked(&held);
+        kill_traced_broker(&mut broker);
+    }
+
+    fn require_strace() {
+        assert!(
+            Command::new("strace")
+                .arg("-V")
+                .output()
+                .is_ok_and(|output| output.status.success()),
+            "this test injects accept() errors with strace; install it on the Linux test host"
+        );
+    }
+
+    fn kill_traced_broker(broker: &mut Broker) {
+        let tracer_pid = broker.child.id().to_string();
+        let killed = Command::new("pkill")
+            .args(["-KILL", "-P", &tracer_pid])
+            .status()
+            .unwrap();
+        assert!(killed.success(), "the traced broker process was not found");
+        broker.child.wait().unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_accept_error_that_is_not_a_resource_shortage_stops_the_broker() {
+        require_strace();
+        let trace_dir = tempfile::tempdir().unwrap();
+        let trace = trace_dir.path().join("accept.trace");
+        let mut broker = spawn_with(
+            &fixture("policy.toml"),
+            &standard_seeds(),
+            &strace_wrapper(&trace, "trace=accept4", Some("inject=accept4:error=EINVAL")),
+        )
+        .await;
+        wait_for_socket(&mut broker).await;
+        let _client = std::os::unix::net::UnixStream::connect(&broker.socket).unwrap();
+
+        let mut exit = None;
+        for _ in 0..200 {
+            if let Some(status) = broker.child.try_wait().unwrap() {
+                exit = Some(status);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        let status = exit.unwrap_or_else(|| {
+            kill_traced_broker(&mut broker);
+            panic!(
+                "the broker kept running after a fatal accept() error, trace: {}",
+                fs::read_to_string(&trace).unwrap_or_default()
+            )
+        });
+        assert_eq!(
+            status.code(),
+            Some(70),
+            "a fatal accept error is an initialization failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_aborted_connection_during_accept_does_not_stop_the_broker() {
+        require_strace();
+        let trace_dir = tempfile::tempdir().unwrap();
+        let trace = trace_dir.path().join("accept.trace");
+        let mut broker = start_with(
+            &fixture("policy.toml"),
+            &standard_seeds(),
+            &strace_wrapper(
+                &trace,
+                "trace=accept4",
+                Some("inject=accept4:error=ECONNABORTED:when=1"),
+            ),
+        )
+        .await;
+
+        assert!(
+            resolves_with_200(&broker).await,
+            "a valid resolution must succeed after an aborted accept()"
+        );
+        fail_if_exited(&mut broker, "after an aborted accept()");
+        kill_traced_broker(&mut broker);
+        let trace_text = fs::read_to_string(&trace).unwrap();
+        assert!(
+            trace_text.contains("ECONNABORTED"),
+            "the injection never reached the broker, trace: {trace_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_durable_descriptor_shortage_is_retried_with_a_backoff_and_never_stops_the_broker() {
+        require_strace();
+        let trace_dir = tempfile::tempdir().unwrap();
+        let trace = trace_dir.path().join("accept.trace");
+        let mut broker = spawn_with(
+            &fixture("policy.toml"),
+            &standard_seeds(),
+            &strace_wrapper(&trace, "trace=accept4", Some("inject=accept4:error=EMFILE")),
+        )
+        .await;
+        wait_for_socket(&mut broker).await;
+        let _client = std::os::unix::net::UnixStream::connect(&broker.socket).unwrap();
+
+        let window = Duration::from_millis(1500);
+        let deadline = std::time::Instant::now() + window;
+        while std::time::Instant::now() < deadline {
+            fail_if_exited(&mut broker, "while accept() kept failing with EMFILE");
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        kill_traced_broker(&mut broker);
+
+        let trace_text = fs::read_to_string(&trace).unwrap();
+        let attempts = trace_text
+            .lines()
+            .filter(|line| line.contains("accept4(") && line.contains("EMFILE"))
+            .count();
+        assert!(
+            attempts >= 2,
+            "the injection never reached the broker, trace: {trace_text}"
+        );
+        assert!(
+            attempts <= 40,
+            "{attempts} accept() attempts in {window:?}: the retry must back off, not spin"
         );
     }
 
