@@ -3915,11 +3915,20 @@ mod broker_selection_tests {
         run_broker_client(cli, explicit).await.err().map(|e| e.code)
     }
 
+    struct BrokerSocketVariable;
+
+    impl Drop for BrokerSocketVariable {
+        fn drop(&mut self) {
+            std::env::remove_var("CRED_BROKER_SOCKET");
+        }
+    }
+
     #[tokio::test]
     async fn broker_socket_alone_selects_broker_mode_and_explicit_local_modes_conflict() {
         std::env::remove_var("CRED_AUTH_MODE");
         std::env::remove_var("CRED_KEYFILE");
         std::env::remove_var("CRED_MASTER_PASSWORD");
+        let _restore = BrokerSocketVariable;
         std::env::set_var("CRED_BROKER_SOCKET", "/nonexistent-broker-dir/cred.sock");
 
         assert_eq!(
@@ -3944,8 +3953,6 @@ mod broker_selection_tests {
             Some(78),
             "an explicit yubikey choice is a local authentication option"
         );
-
-        std::env::remove_var("CRED_BROKER_SOCKET");
     }
 }
 

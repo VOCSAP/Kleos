@@ -289,6 +289,20 @@ sleep 0.3
 pgrep -f 'sleep 3102.7' >/dev/null || fail 'orphan detector control did not observe a detached process'
 pkill -f 'sleep 3102.7' || true
 
+expect_exit 0 'broker mode served through CRED_BROKER_SOCKET alone' \
+  traced clean_env CRED_BROKER_SOCKET="$socket" "$CLIENT_BIN" exec success api-key --env TEST_CRED_VALUE -- \
+  /bin/sh -c '[ "$TEST_CRED_VALUE" = "FAKE_API_VALUE_FOR_CONTRACT_TESTS" ]'
+expect_exit 0 'listing through CRED_BROKER_SOCKET alone' \
+  traced clean_env CRED_BROKER_SOCKET="$socket" "$CLIENT_BIN" list
+grep -q '^success  *api-key' "$root/last.stdout" || \
+  fail "listing through CRED_BROKER_SOCKET alone lacks the served entry: $(cat "$root/last.stdout")"
+expect_exit 0 'nested cred through CRED_BROKER_SOCKET alone' \
+  traced clean_env CRED_BROKER_SOCKET="$socket" OUTER_CLIENT="$CLIENT_BIN" NESTED_CHECK="$nested_check" \
+  "$CLIENT_BIN" exec echo-outer api-key --env OUTER -- \
+  /bin/sh -c '"$OUTER_CLIENT" exec echo-inner api-key --env INNER -- /bin/sh -c "$NESTED_CHECK"'
+expect_clean_refusal 78 'a socket variable with an explicit local auth mode is a configuration error' \
+  clean_env CRED_BROKER_SOCKET="$socket" "$CLIENT_BIN" --auth-mode keyfile --keyfile "$decoy_key" list
+
 (cd "$root" && find config decoy -type f -exec sha256sum {} + | sort) > "$root/decoys.after"
 diff "$root/decoys.before" "$root/decoys.after" >/dev/null || fail 'a decoy file was modified'
 touched=$(grep -rhE "$decoy_key|$config/cred" "$traces" | grep -v 'execve(' || true)
@@ -337,17 +351,5 @@ traced local_env "$CLIENT_BIN" --auth-mode keyfile --keyfile "$decoy_key" list >
 set -e
 opened=$(grep -h "$decoy_key" "$traces/$trace_count.log" | grep -v 'execve(' || true)
 [[ -n $opened ]] || fail 'trace control did not observe a local-mode run opening the keyfile it was given'
-
-expect_exit 0 'broker mode served through CRED_BROKER_SOCKET alone' \
-  clean_env CRED_BROKER_SOCKET="$socket" "$CLIENT_BIN" exec success api-key --env TEST_CRED_VALUE -- \
-  /bin/sh -c '[ "$TEST_CRED_VALUE" = "FAKE_API_VALUE_FOR_CONTRACT_TESTS" ]'
-expect_exit 0 'listing through CRED_BROKER_SOCKET alone' \
-  clean_env CRED_BROKER_SOCKET="$socket" "$CLIENT_BIN" list
-expect_exit 0 'nested cred through CRED_BROKER_SOCKET alone' \
-  clean_env CRED_BROKER_SOCKET="$socket" OUTER_CLIENT="$CLIENT_BIN" NESTED_CHECK="$nested_check" \
-  "$CLIENT_BIN" exec echo-outer api-key --env OUTER -- \
-  /bin/sh -c '"$OUTER_CLIENT" exec echo-inner api-key --env INNER -- /bin/sh -c "$NESTED_CHECK"'
-expect_exit 78 'a socket variable with an explicit local auth mode is a configuration error' \
-  clean_env CRED_BROKER_SOCKET="$socket" "$CLIENT_BIN" --auth-mode keyfile --keyfile "$decoy_key" list
 
 printf 'broker client acceptance gate passed\n'
