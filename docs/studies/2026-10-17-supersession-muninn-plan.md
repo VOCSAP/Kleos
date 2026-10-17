@@ -101,7 +101,10 @@ s'appuyer dessus.
 | 10 | `duplicates.rs:56-124` marque `is_superseded = 1` la memoire de **moindre importance** d'une paire a similarite >= seuil. Si la memoire la plus recente a la moindre importance, c'est la **nouvelle** decision qui disparaitra une fois le filtre de la phase 1 pose. A mesurer avant la phase 1 (section 4.3). | kleos-lib | R |
 | 11 | `reconsolidation.rs:85-96` compte les liens entrants `corrects / updates / contradicts` et baisse `confidence` et `importance`, mais `confidence` et `importance` n'entrent pas dans le score de recherche (`search.rs:1186-1198`). | kleos-lib | R |
 | 12 | Les atomes de handoff ont un vrai cycle `active / superseded / contested`, respecte par `get_packed_context` (`handoffs/mod.rs:880-883`), mais pose a la main. | kleos-lib | R |
-| 13 | La seule defense en prompt : "If a memory contradicts the current conversation, prefer the conversation" (`prompts.rs:128`). Ne couvre pas une session neuve. La section "Resolved Contradictions" de `prompts.rs:332-345` est toujours vide (`services/brain.rs:939` renvoie un vecteur vide). | kleos-lib | V (128) / R (332) |
+| 13 | La seule defense en prompt : "If a memory contradicts the current conversation, prefer the conversation" (`prompts.rs:128`). Ne couvre pas une session neuve. | kleos-lib | V |
+| 13b | La section "Resolved Contradictions (brain settled these conflicts)" du prompt vivant (`prompts.rs:332-345`, rendue par `build_living_prompt`) est **vide par construction**. Trois morceaux existent et chacun attend l'autre : (a) `POST /prompt/generate` (`kleos-server/src/routes/prompts/mod.rs:489-518`) lit `task_result.contradictions` et construit des paires gagnant / perdant ; (b) `services/brain.rs:939` renvoie toujours `contradictions: Vec::new()` avec le commentaire "done by the intelligence layer" ; (c) la couche intelligence ne produit que des liens `contradicts` dans `memory_links`, que rien ne reconvertit en paires. | kleos-lib, kleos-server | V |
+| 13c | **Chiasm et Broca ne sont pas impliques.** Chiasm = routage de taches multi-agents (`services/chiasm/` : `chiasm_tasks`, claims, file, heartbeats, cles). Broca = journal d'actions et narration (`services/broca.rs` : `broca_actions`). Aucun des deux ne lit ni n'ecrit `memories`, `structured_facts` ou `memory_links`, et aucune reference a contradiction / supersession dans leurs modules. Ne pas chercher la detection de ce cote. | kleos-lib | V |
+| 13d | Le seul code qui tranche reellement entre deux memoires contradictoires est `brain/hopfield/interference.rs:25-40` (feature `brain_hopfield`) : gagnant x1.2, perdant x0.1 sur des aretes `brain_edges` de type `contradiction`. Aucun appelant ne cree ces aretes a partir du contenu (`store_edge` n'ecrit que Association / Causal). Verifier sur le PC si la feature est compilee dans le binaire deploye. | kleos-lib | R |
 | 14 | Aucune provenance "dit par l'utilisateur" / "infere" sur `memories` (seulement `source`, `model`, `status`). | schema | R |
 | 15 | Aucune ingestion git. `kleos-ingest` suit `~/.claude/projects/**/*.jsonl` (`config.rs:16-22`) et classe par classes lexicon `ingest_decision_markers` / `ingest_preference_markers` (`extractor.rs:68-75`, `kleos-lib/lexicon/{fr,en,de}.toml:485-489`). | kleos-ingest | V |
 
@@ -112,7 +115,10 @@ s'appuyer dessus.
   `kleos-cli context`.
 - Debut de session : `hooks/full/session-start-kleos.sh` appelle Eidolon
   `/prompt/generate`, puis `kleos-cli list` / `kleos-cli context ... --limit 8` en
-  repli (lignes 319-430).
+  repli (lignes 319-430). `/prompt/generate` est servi par
+  `kleos-server/src/routes/prompts/mod.rs:155` et rend `build_living_prompt`
+  (`prompts.rs:353`), donc la section "Resolved Contradictions" du constat 13b
+  **atteindrait le modele en debut de session si elle etait alimentee**.
 - Hors hooks : `POST /search`, `POST /context`, `POST /recall` cote serveur.
 
 ---
@@ -132,6 +138,10 @@ de la base.
       `scripts/encrypt-tenant-dbs.sh` pour la procedure inverse).
 - [ ] Reverifier les constats marques **R** de la section 3.1, en notant les lignes
       exactes dans le journal.
+- [ ] Verifier si la feature `brain_hopfield` est compilee dans le binaire deploye
+      (`cargo build` flags dans `CLAUDE.local.md` / `deploy/`) et si le hook de debut
+      de session passe reellement par Eidolon `/prompt/generate` ou par le repli
+      `kleos-cli` : cela decide ou la phase 4b doit brancher les conflits.
 - [ ] Verifier s'il existe deja un jeu d'evaluation du recall dans le depot ou les
       dev-notes. S'il n'y en a pas, enregistrer 20 requetes de reference et leurs
       top-5 actuels avant tout patch (regression guard pour la phase 1).
@@ -392,10 +402,34 @@ decision enregistree" avec la bonne decision sous les yeux.
       complete" ou "N plus recentes" (sans compter le reste si le compte coute).
       Limite configurable (`KLEOS_CATALOG_LIMIT`, defaut a fixer apres mesure de
       `ctx_tokens`).
-- [ ] **4b. Conflits actifs** : deux memoires actives liees par `contradicts` sont
-      servies toutes les deux et marquees ; le ranking ne tranche jamais. Remplir
-      la section "Resolved Contradictions" de `prompts.rs` depuis `memory_links`
-      au lieu du vecteur vide de `services/brain.rs:939`, ou la retirer.
+- [ ] **4b. Conflits actifs : raccorder les trois morceaux du constat 13b.** Deux
+      memoires actives liees par `contradicts` sont servies toutes les deux et
+      marquees ; le ranking ne tranche jamais (reference N4 : la frontiere qui tient
+      est la lecture). Travail, du plus bas niveau au plus haut :
+      1. `services/brain.rs:939` : au lieu de `Vec::new()`, renvoyer les paires
+         `(a, b)` ou `a` et `b` sont toutes deux dans `activated` et liees par un
+         `memory_links.type = 'contradicts'` (meme user, meme espace). Patch
+         chirurgical, le format `BrainContradiction { winner_id, loser_id, reason }`
+         existe deja.
+      2. Choix de `winner` / `loser` : **ne pas trancher par score**. Si l'une des
+         deux porte `is_superseded = 1` ou un fait invalide (phases 1 et 2), elle
+         est `loser` et `reason = 'superseded'` ; sinon les deux sont actives et la
+         paire est rendue comme **conflit non resolu**, ce qui demande d'ajuster le
+         gabarit de `prompts.rs:332-345` ("brain settled these conflicts" devient
+         faux). Verifier si ce gabarit est surchargeable via `prompts-overrides`
+         (catalogue des prompts) ; sinon patch chirurgical du texte.
+      3. Meme information dans `POST /context` et le `/recall` du sidecar (ligne
+         `conflict with #m` du catalogue 4a), car le repli `kleos-cli context` ne
+         passe pas par le prompt vivant.
+      4. Ne pas toucher a `brain/hopfield/interference.rs` : son arbitrage par
+         score est exactement ce que la reference N4 mesure comme defaillant. Si
+         la feature est compilee, verifier qu'aucune arete `contradiction` n'est
+         creee par la phase 2 ; sinon la memoire remplacee serait attenuee a x0.1
+         **et** marquee, ce qui est redondant mais pas nuisible. A noter, pas a
+         construire.
+      Mesure : la section apparait dans `/prompt/generate` pour une paire de la
+      fixture ; `delivered_old` reste 0 pour une paire superseedee ; une paire
+      reellement en conflit est rendue avec ses deux valeurs et marquee.
 - [ ] **4c. Cadre epistemique** : le bloc memoire est presente comme evidence, pas
       comme instruction ; les memoires issues de `growth` / `insight` / assistant
       portent une marque "a verifier". Le texte du cadre passe par
@@ -505,6 +539,7 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | Date | Phase | Condition | Resultat | Source |
 |---|---|---|---|---|
 | 2026-10-17 | redaction | lecture muninn 1.0.5 + audit code Kleos | constats section 3 | cette session |
+| 2026-10-17 | redaction | question : Chiasm / Broca appellent-ils la detection ? | non (13c) ; plomberie exacte du prompt vivant (13b) ; phase 4b reecrite | cette session |
 
 ---
 
@@ -528,6 +563,10 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
   memory_links 106-113, reconsolidations 517-526, current_state 436-449).
 - `kleos-lib/src/memory/{fts.rs, vector.rs, search.rs, scoring.rs, facts_channel.rs}`.
 - `kleos-lib/src/context/{mod.rs, deps.rs}`, `kleos-lib/src/prompts.rs`.
+- `kleos-server/src/routes/prompts/mod.rs` (`/prompt/generate`, construction des
+  paires de contradiction), `kleos-lib/src/services/brain.rs` (vecteur vide ligne 939),
+  `kleos-lib/src/brain/hopfield/interference.rs`.
+- `kleos-lib/src/services/{chiasm/, broca.rs}` : hors perimetre (constat 13c).
 - `kleos-lib/src/intelligence/{contradiction.rs, correction.rs, duplicates.rs,
   consolidation.rs, reconsolidation.rs, temporal.rs, extraction.rs, scheduler.rs}`.
 - `kleos-ingest/src/{extractor.rs, tailer.rs, config.rs}`,
