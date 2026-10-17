@@ -535,3 +535,36 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 - `hooks/full/{user-prompt-lean.sh, session-start-kleos.sh}`.
 - `kleos-lib/src/db/vocsap/mod.rs` (canal overlay schema, Patch 41).
 - `CLAUDE.md`, `docs/dev-notes/local-patches.md` (Patches 37, 37.1, 38, 41).
+
+---
+
+## 16. Prompt de demarrage de la session dediee (a copier-coller)
+
+```text
+Session dediee : etude et implementation de la supersession des memoires dans Kleos (intention muninn).
+
+Contexte
+- Lis d'abord en entier docs/studies/2026-10-17-supersession-muninn-plan.md. C'est le plan de reference ; ne le reformule pas, applique-le.
+- Lis ensuite CLAUDE.md, CLAUDE.local.md (chemins, hotes, procedure de deploiement) et les sections Patch 37, 37.1, 38 et 41 de docs/dev-notes/local-patches.md.
+- Branche de travail : ccr-bfdfcf62-1j7z1k (a jour sur origin). Toute modification de code se fait sur cette branche.
+
+Regles de la session
+1. Phase 0 d'abord, sans aucune modification de code : mesurer l'existant. Les phases 1 a 6 ne demarrent que si la porte de decision de la phase precedente (section 11 du plan) est passee, et je valide explicitement chaque passage de phase.
+2. Base de donnees : travailler uniquement sur une copie (sqlite3 ".backup"). Ne jamais ecrire dans la base vive. Si une base tenant est chiffree, me demander avant toute manipulation.
+3. Avant de t'appuyer sur un constat marque R dans la section 3.1 du plan, reverifie-le dans le code et note la ligne exacte dans le journal (section 14).
+4. Toute mesure suit les metriques de la section 4.5, fixees avant de lancer la mesure. Pas de juge LLM pour noter les resultats : regex et comparaison exacte uniquement. Chaque comparaison de variantes se fait a rendu fixe et sur la meme copie de base restauree.
+5. Fixtures : contenu synthetique uniquement. Aucun extrait de transcript reel, aucun hote, aucune IP dans un fichier suivi par git. Les mesures brutes et les fixtures vont dans docs/dev-notes/supersession-bench/ (gitignore). Seuls les tableaux de synthese remontent dans le plan.
+6. Code : niveau d'ecart upstream le plus bas qui resout le probleme (grille de CLAUDE.md). Avant d'editer un fichier suivi par upstream : git log -p sur le fichier, puis verifier si un patch numerote existant couvre la zone. Chaque phase de code = une section Patch 60+ dans local-patches.md (symptome, approche et pourquoi pas le niveau en dessous, fichiers, tests, conditions de retrait) + un fait Kleos tague delta-upstream. Rien de muninn n'est copie : ni code, ni regex, ni fixture (licence AGPL incompatible).
+7. Tests : cargo test -p kleos-lib avec --features bundled-sqlite sur Windows ; build Linux via WSL. Le test de garantie de la phase 1 doit etre montre rouge sans le filtre avant d'etre accepte vert.
+8. Un faux retrait est pire qu'un retrait manque : si une garde est en doute, elle reste restrictive et tu me le signales.
+9. Commits atomiques par sous-etape, messages en anglais, push sur la branche apres chaque porte passee. Pas de PR sans mon accord.
+10. Signale en tete de reponse toute contradiction entre le plan et ce que tu observes dans le code ou la base. Si le plan est faux, on corrige le plan avant de continuer.
+
+Livrable attendu pour cette session
+- Section 4.6 du plan remplie (ligne de base : existant voie A, existant voie B, sans memoire).
+- Journal (section 14) alimente a chaque mesure.
+- Un verdict argumente sur la porte de la phase 0 : la fuite est-elle confirmee sur donnees reelles, la fixture est-elle valide ?
+- Si la porte passe et que je le confirme : phase 1, avec le test de garantie en premier.
+
+Demarre par un inventaire de l'environnement (serveur, kleos-ingest, hooks actifs, version de la base, espace de test disponible), puis la section 4.1 du plan. Fais-moi un point court apres l'inventaire avant de lancer les requetes SQL de la section 4.2.
+```
