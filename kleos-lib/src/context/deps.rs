@@ -114,7 +114,7 @@ pub async fn get_static_memories(db: &Database, user_id: i64) -> Result<Vec<Memo
         // isolated, hardened to promoted insights only, and gate-respecting.
         "SELECT {} FROM memories \
          WHERE user_id = ?1 AND is_static = 1 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
-           AND is_archived = 0 AND importance >= 8 AND status != 'pending' \
+           AND is_archived = 0 AND importance >= 8 AND status != 'pending' AND is_superseded = 0 \
          ORDER BY importance DESC, source_count DESC, created_at DESC \
          LIMIT ?2",
         MEMORY_COLUMNS,
@@ -143,7 +143,7 @@ pub async fn get_memory_without_embedding(
     // for injection, so a pending row must not surface here even when a caller
     // hands us its id.
     let sql = format!(
-        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND status != 'pending'",
+        "SELECT {} FROM memories WHERE id = ?1 AND user_id = ?2 AND status != 'pending' AND is_superseded = 0",
         MEMORY_COLUMNS
     );
     db.read(move |conn| {
@@ -172,7 +172,7 @@ pub async fn get_version_chain(
     let sql = "SELECT id, content, category, version, is_latest, created_at \
                FROM memories \
                WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
-                 AND status != 'pending' \
+                 AND status != 'pending' AND is_superseded = 0 \
                ORDER BY version ASC";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
@@ -232,7 +232,7 @@ pub async fn get_links(db: &Database, mem_id: i64, user_id: i64) -> Result<Vec<L
                WHERE (ml.source_id = ?1 OR ml.target_id = ?1) \
                  AND m.user_id = ?2 \
                  AND m.is_latest = 1 AND m.is_consolidated = 0 \
-                 AND m.status != 'pending' \
+                 AND m.status != 'pending' AND m.is_superseded = 0 \
                ORDER BY ml.similarity DESC LIMIT 10";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
@@ -264,7 +264,7 @@ pub async fn get_recent_dynamic(db: &Database, user_id: i64, limit: usize) -> Re
     let sql = format!(
         "SELECT {} FROM memories \
          WHERE user_id = ?1 AND is_static = 0 AND is_forgotten = 0 AND is_latest = 1 AND is_consolidated = 0 \
-           AND status != 'pending' \
+           AND status != 'pending' AND is_superseded = 0 \
          ORDER BY created_at DESC LIMIT ?2",
         MEMORY_COLUMNS,
     );

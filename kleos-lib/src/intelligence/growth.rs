@@ -108,7 +108,7 @@ pub async fn list_observations(
         "SELECT id, content, source, importance, created_at \
          FROM memories \
          WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?{uid_idx}{extra_clause} \
-           AND status != 'pending' AND is_archived = 0 \
+           AND status != 'pending' AND is_archived = 0 AND is_superseded = 0 \
          ORDER BY created_at DESC LIMIT ?{limit_idx}"
     );
     db.read(move |conn| {
@@ -600,7 +600,7 @@ async fn match_observations(
                  JOIN memories m ON m.id = memories_fts.rowid \
                  WHERE memories_fts MATCH ?1 \
                    AND m.category = 'growth' AND m.is_forgotten = 0 AND m.user_id = ?2 \
-                   AND m.status != 'pending' AND m.is_archived = 0 \
+                   AND m.status != 'pending' AND m.is_archived = 0 AND m.is_superseded = 0 \
                  ORDER BY memories_fts.rank LIMIT ?3",
         )?;
         let observations = stmt

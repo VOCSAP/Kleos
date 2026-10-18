@@ -837,7 +837,7 @@ async fn recall(
     let recent_extra = memory::list(&db, recent_extra_opts).await?;
     let recent_items: Vec<Value> = recent_extra
         .iter()
-        .filter(|m| m.importance < 7 && !m.is_static)
+        .filter(|m| m.importance < 7 && !m.is_static && !m.is_superseded)
         .filter(|m| seen_ids.insert(m.id))
         .map(|m| {
             json!({

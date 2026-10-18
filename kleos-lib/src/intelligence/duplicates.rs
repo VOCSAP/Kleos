@@ -119,6 +119,9 @@ pub async fn deduplicate(
             merged += 1;
         }
     }
+    if merged > 0 {
+        crate::memory::search::invalidate_search_cache(user_id);
+    }
 
     Ok(DeduplicateResult {
         pairs_found,

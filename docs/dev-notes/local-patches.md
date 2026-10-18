@@ -6733,3 +6733,132 @@ Integration sur le vrai schema dans `tests/dedup_keeper.rs` :
 **Conditions de retrait :** upstream maintient lui-meme l'invariant (trigger ou
 lecture derivee) ; la reparation unique, deja appliquee, peut alors sortir du
 registre, le marqueur restant inerte.
+
+## Patch 62 -- une memoire retiree (`is_superseded = 1`) n'atteint plus aucune surface de lecture (2026-10-18)
+
+**Symptome sous upstream pur :** `is_superseded` est ecrit (dedup, correction)
+mais aucune requete de lecture ne le consulte. Une memoire retiree au profit
+d'une reformulation continue d'etre servie partout : resultats de recherche
+hybride, payload `linked` de son gardien (le lien `supersedes` la ramene),
+expansion de graphe, canal des faits, blocs statique, recent et associatif de
+`assemble_context`, `/pack`, `generate_prompt`, `graph_search`, recherche par
+tags, recherche a facettes, tiers statique et important de `/recall`, memoires
+d'episode, rappel predictif, digests, vue graphe, profil de personnalite
+injecte, regles statiques du gate (une regle retiree continuait de garder),
+et la consolidation recopiait une retiree dans une nouvelle memoire servie. Le test
+`kleos-lib/tests/supersession_surfaces.rs` etait rouge sur les 9 surfaces
+d'origine.
+
+**Approche :** patch chirurgical, 45 lignes SQL (41 modifiees, 4 ajoutees) et
+un filtre Rust dans la route `/recall`, aucune signature touchee. Le predicat `is_superseded = 0` (alias `m.` quand la requete en a un)
+est ajoute sur la meme ligne que le predicat de revue upstream
+`status != 'pending'`, aux memes requetes : c'est la discipline que upstream a
+appliquee pour le gate de revue, une memoire non servable sort aux memes
+endroits. Sites :
+- `memory/search.rs` : `hydrate_candidates` (goulot des candidats, redondant
+  avec le suivant : le retirer seul ne fait rougir aucun test, garde comme pour
+  pending), `fetch_memories_batch` (seule source du contenu des resultats,
+  couvre aussi les voisins de graphe et les hits du canal des faits),
+  `fetch_links_batch` (les deux moities de l'UNION), `fetch_version_chains_batch`
+  (payload `version_chain` ; aucun predicat pending upstream, mais une
+  correction peut retirer la racine d'une chaine dont la version suivante est
+  servie), `faceted_db_scan` (mode filtre seul de `/search/faceted`) ;
+- `memory/facts_channel.rs::search_facts_fts` : seul site sans predicat
+  pending (upstream deleguait a `fetch_memories_batch`), mais la fonction est
+  publique et appelee directement ; predicat ajoute apres `m.is_archived = 0` ;
+- `context/deps.rs` : `get_static_memories` (ligne deja portee par Patch 17b),
+  `get_links`, `get_recent_dynamic`, `get_memory_without_embedding`,
+  `get_version_chain` ;
+- `pack.rs` et `prompts.rs` : couches statique et importante (la couche
+  importante ne filtre pas `is_static`, une statique importante y entrerait) ;
+- `graph/search.rs` : `graph_search`, `batch_fetch_memory_nodes`
+  (`/graph/neighborhood`) ; `graph/builder.rs::build_graph_data` (`/graph`) ;
+  `graph/entities.rs::search_entity_memories` ;
+  `graph/communities.rs::get_community_members` ;
+- `memory/mod.rs` : `search_by_tags` (match_all et match_any), `list_static`
+  et `list_important` (3 variantes d'espace chacune, tiers de `/recall`) ;
+- `episodes.rs::get_episode_memories` ; `intelligence/digests.rs` ;
+  `intelligence/growth.rs` (`list_observations`, `match_observations`) ;
+- `intelligence/predictive.rs::predictive_recall` : les trois branches (taches,
+  issues, continuite de session). Les deux dernieres n'ont pas non plus le
+  predicat pending upstream ; seul `is_superseded` est ajoute ici ;
+- `kleos-server/src/routes/search/mod.rs` : `/decay/scores` (3 requetes) ;
+  `kleos-server/src/routes/gate/mod.rs` : regles statiques du guard et
+  enrichissement du modele d'agent ;
+- `personality.rs::synthesize_personality_profile` : le profil cite les
+  200 premiers caracteres des statiques les plus importantes et il est injecte
+  dans chaque `assemble_context` ;
+- `intelligence/consolidation.rs` : lecture des sources de `consolidate` et
+  candidats du sweep (les deux cotes). La consolidation recopie le texte des
+  sources dans une nouvelle memoire servie : une retiree y serait blanchie ;
+- `kleos-server/src/routes/memory/mod.rs`, tier recent de `/recall` : filtre
+  Rust `!m.is_superseded` sur les lignes rendues par `memory::list`, qui reste
+  non filtre (voir plus bas).
+
+Cache de recherche : `hybrid_search` garde ses resultats 15 s par utilisateur,
+invalides seulement par `invalidate_search_cache`, que `memory/mod.rs` appelle a
+chaque ecriture mais que `duplicates::deduplicate` n'appelait pas. Une memoire
+tout juste retiree restait servie jusqu'a 15 s. `deduplicate` invalide
+maintenant le cache quand il a marque au moins une paire (site deja porte par
+Patch 60). L'archivage d'un gardien (trigger du Patch 61) passe par
+`memory::mark_archived`, qui invalide deja.
+
+**Pourquoi pas le niveau d'en dessous :** aucun canal overlay ne porte les
+requetes de lecture. Une vue SQL filtree ou un etat derive a la lecture aurait
+demande de reecrire toutes ces requetes, donc plus de delta pour le meme effet.
+
+**Plan de requete :** mesure sur la copie tenant du 2026-10-18 avec
+`EXPLAIN QUERY PLAN`, avec et sans le predicat, sur la requete d'hydratation
+reelle, le bloc recent et le scan a facettes : meme plan
+(`idx_memories_user_id`, recherche par `rowid` pour l'hydratation), donc
+`idx_memories_search` n'est pas etendu.
+
+**Hors scope, laisse ouvert :**
+- `memory::list` n'est pas filtre : il sert aussi les vues admin et `GET /list`,
+  que la replique kleos-cache lit pour se synchroniser (etape 1g) ; la replique
+  doit voir la ligne et son drapeau pour la retirer de son index local.
+- `fetch_graph_neighbors` ne filtre pas, comme pour le predicat pending : le
+  contenu des voisins est re-lu par `fetch_memories_batch`. Un voisin retire
+  peut encore occuper une place du pool de candidats avant d'etre ecarte.
+- Le texte des anciennes versions dans la phase Evolution (`is_latest = 0`, pas
+  `is_superseded`) releve de l'etape 1d.
+- `intelligence/temporal.rs::time_travel` : montre l'etat a une date passee et
+  omet volontairement `is_latest` ; `is_superseded` est un etat present sans
+  date, le poser effacerait du passe des lignes qui existaient alors.
+- Passes internes qui filtrent pending sans renvoyer le texte d'une memoire a
+  un client : backfills `admin/mod.rs` (faits et entites extraits, les faits
+  sont filtres a la lecture par `search_facts_fts`), `reflections.rs` et
+  `dreamer.rs` (sortie de LLM), `growth.rs::materialize` (ne lit que des
+  observations non archivees, or toutes le sont), `linker.rs` (liens),
+  comptes de `calendar_counts` et `list_all_tags`, `refresh_decay`.
+- Gardien oublie : sa cible reste marquee (regle de l'oubli du Patch 61), donc
+  masquee par ce patch, meme s'il ne reste aucune copie servie. C'est la regle
+  operateur : l'oubli est une suppression volontaire.
+
+**Fichiers :** `kleos-lib/src/memory/{search,facts_channel,mod}.rs`,
+`kleos-lib/src/context/deps.rs`,
+`kleos-lib/src/{pack,prompts,episodes,personality}.rs`,
+`kleos-lib/src/graph/{search,builder,entities,communities}.rs`,
+`kleos-lib/src/intelligence/{duplicates,digests,growth,predictive,consolidation}.rs`,
+`kleos-server/src/routes/{search,gate,memory}/mod.rs`,
+`kleos-lib/tests/supersession_surfaces.rs`.
+
+**Tests :** `kleos-lib/tests/supersession_surfaces.rs`, 18 tests verts sur 19
+(le 19e, versions anterieures dans Evolution, attend 1d). Chacun verifie aussi
+que la memoire est servie a nouveau une fois la marque effacee. Montre rouge,
+une mutation a la fois : sans le predicat de `fetch_memories_batch` seul,
+4 tests echouent (recherche hybride, voisin de graphe, contexte statique et
+recent) ; sans celui de `graph_search` seul, son test echoue. Le test du
+rappel predictif a trouve la branche "continuite de session" non filtree.
+Non couverts par un test de la lib : les routes serveur (`/decay/scores`,
+gate, tier recent de `/recall`, a couvrir au test serveur de la phase 1),
+`hydrate_candidates` (redondant), et les variantes d'espace de `list_static` et
+`list_important`, de `batch_fetch_memory_nodes`, `search_entity_memories`,
+`get_community_members` et des observations growth, qui portent le meme
+predicat sur la meme ligne que pending. Les helpers du test ecrivent la marque en
+SQL brut et invalident le cache comme le fait `deduplicate`.
+`env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --test supersession_surfaces`.
+
+**Conditions de retrait :** upstream filtre `is_superseded` sur ses surfaces de
+lecture (meme sites que `status != 'pending'`) et invalide le cache de
+recherche dans `deduplicate`.

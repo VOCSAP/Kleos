@@ -52,7 +52,7 @@ pub async fn generate_prompt(
                          FROM memories \
                          WHERE is_static = 1 AND is_forgotten = 0 \
                            AND is_archived = 0 AND is_latest = 1 \
-                           AND status != 'pending' \
+                           AND status != 'pending' AND is_superseded = 0 \
                            AND is_consolidated = 0 AND user_id = ?1",
                 )?;
                 let rows = stmt.query_map(params![prompt_user_id], |row| {
@@ -80,7 +80,7 @@ pub async fn generate_prompt(
                          FROM memories \
                          WHERE is_forgotten = 0 AND is_archived = 0 \
                            AND is_latest = 1 AND is_consolidated = 0 \
-                           AND status != 'pending' \
+                           AND status != 'pending' AND is_superseded = 0 \
                            AND user_id = ?1 \
                          ORDER BY ds DESC LIMIT 1000",
                 )?;

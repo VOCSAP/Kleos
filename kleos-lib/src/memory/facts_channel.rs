@@ -64,7 +64,7 @@ pub async fn search_facts_fts(
              WHERE facts_fts MATCH ?1 \
                AND sf.user_id = ?2 AND m.user_id = ?2 \
                AND sf.invalid_at IS NULL \
-               AND m.is_latest = 1 AND m.is_forgotten = 0 AND m.is_archived = 0 \
+               AND m.is_latest = 1 AND m.is_forgotten = 0 AND m.is_archived = 0 AND m.is_superseded = 0 \
              ORDER BY bm25(facts_fts) \
              LIMIT ?3",
         )?;
