@@ -6586,3 +6586,53 @@ revue, `wsl --cd /mnt/c/Users/Olivier/workspace/Kleos --
 
 **Conditions de retrait :** upstream fournit une interface broker Unix avec
 politique de references stricte et client sans fallback local ou distant.
+
+---
+
+## Patch 60 -- la dedup ne retire plus une memoire servie au profit d'une copie non servie (2026-10-18)
+
+**Symptome sous upstream pur :** `intelligence::duplicates::deduplicate` est le
+seul ecrivain reel de `is_superseded` (copie du tenant VOCSAP du 2026-10-18 :
+987 liens `supersedes`, aucun autre type). Deux defauts dans sa selection du
+gardien :
+1. `find_duplicates` filtre `is_forgotten` et `is_superseded` mais pas
+   `is_archived`. Or `growth::reflect` insere chaque observation growth avec
+   `is_archived = 1` (brouillon jamais servi, 16 944/16 944 lignes growth
+   archivees). Un brouillon qui paraphrase une vraie memoire peut gagner
+   l'egalite et la retirer : 16 liens ont un gardien growth archive, dont 9
+   retirees encore servables qui n'ont plus aucune copie servie.
+2. A importance egale, la plus ancienne (id bas) est gardee. Les paires
+   mesurees sont des reformulations stockees a quelques secondes d'ecart, la
+   plus recente est la version raffinee : 815/987 liens retirent la plus
+   recente.
+
+**Approche :** patch chirurgical dans `duplicates.rs`, deux points :
+`AND ms.is_archived = 0 AND mt.is_archived = 0` dans `find_duplicates`, et
+inversion de la branche d'egalite (garder l'id le plus haut). Signatures
+inchangees. La zone portait deja Patch 33 (filtre `space_id`) : on etend un
+site existant, pas de site neuf. Pas de niveau inferieur possible : ni overlay
+ni env var ne porte la requete de selection. Upstream `main` a les deux
+defauts, candidat PR.
+
+**Ecart assume avec la section `contradiction.rs` :** celle-ci avait exclu
+`is_archived` de son filtre au motif qu'une memoire archivee reste legitime
+dans la *detection* d'une paire. La dedup ne fait pas que detecter, elle
+choisit un gardien qui doit rester servi ; une memoire hors du corpus actif
+n'a pas a etre dedupliquee.
+
+**Hors scope :** reparation des liens deja ecrits (16 gardiens archives, 815
+egalites inversees) et invariant "une retiree a toujours un remplacant
+servable" tenu par trigger overlay : etape 1e-c du plan
+`docs/studies/2026-10-17-supersession-muninn-plan.md`.
+
+**Fichiers :** `kleos-lib/src/intelligence/duplicates.rs`,
+`kleos-lib/tests/dedup_keeper.rs`.
+
+**Tests :** `kleos-lib/tests/dedup_keeper.rs`, 6 tests (4 rouges avant patch,
+6 verts apres) : copie archivee ignoree meme d'importance superieure,
+`find_duplicates` et `dry_run` sans membre archive, egalite qui garde la plus
+recente, importance qui prime sur la recence, rejeu sans effet.
+`env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --test dedup_keeper`.
+
+**Conditions de retrait :** upstream filtre `is_archived` dans
+`find_duplicates` et garde la plus recente a importance egale.
