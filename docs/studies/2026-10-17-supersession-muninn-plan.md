@@ -604,6 +604,12 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-18 | 0 / 4.2 | Q4 liens | `similarity` 87 350, `consolidates` 3 912, `supersedes` 987 ; **0 `contradicts`**, 0 `corrects`, 0 `updates` | idem |
 | 2026-10-18 | 0 / 4.2 | Q5 risque dedup | **815 / 987** liens `supersedes` retirent la memoire la plus recente | idem |
 | 2026-10-18 | 0 / 4.2 | Q6 decisions actives | 1 395 memoires `decision` sur 19 espaces (+ 51 sans espace) | idem |
+| 2026-10-18 | 0 / 3.1 | reverif. constat 7 (R) | confirme : `get_version_chain` ne filtre que `user_id` et `status != 'pending'` (`context/deps.rs:172-176`), ni `is_forgotten` ni `is_archived` | code branche |
+| 2026-10-18 | 0 / 3.1 | reverif. constat 8 (R) | confirme dans le code : `contradiction_penalty` rend 1.0 des que `is_latest` (`memory/scoring.rs:627-645`), appele en `memory/search.rs:1186` ; ses marqueurs sont anglais seulement | code branche |
+| 2026-10-18 | 0 / 3.1 | reverif. constat 9 (R) | confirme en pratique : un texte identique stocke deux fois (fillers N06 / N10) renvoie l'id existant, sans lien ni supersession | load-a.log |
+| 2026-10-18 | 0 / 4.4 | fixture | 70 scenarios synthetiques valides (30 paires 3 par formulation et par langue, 30 controles, 10 bruit) ; aucune question ne contient la valeur attendue ni interdite | fixture.json |
+| 2026-10-18 | 0 / 4.4 | voie A, etat apres store | 220 memoires dans l'espace de test (fillers identiques dedoublonnes), 0 superseedee, **0 `structured_facts` extrait**, 0 lien | out-4.4 SQL |
+| 2026-10-18 | 0 / 4.4 | voie A, pipeline dreamer x 9 (`POST /intelligence/run`) | 1 242 liens `similarity`, 0 `contradicts`, 0 `supersedes`, 0 retrait dans l'espace de test (1 fusion ailleurs dans le tenant) | supersession-run-a.json |
 | 2026-10-18 | 0 / 4.3 + 5 | decision operateur | 4.3 reecrite sur les 81 paires reelles ; 1e obligatoire et avant 1a | session PC |
 | 2026-10-18 | 0 / 4.1 | instance de banc | `kleos-server` sur `:4290`, donnees = copies 20261018-082511, dreamer / backup / pagerank / communautes coupes ; 429 au premier run (liste d'IP de confiance preauth absente du dossier de banc, `rate_limit.rs:59-86`), copiee puis run refait | session PC |
 | 2026-10-18 | 0 / 4.3 | 81 paires reelles | retiree servie : `/recall` 45 / 81, `/search` 64 / 81 ; retiree classee avant la gardee : 20 et 31 ; population : des doublons, mais aussi de vraies corrections retirees au profit de l'ancienne version (ex. memoires qui disent "corrige / supersede #n" et qui sont elles-memes les retirees) | out-4.3-existing.jsonl |
