@@ -636,4 +636,54 @@ async fn assembled_context_does_not_inject_text_of_older_versions() {
         !content.contains("hollowmere"),
         "text of an older version must not be injected (context: {content})"
     );
+    let first_date: String = db
+        .read(move |conn| {
+            Ok(conn.query_row(
+                "SELECT substr(created_at, 1, 10) FROM memories WHERE id = ?1",
+                params![first],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .expect("read v1 date");
+    assert!(
+        content.contains(&format!("replaces #{first} v1 ({first_date})")),
+        "the older version is named with its id, version and date (context: {content})"
+    );
+}
+
+/// Forgetting is a voluntary deletion: a forgotten older version is not even
+/// named, and a chain left with one version renders no Evolution block.
+#[tokio::test]
+async fn assembled_context_does_not_name_a_forgotten_older_version() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let first = memory::store(
+        &db,
+        store_req("the search index for ostrava runs on corvane", false, 5, None, None),
+        None,
+        false,
+    )
+    .await
+    .expect("store v1")
+    .id;
+    memory::store(
+        &db,
+        store_req("the search index for ostrava runs on tantivy", false, 5, None, Some(first)),
+        None,
+        false,
+    )
+    .await
+    .expect("store v2");
+    memory::mark_forgotten(&db, first, USER).await.expect("forget v1");
+
+    let content = assemble(&db, "ostrava search index").await;
+    assert!(content.contains("tantivy"), "current version must be injected (context: {content})");
+    assert!(
+        !content.contains(&format!("replaces #{first}")),
+        "a forgotten version must not be named (context: {content})"
+    );
+    assert!(
+        !content.contains("[Evolution of memory"),
+        "a chain left with one version renders no Evolution block (context: {content})"
+    );
 }

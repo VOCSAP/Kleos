@@ -867,19 +867,26 @@ async fn assemble_context_inner(
             let chain = get_version_chain(db, root_id, user_id)
                 .await
                 .unwrap_or_default();
-            if chain.len() < 2 {
+            if chain.len() < 2 || !chain.iter().any(|c| c.is_latest) {
                 continue;
             }
+            // Older versions are named, never quoted: their text is what the
+            // current version replaced, and injecting it next to the current
+            // one hands the agent both facts to choose from.
+            let date_of = |created_at: &str| {
+                if created_at.len() >= 10 {
+                    created_at[..10].to_string()
+                } else {
+                    "?".to_string()
+                }
+            };
             let evolution_lines: Vec<String> = chain
                 .iter()
-                .map(|c| {
-                    let date = if c.created_at.len() >= 10 {
-                        &c.created_at[..10]
-                    } else {
-                        "?"
-                    };
-                    format!("v{} ({}): {}", c.version, date, c.content)
-                })
+                .filter(|c| c.is_latest)
+                .map(|c| format!("v{} ({}): {}", c.version, date_of(&c.created_at), c.content))
+                .chain(chain.iter().rev().filter(|c| !c.is_latest).map(|c| {
+                    format!("replaces #{} v{} ({})", c.id, c.version, date_of(&c.created_at))
+                }))
                 .collect();
             let evolution_text = format!(
                 "[Evolution of memory #{}]\n{}",

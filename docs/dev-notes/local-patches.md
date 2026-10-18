@@ -6862,3 +6862,42 @@ SQL brut et invalident le cache comme le fait `deduplicate`.
 **Conditions de retrait :** upstream filtre `is_superseded` sur ses surfaces de
 lecture (meme sites que `status != 'pending'`) et invalide le cache de
 recherche dans `deduplicate`.
+
+## Patch 63 -- la phase Evolution nomme les anciennes versions sans injecter leur texte (2026-10-19)
+
+**Symptome sous upstream pur :** la phase 2.5a d'`assemble_context`
+(`context/mod.rs`) rend chaque version de la chaine d'un hit semantique sous la
+forme `vN (date): texte`. Le texte d'une version remplacee arrive donc dans le
+prompt a cote de la version courante, et l'agent recoit les deux faits sans
+autre indice que le numero de version. Test rouge :
+`assembled_context_does_not_inject_text_of_older_versions`.
+
+**Approche :** patch chirurgical dans la zone upstream pure de la phase 2.5a :
+- la version courante (`is_latest`) est rendue avec son texte, puis chaque
+  version anterieure, de la plus recente a la plus ancienne, par une ligne
+  `replaces #id vN (date)` sans texte. L'en-tete `[Evolution of memory #root]`,
+  les seuils de budget et l'alimentation de `seen_ids` sont inchanges ;
+- une chaine sans version courante apres filtrage (version courante en
+  attente de revue ou retiree) ne produit pas de bloc ;
+- `context/deps.rs::get_version_chain` exclut aussi les versions oubliees et
+  archivees (ligne deja portee par Patch 62) : une version oubliee n'est meme
+  plus nommee, et une chaine reduite a une version ne produit pas de bloc.
+
+**Pourquoi pas le niveau d'en dessous :** le rendu est code en dur dans la
+phase, aucun template ni overlay ne le porte.
+
+**Hors scope :** le payload `version_chain` de `hybrid_search` (route
+`/search` avec `include_links`) porte toujours le texte de toutes les versions
+servables : c'est une vue d'historique demandee explicitement, pas une
+injection de contexte.
+
+**Fichiers :** `kleos-lib/src/context/mod.rs`, `kleos-lib/src/context/deps.rs`,
+`kleos-lib/tests/supersession_surfaces.rs`.
+
+**Tests :** `supersession_surfaces.rs`, 20/20 :
+`assembled_context_does_not_inject_text_of_older_versions` (rouge avant, vert
+apres ; verifie aussi que `replaces #id v1 (` est present) et
+`assembled_context_does_not_name_a_forgotten_older_version`.
+
+**Conditions de retrait :** upstream cesse d'injecter le texte des versions
+non courantes dans la phase Evolution.
