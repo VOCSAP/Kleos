@@ -102,6 +102,97 @@ fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+/// True if a trigger named `trigger` exists.
+fn trigger_exists(conn: &Connection, trigger: &str) -> Result<bool> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?1",
+            rusqlite::params![trigger],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("sqlite_master trigger lookup failed: {e}")))?;
+    Ok(count > 0)
+}
+
+/// True once the one-shot overlay `name` has committed. A one-shot overlay
+/// cannot guard on the schema object it creates: an upstream table rebuild can
+/// drop that object and would silently rerun a data repair.
+fn one_shot_done(conn: &Connection, name: &str) -> Result<bool> {
+    if !table_exists(conn, "vocsap_one_shot")? {
+        return Ok(false);
+    }
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM vocsap_one_shot WHERE name = ?1",
+            rusqlite::params![name],
+            |row| row.get(0),
+        )
+        .map_err(|e| EngError::DatabaseMessage(format!("vocsap_one_shot lookup failed: {e}")))?;
+    Ok(count > 0)
+}
+
+// --- supersession overlays (Patch 61), shared by both registries ---
+
+const SUPERSESSION_TRIGGER: &str = "vocsap_supersession_release_on_archive";
+
+/// Every table and `memories` column the supersession SQL reads. `status` and
+/// `is_superseded` arrive late in the upstream sequence, hence the column probes.
+fn supersession_schema_ready(conn: &Connection) -> Result<bool> {
+    for table in ["memories", "memory_links", "reconsolidations"] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+    for column in ["is_superseded", "is_archived", "is_forgotten", "is_latest", "status", "importance"] {
+        if !table_has_column(conn, "memories", column)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Repair the existing supersedes links, install the archive trigger and record
+/// the one-shot marker in a single SAVEPOINT. The runner wraps overlays in no
+/// transaction: a crash between the repair and the marker would otherwise leave
+/// a half-repaired graph that the next boot repairs again under new importances.
+fn supersession_repair_apply(conn: &Connection) -> Result<()> {
+    conn.execute_batch("SAVEPOINT vocsap_supersession_repair;")
+        .map_err(|e| EngError::DatabaseMessage(format!("vocsap overlay supersession_repair failed: {e}")))?;
+    let body = conn.execute_batch(concat!(
+        include_str!("supersession_repair.sql"),
+        include_str!("supersession_trigger.sql"),
+    ));
+    match body {
+        Ok(()) => conn
+            .execute_batch("RELEASE vocsap_supersession_repair;")
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("vocsap overlay supersession_repair failed: {e}"))
+            }),
+        Err(e) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO vocsap_supersession_repair; RELEASE vocsap_supersession_repair;",
+            );
+            Err(EngError::DatabaseMessage(format!("vocsap overlay supersession_repair failed: {e}")))
+        }
+    }
+}
+
+fn supersession_trigger_apply(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("supersession_trigger.sql"))
+        .map_err(|e| {
+            EngError::DatabaseMessage(format!("vocsap overlay supersession_archive_trigger failed: {e}"))
+        })?;
+    Ok(())
+}
+
+fn supersession_repair_needs(conn: &Connection) -> Result<bool> {
+    Ok(supersession_schema_ready(conn)? && !one_shot_done(conn, "supersession_repair")?)
+}
+
+fn supersession_trigger_needs(conn: &Connection) -> Result<bool> {
+    Ok(supersession_schema_ready(conn)? && !trigger_exists(conn, SUPERSESSION_TRIGGER)?)
+}
+
 // --- monolith overlay bodies (ported from the former numbered migrations) ---
 
 /// Add nullable `gate_id INTEGER` to `approvals` so the gate `pending_approval`
@@ -307,6 +398,18 @@ static VOCSAP_MONOLITH_OVERLAYS: &[VocsapOverlay] = &[
         needs: |conn| Ok(!table_exists(conn, "toolbox_locations")?),
         apply: monolith_toolbox_locations_apply,
     },
+    // The repair also creates the trigger; the trigger overlay only restores it
+    // after an upstream rebuild of `memories` drops it. Order matters.
+    VocsapOverlay {
+        name: "supersession_repair",
+        needs: supersession_repair_needs,
+        apply: supersession_repair_apply,
+    },
+    VocsapOverlay {
+        name: "supersession_archive_trigger",
+        needs: supersession_trigger_needs,
+        apply: supersession_trigger_apply,
+    },
 ];
 
 static VOCSAP_TENANT_OVERLAYS: &[VocsapTenantOverlay] = &[
@@ -356,6 +459,16 @@ static VOCSAP_TENANT_OVERLAYS: &[VocsapTenantOverlay] = &[
         name: "toolbox_locations",
         needs: |conn| Ok(!table_exists(conn, "toolbox_locations")?),
         apply: tenant_toolbox_locations_apply,
+    },
+    VocsapTenantOverlay {
+        name: "supersession_repair",
+        needs: supersession_repair_needs,
+        apply: |conn, _owner| supersession_repair_apply(conn),
+    },
+    VocsapTenantOverlay {
+        name: "supersession_archive_trigger",
+        needs: supersession_trigger_needs,
+        apply: |conn, _owner| supersession_trigger_apply(conn),
     },
 ];
 
@@ -599,5 +712,303 @@ mod tests {
         let conn = make_tenant_base();
         apply_tenant_overlays(&conn, None).unwrap();
         assert!(table_has_column(&conn, "conversations", "space_id").unwrap());
+    }
+
+    // --- supersession repair and archive trigger ---
+
+    fn make_supersession_base() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE memories (
+                id INTEGER PRIMARY KEY,
+                content TEXT NOT NULL DEFAULT '',
+                importance INTEGER NOT NULL DEFAULT 5,
+                is_latest INTEGER NOT NULL DEFAULT 1,
+                is_forgotten INTEGER NOT NULL DEFAULT 0,
+                is_archived INTEGER NOT NULL DEFAULT 0,
+                is_superseded INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'approved'
+             );
+             CREATE TABLE memory_links (
+                id INTEGER PRIMARY KEY,
+                source_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                similarity REAL NOT NULL DEFAULT 1.0,
+                type TEXT NOT NULL,
+                UNIQUE(source_id, target_id, type)
+             );
+             CREATE TABLE reconsolidations (
+                id INTEGER PRIMARY KEY,
+                memory_id INTEGER NOT NULL,
+                old_content TEXT NOT NULL,
+                new_content TEXT NOT NULL
+             );",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Insert memory `id` with `importance`, then apply `extra` assignments.
+    fn mem(conn: &Connection, id: i64, importance: i64, extra: &str) {
+        conn.execute(
+            "INSERT INTO memories (id, content, importance) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, format!("m{id}"), importance],
+        )
+        .unwrap();
+        if !extra.is_empty() {
+            conn.execute(&format!("UPDATE memories SET {extra} WHERE id = ?1"), [id])
+                .unwrap();
+        }
+    }
+
+    /// Record a dedup outcome: `keeper` supersedes `target`.
+    fn supersede(conn: &Connection, keeper: i64, target: i64) {
+        conn.execute(
+            "INSERT INTO memory_links (source_id, target_id, type) VALUES (?1, ?2, 'supersedes')",
+            [keeper, target],
+        )
+        .unwrap();
+        conn.execute("UPDATE memories SET is_superseded = 1 WHERE id = ?1", [target])
+            .unwrap();
+    }
+
+    fn superseded(conn: &Connection, id: i64) -> bool {
+        conn.query_row("SELECT is_superseded FROM memories WHERE id = ?1", [id], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+            == 1
+    }
+
+    fn supersedes_links(conn: &Connection) -> Vec<(i64, i64)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT source_id, target_id FROM memory_links
+                 WHERE type = 'supersedes' ORDER BY source_id, target_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn repair_serves_targets_whose_keepers_are_all_archived() {
+        let conn = make_supersession_base();
+        mem(&conn, 1, 9, "is_archived = 1");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+        // Forgotten keeper, archived or not: the target stays hidden.
+        mem(&conn, 3, 9, "is_forgotten = 1");
+        mem(&conn, 4, 5, "");
+        supersede(&conn, 3, 4);
+        mem(&conn, 5, 9, "is_archived = 1, is_forgotten = 1");
+        mem(&conn, 6, 5, "");
+        supersede(&conn, 5, 6);
+        // One archived keeper, one served keeper: still held.
+        mem(&conn, 7, 9, "is_archived = 1");
+        mem(&conn, 8, 9, "");
+        mem(&conn, 9, 5, "");
+        supersede(&conn, 7, 9);
+        supersede(&conn, 8, 9);
+        // Retired without any link: nothing says why, left alone.
+        mem(&conn, 10, 5, "is_superseded = 1");
+
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+
+        assert!(!superseded(&conn, 2));
+        assert!(superseded(&conn, 4));
+        assert!(superseded(&conn, 6));
+        assert!(superseded(&conn, 9));
+        assert!(superseded(&conn, 10));
+    }
+
+    #[test]
+    fn repair_reverses_links_the_target_wins() {
+        let conn = make_supersession_base();
+        // Tie: the newer (higher id) must be served.
+        mem(&conn, 1, 5, "");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+        // The target became more important than its newer keeper.
+        mem(&conn, 3, 8, "");
+        mem(&conn, 4, 4, "");
+        supersede(&conn, 4, 3);
+        // The keeper is more important: unchanged even though it is older.
+        mem(&conn, 5, 8, "");
+        mem(&conn, 6, 4, "");
+        supersede(&conn, 5, 6);
+
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+
+        assert_eq!(supersedes_links(&conn), vec![(2, 1), (3, 4), (5, 6)]);
+        assert!(superseded(&conn, 1) && !superseded(&conn, 2));
+        assert!(!superseded(&conn, 3) && superseded(&conn, 4));
+        assert!(!superseded(&conn, 5) && superseded(&conn, 6));
+    }
+
+    #[test]
+    fn repair_never_reverses_a_link_with_an_unserved_side_or_a_correction() {
+        let conn = make_supersession_base();
+        let cases = [
+            ("is_latest = 0", ""),
+            ("", "is_latest = 0"),
+            ("status = 'pending'", ""),
+            ("", "status = 'pending'"),
+            ("", "is_archived = 1"),
+            ("", "is_forgotten = 1"),
+        ];
+        let mut expected = Vec::new();
+        for (i, (keeper_extra, target_extra)) in cases.iter().enumerate() {
+            let keeper = 10 * (i as i64 + 1);
+            let target = keeper + 1;
+            mem(&conn, keeper, 5, keeper_extra);
+            mem(&conn, target, 5, target_extra);
+            supersede(&conn, keeper, target);
+            expected.push((keeper, target));
+        }
+        // Manual correction: the reconsolidations row carries the keeper text.
+        mem(&conn, 100, 5, "");
+        mem(&conn, 101, 5, "");
+        supersede(&conn, 100, 101);
+        conn.execute(
+            "INSERT INTO reconsolidations (memory_id, old_content, new_content) VALUES (101, 'm101', 'm100')",
+            [],
+        )
+        .unwrap();
+        expected.push((100, 101));
+
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+
+        assert_eq!(supersedes_links(&conn), expected);
+        for (_, target) in expected {
+            assert!(superseded(&conn, target), "target {target} must stay hidden");
+        }
+    }
+
+    #[test]
+    fn repair_drops_a_link_whose_reverse_already_exists() {
+        let conn = make_supersession_base();
+        mem(&conn, 1, 5, "");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+        conn.execute(
+            "INSERT INTO memory_links (source_id, target_id, type) VALUES (2, 1, 'supersedes')",
+            [],
+        )
+        .unwrap();
+
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+
+        assert_eq!(supersedes_links(&conn), vec![(2, 1)]);
+        assert!(superseded(&conn, 1) && !superseded(&conn, 2));
+    }
+
+    #[test]
+    fn repair_keeps_a_winner_hidden_while_another_keeper_holds_it() {
+        let conn = make_supersession_base();
+        mem(&conn, 1, 5, "");
+        mem(&conn, 2, 5, "");
+        mem(&conn, 3, 9, "");
+        supersede(&conn, 1, 2);
+        supersede(&conn, 3, 2);
+
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+
+        // 1 is now behind 2, itself behind 3: the chain ends on a served memory.
+        assert_eq!(supersedes_links(&conn), vec![(2, 1), (3, 2)]);
+        assert!(superseded(&conn, 1));
+        assert!(superseded(&conn, 2));
+        assert!(!superseded(&conn, 3));
+    }
+
+    #[test]
+    fn repair_runs_once_and_the_trigger_overlay_restores_a_dropped_trigger() {
+        let conn = make_supersession_base();
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+        assert!(one_shot_done(&conn, "supersession_repair").unwrap());
+        assert!(trigger_exists(&conn, SUPERSESSION_TRIGGER).unwrap());
+        for o in VOCSAP_TENANT_OVERLAYS {
+            assert!(!(o.needs)(&conn).unwrap(), "overlay {} should be no-op", o.name);
+        }
+
+        // A tie written after the repair is not reversed by a later boot.
+        mem(&conn, 1, 5, "");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+        conn.execute_batch(&format!("DROP TRIGGER {SUPERSESSION_TRIGGER};")).unwrap();
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+        apply_monolith_overlays(&conn).unwrap();
+
+        assert_eq!(supersedes_links(&conn), vec![(1, 2)]);
+        assert!(trigger_exists(&conn, SUPERSESSION_TRIGGER).unwrap());
+    }
+
+    #[test]
+    fn repair_rolls_back_entirely_when_a_statement_fails() {
+        let conn = make_supersession_base();
+        // R1 succeeds on this pair, R2 then fails on the missing column.
+        conn.execute_batch(
+            "DROP TABLE reconsolidations;
+             CREATE TABLE reconsolidations (id INTEGER PRIMARY KEY, memory_id INTEGER NOT NULL);",
+        )
+        .unwrap();
+        mem(&conn, 1, 9, "is_archived = 1");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+
+        assert!(apply_tenant_overlays(&conn, Some(1)).is_err());
+
+        assert!(superseded(&conn, 2), "R1 must be rolled back");
+        assert!(!one_shot_done(&conn, "supersession_repair").unwrap());
+        assert!(!trigger_exists(&conn, SUPERSESSION_TRIGGER).unwrap());
+    }
+
+    #[test]
+    fn archiving_a_keeper_serves_its_target_unless_another_keeper_holds_it() {
+        let conn = make_supersession_base();
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+        mem(&conn, 1, 9, "");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+        mem(&conn, 3, 9, "");
+        mem(&conn, 4, 9, "");
+        mem(&conn, 5, 5, "");
+        supersede(&conn, 3, 5);
+        supersede(&conn, 4, 5);
+
+        conn.execute_batch("UPDATE memories SET is_archived = 1 WHERE id IN (1, 3);")
+            .unwrap();
+
+        assert!(!superseded(&conn, 2));
+        assert!(superseded(&conn, 5), "keeper 4 still holds target 5");
+        assert_eq!(supersedes_links(&conn).len(), 3, "the trigger deletes no link");
+
+        conn.execute_batch("UPDATE memories SET is_archived = 1 WHERE id = 4;")
+            .unwrap();
+        assert!(!superseded(&conn, 5));
+    }
+
+    #[test]
+    fn forgetting_a_keeper_keeps_its_target_hidden() {
+        let conn = make_supersession_base();
+        apply_tenant_overlays(&conn, Some(1)).unwrap();
+        mem(&conn, 1, 9, "");
+        mem(&conn, 2, 5, "");
+        supersede(&conn, 1, 2);
+        mem(&conn, 3, 9, "");
+        mem(&conn, 4, 5, "");
+        supersede(&conn, 3, 4);
+
+        conn.execute_batch(
+            "UPDATE memories SET is_forgotten = 1 WHERE id = 1;
+             UPDATE memories SET is_archived = 1 WHERE id = 1;
+             UPDATE memories SET is_archived = 1, is_forgotten = 1 WHERE id = 3;",
+        )
+        .unwrap();
+
+        assert!(superseded(&conn, 2));
+        assert!(superseded(&conn, 4));
     }
 }

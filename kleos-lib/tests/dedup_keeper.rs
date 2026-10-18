@@ -1,7 +1,8 @@
 //! The dedup pass must never retire a memory that is served in favour of a copy
-//! that is not. An archived memory (every growth observation is born archived)
-//! cannot be a keeper, and on equal importance the newer of two reformulations
-//! is the one kept.
+//! that is not. An archived memory (every growth observation is born archived),
+//! an old version or a memory awaiting review cannot be a keeper, and on equal
+//! importance the newer of two reformulations is the one kept. Archiving a
+//! keeper later serves its retired memory again; forgetting it does not.
 
 use kleos_lib::db::Database;
 use kleos_lib::intelligence::duplicates::{deduplicate, find_duplicates};
@@ -179,4 +180,70 @@ async fn rerun_is_a_no_op() {
 
     assert_eq!(second.merged, 0);
     assert_eq!(supersedes_links(&db).await.len(), 1);
+}
+
+async fn set_column(db: &Database, id: i64, assignment: &'static str) {
+    db.write(move |conn| {
+        conn.execute(&format!("UPDATE memories SET {assignment} WHERE id = ?1"), params![id])?;
+        Ok(())
+    })
+    .await
+    .expect("set column");
+}
+
+#[tokio::test]
+async fn old_version_never_becomes_a_keeper() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let served = store(&db, "copper meadow falcon served", 5).await;
+    let old_version = store(&db, "copper meadow falcon old version", 9).await;
+    set_column(&db, old_version, "is_latest = 0").await;
+    link_similar(&db, old_version, served).await;
+
+    let result = deduplicate(&db, USER, THRESHOLD, false).await.expect("dedup");
+
+    assert_eq!(result.merged, 0);
+    assert!(!is_superseded(&db, served).await);
+}
+
+#[tokio::test]
+async fn pending_memory_never_becomes_a_keeper() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let served = store(&db, "velvet canyon otter served", 5).await;
+    let pending = store(&db, "velvet canyon otter awaiting review", 9).await;
+    set_column(&db, pending, "status = 'pending'").await;
+    link_similar(&db, pending, served).await;
+
+    let result = deduplicate(&db, USER, THRESHOLD, false).await.expect("dedup");
+
+    assert_eq!(result.merged, 0);
+    assert!(!is_superseded(&db, served).await);
+}
+
+#[tokio::test]
+async fn archiving_the_keeper_serves_the_retired_memory_again() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let retired = store(&db, "granite orchard heron first", 5).await;
+    let keeper = store(&db, "granite orchard heron second", 5).await;
+    link_similar(&db, retired, keeper).await;
+    deduplicate(&db, USER, THRESHOLD, false).await.expect("dedup");
+    assert!(is_superseded(&db, retired).await);
+
+    memory::mark_archived(&db, keeper, USER).await.expect("archive keeper");
+
+    assert!(!is_superseded(&db, retired).await, "archiving the keeper must serve its target again");
+    assert_eq!(supersedes_links(&db).await, vec![(keeper, retired)], "the link is kept");
+}
+
+#[tokio::test]
+async fn forgetting_the_keeper_keeps_the_retired_memory_hidden() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let retired = store(&db, "saffron glacier lynx first", 5).await;
+    let keeper = store(&db, "saffron glacier lynx second", 5).await;
+    link_similar(&db, retired, keeper).await;
+    deduplicate(&db, USER, THRESHOLD, false).await.expect("dedup");
+
+    memory::mark_forgotten(&db, keeper, USER).await.expect("forget keeper");
+    memory::mark_archived(&db, keeper, USER).await.expect("archive forgotten keeper");
+
+    assert!(is_superseded(&db, retired).await);
 }

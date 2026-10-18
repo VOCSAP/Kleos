@@ -6609,7 +6609,11 @@ gardien :
 **Approche :** patch chirurgical dans `duplicates.rs`, deux points :
 `AND ms.is_archived = 0 AND mt.is_archived = 0` dans `find_duplicates`, et
 inversion de la branche d'egalite (garder l'id le plus haut). Signatures
-inchangees. La zone portait deja Patch 33 (filtre `space_id`) : on etend un
+inchangees. Extension du meme jour, meme classe de bug (gardien non servi) :
+`find_duplicates` exclut aussi `is_latest = 0` (ancienne version d'une memoire
+editee) et `status = 'pending'` (memoire en attente de revue) des deux cotes.
+Aucun cas sur les donnees du 2026-10-18 (72 gardiens vivants, tous
+`is_latest = 1` et `approved`), le filtre est preventif. La zone portait deja Patch 33 (filtre `space_id`) : on etend un
 site existant, pas de site neuf. Pas de niveau inferieur possible : ni overlay
 ni env var ne porte la requete de selection. Upstream `main` a les deux
 defauts, candidat PR.
@@ -6622,17 +6626,110 @@ n'a pas a etre dedupliquee.
 
 **Hors scope :** reparation des liens deja ecrits (16 gardiens archives, 815
 egalites inversees) et invariant "une retiree a toujours un remplacant
-servable" tenu par trigger overlay : etape 1e-c du plan
-`docs/studies/2026-10-17-supersession-muninn-plan.md`.
+servable" tenu par trigger overlay : Patch 61.
 
 **Fichiers :** `kleos-lib/src/intelligence/duplicates.rs`,
 `kleos-lib/tests/dedup_keeper.rs`.
 
-**Tests :** `kleos-lib/tests/dedup_keeper.rs`, 6 tests (4 rouges avant patch,
-6 verts apres) : copie archivee ignoree meme d'importance superieure,
-`find_duplicates` et `dry_run` sans membre archive, egalite qui garde la plus
-recente, importance qui prime sur la recence, rejeu sans effet.
+**Tests :** `kleos-lib/tests/dedup_keeper.rs`, 8 tests pour ce patch (6 rouges
+avant patch, 8 verts apres) : copie archivee ignoree meme d'importance
+superieure, `find_duplicates` et `dry_run` sans membre archive, egalite qui
+garde la plus recente, importance qui prime sur la recence, rejeu sans effet,
+ancienne version et memoire en attente jamais gardiennes.
 `env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --test dedup_keeper`.
 
-**Conditions de retrait :** upstream filtre `is_archived` dans
-`find_duplicates` et garde la plus recente a importance egale.
+**Conditions de retrait :** upstream filtre `is_archived`, `is_latest` et
+`status` dans `find_duplicates` et garde la plus recente a importance egale.
+
+## Patch 61 -- reparation unique des liens `supersedes` et trigger d'archivage du gardien (2026-10-18)
+
+**Symptome sous upstream pur :** les liens ecrits par la dedup avant le
+Patch 60 restent faux, et rien ne maintient l'invariant "une memoire retiree a
+toujours un remplacant servable" apres coup. Copie tenant du 2026-10-18 :
+- 9 retirees servables n'ont plus aucune copie servie : leur seul gardien est
+  un brouillon growth archive ;
+- 51 liens servent la mauvaise version : 46 egalites ou la plus ancienne a
+  ete gardee, 5 paires ou la retiree est depuis devenue plus importante que
+  son gardien ;
+- archiver un gardien plus tard laisse sa retiree masquee pour toujours.
+
+**Regle operateur (2026-10-18) :** archiver un gardien rend ses retirees ;
+l'oublier les laisse masquees. Gardien "qui tient" = `is_archived = 0 OR
+is_forgotten = 1`. Les 5 paires d'importance sont incluses dans la reparation
+sur decision operateur : donnees anciennes et nouvelles suivent la meme regle
+que le Patch 60.
+
+**Approche :** canal overlay de schema (Patch 41), zero delta upstream, sur
+les deux registres (monolith et tenant) :
+1. `supersession_repair`, unique, garde par une ligne de la table marqueur
+   `vocsap_one_shot` et non par l'existence du trigger : une reconstruction de
+   `memories` par upstream supprimerait le trigger et relancerait la
+   reparation sous des importances qui ont change. Dans un seul `SAVEPOINT`
+   (le runner n'ouvre aucune transaction autour des overlays) :
+   - R1 remet `is_superseded = 0` sur toute retiree dont aucun gardien ne
+     tient. Une retiree sans aucun lien n'est pas touchee ;
+   - R2 fige dans une table temporaire les liens dont la retiree gagne selon la
+     regle du Patch 60. Conditions : les deux cotes servis (non archives, non
+     oublies, `is_latest = 1`, pas `pending`), et pas une correction manuelle
+     (ligne `reconsolidations` portant le texte du gardien) ;
+   - suppression defensive du lien direct si le lien inverse existe deja
+     (collision `UNIQUE` au demarrage), puis echange source/cible ;
+   - drapeaux : perdants a 1, gagnants a 0 sauf s'ils restent cible d'un
+     gardien qui tient (chaine) ;
+   - creation du trigger, ecriture du marqueur, `RELEASE`. En cas d'erreur,
+     `ROLLBACK TO` : rien n'est ecrit.
+2. `supersession_archive_trigger` recree le trigger s'il manque (needs =
+   trigger absent).
+
+Trigger `vocsap_supersession_release_on_archive` : `AFTER UPDATE OF is_archived
+ON memories WHEN NEW.is_archived = 1 AND OLD.is_archived = 0 AND
+NEW.is_forgotten = 0`. Il remet `is_superseded = 0` sur les cibles des liens
+partant du gardien archive qui n'ont plus de gardien qui tient. Il ne
+supprime aucun lien, ne fait rien au desarchivage, rien a l'oubli.
+
+**Pourquoi pas le niveau d'en dessous :** aucun. L'overlay est deja le niveau
+zero delta. L'alternative "etat derive a la lecture" (une memoire est retiree
+s'il existe un lien depuis un gardien qui tient) a ete ecartee : decision
+operateur "invariant tenu a l'ecriture", une sous-requete par ligne sur les
+10 surfaces de lecture, et un `/admin/gc` qui supprime un gardien oublie
+ferait reapparaitre sa cible par cascade du lien, contre la regle de l'oubli.
+
+**Piege de plan de requete :** sans `CROSS JOIN`, SQLite construit la liste R2
+en partant des deux scans d'index `is_forgotten` de `memories` (28 987 x
+28 987 lignes) au lieu des 987 liens. Mesure sur la copie tenant : plus de
+5 minutes a 100 % CPU, contre 0,1 s pour toute la reparation avec l'ordre
+force.
+
+**Mesures sur les copies du 2026-10-18 :** tenant : 51 liens inverses,
+0 supprime, 9 retirees servables liberees par R1 (16 au total), 50 gagnants
+servis (1 reste derriere une chaine). Apres : 0 retiree servable sans gardien
+qui tient, 0 candidat R2 restant. Monolith : aucun lien, marqueur et trigger
+poses. Trigger sur la copie tenant : gardien 355 archive, cible 352 servie en
+6 ms, lien conserve.
+
+**Trous acceptes :**
+- un gardien sorti du service par edition (`is_latest = 0`) ou consolidation
+  puis archive plus tard : sa cible reste masquee derriere la nouvelle version ;
+- `/admin/gc` supprime un gardien oublie : sa cible reste masquee, conforme a
+  la regle de l'oubli ;
+- l'inversion R2 photographie les importances du jour de la reparation : rien
+  ne reinverse une paire si elles changent ensuite.
+
+**Fichiers :** `kleos-lib/src/db/vocsap/mod.rs`,
+`kleos-lib/src/db/vocsap/supersession_repair.sql`,
+`kleos-lib/src/db/vocsap/supersession_trigger.sql`,
+`kleos-lib/tests/dedup_keeper.rs`.
+
+**Tests :** unitaires dans `vocsap/mod.rs` (9 nouveaux) : R1 et la regle de
+l'oubli, inversion egalite et importance, aucune inversion avec un cote non
+servi ou une correction, lien inverse preexistant, gagnant tenu par un autre
+gardien, reparation unique et trigger recree, rollback complet sur erreur,
+trigger d'archivage avec ou sans autre gardien, oubli sans effet.
+`env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --lib db::vocsap`.
+Integration sur le vrai schema dans `tests/dedup_keeper.rs` :
+`archiving_the_keeper_serves_the_retired_memory_again`,
+`forgetting_the_keeper_keeps_the_retired_memory_hidden`.
+
+**Conditions de retrait :** upstream maintient lui-meme l'invariant (trigger ou
+lecture derivee) ; la reparation unique, deja appliquee, peut alors sortir du
+registre, le marqueur restant inerte.
