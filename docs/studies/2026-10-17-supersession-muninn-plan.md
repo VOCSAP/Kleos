@@ -574,6 +574,15 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-18 | 0 / 4.1 | espace de test | aucun espace `supersession-bench` ; 40 espaces existants, dont des espaces de test de patchs anterieurs | session PC |
 | 2026-10-18 | 0 / 4.1 | copie de base | `.backup` refuse par SQLCipher ; `sqlcipher_export` depuis la source attachee `mode=ro` ; `integrity_check` ok sur les deux copies ; tenant : 28 987 memoires, schema v84 ; monolith : 0 memoire, schema v102 | session PC |
 | 2026-10-18 | 0 / 4.1 | decisions operateur | banc sur une seconde instance pointee sur la copie ; kleos-cache ajoute au perimetre de la phase 1 (1g) ; plan corrige en 3.2, 4.1, 4.4, 5 | session PC |
+| 2026-10-18 | 0 / 4.1 | jeu d'evaluation existant | `kleos-lib/tests/fixtures/retrieval/golden.json` ; `kleos-cache/eval/` (requetes reelles, ligne de base remesuree le 2026-09-22) : candidats au garde de regression de la phase 1 | session PC |
+| 2026-10-18 | 0 / 3.1 | reverif. constat 10 (R) | confirme : `duplicates.rs:76-84` garde l'importance la plus haute, a egalite **la plus ancienne** (id le plus bas) ; lien `supersedes` garde -> retiree (`duplicates.rs:104-106`) | code branche |
+| 2026-10-18 | 0 / 4.2 | Q1 servie-mais-superseedee | **81** memoires `is_superseded = 1` encore servables (plus 17 archivees, 889 oubliees) | copie tenant, out-4.2.txt |
+| 2026-10-18 | 0 / 4.2 | Q3 `invalid_at` ecrit | **0** sur 900 `structured_facts` : constat 3 confirme | idem |
+| 2026-10-18 | 0 / 4.2 | Q2 contradictions latentes | 15 cles, toutes `subject = user` avec un predicat verbal (`fait` : 703 objets distincts) : bruit d'extraction, **aucune paire de decision exploitable** | idem |
+| 2026-10-18 | 0 / 4.2 | Q4 liens | `similarity` 87 350, `consolidates` 3 912, `supersedes` 987 ; **0 `contradicts`**, 0 `corrects`, 0 `updates` | idem |
+| 2026-10-18 | 0 / 4.2 | Q5 risque dedup | **815 / 987** liens `supersedes` retirent la memoire la plus recente | idem |
+| 2026-10-18 | 0 / 4.2 | Q6 decisions actives | 1 395 memoires `decision` sur 19 espaces (+ 51 sans espace) | idem |
+| 2026-10-18 | 0 / 4.2 | detail des 81 (Q1) | les 81 viennent toutes de `duplicates.rs` (0 sans lien `supersedes`) ; 61 sont plus recentes que la gardee ; **13 ont une gardee elle-meme non servable** ; similarite 0.90 a 1.0, contenu identique sur 86 / 987 liens ; echantillon lu : reformulations du meme fait stockees a quelques secondes d'ecart, pas des changements de decision | out-4.2b.txt |
 
 ---
 
