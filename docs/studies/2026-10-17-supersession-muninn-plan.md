@@ -368,6 +368,15 @@ rien ; elle rend la marque existante effective.
       importance egale, ou ne pas superseder quand les objets SVO different), et
       decider du sort des paires deja marquees. Tant que 1e n'est pas faite, 1a ne
       filtre une memoire retiree que si sa gardee reste servable.
+      **Decision operateur 2026-10-18** : l'invariant "une memoire retiree a toujours un
+      remplacant servable" est tenu a l'ecriture, pas a la lecture. Trigger SQLite pose
+      par le canal overlay (Patch 41, zero delta upstream) : quand une memoire qui en
+      remplace d'autres est **archivee**, ses cibles perdent `is_superseded` et
+      redeviennent servies ; quand elle est **oubliee** (suppression volontaire), ses
+      cibles restent masquees. Reparation ponctuelle idempotente des cas existants (9
+      gardees archivees sur la copie ; les 4 chaines finissent sur une memoire
+      servable). Le filtre de lecture reste `is_superseded = 0`. Avant d'ecrire le
+      trigger : identifier qui archive les gardees.
 - [ ] **1f. Test de garantie** (equivalent du test de faute muninn) : un test
       d'integration qui insere une memoire, la supersede, puis interroge **chaque**
       canal (FTS, vecteur, graphe via lien, faits, contexte statique, evolution,
@@ -597,7 +606,7 @@ si la phase 2 montre des retraits provoques par des memoires non utilisateur.
 
 | Tentation | Pourquoi non | Reference |
 |---|---|---|
-| Un juge LLM a l'ecriture pour decider ce qu'un message remplace | trouve le bon enregistrement mais marque aussi les voisins ; 46 / 54 avec juge contre 48 / 54 sans ; runtime de 6 Go | Z11 |
+| Un juge LLM a l'ecriture pour decider **seul** ce qu'un message remplace | trouve le bon enregistrement mais marque aussi les voisins ; 46 / 54 avec juge contre 48 / 54 sans ; runtime de 6 Go. **Amende le 2026-10-18 (decision operateur)** : un juge de classe Sonnet / Haiku 5.5, servi par LiteLLM, devient une **variante mesuree** (phase 3b), desactivee par defaut. Forme retenue : agent dedie a prompt systeme et outils (lecture des memoires et faits, un seul outil d'ecriture qui *propose* un conflit ou une supersession avec ids et valeurs citees), applique par un validateur deterministe (meme user, meme espace, deux actives, nouvelle plus recente, canal utilisateur). Porte : `false_retire = 0 / 30` sur la fixture, comparaison a rendu fixe avec les regles des phases 2-3. Pistes d'hebergement : boucle locale via LiteLLM (recommande, reseau prive), workflow Dify (exploration) ; Managed Agents ecarte tant que Kleos n'est pas joignable depuis Internet | Z11 |
 | La consolidation / reflexion LLM comme mecanisme de contradiction | la memoire consolidee passe sous la ligne "sans memoire" ; fusionne des strategies superficiellement proches et incompatibles | C1, K10 |
 | Un ledger bi-temporel fin, etats "non prouvable", force d'evidence | a rendu egal, indistinguable de zero ; l'invalidation grossiere bat le ledger fin de 0,084 | X1 |
 | Trancher un conflit entre deux actifs par le ranking | les cinq systemes mesures servent la politique revoquee en premier dans 42 a 44 % des essais ; la frontiere qui tient est **la lecture**, pas l'outil | K7 / N4 |
