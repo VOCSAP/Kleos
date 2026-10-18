@@ -196,14 +196,22 @@ la premiere renvoie > 0, le constat central est confirme.
 
 ### 4.3 Reproduction sur donnees reelles
 
-- [ ] Prendre 10 a 20 paires de la requete "latent contradictions" ci-dessus.
+**Corrige le 2026-10-18 (decision operateur)** : la requete "latent contradictions"
+ne renvoie que du bruit d'extraction et la base ne contient aucune paire
+"ancienne decision / nouvelle decision" marquee. Les seules supersessions reelles
+sont les 81 paires de doublons de `duplicates.rs` encore servables (section 14).
+La 4.3 mesure donc sur ces paires si la memoire **retiree** est servie ; la fuite
+d'une decision changee se mesure uniquement sur la fixture 4.4.
+
+- [ ] Prendre les 81 paires gardee / retiree servables (Q1 de la 4.2), sur
+      l'instance de banc.
 - [ ] Pour chacune, formuler une question **hors du vocabulaire exact** des deux
       memoires (muninn : la question en vocabulaire identique mesure la
       recherche, pas la memoire).
-- [ ] Appeler `POST /recall` (meme payload que le hook, `limit: 3`) et
-      `POST /search` ; noter pour chaque paire : ancienne servie ? nouvelle servie ?
-      rang de chacune ? les deux ?
-- [ ] Meme chose en debut de session via `kleos-cli context "<question>" --limit 8`.
+- [ ] Interroger les trois canaux reels : kleos-cache `POST /v1/retrieve`
+      (`top_k: 3`), sidecar / serveur `POST /recall` (`limit: 8`), `POST /search` ;
+      noter par id : retiree servie ? gardee servie ? rang de chacune ?
+- [ ] Meme chose en debut de session via `/prompt/generate`.
 
 ### 4.4 Banc synthetique (la fixture qui jugera les phases 2 a 5)
 
@@ -298,10 +306,12 @@ rien ; elle rend la marque existante effective.
       version courante, puis une ligne par version anterieure `replaces #id (date)`
       **sans son texte**. Filtrer `is_forgotten` / `is_archived` dans
       `get_version_chain`.
-- [ ] **1e. Dedup `duplicates.rs`** : si la mesure 4.2 montre des cas ou la
-      superseedee est plus recente que la survivante, changer le critere (garder la
-      plus recente a importance egale, ou ne pas superseder quand les objets SVO
-      different). Sinon laisser tel quel et le noter.
+- [ ] **1e. Dedup `duplicates.rs`** -- **obligatoire, a faire AVANT 1a** (mesure
+      4.2 : 815 / 987 liens retirent la plus recente ; 13 des 81 retirees servables
+      ont une gardee non servable). Changer le critere (garder la plus recente a
+      importance egale, ou ne pas superseder quand les objets SVO different), et
+      decider du sort des paires deja marquees. Tant que 1e n'est pas faite, 1a ne
+      filtre une memoire retiree que si sa gardee reste servable.
 - [ ] **1f. Test de garantie** (equivalent du test de faute muninn) : un test
       d'integration qui insere une memoire, la supersede, puis interroge **chaque**
       canal (FTS, vecteur, graphe via lien, faits, contexte statique, evolution,
@@ -582,6 +592,7 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-18 | 0 / 4.2 | Q4 liens | `similarity` 87 350, `consolidates` 3 912, `supersedes` 987 ; **0 `contradicts`**, 0 `corrects`, 0 `updates` | idem |
 | 2026-10-18 | 0 / 4.2 | Q5 risque dedup | **815 / 987** liens `supersedes` retirent la memoire la plus recente | idem |
 | 2026-10-18 | 0 / 4.2 | Q6 decisions actives | 1 395 memoires `decision` sur 19 espaces (+ 51 sans espace) | idem |
+| 2026-10-18 | 0 / 4.3 + 5 | decision operateur | 4.3 reecrite sur les 81 paires reelles ; 1e obligatoire et avant 1a | session PC |
 | 2026-10-18 | 0 / 4.2 | detail des 81 (Q1) | les 81 viennent toutes de `duplicates.rs` (0 sans lien `supersedes`) ; 61 sont plus recentes que la gardee ; **13 ont une gardee elle-meme non servable** ; similarite 0.90 a 1.0, contenu identique sur 86 / 987 liens ; echantillon lu : reformulations du meme fait stockees a quelques secondes d'ecart, pas des changements de decision | out-4.2b.txt |
 
 ---
