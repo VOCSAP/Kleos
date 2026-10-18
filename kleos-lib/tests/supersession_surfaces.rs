@@ -1,7 +1,8 @@
 //! A memory marked `is_superseded = 1` must never reach an agent, whatever the
 //! read surface: hybrid search (and the linked/version payload it carries), the
-//! facts channel, assembled context, `/pack`, prompt generation, graph search and
-//! tag search.
+//! facts channel, assembled context, `/pack`, prompt generation, graph search,
+//! tag search, faceted search, the static and important tiers of `/recall`,
+//! episode memories, predictive recall, digests and the graph view.
 //!
 //! Every test follows the review-gate shape: seed one live memory and one
 //! superseded memory with distinct tokens, assert the live one is served and the
@@ -12,13 +13,20 @@
 
 use kleos_lib::context::{assemble_context, ContextOptions};
 use kleos_lib::db::Database;
+use kleos_lib::episodes::{self, CreateEpisodeRequest};
 use kleos_lib::graph;
+use kleos_lib::graph::builder::build_graph_data;
+use kleos_lib::graph::types::GraphBuildOptions;
+use kleos_lib::intelligence::consolidation::consolidate;
+use kleos_lib::intelligence::digests::generate_digest;
+use kleos_lib::intelligence::predictive::predictive_recall;
 use kleos_lib::memory;
 use kleos_lib::memory::facts_channel::search_facts_fts;
 use kleos_lib::memory::fts::fts_or_match_query;
-use kleos_lib::memory::search::hybrid_search;
-use kleos_lib::memory::types::{SearchRequest, StoreRequest};
+use kleos_lib::memory::search::{faceted_search, hybrid_search, invalidate_search_cache};
+use kleos_lib::memory::types::{FacetedSearchRequest, SearchRequest, StoreRequest};
 use kleos_lib::pack::{self, PackFormat};
+use kleos_lib::personality::synthesize_personality_profile;
 use kleos_lib::prompts;
 use rusqlite::params;
 
@@ -83,6 +91,7 @@ async fn mark_superseded(db: &Database, keeper: i64, retired: i64) {
     })
     .await
     .expect("mark superseded");
+    invalidate_search_cache(USER);
 }
 
 async fn clear_superseded(db: &Database, retired: i64) {
@@ -95,6 +104,7 @@ async fn clear_superseded(db: &Database, retired: i64) {
     })
     .await
     .expect("clear superseded");
+    invalidate_search_cache(USER);
 }
 
 async fn insert_fact(db: &Database, memory_id: i64, subject: &str, object: &str) {
@@ -353,6 +363,247 @@ async fn tag_search_withholds_superseded() {
         .await
         .expect("tag search");
     assert!(hits.iter().any(|m| m.content.contains("thornfield")), "found once the mark is cleared");
+}
+
+#[tokio::test]
+async fn recall_static_and_important_tiers_withhold_superseded() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let live = store(&db, "recall tier brightwater", true, 9).await;
+    let retired = store(&db, "recall tier thornfield", true, 9).await;
+    mark_superseded(&db, live, retired).await;
+
+    let statics = memory::list_static(&db, USER, None, None, 50).await.expect("list static");
+    let important = memory::list_important(&db, USER, None, None, 8, 50)
+        .await
+        .expect("list important");
+    for (tier, rows) in [("static", &statics), ("important", &important)] {
+        assert!(rows.iter().any(|m| m.id == live), "live memory in the {tier} tier");
+        assert!(
+            !rows.iter().any(|m| m.id == retired),
+            "superseded memory must be withheld from the {tier} tier"
+        );
+    }
+
+    clear_superseded(&db, retired).await;
+    let statics = memory::list_static(&db, USER, None, None, 50).await.expect("list static");
+    let important = memory::list_important(&db, USER, None, None, 8, 50)
+        .await
+        .expect("list important");
+    assert!(statics.iter().any(|m| m.id == retired), "static tier once the mark is cleared");
+    assert!(important.iter().any(|m| m.id == retired), "important tier once the mark is cleared");
+}
+
+/// Filter-only faceted search (no query) runs a direct DB scan.
+async fn faceted_ids(db: &Database) -> Vec<i64> {
+    let req: FacetedSearchRequest = serde_json::from_value(serde_json::json!({
+        "user_id": USER,
+        "category": "decision",
+        "limit": 50
+    }))
+    .expect("faceted request");
+    faceted_search(db, req)
+        .await
+        .expect("faceted search")
+        .results
+        .iter()
+        .map(|r| r.memory.id)
+        .collect()
+}
+
+#[tokio::test]
+async fn faceted_filter_scan_withholds_superseded() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let live = store(&db, "faceted brightwater", false, 5).await;
+    let retired = store(&db, "faceted thornfield", false, 5).await;
+    mark_superseded(&db, live, retired).await;
+
+    let ids = faceted_ids(&db).await;
+    assert!(ids.contains(&live), "live memory in faceted results (ids: {ids:?})");
+    assert!(!ids.contains(&retired), "superseded memory must be withheld (ids: {ids:?})");
+
+    clear_superseded(&db, retired).await;
+    let ids = faceted_ids(&db).await;
+    assert!(ids.contains(&retired), "faceted results once the mark is cleared (ids: {ids:?})");
+}
+
+fn to_json<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_string(value).expect("serialize surface output")
+}
+
+#[tokio::test]
+async fn episode_memories_withhold_superseded() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let episode = episodes::create_episode(
+        &db,
+        CreateEpisodeRequest {
+            title: Some("release".to_string()),
+            session_id: None,
+            agent: None,
+            summary: None,
+        },
+        USER,
+    )
+    .await
+    .expect("create episode")
+    .id;
+    let live = store(&db, "episode note brightwater", false, 5).await;
+    let retired = store(&db, "episode note thornfield", false, 5).await;
+    episodes::assign_memories_to_episode(&db, episode, USER, &[live, retired])
+        .await
+        .expect("assign memories");
+    mark_superseded(&db, live, retired).await;
+
+    let rendered = to_json(&episodes::get_episode_memories(&db, episode, USER).await.expect("episode"));
+    assert!(rendered.contains("brightwater"), "live memory shown");
+    assert!(!rendered.contains("thornfield"), "superseded memory withheld from episode memories");
+
+    clear_superseded(&db, retired).await;
+    let rendered = to_json(&episodes::get_episode_memories(&db, episode, USER).await.expect("episode"));
+    assert!(rendered.contains("thornfield"), "shown once the mark is cleared");
+}
+
+#[tokio::test]
+async fn predictive_recall_withholds_superseded_task() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let live = store(&db, "open task brightwater", false, 7).await;
+    let retired = store(&db, "open task thornfield", false, 7).await;
+    db.write(move |conn| {
+        conn.execute(
+            "UPDATE memories SET category = 'task' WHERE id IN (?1, ?2)",
+            params![live, retired],
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("set task category");
+    mark_superseded(&db, live, retired).await;
+
+    let rendered = to_json(&predictive_recall(&db, USER).await.expect("predictive recall"));
+    assert!(rendered.contains("brightwater"), "live task surfaced: {rendered}");
+    assert!(!rendered.contains("thornfield"), "superseded task withheld: {rendered}");
+
+    clear_superseded(&db, retired).await;
+    let rendered = to_json(&predictive_recall(&db, USER).await.expect("predictive recall"));
+    assert!(rendered.contains("thornfield"), "task surfaced once the mark is cleared");
+}
+
+#[tokio::test]
+async fn digest_withholds_superseded() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let live = store(&db, "digest entry brightwater", false, 5).await;
+    let retired = store(&db, "digest entry thornfield", false, 5).await;
+    mark_superseded(&db, live, retired).await;
+
+    let rendered = to_json(&generate_digest(&db, USER, "daily").await.expect("digest"));
+    assert!(rendered.contains("brightwater"), "live memory in digest: {rendered}");
+    assert!(!rendered.contains("thornfield"), "superseded memory withheld from digest");
+
+    clear_superseded(&db, retired).await;
+    let rendered = to_json(&generate_digest(&db, USER, "daily").await.expect("digest"));
+    assert!(rendered.contains("thornfield"), "in digest once the mark is cleared");
+}
+
+/// The graph view prunes nodes without edges, and the only edge here is the
+/// supersedes link, so the live node may drop out with the retired one.
+#[tokio::test]
+async fn graph_view_withholds_superseded_node() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let live = store(&db, "graph view brightwater", false, 5).await;
+    let retired = store(&db, "graph view thornfield", false, 5).await;
+    mark_superseded(&db, live, retired).await;
+
+    let opts = GraphBuildOptions { user_id: USER, ..Default::default() };
+    let rendered = to_json(&build_graph_data(&db, &opts).await.expect("graph"));
+    assert!(!rendered.contains("thornfield"), "superseded node withheld from the graph view");
+
+    clear_superseded(&db, retired).await;
+    let rendered = to_json(&build_graph_data(&db, &opts).await.expect("graph"));
+    assert!(rendered.contains("thornfield"), "node shown once the mark is cleared");
+}
+
+/// The synthesized profile quotes the top static memories and is injected into
+/// every context assembly.
+#[tokio::test]
+async fn personality_profile_withholds_superseded_static() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    db.write(|conn| {
+        conn.execute(
+            "INSERT INTO personality_signals (signal_type, subject, valence, value, intensity, user_id) \
+             VALUES ('preference', 'release cadence', 'positive', 0.9, 0.9, ?1)",
+            params![USER],
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("insert personality signal");
+    let live = store(&db, "identity brightwater", true, 9).await;
+    let retired = store(&db, "identity thornfield", true, 9).await;
+    mark_superseded(&db, live, retired).await;
+
+    let profile = synthesize_personality_profile(&db, USER).await.expect("profile");
+    assert!(profile.contains("brightwater"), "live static quoted in the profile: {profile}");
+    assert!(!profile.contains("thornfield"), "superseded static must not be quoted: {profile}");
+
+    clear_superseded(&db, retired).await;
+    let profile = synthesize_personality_profile(&db, USER).await.expect("profile");
+    assert!(profile.contains("thornfield"), "quoted once the mark is cleared");
+}
+
+/// Consolidation copies source text verbatim into a new served memory, so a
+/// retired source would be laundered back into every surface.
+#[tokio::test]
+async fn consolidation_never_folds_a_superseded_source() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let live = store(&db, "cluster note brightwater", false, 5).await;
+    let retired = store(&db, "cluster note thornfield", false, 5).await;
+    mark_superseded(&db, live, retired).await;
+
+    let ids = [live.to_string(), retired.to_string()];
+    if let Ok(merged) = consolidate(&db, &ids, USER).await {
+        assert!(!merged.content.contains("thornfield"), "superseded text folded: {}", merged.content);
+    }
+
+    clear_superseded(&db, retired).await;
+    let other = store(&db, "cluster note silverkeep", false, 5).await;
+    let merged = consolidate(&db, &[retired.to_string(), other.to_string()], USER)
+        .await
+        .expect("consolidate once the mark is cleared");
+    assert!(merged.content.contains("thornfield"), "folded once the mark is cleared");
+}
+
+/// A correction can retire any memory, including the root of a version chain
+/// whose later version is served: the chain payload of search must not carry
+/// the retired text.
+#[tokio::test]
+async fn search_version_chain_withholds_superseded_root() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let first = memory::store(
+        &db,
+        store_req("the queue broker for calder was pellucine", false, 5, None, None),
+        None,
+        false,
+    )
+    .await
+    .expect("store v1")
+    .id;
+    let second = memory::store(
+        &db,
+        store_req("the queue broker for calder is rabbitmq", false, 5, None, Some(first)),
+        None,
+        false,
+    )
+    .await
+    .expect("store v2")
+    .id;
+    mark_superseded(&db, second, first).await;
+
+    let (ids, dump) = search_dump(&db, "calder queue broker").await;
+    assert!(ids.contains(&second), "current version must surface (ids: {ids:?})");
+    assert!(!dump.contains("pellucine"), "superseded root text must not ride in the chain: {dump}");
+
+    clear_superseded(&db, first).await;
+    let (_, dump) = search_dump(&db, "calder queue broker").await;
+    assert!(dump.contains("pellucine"), "the chain carries the root once the mark is cleared");
 }
 
 /// The Evolution phase of assembled context renders the version chain of each

@@ -104,7 +104,7 @@ async fn get_decay_scores(
                     // rejected rows for the same reason.
                     "SELECT id, content, category, importance, decay_score, created_at \
                      FROM memories WHERE id = ?1 AND is_forgotten = 0 AND user_id = ?2 \
-                     AND status != 'pending' AND is_archived = 0",
+                     AND status != 'pending' AND is_archived = 0 AND is_superseded = 0",
                 )?;
                 let rows = stmt.query_map(params![mid, effective_user_id], |r| {
                     let id: i64 = r.get(0)?;
@@ -127,12 +127,12 @@ async fn get_decay_scores(
             let sql = if order_asc {
                 "SELECT id, content, category, importance, decay_score, created_at \
                  FROM memories WHERE is_forgotten = 0 AND user_id = ?2 \
-                 AND status != 'pending' AND is_archived = 0 \
+                 AND status != 'pending' AND is_archived = 0 AND is_superseded = 0 \
                  ORDER BY decay_score ASC LIMIT ?1"
             } else {
                 "SELECT id, content, category, importance, decay_score, created_at \
                  FROM memories WHERE is_forgotten = 0 AND user_id = ?2 \
-                 AND status != 'pending' AND is_archived = 0 \
+                 AND status != 'pending' AND is_archived = 0 AND is_superseded = 0 \
                  ORDER BY decay_score DESC LIMIT ?1"
             };
             let mut stmt = conn.prepare(sql)?;

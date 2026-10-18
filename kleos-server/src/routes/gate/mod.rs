@@ -822,7 +822,7 @@ async fn guard_handler(
                 "SELECT id, content, importance FROM memories
                  WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
                  AND user_id = ?1
-                 AND status != 'pending' AND is_archived = 0
+                 AND status != 'pending' AND is_archived = 0 AND is_superseded = 0
                  ORDER BY importance DESC LIMIT 20",
             )?;
             let rows = stmt.query_map(params![user_id], |row| {
@@ -1035,7 +1035,7 @@ async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> O
                 "SELECT content FROM memories
                  WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
                  AND user_id = ?1
-                 AND status != 'pending' AND is_archived = 0
+                 AND status != 'pending' AND is_archived = 0 AND is_superseded = 0
                  AND (content LIKE '%agent.model.preference%'
                       OR content LIKE '%force-agent-models%'
                       OR content LIKE '%delegate to opencode%'

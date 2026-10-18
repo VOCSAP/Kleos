@@ -473,7 +473,7 @@ async fn hydrate_candidates(
          version, is_latest, source, model, access_count, pagerank_score, \
          fsrs_stability, content, category, is_archived, is_consolidated, \
          fsrs_last_review_at \
-         FROM memories WHERE id IN ({}) AND user_id = ? AND status != 'pending'",
+         FROM memories WHERE id IN ({}) AND user_id = ? AND status != 'pending' AND is_superseded = 0",
         placeholders
     );
 
@@ -584,7 +584,7 @@ async fn fetch_memories_batch(
     let fetch_sql = format!(
         "SELECT {} FROM memories \
          WHERE id IN ({}) AND user_id = ? AND is_forgotten = 0 AND is_latest = 1 \
-         AND status != 'pending' AND is_archived = 0",
+         AND status != 'pending' AND is_archived = 0 AND is_superseded = 0",
         MEMORY_COLUMNS, placeholders
     );
 
@@ -635,12 +635,12 @@ async fn fetch_links_batch(
         "SELECT ml.source_id AS owner, ml.target_id, ml.similarity, ml.type, \
              m.content, m.category, m.is_forgotten, m.status, m.is_archived \
          FROM memory_links ml JOIN memories m ON m.id = ml.target_id \
-         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending' \
+         WHERE ml.source_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending' AND m.is_superseded = 0 \
          UNION ALL \
          SELECT ml.target_id AS owner, ml.source_id, ml.similarity, ml.type, \
              m.content, m.category, m.is_forgotten, m.status, m.is_archived \
          FROM memory_links ml JOIN memories m ON m.id = ml.source_id \
-         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending'"
+         WHERE ml.target_id IN ({placeholders}) AND m.user_id = ? AND m.status != 'pending' AND m.is_superseded = 0"
     );
 
     db.read(move |conn| {
@@ -703,6 +703,7 @@ async fn fetch_version_chains_batch(
         "SELECT COALESCE(root_memory_id, id) AS root, id, content, version, is_latest \
          FROM memories \
          WHERE (root_memory_id IN ({placeholders}) OR id IN ({placeholders})) AND user_id = ? \
+           AND is_superseded = 0 \
          ORDER BY root, version ASC"
     );
 
@@ -2037,6 +2038,7 @@ async fn faceted_db_scan(
         "is_forgotten = 0".to_string(),
         "is_latest = 1".to_string(),
         "status != 'pending'".to_string(),
+        "is_superseded = 0".to_string(),
     ];
     let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql + Send>> = vec![];
     let mut idx = 1usize;

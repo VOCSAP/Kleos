@@ -1270,7 +1270,7 @@ pub async fn list_static(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
-               AND status != 'pending' AND {clause} \
+               AND status != 'pending' AND is_superseded = 0 AND {clause} \
              ORDER BY importance DESC, created_at DESC LIMIT ?4",
             cols = MEMORY_COLUMNS,
             clause = inclusive_space_clause(2),
@@ -1279,7 +1279,7 @@ pub async fn list_static(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
-               AND status != 'pending' AND space_id = ?2 \
+               AND status != 'pending' AND is_superseded = 0 AND space_id = ?2 \
              ORDER BY importance DESC, created_at DESC LIMIT ?3",
             cols = MEMORY_COLUMNS,
         ),
@@ -1287,7 +1287,7 @@ pub async fn list_static(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND is_static = 1 \
-               AND status != 'pending' \
+               AND status != 'pending' AND is_superseded = 0 \
              ORDER BY importance DESC, created_at DESC LIMIT ?2",
             cols = MEMORY_COLUMNS,
         ),
@@ -1335,7 +1335,7 @@ pub async fn list_important(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
-               AND status != 'pending' AND {clause} \
+               AND status != 'pending' AND is_superseded = 0 AND {clause} \
              ORDER BY importance DESC, id DESC LIMIT ?5",
             cols = MEMORY_COLUMNS,
             clause = inclusive_space_clause(3),
@@ -1344,7 +1344,7 @@ pub async fn list_important(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
-               AND status != 'pending' AND space_id = ?3 \
+               AND status != 'pending' AND is_superseded = 0 AND space_id = ?3 \
              ORDER BY importance DESC, id DESC LIMIT ?4",
             cols = MEMORY_COLUMNS,
         ),
@@ -1352,7 +1352,7 @@ pub async fn list_important(
             "SELECT {cols} FROM memories \
              WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 \
                AND is_latest = 1 AND is_consolidated = 0 AND importance >= ?2 \
-               AND status != 'pending' \
+               AND status != 'pending' AND is_superseded = 0 \
              ORDER BY importance DESC, id DESC LIMIT ?3",
             cols = MEMORY_COLUMNS,
         ),
@@ -2215,7 +2215,7 @@ pub async fn search_by_tags(
                AND m.is_forgotten = 0
                AND m.is_latest = 1
                AND m.is_archived = 0
-               AND m.status != 'pending'
+               AND m.status != 'pending' AND m.is_superseded = 0
                AND m.tags IS NOT NULL
                AND (SELECT COUNT(DISTINCT je.value)
                     FROM json_each(m.tags) je
@@ -2236,7 +2236,7 @@ pub async fn search_by_tags(
                AND m.is_forgotten = 0
                AND m.is_latest = 1
                AND m.is_archived = 0
-               AND m.status != 'pending'
+               AND m.status != 'pending' AND m.is_superseded = 0
                AND m.tags IS NOT NULL
                AND EXISTS (
                    SELECT 1 FROM json_each(m.tags) je

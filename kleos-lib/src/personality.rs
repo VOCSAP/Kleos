@@ -1291,7 +1291,7 @@ pub async fn synthesize_personality_profile(db: &Database, user_id: i64) -> Resu
             // personality profile that is injected into every context assembly.
             let mut stmt = conn.prepare(
                 "SELECT content FROM memories WHERE is_static = 1 AND is_forgotten = 0 \
-             AND is_latest = 1 AND is_archived = 0 AND status != 'pending' \
+             AND is_latest = 1 AND is_archived = 0 AND status != 'pending' AND is_superseded = 0 \
              AND user_id = ?1 ORDER BY importance DESC LIMIT 20",
             )?;
 

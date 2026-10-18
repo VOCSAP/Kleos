@@ -52,7 +52,7 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
             let sql = format!(
                 "SELECT id, content, category, importance \
                  FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0 \
-                 AND status != 'pending'",
+                 AND status != 'pending' AND is_superseded = 0",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
@@ -235,6 +235,7 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_latest = 1 AND mt.is_latest = 1 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
                        AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
+                       AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
                        AND ms.user_id = ?2 AND mt.user_id = ?2 \
                        AND (ms.space_id = mt.space_id \
                             OR (ms.space_id IS NULL AND mt.space_id IS NULL)) \

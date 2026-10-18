@@ -87,7 +87,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                       AND status != 'pending' \
+                       AND status != 'pending' AND is_superseded = 0 \
                        AND category = 'task' AND is_static = 0 \
                        AND created_at > datetime('now', '-3 days') \
                      ORDER BY importance DESC, created_at DESC LIMIT 5",
@@ -129,7 +129,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                       AND category = 'issue' \
+                       AND is_superseded = 0 AND category = 'issue' \
                        AND created_at > datetime('now', '-7 days') \
                      ORDER BY importance DESC LIMIT 3",
             )?;
@@ -167,6 +167,7 @@ pub async fn predictive_recall(db: &Database, user_id: i64) -> Result<Predictive
                 "SELECT id, content, category, importance \
                      FROM memories \
                      WHERE user_id = ?1 AND is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
+                       AND is_superseded = 0 \
                      ORDER BY created_at DESC LIMIT 3",
             )?;
             let rows = stmt.query_map(params![user_id], |row| {
