@@ -25,6 +25,8 @@ pub async fn find_duplicates(
                    AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                    AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
                    AND ms.is_archived = 0 AND mt.is_archived = 0 \
+                   AND ms.is_latest = 1 AND mt.is_latest = 1 \
+                   AND ms.status <> 'pending' AND mt.status <> 'pending' \
                    AND ms.user_id = ?3 AND mt.user_id = ?3 \
                    AND (ms.space_id = mt.space_id \
                         OR (ms.space_id IS NULL AND mt.space_id IS NULL)) \
