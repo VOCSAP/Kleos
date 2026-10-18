@@ -213,6 +213,18 @@ d'une decision changee se mesure uniquement sur la fixture 4.4.
       noter par id : retiree servie ? gardee servie ? rang de chacune ?
 - [ ] Meme chose en debut de session via `/prompt/generate`.
 
+Resultat 2026-10-18 (instance de banc, copie figee, 81 questions hors vocabulaire,
+comparaison exacte d'id, `limit: 8`, espace de la paire) :
+
+| Canal | retiree servie | gardee servie | les deux | retiree avant gardee | aucune |
+|---|---|---|---|---|---|
+| `POST /recall` (= `kleos-cli context`) | 45 / 81 | 46 / 81 | 31 | 20 | 21 |
+| `POST /search` | 64 / 81 | 62 / 81 | 55 | 31 | 10 |
+
+Sur les 13 paires dont la gardee n'est plus servable, la retiree est la seule
+version servie dans 7 cas (`/recall`) et 7 cas (`/search`). kleos-cache et
+`/prompt/generate` : pas encore mesures (kleos-cache de test a monter).
+
 ### 4.4 Banc synthetique (la fixture qui jugera les phases 2 a 5)
 
 Construire dans `docs/dev-notes/supersession-bench/` (gitignore) :
@@ -593,6 +605,8 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-18 | 0 / 4.2 | Q5 risque dedup | **815 / 987** liens `supersedes` retirent la memoire la plus recente | idem |
 | 2026-10-18 | 0 / 4.2 | Q6 decisions actives | 1 395 memoires `decision` sur 19 espaces (+ 51 sans espace) | idem |
 | 2026-10-18 | 0 / 4.3 + 5 | decision operateur | 4.3 reecrite sur les 81 paires reelles ; 1e obligatoire et avant 1a | session PC |
+| 2026-10-18 | 0 / 4.1 | instance de banc | `kleos-server` sur `:4290`, donnees = copies 20261018-082511, dreamer / backup / pagerank / communautes coupes ; 429 au premier run (liste d'IP de confiance preauth absente du dossier de banc, `rate_limit.rs:59-86`), copiee puis run refait | session PC |
+| 2026-10-18 | 0 / 4.3 | 81 paires reelles | retiree servie : `/recall` 45 / 81, `/search` 64 / 81 ; retiree classee avant la gardee : 20 et 31 ; population : des doublons, mais aussi de vraies corrections retirees au profit de l'ancienne version (ex. memoires qui disent "corrige / supersede #n" et qui sont elles-memes les retirees) | out-4.3-existing.jsonl |
 | 2026-10-18 | 0 / 4.2 | detail des 81 (Q1) | les 81 viennent toutes de `duplicates.rs` (0 sans lien `supersedes`) ; 61 sont plus recentes que la gardee ; **13 ont une gardee elle-meme non servable** ; similarite 0.90 a 1.0, contenu identique sur 86 / 987 liens ; echantillon lu : reformulations du meme fait stockees a quelques secondes d'ecart, pas des changements de decision | out-4.2b.txt |
 
 ---
