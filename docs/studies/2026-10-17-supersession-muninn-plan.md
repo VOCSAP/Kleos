@@ -110,10 +110,18 @@ s'appuyer dessus.
 
 ### 3.2 Chemins d'injection reels sur le PC (a confirmer en phase 0)
 
-- Par prompt : `hooks/full/user-prompt-lean.sh:131-143` appelle le sidecar
-  `POST /recall` avec `{message, limit: 3, space}` et injecte `context` ; repli sur
-  `kleos-cli context`.
-- Debut de session : `hooks/full/session-start-kleos.sh` appelle Eidolon
+- Par prompt (**corrige le 2026-10-18 apres mesure**) : le hook actif n'est pas
+  `hooks/full/user-prompt-lean.sh` mais le port Rust `claude-hooks user-prompt-lean`
+  (configuration utilisateur, hors depot). Cascade : kleos-cache local
+  `POST /v1/retrieve` (`top_k: 3`) > sidecar `POST /recall` (`limit: 8`) >
+  `kleos-cli context --limit 8`. kleos-cache sert l'immense majorite des prompts
+  (206 sur 219 appels logges). kleos-cache est un depot separe qui replique les
+  memoires via `GET /list` et garde une ligne si
+  `!is_archived && !is_forgotten && is_latest` (`kleos-cache/src/sync_worker.rs:468`) :
+  il **ignore `is_superseded`**. Un filtre pose seulement dans kleos-lib ne ferme
+  donc pas la fuite sur ce canal (voir 1g).
+- Debut de session : `~/.claude/hooks/session-start-kleos.sh` (script maison ; le
+  passage par Eidolon est mesure sur 30 demarrages sur 30) appelle Eidolon
   `/prompt/generate`, puis `kleos-cli list` / `kleos-cli context ... --limit 8` en
   repli (lignes 319-430). `/prompt/generate` est servi par
   `kleos-server/src/routes/prompts/mod.rs:155` et rend `build_living_prompt`
@@ -133,12 +141,20 @@ de la base.
 
 - [ ] `kleos-server` a jour sur la branche de travail, `kleos-ingest` et les hooks
       actifs, un espace de test dedie (ex. `KLEOS_SPACE=supersession-bench`).
-- [ ] Copie de la base : `sqlite3 <db> ".backup /tmp/kleos-bench.db"` (jamais
-      travailler sur la base vive ; si les bases tenant sont chiffrees, voir
-      `scripts/encrypt-tenant-dbs.sh` pour la procedure inverse).
+      **Corrige le 2026-10-18** : `kleos-ingest` ne tourne nulle part, et un store
+      dans un espace de test du serveur vif ecrit dans la base vive. Le banc tourne
+      donc sur une **seconde instance `kleos-server`** (autre port, `KLEOS_DB_PATH`
+      vers la copie), avec un `kleos-ingest` et un kleos-cache de test pointes
+      dessus. Le serveur vif n'est jamais ecrit.
+- [x] Copie de la base : les bases sont chiffrees (sqlcipher) et SQLCipher refuse
+      `.backup` ("backup is not supported with encrypted databases"). Copie faite
+      par `sqlcipher_export` depuis la source attachee en lecture seule, dans un
+      dossier hors depot du LXC ; `integrity_check` = ok. Les memoires vivent dans le
+      shard tenant (28 987 lignes, schema tenant v84), la base monolith n'en
+      contient aucune (schema v102).
 - [ ] Reverifier les constats marques **R** de la section 3.1, en notant les lignes
       exactes dans le journal.
-- [ ] Verifier si la feature `brain_hopfield` est compilee dans le binaire deploye
+- [x] Verifier si la feature `brain_hopfield` est compilee dans le binaire deploye
       (`cargo build` flags dans `CLAUDE.local.md` / `deploy/`) et si le hook de debut
       de session passe reellement par Eidolon `/prompt/generate` ou par le repli
       `kleos-cli` : cela decide ou la phase 4b doit brancher les conflits.
@@ -211,6 +227,8 @@ Construire dans `docs/dev-notes/supersession-bench/` (gitignore) :
   interdite**.
 
 Deux voies d'injection, a mesurer separement :
+
+Les deux voies visent l'instance de banc (section 4.1), jamais le serveur vif.
 
 - **Voie A, API** : `kleos-cli store` ou `POST /memory` dans l'espace de test, avec
   horodatage force (lundi / jeudi) si le serveur le permet, sinon ingestion
@@ -289,6 +307,12 @@ rien ; elle rend la marque existante effective.
       canal (FTS, vecteur, graphe via lien, faits, contexte statique, evolution,
       `/recall`, `/search`, `/context`) et echoue si le texte superseede sort.
       Le test doit etre montre **rouge** en retirant un des filtres.
+- [ ] **1g. kleos-cache** (depot separe, ajoute le 2026-10-18) : c'est le canal
+      dominant par prompt (section 3.2). Verifier si `GET /list` exclut deja ou
+      expose `is_superseded` (`Memory::is_superseded`, `memory/types.rs:189`), puis
+      faire respecter le drapeau par la replique (`sync_worker.rs:468`) et retirer
+      de l'index local une ligne qui devient superseedee apres sa replication. Le
+      test de garantie 1f doit couvrir `POST /v1/retrieve`.
 - [ ] Mettre en coherence les textes faux : README ligne 39, Patch 37.1, header de
       `temporal.rs`.
 
@@ -540,6 +564,16 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 |---|---|---|---|---|
 | 2026-10-17 | redaction | lecture muninn 1.0.5 + audit code Kleos | constats section 3 | cette session |
 | 2026-10-17 | redaction | question : Chiasm / Broca appellent-ils la detection ? | non (13c) ; plomberie exacte du prompt vivant (13b) ; phase 4b reecrite | cette session |
+| 2026-10-18 | 0 / 4.1 | inventaire serveur | `/health` = 1.10.0 ; binaire deploye 2026-10-11 ; depuis, seuls des commits `cred` touchent kleos-lib / kleos-server (chemins de recall identiques a la branche) | session PC |
+| 2026-10-18 | 0 / 4.1 | chiffrement | `KLEOS_ENCRYPTION_MODE=env` ; en-tete SQLite absent sur la base monolith et sur le shard tenant 2 : les deux sont chiffrees (sqlcipher) | session PC |
+| 2026-10-18 | 0 / 4.1 | `kleos-ingest` | aucun processus sur le PC, aucune unite sur le LXC : la voie B n'a pas de consommateur actif | session PC |
+| 2026-10-18 | 0 / 4.1 | hook par prompt | `claude-hooks user-prompt-lean` (port Rust, pas `hooks/full/user-prompt-lean.sh`) : cascade kleos-cache `POST /v1/retrieve` (`top_k: 3`) > sidecar `/recall` (`limit: 8`) > `kleos-cli context --limit 8`. Sur les 2000 dernieres lignes de log : 206 CACHE HIT, 12 TIMEOUT, 1 DOWN | session PC |
+| 2026-10-18 | 0 / 4.1 | kleos-cache | replique via `/list`, garde une ligne si `!is_archived && !is_forgotten && is_latest` (`kleos-cache/src/sync_worker.rs:468`), ignore `is_superseded` | session PC |
+| 2026-10-18 | 0 / 4.1 | hook debut de session | `session-start-kleos.sh` passe par Eidolon `/prompt/generate` sur 30 / 30 demarrages logges ; le repli `kleos-cli` n'a pas servi | session PC |
+| 2026-10-18 | 0 / 4.1 | `brain_hopfield` | compilee : `kleos-server/Cargo.toml:31` l'active explicitement ; les chemins `brain/hopfield/*.rs` figurent dans le binaire deploye | session PC |
+| 2026-10-18 | 0 / 4.1 | espace de test | aucun espace `supersession-bench` ; 40 espaces existants, dont des espaces de test de patchs anterieurs | session PC |
+| 2026-10-18 | 0 / 4.1 | copie de base | `.backup` refuse par SQLCipher ; `sqlcipher_export` depuis la source attachee `mode=ro` ; `integrity_check` ok sur les deux copies ; tenant : 28 987 memoires, schema v84 ; monolith : 0 memoire, schema v102 | session PC |
+| 2026-10-18 | 0 / 4.1 | decisions operateur | banc sur une seconde instance pointee sur la copie ; kleos-cache ajoute au perimetre de la phase 1 (1g) ; plan corrige en 3.2, 4.1, 4.4, 5 | session PC |
 
 ---
 
