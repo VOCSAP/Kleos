@@ -172,7 +172,7 @@ pub async fn get_version_chain(
     let sql = "SELECT id, content, category, version, is_latest, created_at \
                FROM memories \
                WHERE (root_memory_id = ?1 OR id = ?1) AND user_id = ?2 \
-                 AND status != 'pending' AND is_superseded = 0 \
+                 AND status != 'pending' AND is_superseded = 0 AND is_forgotten = 0 AND is_archived = 0 \
                ORDER BY version ASC";
     db.read(move |conn| {
         let mut stmt = conn.prepare(sql)?;
