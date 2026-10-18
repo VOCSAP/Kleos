@@ -287,9 +287,53 @@ Remplir ce tableau avant tout patch :
 
 | Condition | delivered_new | delivered_old | retired_ok | false_retire | agent_ok | ctx_tokens |
 |---|---|---|---|---|---|---|
-| existant, voie A | | | | | | |
-| existant, voie B | | | | | | |
-| sans memoire | | | | | | |
+| existant, voie A | 4 / 40 | 7 / 40 | 0 / 40 | 0 / 30 | 3 / 40 (controles 13 / 30) | ~97 (389 car.) |
+| existant, voie B | 4 / 40 | 1 / 40 | 0 / 40 | 0 / 30 | 3 / 40 (controles 1 / 30) | ~103 (411 car.) |
+| sans memoire | 0 / 40 | 0 / 40 | - | - | **0 / 40 (controles 0 / 30)** | 0 |
+
+Mesure du 2026-10-18, instance de banc sur la copie figee, restauree entre voie A et voie B.
+Lecture des colonnes :
+
+- `/ 40` = 30 paires + 10 scenarios bruit ; `false_retire` porte sur les 30 controles.
+- `delivered_*` = regex sur le bloc reellement injecte par `claude-hooks user-prompt-lean`,
+  isole du kleos-cache et du sidecar, donc via son repli `kleos-cli context --limit 8`
+  (3 lignes gardees). Le canal kleos-cache, dominant en usage reel, **n'est pas mesure** ici.
+- Etat apres 9 (voie A) et 6 (voie B) cycles de `POST /intelligence/run`, le pipeline du
+  dreamer ; avant ces cycles, la voie A donnait 1 / 30 et 7 / 30 sur les paires seules.
+- `agent_ok` = `claude -p` sonnet, sans reglages utilisateur ni MCP ni outils, seul hook =
+  le hook de prompt pointe sur le banc, meme consigne systeme fixe dans les trois conditions.
+- `ctx_tokens` = caracteres du bloc memoire hors regles / 4 (approximation), mediane.
+- `hook_p95_ms` : 1 415 ms (A), 1 466 ms (B), chemin CLI de repli.
+- Voie B = **rejeu** des candidats exacts du dry-run `kleos-ingest` (meme corps,
+  `POST /memories`, auth Bearer) : le daemon reel recoit 401, il envoie un en-tete
+  `X-API-Key` que le serveur ne lit jamais (`kleos-ingest/src/writer.rs:72-74`). L'extracteur
+  ne retient que 13 tours sur 240 (marqueurs lexicaux, 50 caracteres minimum).
+
+Par formulation (voie A, paires, `delivered_new` / `delivered_old`) : 1 = 0 / 0,
+2 = 1 / 1, 3 = 0 / 4, 4 = 0 / 1, 5 = 0 / 0. Les remplacements comparatifs et a verbe de
+changement perdent contre l'original, plus proche du sujet de la question.
+
+### 4.7 Verdict de la porte de la phase 0 (2026-10-18)
+
+Les trois criteres de la section 11 sont remplis :
+
+1. **Fuite sur donnees reelles : confirmee.** Les 81 memoires marquees `is_superseded`
+   encore servables sortent dans 45 cas sur 81 (`/recall`) et 64 sur 81 (`/search`), dont
+   20 et 31 fois avant leur gardee (section 4.3). Rien ne filtre le drapeau.
+2. **`invalid_at` jamais ecrit : confirme** (0 sur 900 faits ; 0 fait extrait de la fixture).
+3. **Fixture valide** : le controle sans memoire donne `agent_ok` = 0 / 70.
+
+Reserves qui conditionnent la suite :
+
+- Sur la fixture, aucune paire n'est jamais marquee (`retired_ok` = 0) : la phase 1 ne peut
+  y etre jugee que sur des paires marquees a la main, comme le prevoit la section 5.
+- La phase 1 commence par 1e : un filtre seul ferait disparaitre la version la plus
+  recente dans 61 des 81 paires reelles, et le fait entier dans 13.
+- Le canal kleos-cache (1g) reste a mesurer avec un kleos-cache de test pointe sur le banc.
+- La voie B n'existe pas en production : `kleos-ingest` ne tourne nulle part, et son
+  authentification par cle est refusee.
+- `delivered_new` de base est tres bas (4 / 40) : le probleme de livraison (phase 4) pese
+  plus que le probleme de retrait sur cette fixture, comme chez muninn.
 
 ---
 
@@ -610,6 +654,12 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-18 | 0 / 4.4 | fixture | 70 scenarios synthetiques valides (30 paires 3 par formulation et par langue, 30 controles, 10 bruit) ; aucune question ne contient la valeur attendue ni interdite | fixture.json |
 | 2026-10-18 | 0 / 4.4 | voie A, etat apres store | 220 memoires dans l'espace de test (fillers identiques dedoublonnes), 0 superseedee, **0 `structured_facts` extrait**, 0 lien | out-4.4 SQL |
 | 2026-10-18 | 0 / 4.4 | voie A, pipeline dreamer x 9 (`POST /intelligence/run`) | 1 242 liens `similarity`, 0 `contradicts`, 0 `supersedes`, 0 retrait dans l'espace de test (1 fusion ailleurs dans le tenant) | supersession-run-a.json |
+| 2026-10-18 | 0 / 4.4 | voie A, livraison par le hook | apres dreamer : paires 1 / 30 nouvelle, 6 / 30 ancienne ; bruit 3 / 10 et 1 / 10 ; controles 8 / 30 ; `/recall` brut (8) : paires 3 / 30 et 8 / 30 | out-hook-existing-a-dreamed.jsonl |
+| 2026-10-18 | 0 / 4.4 | voie A, `agent_ok` | paires 1 / 30 (ancienne citee 10 / 30), bruit 2 / 10, controles 13 / 30 ; premier run tue par manque de RAM, relance a 2 sessions avec consigne systeme fixe (sans elle, le modele emettait des appels d'outils simules) | out-agent-existing-a.jsonl |
+| 2026-10-18 | 0 / 4.4 | sans memoire, `agent_ok` | **0 / 70** : fixture non fuyante | out-agent-no-memory.jsonl |
+| 2026-10-18 | 0 / 4.4 | voie B, `kleos-ingest` | crate Linux-only, compile en release dans WSL ; dry-run : 13 tours retenus sur 240 ; envoi reel : 401 sur les 14 (en-tete `X-API-Key` jamais lu par le serveur) ; rejeu des candidats en Bearer sur copie restauree | ingest-b-candidates.log |
+| 2026-10-18 | 0 / 4.4 | voie B, mesures | 13 memoires, 0 retrait, 0 fait, 40 liens `similarity` ; hook : paires 3 / 30 et 1 / 30 ; `agent_ok` paires 2 / 30, bruit 1 / 10, controles 1 / 30 | out-hook-existing-b-dreamed.jsonl, out-agent-existing-b.jsonl |
+| 2026-10-18 | 0 / 4.7 | porte de la phase 0 | criteres remplis (voir 4.7), en attente de validation operateur | cette session |
 | 2026-10-18 | 0 / 4.3 + 5 | decision operateur | 4.3 reecrite sur les 81 paires reelles ; 1e obligatoire et avant 1a | session PC |
 | 2026-10-18 | 0 / 4.1 | instance de banc | `kleos-server` sur `:4290`, donnees = copies 20261018-082511, dreamer / backup / pagerank / communautes coupes ; 429 au premier run (liste d'IP de confiance preauth absente du dossier de banc, `rate_limit.rs:59-86`), copiee puis run refait | session PC |
 | 2026-10-18 | 0 / 4.3 | 81 paires reelles | retiree servie : `/recall` 45 / 81, `/search` 64 / 81 ; retiree classee avant la gardee : 20 et 31 ; population : des doublons, mais aussi de vraies corrections retirees au profit de l'ancienne version (ex. memoires qui disent "corrige / supersede #n" et qui sont elles-memes les retirees) | out-4.3-existing.jsonl |
