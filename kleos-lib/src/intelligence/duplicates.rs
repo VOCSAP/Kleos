@@ -24,6 +24,7 @@ pub async fn find_duplicates(
                    AND ml.type = 'similarity' \
                    AND ms.is_forgotten = 0 AND mt.is_forgotten = 0 \
                    AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
+                   AND ms.is_archived = 0 AND mt.is_archived = 0 \
                    AND ms.user_id = ?3 AND mt.user_id = ?3 \
                    AND (ms.space_id = mt.space_id \
                         OR (ms.space_id IS NULL AND mt.space_id IS NULL)) \
@@ -72,12 +73,13 @@ pub async fn deduplicate(
 
     let mut merged = 0i64;
     for pair in &pairs {
-        // Keep the one with higher importance; on tie, keep the older one (lower id)
+        // Keep the one with higher importance; on tie, keep the newer one (higher
+        // id): pairs are rewordings stored seconds apart, the later one refines.
         let (keep_id, supersede_id) = if pair.importance_a > pair.importance_b {
             (pair.id_a, pair.id_b)
         } else if pair.importance_b > pair.importance_a {
             (pair.id_b, pair.id_a)
-        } else if pair.id_a < pair.id_b {
+        } else if pair.id_a > pair.id_b {
             (pair.id_a, pair.id_b)
         } else {
             (pair.id_b, pair.id_a)
