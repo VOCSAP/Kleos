@@ -8,7 +8,7 @@ use kleos_lib::intelligence::{
     causal::{add_link, backward_chain, create_chain, get_chain, list_chains},
     consolidation::{consolidate, find_consolidation_candidates, list_consolidations, sweep},
     contradiction::{detect_contradictions, scan_all_contradictions},
-    correction::correct_memory,
+    correction::correct_memory_with_embedder,
     decomposition::decompose,
     digests::{generate_digest, list_digests},
     duplicates::{deduplicate, find_duplicates},
@@ -755,12 +755,15 @@ async fn sweep_handler(
 
 #[tracing::instrument(skip_all)]
 async fn correct_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<CorrectBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let corrected = correct_memory(
+    let embedder = state.current_embedder().await;
+    let corrected = correct_memory_with_embedder(
         &db,
+        embedder.as_deref(),
         auth.effective_user_id(),
         body.memory_id,
         &body.content,

@@ -6951,3 +6951,57 @@ deux passes puis revient quand la marque est effacee.
 
 **Conditions de retrait :** upstream emet `is_superseded` dans le JSON d'une
 memoire.
+
+## Patch 65 -- une correction est la version suivante de la memoire corrigee (2026-10-19)
+
+**Symptome sous upstream pur :** `intelligence::correction::correct_memory`
+(`POST /correct`) cree le texte corrige par `memory::store` : une ligne
+version 1 sans `parent_memory_id` ni `root_memory_id`, sans embedding, et
+l'original reste `is_latest = 1`. L'original n'est masque que par
+`is_superseded` ; il reste dans `GET /list`, la chaine de versions ignore la
+correction, et la copie n'entre pas dans la recherche vectorielle. Second
+defaut mesure en test : une correction proche de l'original (« 02:00 » ->
+« 03:00 ») est repliee par `store` sur l'original comme doublon, puis le lien
+`supersedes` de l'original vers lui-meme echoue (`NotFound`).
+
+**Approche :** la correction passe par le contrat de version de
+`memory::update` (ou `update_with_chunks` quand le serveur a un embedder) :
+l'original passe `is_latest = 0` (garde `AND is_latest = 1`), la correction
+est `version + 1`, `parent` = original, `root` = racine de l'original, et
+herite de ses metadonnees (categorie, importance, tags, statique, espace,
+statut, archivage, FSRS, episode) ; l'index vectoriel et les chunks suivent.
+Le lien `supersedes`, `is_superseded = 1` sur l'original et la ligne
+`reconsolidations` sont conserves ; le cache de recherche est invalide apres
+le marquage. Corriger une version qui n'est plus la derniere est refuse par
+`update` avant toute ecriture. `correct_memory` garde sa signature upstream et
+delegue a une nouvelle fonction additive `correct_memory_with_embedder` ; la
+route `/correct` appelle cette derniere avec l'embedder du serveur (le texte
+corrige recoit son propre vecteur, jamais celui de l'original).
+
+**Pourquoi pas le niveau d'en dessous :** le chemin d'ecriture est code en dur
+dans `correct_memory`, aucun overlay ne le porte. Garder la signature et
+ajouter une fonction evite de casser un appelant futur.
+
+**Consequences assumees :**
+- la phase Evolution et le payload `version_chain` filtrent `is_superseded = 0`
+  (Patch 62) : une version corrigee n'y est pas nommee ;
+- `POST /correct` sur une version deja corrigee renvoie une erreur ; il faut
+  corriger la derniere version ;
+- echec d'embedding dans `update_with_chunks` : repli upstream sur le vecteur
+  reporte, avec un avertissement.
+
+**Fichiers :** `kleos-lib/src/intelligence/correction.rs`,
+`kleos-server/src/routes/intelligence/mod.rs`,
+`kleos-lib/tests/correction_versioning.rs`,
+`kleos-server/tests/routes_memory_supersession.rs`.
+
+**Tests :** `correction_versioning.rs` 5/5 (5 rouges avant) : version suivante
+chainee, metadonnees conservees, seconde correction chainee sur la derniere,
+correction d'une version perimee refusee sans ecriture, vecteur propre avec
+embedder. `routes_memory_supersession.rs` 2/2 : l'original corrige quitte
+`/list` et sa correction y est avec `parent_memory_id` ; la lecture de
+`is_superseded: true` dans `/list` passe par une ligne retiree encore derniere
+version (comme la dedup). `supersession_surfaces` 20/20, `dedup_keeper` 10/10.
+
+**Conditions de retrait :** upstream versionne la correction par le chemin de
+mise a jour.
