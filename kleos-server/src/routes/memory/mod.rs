@@ -90,6 +90,7 @@ fn memory_to_json(m: &kleos_lib::memory::types::Memory) -> Value {
         "parent_memory_id": m.parent_memory_id, "root_memory_id": m.root_memory_id,
         "source_count": m.source_count, "is_static": m.is_static,
         "is_forgotten": m.is_forgotten, "is_archived": m.is_archived,
+        "is_superseded": m.is_superseded,
         "is_fact": m.is_fact,
         "is_decomposed": m.is_decomposed, "forget_after": m.forget_after,
         "forget_reason": m.forget_reason, "model": m.model,

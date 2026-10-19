@@ -6901,3 +6901,53 @@ apres ; verifie aussi que `replaces #id v1 (` est present) et
 
 **Conditions de retrait :** upstream cesse d'injecter le texte des versions
 non courantes dans la phase Evolution.
+
+## Patch 64 -- le JSON d'une memoire expose `is_superseded` (2026-10-19)
+
+**Symptome sous upstream pur :** `memory_to_json`
+(`kleos-server/src/routes/memory/mod.rs`) emet `is_latest`, `is_archived` et
+`is_forgotten` mais pas `is_superseded`. La replique kleos-cache lit `GET /list`
+(volontairement non filtre, Patch 62) pour construire son index local et ne
+peut donc pas savoir qu'une memoire est retiree : elle la sert par
+`POST /v1/retrieve`, le canal dominant par prompt. Banc du 2026-10-18 : 82 des
+7 704 lignes projetables sont retirees.
+
+**Approche :** patch chirurgical, une cle ajoutee dans `memory_to_json`, aucune
+signature touchee. Toutes les routes qui rendent une memoire par cette
+fonction (`/list`, `/memory/{id}`, mise a jour, etc.) portent desormais le
+drapeau. Cote kleos-cache (depot separe) : `RemoteRecord::is_projectable`
+exclut une ligne retiree ; un champ absent est lu `false` pour continuer a
+synchroniser un serveur anterieur a ce patch. La ligne deja repliquee sort de
+l'index par la reconciliation d'absence existante (deux passes), et y revient
+si la marque est effacee (trigger du Patch 61).
+
+**Pourquoi pas le niveau d'en dessous :** aucun canal overlay ne porte la
+serialisation d'une route ; filtrer `memory::list` cote serveur ferait
+disparaitre la ligne de `/list` sans que la replique sache pourquoi, et
+retirerait aussi la ligne des vues admin.
+
+**Garde de suppression kleos-cache :** `Store::reconcile_absences` refuse toute
+suppression si le nombre de lignes voulues s'ecarte de plus de 200 ou de plus de
+10 % de la passe precedente, et ne met pas la reference a jour en cas de refus.
+Mesure sur le banc : la premiere passe apres le patch retire 82 lignes sur
+7 704 (1,06 %), sous les deux seuils.
+
+**Mesure de bout en bout (banc, 2026-10-19) :** avant, une replique de test
+non patchee indexait les 82 retirees. Banc relance sur un serveur construit
+depuis cette branche : la reparation du Patch 61 ramene le jeu a 71 retirees ;
+la replique patchee les supprime en deux passes (`deleted` 71, garde non
+declenchee, 0 restante) et `POST /v1/retrieve` interroge avec le texte de 10
+retirees n'en renvoie aucune.
+
+**Fichiers :** `kleos-server/src/routes/memory/mod.rs`,
+`kleos-server/tests/routes_memory_supersession.rs` ; kleos-cache
+`src/sync_worker.rs`, `tests/sync_worker.rs`.
+
+**Tests :** `routes_memory_supersession.rs` : `/list` porte le booleen, une
+memoire corrigee par `POST /correct` est rendue `is_superseded: true` par
+`GET /memory/{id}`. kleos-cache : ligne retiree jamais projetee, listing sans le
+champ projete comme avant, champ non booleen refuse, ligne repliquee qui sort en
+deux passes puis revient quand la marque est effacee.
+
+**Conditions de retrait :** upstream emet `is_superseded` dans le JSON d'une
+memoire.
