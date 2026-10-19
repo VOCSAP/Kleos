@@ -683,7 +683,7 @@ pub fn link_type_weight(link_type: &str) -> f64 {
     match link_type {
         "caused_by" | "causes" => 2.0,
         "updates" | "corrects" => 1.5,
-        "extends" | "contradicts" => 1.3,
+        "extends" => 1.3,
         _ => 1.0,
     }
 }
