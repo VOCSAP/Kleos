@@ -548,6 +548,51 @@ Rendu vise : `#5 (actuel) remplace #4 · historique #1 #2 #3`. Mesure : chaines 
 a la fixture (aller-retour, trois etapes, sans mot commun), jugees par paire puis par
 chaine ; porte inchangee (0 faux `remplace`), plus 0 memoire ressuscitee.
 
+### 6.1 ter Juge retenu (mesure et decision operateur du 2026-10-19)
+
+Balayage du juge par chaine sur les 192 composantes (140 reelles, 52 de la fixture 4.4)
+plus les 8 chaines K, un run par configuration, via LiteLLM (Kleos #30268). Verite
+operateur : 10 paires reelles etiquetees a la main (confiance declaree 70 a 80 %, paire 1
+acceptee en `remplace` ou `distinct`).
+
+| Config | Cout du lot (USD) | Controles fixture retires a tort | Accord operateur / 10 | Faux `remplace` operateur | Retraits reels |
+|---|---|---|---|---|---|
+| Haiku `low` | 0,105 | 0 | 6 | 1 | 21 |
+| Haiku `medium` (defaut) | 0,124 | 2 | 6 | 1 | 18 |
+| Haiku `high` | 0,162 | 1 | 6 | 1 | 14 |
+| Haiku `xhigh` | 0,305 | 3 (+ 3 fillers d'autres scenarios) | 6 | 1 | 18 |
+| **Sonnet `medium`** | **0,935** | **0** | **7** | **0** | 33 |
+| Sonnet `high` (defaut) | 1,110 | 0 | 6 | 1 | 28 |
+
+Toutes les configurations trouvent les 18 / 18 remplacements de la fixture et ne
+retirent rien a tort sur les chaines K. Monter l'effort n'ameliore pas Haiku : en `xhigh`
+il surinterprete.
+
+**Regle de consensus** : une memoire n'est retiree que si le juge par chaine **et** le
+juge par paire Sonnet disent `remplace` ; sinon le conflit reste ouvert ou annote
+`partiel`. Resultat, pour toutes les configurations : 0 faux `remplace` operateur,
+18 / 18 sur la fixture, 2 a 15 retraits reels (15 pour Sonnet `medium`).
+
+**M3, cout de l'indicateur** : 99 requetes reelles rejouees par
+`kleos-cli context --limit 8` sur le banc (au lieu des questions de la fixture, qui ne
+touchent pas les conflits reels), 792 memoires servies. Sans juge (borne haute) : **1**
+memoire servie porte un indicateur ; apres le juge : 0. Une ligne `conflict with` coute
+environ 34 tokens. Cout en contexte negligeable.
+
+**Cout d'exploitation estime** : rattrapage de l'arriere environ 2 USD (chaine 0,94 +
+paire 1,04) ; regime courant environ 1,3 conflit par jour (194 candidats sur 5 mois),
+soit environ 0,20 USD par mois, la moitie via l'API Batch. Estimations a partir du lot
+mesure, pas d'une facture.
+
+**Decision operateur** : juge par chaine Sonnet 5.5 en effort `medium`, retrait seulement
+sur consensus avec le juge par paire Sonnet. Reserves : un run par configuration (le
+thinking n'est pas deterministe, un ecart de 1 n'est pas significatif) ; echantillons
+petits (10 paires operateur, 30 controles).
+
+**Etat de la porte (11)** : `false_retire` 0 / 30 sur la fixture, aucun `supersedes` faux
+sur l'echantillon operateur, volume et cout de contexte mesures (M1, M3). Reste
+l'idempotence, qui se prouve sur le code de l'implementation.
+
 ### 6.2 Version initiale (abandonnee, voir 6.0)
 
 C'est la regle 1 de muninn (meme cle, objet different), appliquee a la structure
@@ -832,6 +877,12 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-19 | 2 / 6.0 | cles `structured_facts` | seul ecrivain `fast_extract_facts` ; 773 faits de la classe `made`, 308 sur des decisions, cle unique `(user, fait)` : regle 6.2 nuisible | phase2-made-decisions.sql, Kleos #30241 |
 | 2026-10-19 | 2 / 6.0 | retrait lexical au niveau memoire (simulation) | fixture : naive 11 / 30 et `false_retire` 7 / 30, marqueur obligatoire 5 / 30 et 0 / 30 ; reel : 104 retraits sur 1 375 decisions, ~9-10 faux sur 14 lus | phase2_overlap_sim.py, phase2_real_sim.py, Kleos #30245 |
 | 2026-10-19 | 2 / 6.1 | decision operateur | detection sans retrait + indicateur de conflit + arbitrage par le juge dans un job du dreamer ; mesure seulement | cette session |
+| 2026-10-19 | 2 / 6.1 | M1 detecteur | seuil recouvrement >= 0.5, ou >= 0.34 avec marqueur, au moins 2 mots ; fixture : 112 candidats, 18 / 40 remplacements, 7 / 30 controles signales ; reel : 194 candidats en 140 composantes, 39 chaines de 3 a 5 memoires (40 % des memoires en cause) | phase2_candidates.py, Kleos #30245 |
+| 2026-10-19 | 2 / 6.1 | M2 juge par paire | fixture : Sonnet 18 / 18 et 0 faux, Haiku 16 / 18 et 0 faux ; reel : chacun dit `remplace` sur 24 paires que l'etiqueteur independant (194 etiquettes : 19 R, 175 D) classe `distinct` | phase2_judge.py, Kleos #30251 |
+| 2026-10-19 | 2 / 6.1 bis | juge par chaine | 8 chaines K : 0 ressuscitee, 0 retrait a tort ; reel : retraits de memoires partiellement perimees, d'ou le verdict `partiel` | phase2_chain_judge.py, Kleos #30256 |
+| 2026-10-19 | 2 / 6.1 bis | accord sur 10 paires operateur | operateur R sur 3 / 10 ; agent independant 7 / 10, juges par paire 6 / 10 | phase2_compare10.py, Kleos #30257 |
+| 2026-10-19 | 2 / 6.1 ter | balayage d'effort, consensus, M3 | Sonnet `medium` par chaine : 0 controle retire, 7 / 10 operateur, 0 faux, 0,94 USD le lot ; consensus chaine + paire Sonnet : 0 faux operateur pour toutes les configs ; M3 : 1 indicateur sur 792 memoires servies sans juge, 0 apres | phase2_sweep.py, phase2_sweep_score.py, phase2_m3.py, Kleos #30268 |
+| 2026-10-19 | 2 / 6.1 ter | decision operateur | juge par chaine Sonnet `medium`, retrait sur consensus avec le juge par paire Sonnet | cette session |
 
 ---
 
