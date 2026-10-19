@@ -343,26 +343,26 @@ Principe muninn (reference X1) : ce qui paie est **retenir l'enregistrement
 invalide et ne pas le servir**, pas un typage plus riche. Cette phase ne detecte
 rien ; elle rend la marque existante effective.
 
-- [ ] **1a. Filtre `is_superseded = 0`** dans : `memory/fts.rs` (predicat
+- [x] **1a. Filtre `is_superseded = 0`** dans : `memory/fts.rs` (predicat
       `m.is_latest = 1`), `memory/vector.rs`, l'hydratation de `memory/search.rs`
       (c'est le point unique par lequel passent tous les canaux de la recherche
       hybride, graphe et faits compris), `context/deps.rs` (memoires statiques),
       `routes/memory/mod.rs` (`/recall`). Ajouter `is_superseded` a l'index
       `idx_memories_search` seulement si le plan de requete le reclame (mesurer
       avec `EXPLAIN QUERY PLAN`, voir l'experience muninn sur l'index `kind`).
-- [ ] **1b. `correct_memory`** : passer l'original en `is_latest = 0` et chainer la
+- [x] **1b. `correct_memory`** : passer l'original en `is_latest = 0` et chainer la
       correction (`parent_memory_id`, `root_memory_id`, `version + 1`) selon le
       contrat de version deja utilise par la mise a jour de memoire. Verifier sur
       le PC comment `memory::update` cree les versions avant de choisir.
-- [ ] **1c. Poids du lien `contradicts`** dans `scoring.rs::link_type_weight` :
+- [x] **1c. Poids du lien `contradicts`** dans `scoring.rs::link_type_weight` :
       ramener de 1.3 a 1.0 au plus. Ne pas suivre les liens `supersedes` du nouveau
       vers l'ancien dans l'expansion de graphe (couvert par 1a si l'hydratation
       filtre, a verifier par test).
-- [ ] **1d. Phase Evolution** (`context/mod.rs` autour de la ligne 885) : rendre la
+- [x] **1d. Phase Evolution** (`context/mod.rs` autour de la ligne 885) : rendre la
       version courante, puis une ligne par version anterieure `replaces #id (date)`
       **sans son texte**. Filtrer `is_forgotten` / `is_archived` dans
       `get_version_chain`.
-- [ ] **1e. Dedup `duplicates.rs`** -- **obligatoire, a faire AVANT 1a** (mesure
+- [x] **1e. Dedup `duplicates.rs`** -- **obligatoire, a faire AVANT 1a** (mesure
       4.2 : 815 / 987 liens retirent la plus recente ; 13 des 81 retirees servables
       ont une gardee non servable). Changer le critere (garder la plus recente a
       importance egale, ou ne pas superseder quand les objets SVO different), et
@@ -377,12 +377,12 @@ rien ; elle rend la marque existante effective.
       gardees archivees sur la copie ; les 4 chaines finissent sur une memoire
       servable). Le filtre de lecture reste `is_superseded = 0`. Avant d'ecrire le
       trigger : identifier qui archive les gardees.
-- [ ] **1f. Test de garantie** (equivalent du test de faute muninn) : un test
+- [x] **1f. Test de garantie** (equivalent du test de faute muninn) : un test
       d'integration qui insere une memoire, la supersede, puis interroge **chaque**
       canal (FTS, vecteur, graphe via lien, faits, contexte statique, evolution,
       `/recall`, `/search`, `/context`) et echoue si le texte superseede sort.
       Le test doit etre montre **rouge** en retirant un des filtres.
-- [ ] **1g. kleos-cache** (depot separe, ajoute le 2026-10-18) : c'est le canal
+- [x] **1g. kleos-cache** (depot separe, ajoute le 2026-10-18) : c'est le canal
       dominant par prompt (section 3.2). Verifier si `GET /list` exclut deja ou
       expose `is_superseded` (`Memory::is_superseded`, `memory/types.rs:189`), puis
       faire respecter le drapeau par la replique (`sync_worker.rs:468`) et retirer
@@ -394,6 +394,72 @@ rien ; elle rend la marque existante effective.
 Tests : `cargo test -p kleos-lib --lib memory` et `--lib context` (Windows :
 `--features bundled-sqlite`), puis la fixture 4.4 : `delivered_old` doit tomber a
 0 pour les paires que l'on marque **a la main** (`/intelligence/correct`).
+
+Livre (commits locaux de la branche) : 1f `bef8a136` ; 1e Patch 60 `2f592b75` et
+Patch 61 `0ea4b143` ; 1a Patch 62 `ae757473` ; 1d Patch 63 `57bba709` ; 1g Patch 64
+`efd078bf` + `ed41d140` et kleos-cache `63abf63` ; 1b Patch 65 `9b526c43` + `d89fc2f1` ;
+1c Patch 66 `0f9936ac`. Detail par patch : `docs/dev-notes/local-patches.md`.
+
+### 5.1 Verdict de la porte de la phase 1 (2026-10-19)
+
+Les trois criteres de la section 11 sont remplis :
+
+1. **Test de garantie vert, et montre rouge sans filtre.** `supersession_surfaces`
+   20 / 20 a HEAD. Rouge avant les patches : 10 / 10 a `bef8a136`. Rouge par mutation,
+   une a la fois : sans le predicat de `fetch_memories_batch`, 4 tests (Patch 62) ;
+   sans la cle `is_superseded` du JSON, `routes_memory_supersession` 0 / 2 (Patch 64,
+   version du test a `efd078bf`, reecrite depuis par `ed41d140` et `9b526c43`) ;
+   sans le filtre de la replique, `sync_worker` 2 echecs sur 37 (kleos-cache). Rouges
+   avant correction : `correction_versioning` 5 / 5 (Patch 65), `link_weights` 1 / 2
+   (Patch 66).
+2. **`delivered_old = 0 / 40` sur les remplacements marques a la main.** Banc restaure
+   (copie 20261018-082511), serveur construit depuis la branche avec les patches 60 a 66,
+   voie A chargee, 40 remplacements (30 paires + 10 bruit) marques en SQL comme le fait
+   `deduplicate` (`is_superseded = 1` + lien `supersedes` nouvelle -> ancienne). Le
+   marquage passe par SQL et non par `/intelligence/correct`, qui depuis le Patch 65 cree
+   une troisieme memoire au lieu de retirer l'ancienne.
+3. **Requetes de reference sans regression.** `retrieval_eval` (`golden.json`, 9 requetes,
+   FTS seul) : recall@5, recall@10, MRR et nDCG@10 a 1.00 sur chaque requete, a la base
+   `ea6b34ec` comme a HEAD (tableaux par requete identiques, plancher stable 0.95 tenu).
+   kleos-cache, `local_only`, meme banc marque, replique sans filtre contre replique avec
+   filtre : `queries.jsonl` (40) hit@5 0.600 -> 0.625, MRR@5 0.502 -> 0.507 ;
+   `real-queries-relabelled-content` (59) 0.458 et 0.340 inchanges. Aucun id attendu de
+   ces jeux n'est retire sur le banc : le filtre ne peut retirer qu'un distracteur.
+
+| Condition (voie A) | delivered_new | delivered_old | retired_ok | false_retire | controles new | replique : anciennes indexees | ctx_tokens | hook_p95_ms |
+|---|---|---|---|---|---|---|---|---|
+| phase 0, 4.6 (existant, apres 9 cycles dreamer) | 4 / 40 | 7 / 40 | 0 / 40 | 0 / 30 | 8 / 30 | non mesure | ~97 (389 car.) | 1 415 |
+| phase 0, avant dreamer (`out-hook-existing-a`) | 5 / 40 | 8 / 40 | 0 / 40 | 0 / 30 | 7 / 30 | non mesure | ~97 (386 car.) | 1 681 |
+| porte, patches 60-66, avant marquage | 5 / 40 | 8 / 40 | 0 / 40 | 0 / 30 | 7 / 30 | 40 / 40 | ~97 (386 car.) | 1 802 |
+| porte, patches 60-66, apres marquage | 6 / 40 | **0 / 40** | 40 / 40 (a la main) | 0 / 30 | 10 / 30 | **0 / 40** | ~99 (394 car.) | 1 762 |
+
+Lecture : meme hook isole et memes regex que 4.6 (`measure_hook.py`). Les mesures de la
+porte sont faites sans cycle du dreamer : leur comparable est la ligne "avant dreamer"
+de la phase 0, que la ligne "avant marquage" reproduit a l'identique (memes livraisons
+par scenario). `retired_ok` apres marquage compte le marquage manuel, pas une detection ;
+`false_retire` reste 0 / 30 parce qu'aucun controle n'est marque. `hook_p95_ms` vaut 1 681 ms
+(binaire de la phase 0) contre 1 802 puis 1 762 ms (patches 60-66) sur le meme etat : ecart
+non attribue, la variance entre deux runs d'un meme binaire n'a pas ete mesuree, et le
+chemin du hook (`/context`) porte les predicats des Patches 62 et 63. Replique kleos-cache de test sur le banc, Ollama
+`bge-m3` : la premiere passe apres marquage ne supprime rien (regle d'absence a deux
+passes), la seconde supprime les 40 ; ensuite 0 des 1 009 memoires retirees du banc
+n'est indexee, les 40 nouvelles le restent. Sorties brutes (hash du binaire, port,
+comptes, passes de synchronisation) : `gate1-bench-evidence.txt`.
+
+Reserves :
+
+- `retrieval_eval` est sature (tout a 1.00, base et HEAD) et ne mesure pas le canal
+  vecteur : signal de non-regression complet mais faible ; `golden.json` compte 9
+  requetes, pas 20.
+- La replique "sans filtre" est le binaire kleos-cache du 2026-09-24 : hors filtre, sa
+  projection differe dans les deux sens (132 ids indexes par le binaire 1g et pas par
+  lui, dont 10 nouvelles versions de la fixture ; 148 dans l'autre sens, dont 100
+  retirees). La comparaison n'isole pas le seul filtre. Le binaire 1g mesure inclut le WIP non commite du depot kleos-cache
+  (`main.rs`, `http.rs`, `lib.rs`), hors `sync_worker.rs`.
+- `delivered_new` reste bas (6 / 40) : retirer l'ancienne version ne fait pas livrer la
+  nouvelle. C'est l'objet des phases 2 a 4.
+- Reste de la phase 1, hors porte : les textes faux (README ligne 39, Patch 37.1, header
+  de `temporal.rs`), et `pagerank.rs` / `communities.rs` qui gardent `contradicts` a 1.3.
 
 ---
 
@@ -674,6 +740,9 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-18 | 0 / 4.1 | instance de banc | `kleos-server` sur `:4290`, donnees = copies 20261018-082511, dreamer / backup / pagerank / communautes coupes ; 429 au premier run (liste d'IP de confiance preauth absente du dossier de banc, `rate_limit.rs:59-86`), copiee puis run refait | session PC |
 | 2026-10-18 | 0 / 4.3 | 81 paires reelles | retiree servie : `/recall` 45 / 81, `/search` 64 / 81 ; retiree classee avant la gardee : 20 et 31 ; population : des doublons, mais aussi de vraies corrections retirees au profit de l'ancienne version (ex. memoires qui disent "corrige / supersede #n" et qui sont elles-memes les retirees) | out-4.3-existing.jsonl |
 | 2026-10-18 | 0 / 4.2 | detail des 81 (Q1) | les 81 viennent toutes de `duplicates.rs` (0 sans lien `supersedes`) ; 61 sont plus recentes que la gardee ; **13 ont une gardee elle-meme non servable** ; similarite 0.90 a 1.0, contenu identique sur 86 / 987 liens ; echantillon lu : reformulations du meme fait stockees a quelques secondes d'ecart, pas des changements de decision | out-4.2b.txt |
+| 2026-10-19 | 1 / 5.1 | banc pour la porte | restauration 20261018-082511 (28 987 memoires), binaire patches 60-66 sha256 `7ebb0c10` ; reparation du Patch 61 appliquee a l'ouverture du shard : 969 retirees dont 70 projetables | gate1-counts.sql |
+| 2026-10-19 | 1 / 5.1 | porte, `delivered_old` | voie A, 40 remplacements marques en SQL : hook 8 / 40 -> **0 / 40** ; replique kleos-cache 40 / 40 anciennes indexees -> **0 / 40** en deux passes, 0 des 1 009 retirees indexee | out-hook-gate1-unmarked.jsonl, out-hook-gate1-marked.jsonl |
+| 2026-10-19 | 1 / 5.1 | porte, requetes de reference | `retrieval_eval` 9 / 9 a 1.00 a `ea6b34ec` et a HEAD ; kleos-cache `local_only` sans / avec filtre : 40 requetes hit@5 0.600 -> 0.625, 59 requetes inchangees | gate1-retrieval-base.log, gate1-retrieval-head.log, gate1-eval/ |
 
 ---
 
