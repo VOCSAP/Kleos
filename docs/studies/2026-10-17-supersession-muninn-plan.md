@@ -465,6 +465,91 @@ Reserves :
 
 ## 6. Phase 2 : supersession a l'ingestion sur `structured_facts` (additif)
 
+### 6.0 Recadrage du 2026-10-19 (mesure avant code, decision operateur)
+
+La regle ecrite plus bas (6.2) est **abandonnee** : elle est infaisable et nuisible.
+Deux mesures, faites avant toute ligne de code :
+
+- **Pas de cle pour une decision.** `fast_extract_facts` (`extraction.rs:471`) est le
+  seul ecrivain de `structured_facts` au store (tous les chemins y convergent ;
+  `facts::create_fact` n'a aucun appelant de production). Ses patterns ecrivent
+  `subject = user` et le verbe dans `predicate`. La classe `made` (fr : fait, realise,
+  prepare) attrape des phrases de decision : sur la copie tenant 2, 773 faits de cette
+  classe, dont **308 sur des memoires de decision**, tous sous la cle `(user, fait)`. La
+  regle retirerait des decisions au hasard du verbe. Upstream avait deja cette regle
+  (`detect_fact_contradictions`) et l'a supprimee comme code mort (commit `15e14fe0`).
+- **Un retrait lexical au niveau memoire ne tient pas sur donnees reelles.** Regle
+  testee : une nouvelle decision retire la plus recente decision active du meme espace
+  si le recouvrement de mots de contenu (`|A inter B| / min(|A|, |B|)`, au moins 2 mots)
+  atteint 0.5, ou 0.34 avec un marqueur de changement (pistes de 7.1). Fixture 4.4 :
+  variante naive 11 / 30 paires et `false_retire` **7 / 30** ; marqueur obligatoire
+  5 / 30 paires (formulation 4 seule) et 0 / 30. Sur les 1 375 decisions servables de la
+  copie (19 espaces), la variante marqueur produit 104 retraits, dont environ 9 a 10
+  faux sur 14 lus a la main : textes longs qui partagent noms de projet, ids de carte et
+  SHA, marqueurs frequents dans la prose technique. La fixture a phrases courtes le
+  masque.
+
+### 6.1 Forme retenue : detection sans retrait, arbitrage par le juge
+
+Decision operateur du 2026-10-19, **en mesure seulement** tant que la porte n'est pas
+passee (aucun code serveur avant) :
+
+1. **Detection** (deterministe, au store ou en lot) : une paire de decisions actives du
+   meme user et du meme espace qui passe le seuil de recouvrement devient un **conflit
+   ouvert**. Rien n'est retire, aucun `is_superseded` n'est pose.
+2. **Indicateur** : tant que le conflit est ouvert, les deux memoires sont servies et
+   marquees `conflict with #m`, les deux valeurs citees (meme rendu que 4b.3). Un faux
+   positif coute une ligne de contexte, pas une decision perdue (reference N4 : la
+   frontiere qui tient est la lecture).
+3. **Arbitrage** : un job du dreamer reprend les conflits ouverts et les soumet au juge
+   de 3b (agent dedie, ecriture par proposition, validateur deterministe). Verdicts :
+   `supersedes` (seulement la, lien + `is_superseded` sur l'ancienne), `distinct`
+   (conflit ferme, aucun marquage), `conflict` (reste ouvert, signale a l'operateur).
+   Juge absent ou non passe : le conflit reste ouvert, l'indicateur reste servi.
+
+Mesures a produire, dans l'ordre (scripts dans `~/.agent-forge/scratch/phase2_*`,
+donnees reelles lues sur la copie figee, jamais sur la base vive) :
+
+| # | Mesure | Sur | Sortie |
+|---|---|---|---|
+| M1 | detecteur : rappel et precision des conflits ouverts | fixture 4.4 (verite connue) et 1 375 decisions reelles, echantillon etiquete | paires detectees, controles signales, volume par espace |
+| M2 | juge : precision des verdicts `supersedes` | memes candidats, juge en mode hors ligne | `false_retire` du juge, verdicts par classe |
+| M3 | cout de l'indicateur | `/context` rejoue sur les questions de la fixture | lignes `conflict with` et `ctx_tokens` par prompt |
+
+Porte de la phase 2 recadree : M2 donne `false_retire = 0 / 30` sur la fixture et
+aucun `supersedes` faux sur l'echantillon reel etiquete ; M1 reporte le volume de
+conflits ouverts par espace et l'operateur l'accepte comme cout de contexte (M3).
+
+### 6.1 bis Arbitrage par chaine, pas par paire (question operateur du 2026-10-19)
+
+Un meme sujet peut porter plusieurs changements successifs (X, puis Y, puis retour a X).
+Sur les 194 candidats reels, 39 composantes connexes relient 3 a 5 memoires (132 des 334
+memoires en cause, 40 %). Juger chaque paire isolement casse sur ce cas : le juge ne voit
+pas les dates, une paire (X du 01/01, retour a X du 11/10) parait compatible et peut
+resusciter l'ancienne, et les verdicts de deux paires voisines peuvent se contredire. Le
+ranking temporel de Kleos (recence, FSRS) ordonne mais n'arbitre pas (reference N4).
+
+Regle retenue pour la mesure : le juge recoit la **composante entiere**, triee par date,
+chaque memoire datee, et rend l'etat courant du sujet plus les liens `remplace`. Le
+validateur deterministe impose :
+
+- un lien `remplace` va toujours du plus recent vers le plus ancien (pas de cycle) ;
+- une memoire remplacee n'est jamais reactivee parce qu'une plus recente dit la meme
+  chose : c'est la plus recente qui porte l'etat courant ;
+- chaque composante garde au moins une memoire active.
+
+Premiere mesure (2026-10-19, Kleos #30256) : sur 8 chaines de fixture, aucune memoire
+ressuscitee ni retiree a tort ; sur les 39 chaines reelles, le juge retirait aussi des
+memoires seulement **partiellement** perimees (un point faux parmi plusieurs vrais, ou
+reprise precisee). Ajout d'un verdict `partiel` : la memoire reste servie, le point perime
+est annote ; seul un remplacement total retire.
+
+Rendu vise : `#5 (actuel) remplace #4 · historique #1 #2 #3`. Mesure : chaines ajoutees
+a la fixture (aller-retour, trois etapes, sans mot commun), jugees par paire puis par
+chaine ; porte inchangee (0 faux `remplace`), plus 0 memoire ressuscitee.
+
+### 6.2 Version initiale (abandonnee, voir 6.0)
+
 C'est la regle 1 de muninn (meme cle, objet different), appliquee a la structure
 que Kleos extrait deja. Le filtre de lecture existe : le cout au recall est nul.
 
@@ -661,7 +746,7 @@ si la phase 2 montre des retraits provoques par des memoires non utilisateur.
 |---|---|---|
 | Phase 0 | la ligne de base montre la fuite (`delivered_old` > 0 sur des paires reelles, `invalid_at` jamais ecrit) et la fixture est validee par le controle sans memoire | reexaminer les constats R, corriger le plan |
 | Phase 1 | test de garantie vert et montre rouge sans filtre ; `delivered_old = 0` sur paires marquees a la main ; les 20 requetes de reference ne regressent pas | ne pas passer a la phase 2 |
-| Phase 2 | `false_retire = 0 / 30` ; `retired_ok` monte ; idempotence prouvee | revoir les gardes, pas les assouplir |
+| Phase 2 (recadree 6.1) | juge : `false_retire = 0 / 30` sur la fixture et aucun `supersedes` faux sur l'echantillon reel ; volume de conflits ouverts accepte (M1, M3) ; idempotence prouvee | revoir les gardes, pas les assouplir |
 | Phase 3 | `false_retire = 0 / 30` ; gain par formulation documente | garder la classe lexicon, retirer la regle |
 | Phase 4 | `agent_ok` monte a rendu fixe ; `ctx_tokens` et `hook_p95_ms` reportes et acceptes | garder l'interrupteur a off |
 | Phase 5 | `false_retire = 0 / 30` sur toutes les conditions | ne pas activer par defaut |
@@ -743,6 +828,10 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-19 | 1 / 5.1 | banc pour la porte | restauration 20261018-082511 (28 987 memoires), binaire patches 60-66 sha256 `7ebb0c10` ; reparation du Patch 61 appliquee a l'ouverture du shard : 969 retirees dont 70 projetables | gate1-counts.sql |
 | 2026-10-19 | 1 / 5.1 | porte, `delivered_old` | voie A, 40 remplacements marques en SQL : hook 8 / 40 -> **0 / 40** ; replique kleos-cache 40 / 40 anciennes indexees -> **0 / 40** en deux passes, 0 des 1 009 retirees indexee | out-hook-gate1-unmarked.jsonl, out-hook-gate1-marked.jsonl |
 | 2026-10-19 | 1 / 5.1 | porte, requetes de reference | `retrieval_eval` 9 / 9 a 1.00 a `ea6b34ec` et a HEAD ; kleos-cache `local_only` sans / avec filtre : 40 requetes hit@5 0.600 -> 0.625, 59 requetes inchangees | gate1-retrieval-base.log, gate1-retrieval-head.log, gate1-eval/ |
+| 2026-10-19 | 1 | deploiement | phase 1 deployee sur le serveur vif (binaire `7ebb0c10`, sauvegarde a froid `backup-pre-supersession-p1-20261019`) ; `supersession_repair` applique ; replique kleos-cache locale 72 retirees indexees -> 0 a la premiere sync | Kleos #30239 |
+| 2026-10-19 | 2 / 6.0 | cles `structured_facts` | seul ecrivain `fast_extract_facts` ; 773 faits de la classe `made`, 308 sur des decisions, cle unique `(user, fait)` : regle 6.2 nuisible | phase2-made-decisions.sql, Kleos #30241 |
+| 2026-10-19 | 2 / 6.0 | retrait lexical au niveau memoire (simulation) | fixture : naive 11 / 30 et `false_retire` 7 / 30, marqueur obligatoire 5 / 30 et 0 / 30 ; reel : 104 retraits sur 1 375 decisions, ~9-10 faux sur 14 lus | phase2_overlap_sim.py, phase2_real_sim.py, Kleos #30245 |
+| 2026-10-19 | 2 / 6.1 | decision operateur | detection sans retrait + indicateur de conflit + arbitrage par le juge dans un job du dreamer ; mesure seulement | cette session |
 
 ---
 
