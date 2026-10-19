@@ -7012,3 +7012,36 @@ version (comme la dedup). `supersession_surfaces` 20/20, `dedup_keeper` 10/10.
 
 **Conditions de retrait :** upstream versionne la correction par le chemin de
 mise a jour.
+
+## Patch 66 -- un lien `contradicts` ne donne plus de bonus dans l'expansion de graphe (2026-10-19)
+
+**Symptome sous upstream pur :** `memory::scoring::link_type_weight` donne au
+lien `contradicts` le meme bonus 1.3 qu'`extends`. Dans l'expansion de graphe
+de la recherche hybride (`search.rs::inject_graph_neighbors`, score du voisin
+= similarite x poids x 0,5 au second saut), une memoire atteinte par une
+contradiction passe devant un voisin atteint par un lien neutre de meme
+similarite. C'est l'inverse de l'intention muninn : une contradiction ne doit
+pas promouvoir l'autre version.
+
+**Approche :** patch chirurgical d'une ligne, `"extends" | "contradicts" =>
+1.3` devient `"extends" => 1.3` ; `contradicts` tombe sur le poids neutre 1.0.
+Le lien reste suivi (le voisin est toujours injecte), seul le bonus disparait.
+
+**Pourquoi pas le niveau d'en dessous :** le bareme est code en dur, aucun
+overlay ni variable d'environnement ne le porte.
+
+**Hors scope, laisse tel quel :** le meme bareme est copie dans
+`graph/pagerank.rs` (poids des aretes du PageRank, qui alimente le bonus
+`pagerank_score` du classement) et `graph/communities.rs` (regroupement, sans
+effet sur le classement). Les deux gardent `contradicts` a 1.3. Changer le
+PageRank modifie un score persistant recalcule en tache de fond : decision a
+mesurer a part.
+
+**Fichiers :** `kleos-lib/src/memory/scoring.rs`,
+`kleos-lib/tests/link_weights.rs`.
+
+**Tests :** `link_weights.rs` : `contradicts` sans bonus sur un lien neutre
+(rouge avant, vert apres), les autres liens types gardent leur bonus. Le test
+upstream `scoring::tests::link_weight_test` reste vert.
+
+**Conditions de retrait :** upstream ramene `contradicts` au poids neutre.
