@@ -6988,7 +6988,14 @@ ajouter une fonction evite de casser un appelant futur.
 - `POST /correct` sur une version deja corrigee renvoie une erreur ; il faut
   corriger la derniere version ;
 - echec d'embedding dans `update_with_chunks` : repli upstream sur le vecteur
-  reporte, avec un avertissement.
+  reporte, avec un avertissement ;
+- sans embedder (appel direct de `correct_memory`, ou serveur sans embedder
+  actif), `memory::update` reporte le vecteur de l'original sur la correction :
+  avant ce patch elle n'en avait aucun. Le serveur VOCSAP a toujours un
+  embedder (bge-m3), ce chemin n'y est pas emprunte ;
+- `memory::get` en tete de correction enregistre un acces sur l'original
+  (`access_count`, `last_accessed_at`) meme quand `update` refuse ensuite la
+  correction : comportement anterieur, inchange.
 
 **Fichiers :** `kleos-lib/src/intelligence/correction.rs`,
 `kleos-server/src/routes/intelligence/mod.rs`,
