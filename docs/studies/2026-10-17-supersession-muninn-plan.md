@@ -573,6 +573,16 @@ juge par paire Sonnet disent `remplace` ; sinon le conflit reste ouvert ou annot
 `partiel`. Resultat, pour toutes les configurations : 0 faux `remplace` operateur,
 18 / 18 sur la fixture, 2 a 15 retraits reels (15 pour Sonnet `medium`).
 
+**Correction du 2026-10-19 (challenger, reverifie par `phase2_consensus_focus.py`)** :
+le "0 faux `remplace` operateur" est **vide**. Ni le consensus ni le juge par chaine
+Sonnet `medium` seul ne retirent **aucune** des 10 paires etiquetees : le controle n'a
+jamais ete confronte a un retrait. Les 3 paires que l'operateur classe `remplace` (2, 19,
+30) ne sont pas retirees non plus (rappel 0 / 3 ; la chaine dit `partiel` sur 2 et 19).
+Sur les 15 retraits du consensus, l'etiqueteur agent en classe 9 `distinct` (il a un
+biais vers `distinct` : 0 / 3 sur les R de l'operateur), et 3 tombent sur la feuille
+operateur parmi les paires non etiquetees (6, 20, 23). La precision des retraits reels
+n'est **pas mesuree**.
+
 **M3, cout de l'indicateur** : 99 requetes reelles rejouees par
 `kleos-cli context --limit 8` sur le banc (au lieu des questions de la fixture, qui ne
 touchent pas les conflits reels), 792 memoires servies. Sans juge (borne haute) : **1**
@@ -589,9 +599,12 @@ sur consensus avec le juge par paire Sonnet. Reserves : un run par configuration
 thinking n'est pas deterministe, un ecart de 1 n'est pas significatif) ; echantillons
 petits (10 paires operateur, 30 controles).
 
-**Etat de la porte (11)** : `false_retire` 0 / 30 sur la fixture, aucun `supersedes` faux
-sur l'echantillon operateur, volume et cout de contexte mesures (M1, M3). Reste
-l'idempotence, qui se prouve sur le code de l'implementation.
+**Etat de la porte (11)** : `false_retire` 0 / 30 sur la fixture, volume et cout de
+contexte mesures (M1, M3). **Non passee** : le critere "aucun `supersedes` faux sur
+l'echantillon reel etiquete" n'a ete teste sur aucun retrait (voir la correction
+ci-dessus). Il faut un echantillon etiquete **parmi les retraits proposes**, en
+commencant par les paires 6, 20 et 23 de la feuille operateur. L'idempotence se prouve
+sur le code.
 
 ### 6.2 Version initiale (abandonnee, voir 6.0)
 
@@ -883,6 +896,7 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-19 | 2 / 6.1 bis | accord sur 10 paires operateur | operateur R sur 3 / 10 ; agent independant 7 / 10, juges par paire 6 / 10 | phase2_compare10.py, Kleos #30257 |
 | 2026-10-19 | 2 / 6.1 ter | balayage d'effort, consensus, M3 | Sonnet `medium` par chaine : 0 controle retire, 7 / 10 operateur, 0 faux, 0,94 USD le lot ; consensus chaine + paire Sonnet : 0 faux operateur pour toutes les configs ; M3 : 1 indicateur sur 792 memoires servies sans juge, 0 apres | phase2_sweep.py, phase2_sweep_score.py, phase2_m3.py, Kleos #30268 |
 | 2026-10-19 | 2 / 6.1 ter | decision operateur | juge par chaine Sonnet `medium`, retrait sur consensus avec le juge par paire Sonnet | cette session |
+| 2026-10-19 | 2 / 6.1 ter | challenge de la spec | le "0 faux operateur" est vide : aucun des 15 retraits du consensus ne tombe sur les 10 paires etiquetees, rappel 0 / 3 sur les R operateur ; porte non passee ; aussi : signature d'idempotence sur `updated_at` instable (reecrit a la lecture), kleos-cache ne resynchronise que sur `content_hash` | phase2_consensus_focus.py |
 
 ---
 
