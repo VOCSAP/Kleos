@@ -56,4 +56,14 @@ async fn a_corrected_memory_is_reported_as_superseded() {
     let (status, original) = get(&app, &format!("/memory/{id}"), &key).await;
     assert!(status.is_success(), "get failed: {status} {original}");
     assert_eq!(original["is_superseded"], json!(true), "{original}");
+
+    let (status, body) = get(&app, "/list", &key).await;
+    assert!(status.is_success(), "list failed: {status} {body}");
+    let row = body["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .find(|row| row["id"].as_i64() == Some(id))
+        .unwrap_or_else(|| panic!("corrected memory missing from /list: {body}"));
+    assert_eq!(row["is_superseded"], json!(true), "{row}");
 }
