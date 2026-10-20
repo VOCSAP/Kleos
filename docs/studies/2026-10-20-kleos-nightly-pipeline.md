@@ -491,6 +491,7 @@ existants de Patch 60 (4.7).
 | M-N13 | part intra-journee : sur les 194 paires candidates M1 et les 15 retraits du consensus, part dont l'ecart de creation est < 24 h ; puis rejeu de `out-hook-*.jsonl`, blocs servis contenant une memoire remplacee plus tot le meme jour | copie figee, journaux de hook | H1 : < 5 % des blocs et < 10 % des paires, le soir suffit ; >= 20 %, cadence continue au moins pour les decisions. **Partie SQL faite** (2026-10-20) : 161 des 194 candidats a moins de 24 h (83 %, dont 62 % a moins d'une heure), 15 des 15 retraits du consensus (100 %). Seuil de 20 % largement depasse sur les paires ; le volet des blocs servis reste a faire, mais il ne peut plus renverser la cadence continue retenue en D2 |
 | M-N15 | cout du marquage en direct sur la fenetre de quota Claude de 5 h : stores retrouves dans les transcripts, drapeau candidat depuis la copie figee, tokens ajoutes ponderes comme le tarif face aux tokens consommes par fenetre | transcripts Claude Code, copie figee | l'activation de 4.1. **Faite** (2026-10-20, Kleos #30845) : 0,005 % en moyenne, 0,41 % au pire ; regle d'ouverture des fenetres approximee, limite absolue du quota inconnue |
 | M-N14 | effet de 40 liens `updates` (nouvelle vers ancienne) de la fixture 4.4 sur le chemin serveur (`/search`, `kleos-cli context`), avec et sans | copie du banc, jamais la base vive | H4 cote serveur : tient si la nouvelle servie gagne >= 5 / 40 sans que l'ancienne servie augmente ; cote cache, effet nul par construction |
+| M-N16 | utilité du texte sous oracle (a), puis accessibilité réelle après phase 1 (b) | fixture 4.4, rejeu API puis vrai index filtré | **M-N16a faite le 2026-10-20** (MESURÉ, rapport final ; détail 13.1, Kleos #30922) : `agent_ok` V0/A/B = 4/5/11, 4/4/12, 4/5/12 ; `old_cited` = 8/0/0 aux trois passes ; k=7/7 à chaque passe. Verdict de grille **EFFET LOCAL**, seule régression non éligible N10 en passe 1, entrée A/B hash-identique. **Décision opérateur** (Kleos #30923) : mesure considérée réussie, **M-N16b débloqué** avec règle de régression amendée en 13.1 ; utilité du rendu sous oracle seulement, pas validation des chaînes en production |
 
 Contraintes de mesure inchangees : lectures sur la copie figee, jamais la base vive ;
 secrets via `cred exec` ; juge via LiteLLM.
@@ -639,6 +640,59 @@ communiquées ne sont pas réexécutées ici : le futur protocole doit les repro
 figer le plafond de tokens, pas seulement le nombre de lignes. Un succès de M-N16a
 valide une utilité de rendu sous oracle, pas la résolution des chaînes en production.
 
+#### Résultat M-N16a et décision opérateur du 2026-10-20
+
+**MESURÉ, lecture des artefacts, sans relancer l'expérience :**
+`~/.agent-forge/scratch/m_n16a_report.json` (rapport final, Kleos #30922) et
+`m_n16a_audit.json`. Trois passes appariées sur 40 cas, notation Haiku à l'aveugle ;
+coût total **0,4835731 USD**, durée **1 239 s** arrondie. Extraction reproductible :
+`jq '{passes: [.passes[] | {pass, variants, paired: (.paired_A_B.haiku | {k, inverse_flips, noneligible_regressions, noneligible_agent_ok_divergence})}], verdict, total_cost_usd, total_duration_seconds}' C:/Users/Olivier/.agent-forge/scratch/m_n16a_report.json`.
+Le verdict enregistré est `"result": "EFFET LOCAL"`.
+
+| Passe | `agent_ok` V0 / A / B (sur 40) | Gain B contre A | `old_cited` V0 / A / B | k parmi les 7 éligibles | Flips inverses éligibles | Régressions non éligibles |
+|---|---|---|---|---|---|---|
+| 1 | 4 / 5 / 11 | +6 | 8 / 0 / 0 | 7/7 | 0 | N10 |
+| 2 | 4 / 4 / 12 | +8 | 8 / 0 / 0 | 7/7 | 0 | Aucune |
+| 3 | 4 / 5 / 12 | +7 | 8 / 0 / 0 | 7/7 | 0 | Aucune |
+
+**MESURÉ, audit intégré au rapport final :** les chiffres du reviewer sont reproduits :
+8 cas avec l'ancienne, 5 avec la nouvelle déjà présente (P07, N01, N06, N08, N10),
+intersection N08 ; les **7 cas éligibles** sont **P14, P16, P17, P18, P21, P24, P27**.
+Le remplacement des huit anciennes représente **+241 caractères** cumulés ; ce chiffre
+n'est pas le delta net des blocs après déduplication. Aucune troncature, avec plafonds
+de **500 caractères de contexte et 100 tokens de sortie** ; aucun backfill, faute de
+réserve enregistrée, identiquement pour A et B. Extraction :
+`jq '.audit | {old_present_ids, new_present_ids, both_present_ids, eligible_ids, replacement_delta_all_old, truncations, limits, backfill}' ~/.agent-forge/scratch/m_n16a_report.json`.
+Attention à la provenance : l'audit séparé `m_n16a_audit.json` ne liste que N08 dans
+`new_present_ids` ; la liste de cinq ci-dessus vient du rapport final.
+
+**MESURÉ, verdict selon la grille fixée avant expérience (Kleos #30917) : EFFET LOCAL.**
+La grille ouvrait M-N16b si la porte globale tenait sur les trois passes ; sinon,
+k >= 4/7 aux trois passes imposait un arbitrage opérateur, et k <= 3/7 écartait B.
+Les gains globaux et les critères `old_cited` tiennent ; seule N10, non éligible,
+régresse en passe 1 et fait échouer la porte globale. Son entrée est hash-identique
+entre A et B dans l'audit :
+`jq '.entries[] | select(.id == "N10") | {A: .A.input_hash, B: .B.input_hash}' ~/.agent-forge/scratch/m_n16a_audit.json`
+rend pour les deux `2cfc0369f33a692f79b56690bea5887b9a015ec790d7379ac68112a1baee327b`.
+**DÉDUIT :** cette régression isolée sur entrée identique relève du bruit
+inter-passes plutôt que de la substitution ; cela ne démontre pas une absence générale
+de régression du mécanisme.
+
+**DÉDUIT, non revérifié par une nouvelle notation :** la regex compte 4, 4 puis 5
+anciennes citées dans A alors que les anciennes ont été filtrées du contexte ;
+ce décalage avec le juge aveugle rend l'instrument peu fiable pour `old_cited`.
+La notation officielle ci-dessus est Haiku, pas la regex.
+
+**Décision opérateur consignée dans Kleos #30923** (MESURÉ par
+`kleos-cli context "M-N16a résultat décision grille" --limit 5`, extrait :
+`M-N16b debloque, avec regle amendee`) : **M-N16a est considérée comme réussie et
+M-N16b est débloqué**, malgré le verdict de grille conservé ci-dessus. **Pour M-N16b,
+une régression ne compte que si l'entrée diffère entre A et B, ou si elle se reproduit
+sur au moins deux passes.** Cet amendement est postérieur à M-N16a ; il ne réécrit ni
+le protocole initial ni son verdict. La décision valide l'utilité du rendu sous oracle,
+pas la résolution des chaînes en production. M-N16b doit encore établir l'accessibilité
+réelle, les gains, la latence et la sûreté ; aucune option d'index n'est choisie ici.
+
 ### 13.2 M-N10 et complément M-N4 avant l'arriéré global
 
 **M-N10 conservée :** 100 requêtes soumises vers 22 h via LiteLLM, cinq soirs, avec
@@ -661,7 +715,7 @@ La prévision de 182 USD synchrone sur toutes les non-archivées ne respecte pas
 | Décision | Option A | Option B | Recommandation et mesure manquante |
 |---|---|---|---|
 | Résidu déduplication | Garder Patch 60, audit et validation explicite ; faible coût, faux retraits encore possibles | Suspendre avant retrait un ensemble de paires et attendre validation ; plus de doublons servis, nouveau raccordement | A provisoirement, sans promesse de prévention. Mesurer le juge sur les 25 paires étiquetées et une nouvelle cohorte indépendante ; si le besoin est zéro retrait fautif, consultant avant B (N8/M-N12 bis) |
-| Recherche des alias | Résoudre des références après la sélection ; changement local mais portée potentiellement nulle après filtrage phase 1 | Projection de recherche dédiée aux alias de retirées confirmées ; plus de maintenance et risque de contenu périmé | Ne figer aucune des deux avant M-N16b. Consultant si B est nécessaire, car il modifie le contrat de l'index et sa purge (N2/N7) |
+| Recherche des alias | Résoudre des références après la sélection ; changement local mais portée potentiellement nulle après filtrage phase 1 | Projection de recherche dédiée aux alias de retirées confirmées ; plus de maintenance et risque de contenu périmé | M-N16b débloqué par décision opérateur du 2026-10-20 (Kleos #30923, 13.1), avec règle de régression amendée ; aucune option choisie par le succès sous oracle de M-N16a. Ne figer aucune des deux avant M-N16b. Consultant si B est nécessaire, car il modifie le contrat de l'index et sa purge (N2/N7) |
 | Modèle et enveloppe | Sonnet de référence, arriéré actif borné ; coût connu sur 20 groupes | Routage mixte Haiku ou périmètre étendu via Batch ; moindre coût supposé, qualité/transport à valider | A pour le pilote. M-N4 élargi et M-N10 avant extension ; consultant si réduire le coût exige une nouvelle politique de qualité |
 
 **Autres inconnues explicites :** rappel réel des candidats (M-N11), précision des
