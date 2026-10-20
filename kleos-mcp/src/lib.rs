@@ -115,6 +115,14 @@ fn inject_space_for_tool_calls(req: Value) -> Value {
 /// Pure core of [`inject_space_for_tool_calls`]: injects `space` into a
 /// `tools/call`'s arguments. Env-free for testability.
 fn inject_space(mut req: Value, space: &str) -> Value {
+    if let Value::Array(batch) = req {
+        return Value::Array(
+            batch
+                .into_iter()
+                .map(|r| if r.is_object() { inject_space(r, space) } else { r })
+                .collect(),
+        );
+    }
     if req.get("method").and_then(Value::as_str) != Some("tools/call") {
         return req;
     }
@@ -180,5 +188,58 @@ mod tests {
         });
         let out = inject_space(req.clone(), "openclaw");
         assert_eq!(out, req);
+    }
+
+    #[test]
+    fn injects_space_into_each_tools_call_of_a_batch() {
+        let notification = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        let req = json!([
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "memory_list", "arguments": {} }
+            },
+            notification.clone(),
+            {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "memory_search", "arguments": { "query": "x" } }
+            }
+        ]);
+        let out = inject_space(req, "openclaw");
+        assert_eq!(out[0]["params"]["arguments"]["space"], json!("openclaw"));
+        assert_eq!(out[1], notification);
+        assert_eq!(out[2]["params"]["arguments"]["space"], json!("openclaw"));
+    }
+
+    #[test]
+    fn batch_preserves_explicit_space_and_space_id() {
+        let req = json!([
+            {
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "memory_list", "arguments": { "space": "other" } }
+            },
+            {
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "memory_list", "arguments": { "space_id": 7 } }
+            }
+        ]);
+        let out = inject_space(req.clone(), "openclaw");
+        assert_eq!(out, req);
+    }
+
+    #[test]
+    fn batch_leaves_non_tools_call_elements_intact() {
+        let req = json!([
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            42
+        ]);
+        let out = inject_space(req.clone(), "openclaw");
+        assert_eq!(out, req);
+    }
+
+    #[test]
+    fn empty_batch_is_forwarded_unchanged() {
+        let out = inject_space(json!([]), "openclaw");
+        assert_eq!(out, json!([]));
     }
 }
