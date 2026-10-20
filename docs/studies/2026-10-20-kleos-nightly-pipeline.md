@@ -1,11 +1,13 @@
-# Etude d'architecture : passe du soir, etat de traitement et routage des modeles
+# Étude d'architecture v2 : jugement différé, état de traitement et livraison
 
-Statut : **brainstorm redige le 2026-10-20, challenge le meme jour (deux challengers
-independants, verdicts en section 11), aucun code**. Les corrections du challenge sont
-portees dans le corps. Premieres mesures de volume faites sur la copie figee
-`tenant2-20261018-082511.db` (section 6) ; le reste des chiffres vient d'etudes
-anterieures (references en fin de document) ; les estimations sont marquees comme
-telles.
+Statut : **architecture v2 rédigée le 2026-10-20 après challenge et mesures consignées
+parmi M-N1 à M-N15 ; conception seulement, aucun code livré par cette étude**.
+M-N9, M-N10 et M-N14 restent à faire ; M-N11 n'est pas mesurable tel que posé,
+M-N12 reste partielle et complétée par M-N12 bis. La section 4 et ses
+conséquences en sections 5, 6, 9 et 10 remplacent le premier jet. Les historiques des
+sections 7, 8 et 11 sont conservés ; leurs amendements sont explicites. Les résultats
+cités sont ceux des mesures consignées, non des mesures réexécutées pour la v2.
+Les hypothèses et portes restantes figurent en section 13.
 
 Etude soeur : `docs/studies/2026-10-17-supersession-muninn-plan.md` (la section 9 dit
 ce que cette etude reprend du plan de supersession).
@@ -64,8 +66,9 @@ Trois explorations independantes du code, en lecture seule (Kleos #30300, #30301
 Conclusion de cadrage : un modele plus fort n'ameliore la base que dans des **etapes de
 jugement nouvelles**, posees sur les candidats que les regles produisent deja, et
 l'effet n'atteint l'agent que si le **rendu** change aussi. Le challenge renforce le
-second terme : un lien type ne change pas ce que le cache sert (point 5) ; il n'agit
-sur l'agent que par un retrait ou par un pointeur rendu.
+second terme : un lien type ne change pas ce que le cache sert (point 5). Amendement
+v2 : M-N8 invalide le pointeur sans texte comme levier sur cette fixture ; livrer le
+contenu de la remplaçante devient une hypothèse à mesurer, pas un effet acquis du lien.
 
 ---
 
@@ -84,300 +87,314 @@ sur l'agent que par un retrait ou par un pointeur rendu.
 
 ## 3. Principes
 
-1. **Servir tout de suite, juger plus tard.** Le store reste rapide et la memoire est
-   servie immediatement. Les jugements couteux se font hors du chemin de la requete.
-   Le volume a juger ne depend pas de la cadence : chaque memoire est jugee une fois,
-   au meme cout unitaire ; un traitement differe au soir n'achete que la remise de
-   l'API Batch (section 4.4).
-2. **Les regles proposent, le modele tranche, la lecture montre.** Les seuils actuels
-   (cosinus, SimHash, detecteur M1) deviennent des generateurs de candidats. Verdict du
-   challenge : **indecidable** tant que la precision de la dedup n'est pas mesuree
-   (M-N12) ; le juge qui la remplacerait n'est pas mesure non plus (accord operateur 6 a
-   7 sur 10, rappel 0 sur 3 en phase 2). Variante hybride a trancher par M-N12 : la
-   regle garde le retrait automatique pour la classe sure (paire hors decision, la plus
-   recente gardee, ecart de creation < 1 h) et n'envoie au juge que le reste (une
-   decision, un candidat M1, ou une paire ou la regle garderait la plus ancienne).
-3. **Chaque etape est idempotente par construction**, grace a une table d'etat
-   (section 4.2), et rejouable en incrementant sa version.
-4. **Un faux retrait est pire qu'un retrait manque** (intention du plan de
-   supersession). Un retrait exige un consensus ou un signal explicite ; le reste est
-   annote ou pointe.
+1. **Servir tout de suite, juger plus tard.** Le store reste immédiatement servable ;
+   les jugements coûteux sont hors du chemin de la requête (proposition, M-N13).
+   Reporter au soir ne supprime pas les nouvelles mémoires à juger. Le nombre réel
+   d'appels dépend toutefois des regroupements, changements de voisins et relances ;
+   l'hypothèse d'un groupe par mémoire sert au budget, pas à garantir l'idempotence
+   ou un coût constant (M-N4, sections 4.2 et 6).
+2. **Les candidats alimentent le juge ; le juge annote, le signal explicite autorise
+   le retrait.** M-N3 exclut le consensus comme autorisation. La déduplication existante
+   conserve Patch 60 : M-N12 et M-N12 bis justifient un jugement de contenu du résidu,
+   mais aucune nouvelle classe de retrait automatique dite sûre (N8, section 4.7).
+3. **L'idempotence est un contrat à prouver**, pas un effet acquis d'une table : version,
+   empreinte de toutes les entrées et application transactionnelle sont proposées en
+   4.2 (hypothèse de conception ; N1 et N5 motivent cette exigence).
+4. **Un faux retrait est pire qu'un retrait manqué.** Dans le nouveau pipeline, seul un
+   signal explicite de l'agent ou de l'opérateur autorise un retrait (M-N3). Un jugement
+   seul ne change ni `is_superseded`, ni `is_latest`, ni la visibilité. Cette règle ne
+   prétend pas modifier les retraits existants de Patch 60 (M-N12 bis, N8).
 5. **Additif d'abord** : tables par canal overlay (Patch 41), modules nouveaux, taches
    hors DAG. Les patchs dans du code upstream sont listes en section 10.
 
 ---
 
-## 4. Architecture cible
+## 4. Architecture cible v2
 
-### 4.1 Ecriture et marquage en direct (inchange, plus un retour)
+**DÉDUIT des mesures M-N3, M-N5 et M-N8 :** il faut séparer production de candidats,
+annotation, autorisation de retrait et livraison du contenu. Ni un consensus de juges,
+ni des clés de faits libres, ni un pointeur sans texte ne suffisent aux portes mesurées.
+Les paragraphes « proposition » ci-dessous sont des hypothèses de conception à valider,
+pas des capacités déjà livrées.
 
-Le store ne change pas. Quand le detecteur trouve un candidat (decision du meme espace,
-plus ancienne), la reponse du store porte une ligne courte : id, date, extrait borne a
-150 caracteres, commande pour declarer le remplacement. L'agent qui stocke a la
-conversation en contexte : c'est lui qui juge le mieux. Cout estime : environ 150 tokens
-par candidat, environ 1,3 candidat par jour avec le detecteur lexical (194 en 5 mois).
-Les ecritures sans agent dans la boucle (ingestion, imports) n'en profitent pas.
+### 4.1 Écriture et marquage en direct
 
-Mesures (2026-10-20) : M-N2 trouve que les ecritures non archivees viennent d'un agent
-dans la boucle a 99,8 % ou plus (source `claude-session`, aucun hook n'ecrit sous cette
-source, deduit des hooks lus) ; M-N13 trouve que 62 % des 194 candidats M1 et 11 des 15
-retraits du consensus ont moins d'une heure d'ecart entre l'ancienne et la nouvelle. Le
-remplacement d'une decision se produit surtout **dans la meme session** : le marquage en
-direct couvre a la fois la bonne population et le bon moment. kleos-ingest, une fois
-reactive, sera la premiere source automatique hors de sa portee.
+**Proposition fondée sur M-N2, M-N13 et M-N15 :** garder le store immédiatement servable,
+sans appel frontier bloquant. S'il existe un candidat de remplacement du même propriétaire
+et du même espace, retourner son id, sa date et un extrait borné, avec une action
+explicite de confirmation. L'extrait de 150 caractères reste une hypothèse ergonomique,
+pas une mesure de précision. L'agent peut confirmer, refuser ou s'abstenir ; le silence
+n'autorise jamais un retrait (M-N3).
 
-Cout sur le quota Claude (M-N15, transcripts du 2026-09-18 au 2026-10-18) : 54 stores
-sur 1 841 ont un candidat (2,9 %) ; ajoute 0,005 % de la fenetre de 5 h en moyenne,
-0,056 % au maximum, et dans le pire cas (chaque candidat coute un tour d'outil de plus,
-contexte median 249 k tokens) 0,05 % en moyenne, 0,41 % au maximum. Negligeable.
+**DÉDUIT de M-N2 et M-N13 :** le marquage cible une population largement couverte
+(au moins 99,8 % de sources attribuées aux agents) et des changements rapprochés (62 %
+des candidats M1 à moins d'une heure). Cela ne prouve ni que les deux écritures viennent
+de la même session, ni que l'agent confirme correctement. Sa précision reste à mesurer.
 
-### 4.2 Table d'etat par etape
+**Résultat consigné M-N15 :** 54 stores avec candidat sur 1 841 ; coût estimé à 0,005 %
+de la fenêtre de quota en moyenne, 0,41 % dans le pire scénario testé. Le coût ne bloque
+pas cette piste ; la couverture des futures écritures kleos-ingest reste inconnue
+(M-N2). Une confirmation doit nommer exactement ancienne et remplaçante, conserver sa
+provenance et repasser le validateur de 4.6 avant toute mutation (proposition, M-N3).
 
-Overlay tenant, nom semantique `memory_pipeline_state` :
+### 4.2 État du traitement et annotations, sans table de faits
 
-```
-memory_id      INTEGER NOT NULL
-stage          TEXT    NOT NULL   -- 'triage', 'neighbourhood', 'decision_conflicts', ...
-stage_version  INTEGER NOT NULL   -- incremented when the model, prompt or rule changes
-content_sha256 TEXT    NOT NULL   -- sha256 of content at processing time
-done_at        TEXT    NOT NULL
-outcome        TEXT               -- 'ok', 'skipped', 'failed', 'deferred'
-model          TEXT
-cost_usd       REAL
-UNIQUE (memory_id, stage)
-```
+**Proposition motivée par N1, N5 et M-N5 :** un overlay tenant
+`memory_pipeline_state` pour le travail, une zone d'annotations pour les résultats ;
+aucune étape `triage`, aucune table de faits nouvelle. La forme SQL reste à spécifier.
 
-Une memoire a besoin de l'etape S si aucune ligne n'a la version courante et l'empreinte
-courante. Jamais `updated_at` : il est reecrit a la lecture (`context/deps.rs:381`,
-`memory/mod.rs:1005-1007`, `reconsolidation.rs:212`). Effets :
-
-- les etapes deviennent idempotentes ;
-- changer de modele ou de prompt = incrementer `stage_version` = retraitement ;
-- le retraitement global n'est pas un chantier a part : c'est l'arriere du meme job ;
-- `cost_usd` alimente le plafond de budget (4.4).
-
-### 4.3 Zone d'attente des transcripts (kleos-ingest)
-
-Une table dediee, pas des memoires `pending` : `pending` est le statut de la boite de
-revue, qui serait noyee.
-
-```
-transcript_staging(id, session_id, space, received_at, chars, payload, status)
-```
-
-- En journee, kleos-ingest envoie le transcript tronque (tours user, reponses finales
-  de l'assistant) par une route d'envoi nouvelle. Il ne resume plus lui-meme.
-- La passe du soir en tire le resume de session et les decisions, puis marque la ligne
-  traitee ; une purge borne la retention.
-- Prerequis connus : le daemon envoie `X-API-Key`, que le serveur ne lit jamais
-  (`kleos-ingest/src/writer.rs:72-74`, 401 mesure en phase 0) ; le resumeur
-  (`summarizer.rs`) n'envoie pas d'`Authorization` et son prompt est code en dur. Le
-  plan global prevoit deja de reactiver kleos-ingest.
-
-### 4.4 Passe du soir : declenchement, ordre, budget
-
-- **Declenchement** (corrige apres challenge, H1 tombe ; D2 amendee par l'operateur) :
-  un seul job, **cadence parametree**, sous la garde d'inactivite du dreamer
-  (`dream_idle_threshold_secs`, `dreamer.rs:194`, chaque requete HTTP horodatee par
-  `audit.rs:135`). C'est le modele du lot B de la phase 2, qui juge toutes les 21 600 s
-  avec cette garde (`2026-10-19-supersession-phase2-spec.md:181-184`). La fenetre
-  horaire du soir est reservee a l'arriere et aux lots Batch. Raisons : le volume ne
-  baisse pas le soir (principe 1) ; la contention avec le chemin servi est deja reglee
-  par la garde, que `dreamer-growth` utilise environ 842 fois par jour pour Qwen ; les
-  etapes Haiku et Sonnet ne passent pas par Ollama ; une decision changee le matin a ses
-  liens le jour meme. Le test qui tranche est M-N13.
-- **Ordre** : (1) transcripts en attente ; (2) memoires du jour, passe de tri ;
-  (3) memoires du jour, passe de voisinage ; (4) arriere, par priorite (decisions et
-  importance haute d'abord, puis le reste).
-- **Plafond** : un budget par jour (nom propose `KLEOS_NIGHTLY_BUDGET_USD`), decompte
-  depuis `cost_usd`. Plafond atteint = arret propre, la suite reprend au cycle suivant.
-  Relever le plafond quelques nuits = retraitement global. Avec l'API Batch, le cout
-  d'un lot n'est connu qu'au retour : le decompte se fait sur une **estimation a la
-  soumission**, sinon le plafond peut etre depasse d'un lot entier.
-- **API Batch** : divise le cout par deux. Delai documente : la plupart des lots en
-  moins d'une heure, 24 h au plus, lot expire non facture, traitement ralenti selon la
-  demande (platform.claude.com/docs/en/build-with-claude/batch-processing, lu le
-  2026-10-20). LiteLLM l'expose en passthrough `/anthropic/v1/messages/batches` ; le
-  suivi de cout exige le modele declare dans `proxy_config.yaml` (version deployee non
-  verifiee). Le chemin tri, escalade, voisinage fait **deux allers-retours** ; les
-  resultats arrives hors fenetre s'appliquent hors de la garde d'inactivite. Gain
-  quotidien faible (environ 0,4 USD par jour au volume mesure), gain reel sur
-  l'arriere (74 -> 37 USD sur les actives en Sonnet). Test : M-N10.
-
-### 4.5 Passe de tri (une memoire a la fois)
-
-Entree : une memoire, son espace, sa date. Sortie JSON stricte :
-
-```
-{ "kind": "decision|state|fact|discovery|other",
-  "durable": true,
-  "importance": 1-10,
-  "title": "<= 80 chars",
-  "change_marker": true,
-  "facts": [ { "subject": "...", "attribute": "...", "value": "..." } ] }
-```
-
-- Ecrite d'abord dans une table d'annotations (overlay), **pas** dans les colonnes de
-  `memories`. L'application d'un champ (importance, categorie) ne vient qu'apres mesure
-  d'accord.
-- Les faits ne se melangent pas au bruit regex de `structured_facts` (`(user, fait)`,
-  308 faits sur des decisions, phase 2) : table separee ou marquage de source, a
-  trancher. Ce sont eux qui rendraient possible la regle "meme cle, valeur differente"
-  abandonnee en 6.0 du plan de supersession.
-- Modele : Qwen si la memoire tient dans son contexte, Haiku au-dela (section 5).
-- Prerequis de fiabilite : sortie contrainte par schema (`format` ou `response_format`
-  d'Ollama), absente du client actuel (`intelligence/llm.rs:51-58`) ; compteur des
-  echecs de parsing (aujourd'hui un `warn` puis `None`, `decomposition.rs:251`) ;
-  `max_tokens` par defaut a 1 024 (`intelligence/types.rs:371`), qui peut tronquer une
-  liste de faits ; `KLEOS_LLM_THINK=0` pose, sinon qwen3 raisonne par defaut
-  (`llm/mod.rs:76-78`).
-- **Verdict du challenge (H2, indecidable)** : au lancement, les sorties du tri ne
-  servent qu'au canal de candidats par faits et a `change_marker`. Si les vraies paires
-  de remplacement sont deja atteintes par les liens `similarity` et le detecteur M1
-  (M-N11), le tri se replie dans l'appel de voisinage : `kind`, `durable`,
-  `change_marker` et `title` deviennent des champs de sa sortie, sans table ni etape
-  nouvelles. Si le tri est garde, son seul gain de cout defendable est de servir de
-  filtre : `durable = false` saute la passe de voisinage.
-- Risque non couvert par M-N5 : des cles `(sujet, attribut)` produites memoire par
-  memoire, sans le vocabulaire existant, peuvent ne jamais se recouper entre deux
-  memoires ecrites a des mois d'ecart. Cela ne se voit que sur des paires (M-N5
-  amende).
-
-### 4.6 Passe de voisinage (groupes de memoires)
-
-- **Candidats** de chaque memoire du jour, dans son espace (D1) : ses liens
-  `similarity` (cosinus >= 0,55, 6 liens sortants au plus au moment du lien ; le linker
-  ecrit les deux sens, `linker.rs:199-231`, donc une memoire ancienne en porte
-  davantage), les decisions qui passent le detecteur M1,
-  les memoires qui partagent un `(sujet, attribut)` issu du tri, les paires de dedup a
-  cosinus >= 0,9 (4.7).
-- **Groupe** : la memoire du jour et ses candidats, dates et tries, juges ensemble comme
-  le juge par chaine de la phase 2 (6.1 bis du plan de supersession).
-- **Verdicts par paire** et ecriture :
-
-| Verdict | Ecrit | Retrait |
+| Objet proposé | Contrat à prouver | Motivation |
 |---|---|---|
-| `doublon` | `supersedes` | seulement sur consensus ; hors decisions, consensus a definir (sinon : jamais retire) |
-| `remplace` | `supersedes` | ~~seulement sur consensus~~ : le consensus a produit un faux retrait sur 3 etiquetes (M-N3), il ne retire plus seul. Retrait sur signal explicite (marquage en direct de l'agent, 4.1, ou validation operateur) ; sinon pointeur `-> plus recente` (4.9) |
-| `met_a_jour` | `updates` (nouvelle vers ancienne) | non, l'ancienne reste servie avec un pointeur ; prerequis N1 |
-| `partiel` | annotation du point perime | non |
-| `contredit` | `contradicts` | non ; prerequis : reconsolidation idempotente (section 7) |
-| `prolonge` | `extends` | non |
-| `distinct` | rien | non |
+| Identité du travail | Propriétaire, espace, mémoire racine ou groupe, étape, version du contrat modèle/prompt/candidats | N3 interdit de supposer un id global entre shards ; D1 impose les frontières |
+| Empreinte d'entrée | Contenus, ids, dates et états pertinents de tous les membres, ainsi que l'ensemble des candidats ; pas seulement le texte de la racine | N1/N5 : ne pas rejouer indéfiniment ; hypothèse : un voisin ajouté ou modifié invalide le jugement |
+| État d'exécution | En attente, en cours avec reprise bornée, terminé, erreur ou différé ; seul un succès validé pour l'empreinte courante clôt le travail | M-N4 : 1 JSON invalide sur 20 ; une erreur ne vaut pas « déjà traité » |
+| Résultat | `kind`, `change_marker`, `title`, verdicts par paire, preuve textuelle, modèle/version ; aucun écrasement automatique de catégorie ou importance | M-N5 : accord insuffisant pour transformer le tri en vérité |
+| Journal de coût | Tentatives et lots identifiables, dépense réelle et réservation en cours ; ne pas perdre le coût d'un échec ou d'une ancienne version | M-N4 et M-N10 ; hypothèse de comptabilité nécessaire au plafond |
 
-- **Validateur deterministe** (repris de 6.1 bis) : un lien de remplacement va du plus
-  recent au plus ancien, pas de cycle, chaque groupe garde au moins une memoire active,
-  aucune memoire remplacee n'est reactivee.
-- Les decisions passent par le juge deja choisi (Sonnet `medium` par chaine, consensus
-  avec le juge par paire). Le reste par Haiku, sous reserve de mesure. Le consensus
-  n'est defini que pour les decisions (plan de supersession, 6.1 bis) : un Haiku seul
-  qui retire violerait le principe 4.
-- **Effet des liens ecrits sur le classement (H4 tombe)**. Le cache les ignore
-  (section 1, point 5). Cote serveur, ils jouent plutot pour l'ancienne :
-  - l'expansion de graphe est non orientee (UNION des deux sens, `search.rs:526-536`) :
-    quand la nouvelle est graine, `updates` injecte l'ancienne ; le poids ne fait que
-    reordonner le canal graphe, a 1/(90+rang+1) pres (`scoring.rs:38`, `:611-613`,
-    `search.rs:1275-1282`), soit environ 6 % entre le rang 0 et le rang 5 ;
-  - PageRank est oriente vers la cible (`pagerank.rs:103-104`) : `updates` nouvelle vers
-    ancienne donne la masse a l'ancienne. Il regroupe les paires par `MAX(ml.type)`
-    (`pagerank.rs:58`) : `similarity` l'emporte textuellement sur `extends`,
-    `contradicts`, `corrects` et `caused_by`, qui disparaissent de PageRank des qu'un
-    lien `similarity` existe dans le meme sens ;
-  - la reconsolidation use la cible de tout `corrects`, `updates` ou `contradicts`
-    (confiance x0,5, importance -2 a chaque passe, 20 memoires par tick,
-    `reconsolidation.rs:86-98`, `:245-252`) : l'ancienne d'un `met_a_jour`, censee rester
-    servie, s'efface en quelques semaines.
+**Contrat proposé, non prouvé :** réserver le travail, appeler le modèle hors transaction,
+puis revérifier empreinte et droits avant de publier résultat et état atomiquement. Un
+résultat Batch devenu périmé est compté mais non appliqué. Un second passage sur les
+mêmes entrées doit faire zéro appel ; un nouveau voisin doit rouvrir le travail. Une
+réponse perdue après facturation peut provoquer un nouvel appel : ne pas promettre
+l'exactement-une-fois côté fournisseur (hypothèse à tester, M-N10).
 
-  Consequence : avant N1, ecrire les verdicts non retirants dans la table d'annotations
-  ou sous un type que ni la reconsolidation ni PageRank ne lisent ; leur valeur passe
-  par le rendu (4.9), pas par le classement. Test : M-N14.
+**DÉDUIT du premier état des lieux, N1/N5 :** `updated_at` n'est pas une version de
+contenu fiable ; le contrat utilise des empreintes. Suppression, oubli ou archivage
+invalident aussi les annotations et références dérivées ; ne pas reproduire N7.
 
-### 4.7 Dedup du dreamer en mode proposition
+### 4.3 Transcripts en attente : extension distincte
 
-**Corrige apres challenge (H3 tombe telle qu'ecrite).**
+**Proposition sous D6, non mesurée par M-N2 :** kleos-ingest transmet en journée un
+transcript borné vers une zone `transcript_staging`, isolée des mémoires servables et
+de la boîte de revue. Le serveur produit ensuite résumé et mémoires, qui entrent dans
+le même voisinage. Réception, traitement, réessai et purge doivent être identifiables
+par session et empreinte (hypothèse de conception).
 
-- `dry_run` ne renvoie qu'un compte (`pairs_found`) et jette la liste
-  (`duplicates.rs:68-74`) : le rendre pilotable par variable d'environnement revient a
-  **couper** la dedup, pas a produire des candidats. Les paires se lisent par
-  `find_duplicates` (publique, `duplicates.rs:10`) ; pour les memoires du jour, elles
-  sont deja dans les liens `similarity` de 4.6.
-- Couper la dedup degrade le chemin servi le jour meme : un doublon cree le matin sur le
-  sujet actif peut occuper 2 des 3 places du cache (`top_k 3`), alors qu'aujourd'hui il
-  disparait au premier tick inactif. Et hors decisions, faute de consensus defini
-  (4.6), il ne serait jamais retire.
-- Option retenue a mesurer : la variante hybride du principe 2. La dedup garde le
-  retrait pour la classe sure et ne propose que le reste ; la date prime alors sur
-  l'importance dans la classe sure (le Patch 60 ne la fait primer qu'a egalite).
-- Volume : les 987 `supersedes` comprennent ceux de `/correct` ; la part de la dedup
-  (`similarity < 1.0`) et son rythme par jour se mesurent par M-N12 (requetes R1a a
-  R1c, R3).
+**Limite de périmètre :** cette extension n'est pas un préalable au marquage en direct
+ni au voisinage des stores actuels (M-N2). Son volume, sa qualité et sa rétention sont
+à mesurer séparément ; M-N6 mesure du tri, pas du résumé. Le défaut d'authentification
+et le résumé client décrits par la phase 0 du plan de supersession (section 4) restent
+des préalables à revérifier
+avant cette réactivation, pas des travaux déclarés achevés ici.
 
-### 4.8 Espace `default` / NULL
+### 4.4 Cadence, priorité et budget
 
-Passe separee (D1), memes etapes, candidats tires uniquement de `default` / NULL. Une
-memoire de projet ne recoit jamais de candidat global, et inversement.
+**Décision D2 amendée, étayée par M-N13 :** une cadence paramétrée sous la garde
+`dream_idle_threshold_secs`, pas une fenêtre du soir pour le flux courant. Le code
+actuel saute le tick occupé (`kleos-server/src/dreamer.rs:193-206`, DÉDUIT). Cette garde
+contrôle le départ ; elle ne prouve pas une absence de contention pendant tout un lot.
+La valeur de cadence et le délai maximal avant annotation restent des paramètres à
+mesurer, pas une garantie de traitement le jour même.
 
-### 4.9 Rendu aux agents
+**Ordre proposé (hypothèse, M-N1/M-N13) :** confirmations explicites dès leur réception,
+puis voisinages du flux courant, puis arriéré en fenêtre du soir. Les futurs transcripts
+ont une file bornée distincte pour ne pas affamer le courant. Une seule logique de
+jugement traite courant et arriéré ; priorité et budget diffèrent.
 
-| Ajout | Ou | Cout |
+**Contrat de budget proposé (M-N4/M-N10) :** plafond quotidien et enveloppe d'arriéré
+séparés, avec un plafond mensuel commun au flux courant. Dépense engagée = coût des
+tentatives terminées + réservations des appels ou lots en cours. Réserver avant envoi,
+rapprocher au retour, différer ce qui dépasse ; ne pas compter seulement les résultats
+valides. La précision des réservations reste à éprouver en M-N10.
+
+**Batch est une option de transport pour l'arriéré, non une condition du flux courant.**
+La remise de moitié retenue par H7 sert à l'estimation, pas à une facture observée sur
+le déploiement. M-N10 doit valider le passage LiteLLM, les délais, la récupération après
+redémarrage et le rapprochement des coûts avant l'arriéré global. La v2 supprime la
+chaîne tri puis voisinage : un seul jugement par groupe, hors relances (M-N5).
+Une réponse peut être reçue hors fenêtre, mais son application garde les contrôles de
+version et de portée de 4.2 ; aucune exemption implicite à l'ordonnanceur n'est requise.
+
+### 4.5 Un seul appel : métadonnées et jugement de voisinage
+
+**Décision issue de M-N5, H2 et H5 :** supprimer la passe de tri séparée et la table de
+faits envisagée. `kind`, `change_marker` et `title` sont des champs de sortie du juge
+de voisinage, dans la même annotation que les verdicts par paire. Ils ne deviennent
+ni une nouvelle taxonomie obligatoire, ni des critères automatiques de retrait.
+Le champ `durable` ne filtre pas les groupes : son accord Qwen/Sonnet mesuré est de
+7 % (M-N5). Pas de modification automatique de l'importance.
+
+**DÉDUIT de M-N5 :** les clés libres n'ont relié que 3 vraies paires sur 36 avec Qwen,
+1 avec Sonnet, dans le contrat testé à un fait par mémoire. Cela suffit à abandonner
+ce canal dans cette v2, pas à prouver qu'aucune extraction de faits ne fonctionnerait.
+M-N11 reste à refaire sur une vérité terrain indépendante : abandonner les faits ne
+prouve pas que `similarity` + M1 ont un rappel suffisant.
+
+**Hypothèse à mesurer, M-N4 :** ajouter ces trois champs conserve un coût voisin de
+0,0151 USD par groupe. Le contrat élargi doit être rejoué sur 200 mémoires avant de
+figer son budget ; une sortie invalide ne produit aucune annotation partielle appliquée.
+
+### 4.6 Voisinage : le juge propose une relation, pas un retrait
+
+**Proposition fondée sur M-N4/M-N11 :** assembler la mémoire racine et les candidats
+`similarity`, M1 et déduplication dans le même propriétaire/espace, puis les trier par
+date. Les chaînes de changements sont jugées ensemble, selon 6.1 bis du plan de
+supersession. Ne pas recréer un canal de candidats par faits (M-N5). Le bornage des gros
+groupes sans casser une chaîne reste une hypothèse à tester sur le complément de M-N4.
+
+**Modèle de référence : Sonnet `medium`** sur le voisinage, décisions et autres contenus.
+M-N4 mesure 0,0151 USD par groupe sur 20 groupes ; l'effort `medium` est consigné dans
+Kleos #30835, consultée pour cette réécriture. Ce coût ne prouve pas une précision
+suffisante pour retirer. Schéma de sortie, validation des ids et relance bornée sont requis : 1 groupe
+sur 20 était invalide. La limite de relance est à fixer avant implémentation.
+
+| Verdict proposé | Annotation conservée | Mutation automatique par le juge |
 |---|---|---|
-| date de creation sur chaque ligne | prompt vivant, cache, sidecar, CLI | environ 4 tokens par ligne |
-| `-> plus recente : #n (date)` sans texte | memoire servie qui a un `updates` / `supersedes` entrant | environ 10 tokens |
-| `conflit avec #m` | paire `contradicts` ou conflit ouvert | environ 34 tokens (M3) |
-| `created_at`, liens, conflits repliques | kleos-cache (`LocalResult` ne renvoie pas `created_at`, `http.rs:52-58`) | patch kleos-cache, empreinte separee des conflits |
-| reranker sur le chemin du cache | kleos-cache | **a mesurer** contre le budget p50 <= 250 ms (Kleos #18697) ; `bge-reranker-v2-m3` sur CPU : 49 s pour 24 documents cote serveur (#10270) |
+| `doublon`, `remplace` | Couple orienté et justification ; confirmation explicite requise | Aucun retrait, aucun lien `supersedes` (M-N3) |
+| `met_a_jour`, `partiel` | Point modifié, références et preuve textuelle ; les mémoires restent visibles | Aucun `updates`, aucune baisse d'importance (N1/N9) |
+| `contredit` | Conflit ouvert avec les deux références, sans autorité de retrait | Aucun `contradicts` (N1/N9) |
+| `prolonge` | Verdict de diagnostic seulement | Aucun `extends` : 102/275 paires en M-N4, environ 5 par mémoire |
+| `distinct` | Résultat de traitement pour éviter un rejeu inutile | Aucun lien, aucun retrait (M-N4) |
 
-Le rendu est le seul levier qui atteint le chemin principal (le cache ignore les liens,
-section 1, point 5) : les pointeurs et dates de cette table passent avant tout gain de
-classement attendu des liens types (H4).
+**Frontière impérative N1/N9 :** aucune nouvelle écriture de lien typé par ce pipeline
+avant correction des deux nœuds. Stocker les références dans les annotations, pas dans
+un type de lien improvisé que certains lecteurs pourraient interpréter. Même après
+correction, M-N14 doit mesurer l'effet serveur ; un gain de classement n'est pas acquis
+(H4). Le cache ne devient pas sensible aux liens par cette seule correction.
 
-**Mesure M-N8 (2026-10-20)** : dates et pointeur sans texte ne changent pas agent_ok sur
-la fixture 4.4 (4/40 dans les trois variantes), et les dates font monter l'ancienne
-citee. Le pointeur `-> plus recente : #n (date)` sans texte est donc abandonne comme
-levier. Piste a mesurer a la place : quand une memoire retiree ou remplacee serait
-servie, servir **le contenu de sa remplacante** a sa place (redirection), borne au
-meme budget de lignes. C'est ce qui manque depuis la fixture 4.4 (ancienne servie
-8 -> 0, nouvelle servie 5 -> 6 seulement).
+**Signal explicite, proposition motivée par M-N3 :** sa réception autorise une demande,
+non un contournement des prérequis. Tant que N1/N9 bloquent l'application des liens,
+conserver la confirmation en attente, sans mutation partielle des flags. Après ces
+prérequis, l'application doit être atomique et validée : propriétaire/espace identiques,
+contenus encore conformes à la confirmation, remplacement total du plus récent vers
+le plus ancien, aucun cycle, au moins une mémoire active par chaîne, aucune résurrection.
+Ces invariants reprennent 6.1 bis ; leur réalisation reste à tester. Un conflit partiel
+ne devient jamais un retrait total parce qu'il est confirmé.
 
-Le rendu se mesure par `agent_ok` via l'API (pas `claude -p`), en rejouant les blocs
-enregistres dans `out-hook-*.jsonl`, mise en page fixe entre variantes.
+### 4.7 Déduplication : conserver Patch 60, examiner le résidu
+
+**DÉDUIT du code `duplicates.rs:78-109` et de N8 :** Patch 60 conserve la plus haute
+importance, puis le plus grand id à égalité, et écrit déjà un retrait et un lien
+`supersedes`. La v2 ne modifie pas cette règle ni ses écritures existantes. L'interdiction
+de 4.6 vise les nouveaux producteurs du pipeline, pas une désactivation implicite de
+Patch 60 ou de `/correct`.
+
+**Résultats consignés M-N12/M-N12 bis :** environ 3 retraits fautifs sur 25 étiquetés
+avec la règle actuelle ou son rejeu, sans séparation fiable par date ou écart
+d'importance (N8). Ne pas présenter ce résidu comme une classe sûre, ni 3/25 comme une
+estimation représentative de toute la base. La variante « date prioritaire partout »
+et la mise en simple `dry_run` sont écartées ; ce dernier ne renvoie qu'un compte
+(`duplicates.rs:68-74`, DÉDUIT).
+
+**Proposition de première étape :** faire examiner les candidats et retraits de
+déduplication par le même juge de contenu, consigner l'erreur suspectée, demander une
+validation explicite ; ne pas réactiver automatiquement une mémoire ni inverser un
+lien (M-N3/N8). Le périmètre `is_archived = 0` n'interdit pas cet audit des retirées
+non archivées ; il ne les rend pas servables (M-N1/M-N12).
+
+**Limite explicite :** un audit après coup n'empêche pas le retrait fautif. Intercepter
+avant retrait les paires suspectes nécessiterait une politique de suspension et un
+chemin d'application nouveaux. Aucune règle simple ne sachant isoler le résidu, ce
+choix est ouvert en section 13, pas dissimulé sous le mot « hybride » (N8/M-N12 bis).
+
+### 4.8 Portée et séparation des espaces
+
+**D1 et M-N1 :** même propriétaire et même espace à toutes les étapes, y compris dans
+les annotations, confirmations et redirections. Le traitement global `default` / NULL
+est séparé des espaces projet ; aucune comparaison croisée. La sélection coûteuse
+exclut `is_archived = 1`, notamment `dreamer-growth` (M-N1).
+
+**Hypothèse de migration budgétaire :** commencer l'arriéré par les 7 623 actives, puis
+traiter les autres non archivées en audit, dans une enveloppe distincte. Actives et non
+archivées ne sont pas synonymes : 12 043 non archivées coûteraient environ 182 USD en
+synchrone au coût M-N4 (section 6). Ne pas lever les filtres de visibilité pour les juger.
+Le libellé « actives » reprend celui du comptage ; le prédicat SQL exact ayant produit
+7 623 n'est pas documenté ici. Le retrouver et le reproduire avant de sélectionner
+l'arriéré, sans l'assimiler implicitement à `is_archived = 0` ni à « servables ».
+
+### 4.9 Livraison : redirection à éprouver, pas pointeur sans texte
+
+**Résultat consigné M-N8 :** dates et pointeur nu laissent `agent_ok` à 4/40 dans les
+trois variantes ; les dates augmentent même l'ancienne citée de 11 à 13. Le pointeur
+sans texte est abandonné comme levier d'amélioration. Un pointeur conservé dans une
+annotation est une référence pour revue, pas une promesse d'effet sur l'agent.
+
+**Hypothèse R, non démontrée par M-N8 :** quand la recherche aurait sélectionné une
+mémoire retirée, remplacer cette place par le contenu de sa remplaçante validée, avec
+l'id et la provenance de celle-ci. Ne jamais rediriger sur la seule prédiction du juge,
+ni transformer `partiel` ou `met_a_jour` en remplacement total (M-N3/N8).
+
+**Deux options à comparer :**
+
+| Option | Coût et risque estimés | Réversibilité et périmètre |
+|---|---|---|
+| A. Filtrage actuel, aucune redirection | Pas de nouvelle projection ; la nouvelle peut rester absente malgré le retrait, comme dans la fixture 4.4 | Aucun changement du chemin servi ; témoin obligatoire de M-N16 |
+| B. Résolution vers la remplaçante validée | Projection/résolveur supplémentaire, risque de mauvaise destination ou d'entrée périmée | Activation indépendante ; impact cache et rendu, sans nouveau retrait ; hypothèse à mesurer |
+
+**Recommandation :** tester B contre A sans l'activer en production ; conserver A tant
+que M-N16 n'a pas passé ses portes. Le besoin de livrer le texte, plutôt qu'un id,
+est motivé par M-N8, mais le mécanisme reste non validé.
+
+**Contrat candidat (hypothèse, N2/N7/N8) :** la mémoire retirée n'est jamais réinjectée
+comme contenu. Sa trace de recherche ne peut servir que d'alias vers une cible active,
+accessible, du même propriétaire/espace ; cible absente, oubliée, archivée, boucle ou
+ambiguïté = aucune redirection. Dédupliquer les destinations avant `top_k`, borner la
+chaîne et conserver le même budget de contexte. Les retraits Patch 60 sans confirmation
+ne sont pas une preuve suffisante de remplacement sémantique (N8).
+
+**DÉDUIT du plan de supersession, 5.1 lignes 434 et 443-447 :** sur le banc de phase 1,
+les 40 anciennes sortent de l'index après synchronisation. Un simple remplacement
+après `top_k` ne peut donc pas y résoudre ces anciennes. Le mécanisme de récupération
+est un point architectural à mesurer avant code (N2, M-N8). La fixture doit comparer le vrai index filtré à un mécanisme explicite
+d'alias, pas injecter artificiellement la bonne réponse dans le bloc. La réplication
+brute `/list` doit continuer à transmettre les tombstones tandis que les lecteurs
+agents restent filtrés (N2, Patch 67). Reranker et dates ne sont pas des prérequis de
+cette expérience ; M-N9 reste séparée.
+
+### 4.10 Migration proposée et portes
+
+1. **Cadre et signaux :** préserver les garanties phase 1/Patch 67, spécifier les
+   confirmations explicites et l'état transactionnel, puis éprouver le second passage
+   sans appel et les résultats périmés (N2, M-N3, M-N4).
+2. **Observation :** lancer le voisinage Sonnet sous garde d'inactivité, annotations
+   seules et budget borné, sans table de faits ni retrait nouveau ; mesurer le contrat
+   élargi et le rappel indépendant des candidats (M-N4, M-N5, M-N11, M-N13).
+3. **Application contrôlée :** corriger N1/N9, vérifier les invariants et la provenance
+   des confirmations avant le moindre nouveau lien typé ; M-N14 reste une porte
+   distincte pour revendiquer un gain serveur.
+4. **Livraison et volume :** éprouver M-N16 avant la redirection ; valider M-N10 avant
+   l'arriéré global Batch. Transcripts et éventuelle suspension pré-déduplication sont
+   des lots ultérieurs, pas des conditions cachées du premier lot (M-N2/N8).
+
 
 ---
 
-## 5. Routage des modeles
+## 5. Routage des modèles v2
 
-| Tache | Modele | Raison |
+| Travail | Routage proposé | Base et limite |
 |---|---|---|
-| Tri d'une memoire courte | Qwen (`qwen3:8b-ctx16k`) | une memoire, sortie courte, tient dans 16k |
-| Tri d'une memoire au-dela d'environ 8k tokens | Haiku | garde seulement : sur la copie, la plus longue memoire non archivee fait 6 663 caracteres (environ 2 000 tokens), aucune au-dela de 28 000 ; limite du store 102 400 octets (`validation.rs:14`) |
-| Faits `(sujet, attribut, valeur)` des decisions | Qwen, escalade Haiku si sortie invalide ou incertaine | la qualite des cles conditionne la regle de remplacement |
-| Resume d'un transcript en attente | Qwen | borne a fixer ; le resumeur actuel tronque a 3 000 caracteres (`kleos-ingest/src/summarizer.rs:16`) et sort 300 tokens (`:104`) |
-| Voisinage hors decisions, arbitre de dedup | Haiku | plusieurs memoires a comparer |
-| Conflits de decisions en chaine | Sonnet `medium` + consensus | mesure et decision de la phase 2 |
+| Voisinage, décisions et autres mémoires, résidu de déduplication | Sonnet `medium`, un appel par groupe avec métadonnées et verdicts | M-N4 mesure le coût ; M-N3 interdit d'en déduire une autorité de retrait |
+| Confirmation au store | Agent déjà présent, action explicite ; pas de second juge obligatoire | M-N2/M-N13/M-N15 couvrent population, moment et coût, pas encore la précision |
+| Résumé de transcript | Qwen reste candidat, non validé pour ce nouveau contrat | D4/D6 ; M-N5/M-N6 ne mesurent pas des résumés |
+| Tri ou extraction de faits séparés | Aucun appel, aucune escalade dédiée | H2/H5 tombées, M-N5 |
+| Double jugement par consensus | Pas de second appel systématique pour autoriser un retrait | Consensus réfuté par M-N3 |
 
-- Chaque juge a son propre client et ses variables (modele du client `conflict_judge`
-  de la spec phase 2). `KLEOS_LLM_*` reste sur Qwen pour ses sites actuels : aucun
-  patch du client partage.
-- Chaque attribution se mesure avant d'etre figee : accord avec Sonnet sur un
-  echantillon, comme le balayage de la phase 2.
-- `KLEOS_LLM_THINK` injecte `reasoning_effort` ; son effet sur un modele Anthropic
-  derriere LiteLLM n'est pas verifie.
-- Ollama repond sur 192.168.10.50:11434 ; l'ancienne adresse 192.168.10.16 refuse toute
-  connexion TCP (Kleos #30170).
+**Options :** Sonnet partout dans le voisinage fournit une référence de coût mesurée
+(M-N4), au prix d'une facture supérieure à un routage mixte. Haiku pour les non-décisions
+réduirait possiblement le coût, mais sa qualité sur ce contrat n'est pas mesurée ; son
+activation serait réversible par configuration, avec un risque sur toutes les
+annotations hors décisions. **Recommandation :** garder Sonnet comme référence tant que
+le plafond tient, mesurer Haiku avant toute substitution. Le facteur décisif est la
+qualité non démontrée, pas la seule taille de contexte (M-N4/M-N5).
+
+**Proposition additive :** client et paramètres propres au juge, inspirés du
+`conflict_judge` de la spec phase 2 ; laisser `KLEOS_LLM_*` aux sites actuels de Qwen.
+Fixer explicitement l'effort testé, le schéma et les limites de sortie ; ne pas supposer
+que `KLEOS_LLM_THINK` se transpose à Anthropic via LiteLLM. Compatibilité du transport
+et facturation sont à vérifier dans M-N10, sans changement du client partagé.
 
 ---
 
 ## 6. Budget
 
-Couts unitaires mesures sur le lot de la phase 2 (192 composantes, fichiers
-`sweep-*.jsonl`) : Haiku 5.5 `medium` 1 461 tokens d'entree et 1 003 de sortie en
-moyenne, soit environ 0,00065 USD par composante (77 % du cout vient de la sortie) ;
-Sonnet 5.5 `medium` 1 461 / 195, environ 0,0049 USD. Tarifs publics 0,10 / 0,50 et 2 / 10
-USD par million de tokens (platform.claude.com, lu le 2026-10-20) ; sortie et
-raisonnement sont comptes. Un groupe de voisinage reel (memoire du jour et 5 candidats)
-est **suppose** couter le double ; comme la sortie domine, le cout suit plutot le nombre
-de paires a juger que la taille d'entree. Le consensus ajoute un second juge sur les
-decisions (environ 0,12 USD par jour pour environ 12 decisions).
+**Base v2 : M-N4, pas un facteur appliqué aux composantes de phase 2.** Le rapport
+consigne 20 groupes, 275 paires, 0,302 USD au total, soit 0,0151 USD par groupe en
+moyenne et 0,0163 au p90. Un groupe a produit un JSON invalide. Ces résultats mesurent
+le contrat testé, pas le contrat élargi de 4.5 ni le coût des reprises en production.
+
+Les anciens coûts phase 2 (environ 0,00065 USD par composante Haiku et 0,0049 Sonnet)
+ne sont plus utilisés pour chiffrer le voisinage. Ni tri séparé ni deuxième juge par
+consensus ne figurent au budget v2 (M-N3/M-N5).
 
 **Volume mesure** (copie figee, 31 jours du 2026-09-18 au 2026-10-18, lecture seule par
 `q.sh`) :
@@ -391,37 +408,37 @@ decisions (environ 0,12 USD par jour pour environ 12 decisions).
   2026-10-10, porte par `dreamer-growth` (origine du saut non verifiee) ; les samedis ne
   contiennent que du `dreamer-growth`.
 
-**Portee : `is_archived = 0`.** C'est la condition pour que le budget tienne : si
-`dreamer-growth` entrait dans la portee (842 par jour en moyenne, 1 517 en pointe),
-Sonnet sur tous les groupes couterait 8 a 15 USD par jour. La reactivation de
-kleos-ingest ajoutera des ecritures automatiques non encore mesurees.
+**Portée maintenue : `is_archived = 0` (M-N1).** Inclure 842 écritures `dreamer-growth`
+par jour ajouterait environ 12,7 USD/jour au coût moyen M-N4, avant les autres sources
+(calcul extrapolé, non facture). Le volume futur de kleos-ingest reste non mesuré.
 
-**Regime quotidien** (plafond D5) :
+**Synthèse quotidienne, calculs extrapolés de M-N1 x M-N4 :** supposer un groupe par
+nouvelle mémoire, sans rejeu ni relance, donne environ 1,66 USD pour 110 mémoires par
+jour ouvré et 2,94 USD au pic de 195. Sur 22 jours ouvrés, environ 36,5 USD, auxquels
+s'ajoutent week-ends, reprises, invalidations de groupes et futurs transcripts. Le
+plafond de 100 USD/mois reste une limite effective à imposer, pas une garantie donnée
+par cette extrapolation. L'ajout de métadonnées et le regroupement réel demandent le
+complément de M-N4.
 
-```
-cout_jour ~= N_nouvelles_non_archivees x (cout_tri + cout_groupe)
-cout_tri  ~= 0 (Qwen local)
-```
+**Synthèse de l'arriéré, estimations au coût M-N4 :**
 
-A environ 81 memoires par jour : environ 0,1 USD avec Haiku, environ 0,8 USD avec Sonnet
-sur tous les groupes (facteur 2 suppose). Mais 81 est une moyenne calendaire : M-N1
-mesure **110 par jour ouvre** (2 314 sur 21 jours, 15,8 decisions) et 20 par jour de
-week-end (201 sur 10 jours), pic 195 le 2026-10-09. Le plafond se dimensionne sur le jour
-ouvre : environ 0,15 USD avec Haiku, environ 1,1 USD avec Sonnet partout, 2 USD au pic.
-
-**Retraitement global** :
-
-| Portee | Voisinage Haiku | Voisinage Sonnet | Tri Qwen a 6 s |
+| Portée | Sonnet synchrone | Batch si remise effective de moitié | Face à D5, environ 150 USD |
 |---|---|---|---|
-| 7 623 actives | environ 10 USD | environ 74 USD | environ 12,7 h |
-| 12 043 non archivees | environ 16 USD | environ 117 USD | environ 20 h |
-| 28 987 au total | environ 38 USD | environ 281 USD | environ 48 h |
+| 7 623 actives | environ 115 USD | environ 58 USD | Synchrone compatible avant reprises ; Batch à valider par M-N10 |
+| 12 043 non archivées | environ 182 USD | environ 91 USD | Synchrone incompatible ; Batch conditionnel |
+| Archivées | Hors périmètre | Hors périmètre | Ne pas les réintroduire pour remplir un lot |
 
-Le chiffre anterieur de 60 USD pour Haiku sur le total etait une erreur de calcul (38).
-Le plafond accepte (D5, environ 150 USD) couvre Sonnet partout sur les non archivees,
-sous reserve du cout reel d'un groupe (M-N4 : 0,043 USD par groupe ou moins pour le
-quotidien, 0,0197 pour le global sur les actives, 0,0125 pour les non archivees). Les
-6 s par appel Qwen viennent d'une requete Broca, pas d'un appel de tri (M-N6).
+**Correction explicite de H6 :** exclure les archivées est nécessaire, mais ne suffit
+pas à rendre le global Sonnet synchrone compatible avec 150 USD. Le coût plafond par
+groupe est environ 0,0197 USD sur les actives et 0,0125 sur toutes les non archivées ;
+la moyenne M-N4 de 0,0151 est entre les deux. Les verdicts historiques sont conservés
+en section 11 avec cet amendement.
+
+**Recommandation budgétaire :** flux courant synchrone borné ; arriéré actif en premier,
+avec M-N10 avant tout lancement global prévu en Batch. Sans transport Batch validé,
+réduire explicitement la portée ou demander un budget révisé, jamais consommer les
+182 USD sous une autorisation de 150. Pas de durée de tri Qwen au planning v2 : M-N6
+reste une mesure conservée, mais l'étape est supprimée (M-N5).
 
 ---
 
@@ -444,6 +461,14 @@ Deduits du code, aucun reproduit (Kleos #30301) :
 Challenge (H4) : ces noeuds, N1 et N9 surtout, signifient que les liens types ecrits
 aujourd'hui joueraient contre l'intention. Ils sont bloquants pour toute ecriture de
 lien type, pas seulement pour `contradicts`.
+
+**Amendement v2, historique conservé :** N2/M-N7 a été corrigé par Patch 67 ; déploiement
+confirmé dans le brief du lead, non remesuré par l'architecte. La documentation du patch
+(`docs/dev-notes/local-patches.md:7063-7089`) distingue le brut de réplication, le filtre
+serveur et les lecteurs agents (DÉDUIT). N7 reste pertinent pour les annotations et
+références, mais sa mention d'une future table de faits est caduque (M-N5). N1/N9
+bloquent les nouveaux liens du pipeline ; ils ne désactivent pas les producteurs
+existants de Patch 60 (4.7).
 
 ---
 
@@ -474,31 +499,42 @@ secrets via `cred exec` ; juge via LiteLLM.
 
 ## 9. Articulation avec le plan de supersession
 
-| Plan de supersession | Dans cette etude |
+**Conflit documentaire explicite :** le consensus retenu dans le plan du 17 octobre
+(6.1 ter) est réfuté par M-N3. La spec du 19 octobre, section 5 lignes 341-348, bloque
+déjà le lot B tel qu'écrit. La v2 ne déclare donc pas cette porte passée et ne réactive
+pas le retrait par faits abandonné en 6.0 (M-N5 confirme l'abandon du canal testé).
+
+| Plan de supersession | Reprise dans la v2 |
 |---|---|
-| Phase 1 (garantie structurelle) | acquise ; N2 la complete |
-| Phase 2 lot A (detecteur, indicateur) | le detecteur M1 devient un generateur de candidats (4.6) ; l'indicateur passe dans le rendu (4.9) |
-| Phase 2 lot B (juge, retrait sur consensus) | la branche "decisions" de la passe de voisinage ; la porte reste M-N3 |
-| Phase 2 lot C (kleos-cache, hooks) | le rendu (4.9) |
-| Phase 3 (marqueurs de changement) | le champ `change_marker` du tri |
-| Phase 4 (livraison) | le rendu (4.9) ; le catalogue complet au demarrage est ecarte (trop gros, pertinence non mesuree) au profit des pointeurs et d'un outil a la demande |
-| Phase 5 (commits git) | inchangee, hors de cette etude |
+| Phase 1, garantie structurelle | Préserver le filtrage. N2/M-N7 a reçu Patch 67, corrigé et déployé selon le compte rendu du lead ; le listing brut de réplication reste distinct du listing agent |
+| Phase 2 lot A, détecteur et indicateur | M1 produit des candidats ; les références et conflits sont des annotations. Pas de bénéfice agent présumé pour un pointeur nu (M-N8) |
+| Phase 2 lot B, jugement | Reprendre le jugement de groupe et les invariants de chaîne de 6.1 bis, pas l'autorisation par consensus. Annotations seules puis signal explicite ; N1/N9 précèdent tout nouveau lien (M-N3) |
+| Phase 2 lot C et phase 4, livraison | Remplacer l'objectif « pointeur sans texte » par l'expérience conditionnelle de redirection M-N16 ; cache/hooks ne sont modifiés qu'après ses portes (M-N8) |
+| Phase 3, marqueurs | `change_marker` sort du jugement de voisinage ; pas de passe de tri séparée (M-N5) |
+| Phase 5, commits git | Hors de cette étude ; aucune nouvelle autorisation de retrait introduite ici |
+
+**Limite de cette livraison :** les deux études précédentes ne sont pas réécrites dans
+ce lot documentaire. Toute future spec d'implémentation doit citer M-N3/M-N8 et les
+portes v2 plutôt que recopier leur consensus ou leur pointeur sans texte historiques.
 
 ---
 
-## 10. Ecart upstream estime
+## 10. Écart upstream estimé, pas encore implémenté
 
-- **Additif** (cout de rebase tres faible) : overlays `memory_pipeline_state`,
-  annotations, faits du tri, `transcript_staging` ; modules de tri, de voisinage, de
-  juges ; job du soir hors DAG, appele depuis `run_cycle` / `run_cycle_tenants` comme le
-  lot B.
-- **Patchs chirurgicaux** : dedup hybride (classe sure retiree, reste propose ; la date
-  au-dela du Patch 60, N8), forme a fixer apres une re-mesure posterieure au Patch 60 ;
-  correction de la reconsolidation (N1, candidat upstream) ; filtre `is_superseded` de
-  `memory::list` (N2, candidat upstream) ; route d'envoi des transcripts ; en-tete
-  d'authentification de kleos-ingest.
-- **Hors depot Kleos** : kleos-cache (dates, liens, conflits, reranker eventuel),
-  hooks-rs (rendu, ligne parasite).
+| Niveau proposé | Surface | Limite de la v2 |
+|---|---|---|
+| Overlay/additif | État, annotations et journal de tentatives dans le canal Patch 41 ; modules de voisinage, validation, confirmation et budget | Aucune migration numérotée upstream, aucun module de tri ni table de faits (M-N5) |
+| Raccordement minimal | Job sous garde d'inactivité dans les chemins monolithe et tenants ; retour de candidat au store | Modèle du lot B, mais sans son retrait par consensus ; cadence paramétrée (M-N3/M-N13) |
+| Correctifs préalables aux liens | Reconsolidation N1 et PageRank N9 | Reproduire et tester avant d'autoriser les écritures ; pas de refonte du scoring justifiée par H4 |
+| Déjà traité, à préserver | N2 par Patch 67, et déduplication Patch 60 | Patch 67 corrigé/déployé selon le lead ; aucun nouveau patch de règle déduplication (M-N7/M-N12 bis) |
+| Lots conditionnels distincts | Staging et authentification kleos-ingest ; projection de redirection dans kleos-cache et rendu hooks | Volume/qualité d'ingest à mesurer ; M-N16 avant redirection ; M-N9 avant reranker |
+
+**Recommandation de périmètre :** commencer par l'observation et les confirmations,
+pas par une réécriture du graphe ou du cache. Le canal prompt overlay porte le contrat
+LLM ; il ne peut pas fournir l'état transactionnel, l'autorisation ou le filtrage de
+lecture (hypothèse de découpage, N1/N2/M-N3). Chaque futur site source reste à chiffrer
+contre `docs/dev-notes/local-patches.md` avant code ; aucun nombre de lignes de patch
+n'est garanti par cette étude.
 
 ---
 
@@ -522,6 +558,20 @@ Le challenge note un desaccord qui couterait un refactor : si P et H2 survivent 
 deux a leur test, le choix de forme (tri separe ou replie, juge partout ou hybride) va
 au consultant.
 
+**Amendement v2, sans suppression des verdicts :**
+
+- **P/H3 :** M-N12 bis et N8 ne fournissent aucune nouvelle classe sûre séparable par
+  règle simple. Patch 60 reste en place ; le juge annote le résidu, sans droit de
+  retrait. Une suspension pré-déduplication serait un changement distinct (13.3).
+- **H2/H5 :** le choix tri séparé contre replié n'est plus ouvert pour ce contrat :
+  M-N5 conduit au repli dans le voisinage, sans table de faits.
+- **H6 :** M-N4 donne environ 115 USD sur les actives, mais 182 USD sur toutes les
+  non-archivées en synchrone. La portée `is_archived = 0` ne suffit donc plus seule à
+  tenir le plafond global ; Batch ou réduction de portée restent conditionnels.
+- **H7 :** un seul appel de voisinage dans la v2, hors relances, remplace les deux
+  allers-retours du premier jet. Compatibilité réelle, délais et comptabilité Batch
+  restent à mesurer par M-N10 ; le verdict historique n'est pas une preuve de déploiement.
+
 ---
 
 ## 12. References
@@ -537,6 +587,88 @@ au consultant.
   kleos-cache `src/{http,index,sync_worker}.rs`, hooks-rs `src/hooks/user_prompt_lean.rs`.
 - Etudes : `docs/studies/2026-10-17-supersession-muninn-plan.md`,
   `docs/studies/2026-10-19-supersession-phase2-spec.md`.
+
+---
+
+## 13. Décisions ouvertes et prochaines mesures
+
+### 13.1 M-N16 : redirection du contenu sur la fixture 4.4
+
+**Hypothèse à départager :** B, servir la remplaçante validée à la place de l'ancienne
+sélectionnée, améliore `agent_ok` face à A, filtrer sans redirection. M-N8 écarte le
+pointeur nu mais ne mesure pas B. La mesure se fait sur banc et via API, pas sur la base
+vive ; elle ne crée aucun retrait réel.
+
+**Deux portes séparées, proposées avant expérience :**
+
+1. **M-N16a, utilité du texte avec oracle contrôlé.** Rejouer les 40 questions et blocs
+   de M-N8, avec les mêmes modèle, effort, consigne, plafond de tokens et notation
+   aveugle. Conserver V0, V1 et V2 comme références historiques. Construire A en filtrant
+   les anciennes explicitement marquées dans les résultats enregistrés, B en résolvant
+   ces mêmes résultats vers leur remplaçante. Ne substituer que les anciennes réellement
+   présentes ; aucune injection de nouvelle dans les cas hors portée. Publier les ids
+   éligibles, les nouvelles déjà présentes, les troncatures et les cas inchangés.
+   Dédupliquer avant la limite et appliquer le même backfill déterministe à A et B ;
+   faute de réserve de candidats enregistrée, ne pas inventer un backfill dans B seul.
+2. **Critère proposé M-N16a.** Au moins **+5/40 `agent_ok` pour B contre A**, sans
+   régression sur les cas non éligibles, et `old_cited(B) <= old_cited(A)` ; face à V0,
+   viser aussi **au moins 5 anciennes citées en moins**. Rapporter séparément le gain
+   sur les seuls cas recevant réellement un texte nouveau. Refaire trois passes
+   appariées, publier chaque résultat ; ne pas retenir seulement le meilleur run.
+   Porte exploratoire proposée : ces critères tiennent sur les trois passes. Le seuil
+   est un choix de conception, pas un résultat ni une preuve statistique générale.
+3. **M-N16b, accessibilité réelle après phase 1.** Même fixture, état post-retraits,
+   vrai index filtré et projection d'alias candidate : mesurer le nombre de requêtes
+   ayant encore un chemin vers la nouvelle, `new_served`, `agent_ok` et latence. Exiger
+   **+5/40 `new_served` et +5/40 `agent_ok`** face à A, **0 contenu retiré servi**, **0
+   cible hors propriétaire/espace**, **0 doublon de destination** ; ne pas attribuer le
+   succès de M-N16a à ce mécanisme avant ce second test. Porte de latence proposée :
+   p50 <= 250 ms sur le poste, budget historique référencé par Kleos #18697 ; ce seuil
+   reste à confirmer pour le périmètre exact du résolveur, séparément du hook complet.
+4. **Cas de sûreté hors score principal.** Cible absente, oubliée, archivée, cycle,
+   chaîne à plusieurs remplacements, `partiel`, retrait Patch 60 non confirmé :
+   **0 ancienne réinjectée et 0 redirection non autorisée**. Une chaîne tronquée ou
+   ambiguë doit échouer fermée. Le coût de projection et son invalidation sont mesurés
+   séparément ; un oracle de fixture ne valide pas la provenance en production (N7/N8).
+
+**Réserve du challenge indépendant :** le reviewer rapporte sur
+`out-hook-existing-a.jsonl` 40 cas, 8 avec l'ancienne, 5 avec la nouvelle, dont 1 avec
+les deux ; seuls 7 reçoivent donc un texte réellement nouveau par substitution simple.
+Il rapporte aussi +241 caractères cumulés pour remplacer les 8 anciennes. Ces mesures
+communiquées ne sont pas réexécutées ici : le futur protocole doit les reproduire et
+figer le plafond de tokens, pas seulement le nombre de lignes. Un succès de M-N16a
+valide une utilité de rendu sous oracle, pas la résolution des chaînes en production.
+
+### 13.2 M-N10 et complément M-N4 avant l'arriéré global
+
+**M-N10 conservée :** 100 requêtes soumises vers 22 h via LiteLLM, cinq soirs, avec
+`ended_at - created_at` ; seuil historique < 2 h les cinq soirs pour envisager le
+quotidien. La v2 n'attend pas ce résultat pour imposer Batch au courant : elle ne l'y
+impose pas. Avant tout arriéré global, établir aussi récupération des résultats,
+reprise après redémarrage, facturation et réservations, refus des réponses périmées.
+Si la latence dépasse 2 h mais que l'exécution et la comptabilité sont fiables, Batch
+reste candidat pour l'arriéré seulement ; si le transport échoue, ne pas soumettre le
+lot global.
+
+**Complément M-N4 proposé :** 200 mémoires, contrat élargi `kind/change_marker/title`,
+répartition décisions/autres et groupes volumineux publiée ; coût par groupe, p90,
+JSON valide avant/après relance, coût des erreurs, nombre de groupes réellement uniques.
+Lancer le global seulement si le budget réservé plus la dépense réelle reste dans D5.
+La prévision de 182 USD synchrone sur toutes les non-archivées ne respecte pas D5.
+
+### 13.3 Fourches coûteuses : paquet pour le consultant après mesure
+
+| Décision | Option A | Option B | Recommandation et mesure manquante |
+|---|---|---|---|
+| Résidu déduplication | Garder Patch 60, audit et validation explicite ; faible coût, faux retraits encore possibles | Suspendre avant retrait un ensemble de paires et attendre validation ; plus de doublons servis, nouveau raccordement | A provisoirement, sans promesse de prévention. Mesurer le juge sur les 25 paires étiquetées et une nouvelle cohorte indépendante ; si le besoin est zéro retrait fautif, consultant avant B (N8/M-N12 bis) |
+| Recherche des alias | Résoudre des références après la sélection ; changement local mais portée potentiellement nulle après filtrage phase 1 | Projection de recherche dédiée aux alias de retirées confirmées ; plus de maintenance et risque de contenu périmé | Ne figer aucune des deux avant M-N16b. Consultant si B est nécessaire, car il modifie le contrat de l'index et sa purge (N2/N7) |
+| Modèle et enveloppe | Sonnet de référence, arriéré actif borné ; coût connu sur 20 groupes | Routage mixte Haiku ou périmètre étendu via Batch ; moindre coût supposé, qualité/transport à valider | A pour le pilote. M-N4 élargi et M-N10 avant extension ; consultant si réduire le coût exige une nouvelle politique de qualité |
+
+**Autres inconnues explicites :** rappel réel des candidats (M-N11), précision des
+confirmations en direct (non couverte par M-N15), fréquence des invalidations et
+affamement sous garde d'inactivité (M-N13 ne mesure que les écarts temporels), qualité
+et volume des futurs transcripts (M-N2/M-N6), nettoyage des annotations (N7), gain
+serveur des liens après N1/N9 (M-N14). Aucune n'est transformée en garantie par la v2.
 
 ---
 
