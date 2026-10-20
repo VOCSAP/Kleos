@@ -1058,6 +1058,9 @@ pub async fn list(db: &Database, opts: ListOptions) -> Result<Vec<Memory>> {
     if !opts.include_pending {
         conditions.push("status != 'pending'".to_string());
     }
+    if opts.exclude_superseded {
+        conditions.push("is_superseded = 0".to_string());
+    }
 
     if let Some(ref cat) = opts.category {
         conditions.push(format!("category = ?{}", param_idx));

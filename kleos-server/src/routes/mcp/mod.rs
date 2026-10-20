@@ -158,6 +158,10 @@ async fn handle_single_rpc(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+            let arguments = match memory_list_arguments(&name, arguments) {
+                Ok(arguments) => arguments,
+                Err(message) => return Some(rpc_error(id, -32602, &message)),
+            };
 
             // Charge per-tool rate-limit tokens before dispatch.
             if let Some(route) = resolve_tool_name(&name) {
@@ -421,6 +425,27 @@ async fn dispatch_tool(
             &internal_msg,
         ))
     }
+}
+
+/// `memory_list` is read by agents, so it hides retired memories unless
+/// `exclude_superseded` is the boolean `false`. Errors are invalid params.
+fn memory_list_arguments(name: &str, arguments: Value) -> Result<Value, String> {
+    if resolve_tool_name(name).map(|route| route.name) != Some("memory.list") {
+        return Ok(arguments);
+    }
+    let mut map = match arguments {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(map) => map,
+        _ => return Err("Invalid params: memory_list arguments must be an object".into()),
+    };
+    match map.get("exclude_superseded") {
+        None | Some(Value::Null) => {
+            map.insert("exclude_superseded".into(), Value::Bool(true));
+        }
+        Some(Value::Bool(_)) => {}
+        Some(_) => return Err("Invalid params: exclude_superseded must be a boolean".into()),
+    }
+    Ok(Value::Object(map))
 }
 
 /// Converts a route-registry scope to an auth-module scope.

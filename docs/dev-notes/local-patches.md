@@ -7045,3 +7045,101 @@ mesurer a part.
 upstream `scoring::tests::link_weight_test` reste vert.
 
 **Conditions de retrait :** upstream ramene `contradicts` au poids neutre.
+
+## Patch 67 -- `GET /list?exclude_superseded=true`, utilise par l'outil MCP `memory_list` et `kleos-cli list` (2026-10-20)
+
+**Symptome sous upstream pur (avec Patch 62 et 64) :** `GET /list` garde les
+memoires `is_superseded = 1` encore `is_latest` (contrat de la replique
+kleos-cache, Patch 62) et les marque `is_superseded: true` (Patch 64). Deux
+lecteurs de ce listing sont des agents :
+- le hook de demarrage `session-start-kleos.sh` (`kleos-cli list --limit 5`,
+  bloc RECENT MEMORIES, texte sans le drapeau) ;
+- l'outil MCP `memory_list`, execute cote serveur par `POST /mcp`.
+
+Mesure M-N7 sur le banc (2026-10-20) : `/list?limit=5` sans espace rend 1
+retiree sur 5 (#29825) ; `memory_list` par le pont `kleos-mcp` rend 1 retiree
+a `limit=5` et 8 a `limit=100`.
+
+**Approche :** patch chirurgical, parametre opt-in, aucune signature changee.
+- `kleos-lib` : `ListOptions` gagne `exclude_superseded: bool`
+  (`#[serde(default)]`, `false` dans `Default`). `memory::list` ajoute
+  `is_superseded = 0` au `WHERE` quand il vaut `true` : offset et limit
+  comptent des lignes vivantes, en un seul appel SQL.
+- `GET /list` : `ListQuery.exclude_superseded: Option<bool>`, absent = `false`.
+  Le listing brut reste celui que lit la replique, qui doit voir la ligne et
+  son drapeau pour la retirer de son index. Les deux autres constructeurs de
+  `ListOptions` (tier recent de `/recall`, qui filtre deja en Rust, et
+  `synthesize_profile`) posent `false`, donc rien ne change pour eux.
+- Outil MCP `memory_list` / `memory.list` (`routes/mcp/mod.rs`,
+  `memory_list_arguments`, appele dans `handle_single_rpc` avant le
+  dispatch). Cela couvre l'appel seul, le batch JSON-RPC et tout client qui
+  appelle `POST /mcp` sans le pont. Regles :
+  - des arguments absents ou `null` deviennent `{}` ;
+  - tout autre non-objet (tableau, chaine, nombre) est refuse en erreur
+    JSON-RPC `-32602` (invalid params), sans dispatch ;
+  - `exclude_superseded` absent ou `null` devient `true` ;
+  - un booleen `false` explicite est conserve et rend le listing brut ;
+  - toute autre representation (`"false"`, `0`...) est refusee en `-32602`.
+  Aucune forme d'arguments ne fait partir `/list` brut sans un `false`
+  booleen.
+- `kleos-cli list` : envoie `exclude_superseded=true`, puis
+  `kleos-cli/src/listing.rs::live_rows` ecarte localement toute ligne dont
+  `is_superseded` n'est pas absent, `null` ou `false`.
+  - Un serveur anterieur ignore le champ inconnu (pas de
+    `deny_unknown_fields` sur `ListQuery`) et rend les retirees marquees
+    `true` : la CLI ne les montre pas.
+  - Face a un tel serveur, la page peut etre plus courte que `--limit`, et
+    `--offset` y compte des lignes serveur. Il n'y a pas de sur-demande.
+
+**Pourquoi pas le niveau client :** une premiere version filtrait cote
+clients (`kleos-cli`, pont `kleos-mcp`) un `/list` brut.
+- Pour garder offset et limit exacts, elle devait relire le listing depuis
+  l'offset 0 jusqu'a reunir assez de lignes vivantes.
+- La revue a chiffre ce cout a environ 100 appels HTTP pour une page, sous un
+  prefiltre de 60 requetes par minute.
+- Elle laissait une page courte au-dela de sa borne de lecture.
+- Elle ne couvrait pas un client MCP qui parle a `POST /mcp` sans le pont.
+
+Le filtre SQL resout les trois en un appel. Aucun overlay ne porte une clause
+SQL ni le defaut d'un outil MCP.
+
+**Hors scope, laisse ouvert :** la GUI (`gui/src/lib/api/memory.ts`) et les
+SDK python/go lisent `/list` sans le parametre ; le contournement de
+`KLEOS_SPACE` par un batch MCP est suivi a part (carte 93b17966).
+
+**Fichiers :**
+- `kleos-lib/src/memory/types.rs`, `kleos-lib/src/memory/mod.rs`,
+  `kleos-lib/tests/supersession_surfaces.rs` ;
+- `kleos-server/src/routes/memory/types.rs`,
+  `kleos-server/src/routes/memory/mod.rs`, `kleos-server/src/routes/mcp/mod.rs`,
+  `kleos-server/tests/routes_memory_supersession.rs` ;
+- `kleos-cli/src/main.rs`, `kleos-cli/src/listing.rs`.
+
+**Tests :**
+- `supersession_surfaces.rs::listing_excludes_superseded_on_request_with_exact_pages` :
+  - six memoires dont deux retirees intercalees ;
+  - le listing brut les garde ;
+  - avec le drapeau, les pages (0,2) et (2,2) sont exactes et disjointes, (4,2)
+    est vide ;
+  - la memoire revient quand la marque est effacee.
+- `routes_memory_supersession.rs` :
+  - `/list` sans parametre garde la retiree, `?exclude_superseded=true`
+    l'omet ;
+  - `tools/call` l'omet par defaut sous `memory_list` et sous le nom canonique
+    `memory.list`, seul et en batch, et un `exclude_superseded: false`
+    explicite la rend ;
+  - `memory_list_arguments_never_bypass_the_filter` : arguments `null` et
+    `exclude_superseded: null` filtres ; tableau, chaine, nombre,
+    `exclude_superseded: "false"` et `0` refuses en `-32602`.
+- `kleos-cli/src/listing.rs` : une page d'ancien serveur avec des lignes
+  `true`, mal typees, absentes, `null` et `false` ne garde que les trois
+  dernieres formes.
+- Rouges sans le filtre SQL. Rouges aussi avant validation des arguments MCP
+  (`arguments: null` servait la retiree) et avant `live_rows` (rendait
+  `[5,4,3,2,1]` au lieu de `[5,3,2]`). Mutation : retirer le defaut de
+  l'outil MCP fait echouer le test MCP.
+
+**Conditions de retrait :** upstream offre un listing qui exclut les memoires
+retirees et l'utilise pour ses chemins agent (CLI, outil MCP), ou filtre
+`is_superseded` dans `memory::list` tout en exposant un flux distinct a la
+replique.

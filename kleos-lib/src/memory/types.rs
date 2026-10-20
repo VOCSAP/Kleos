@@ -580,6 +580,9 @@ pub struct ListOptions {
     /// false so the review gate withholds unreviewed memories from default
     /// listings and recall; the Inbox path queries pending rows directly.
     pub include_pending: bool,
+    /// False preserves raw rows for replication consumers.
+    #[serde(default)]
+    pub exclude_superseded: bool,
 }
 /// Constructs ListOptions with a 50-item page, zero offset, and all filters unset.
 impl Default for ListOptions {
@@ -598,6 +601,7 @@ impl Default for ListOptions {
             from: None,
             to: None,
             include_pending: false,
+            exclude_superseded: false,
         }
     }
 }

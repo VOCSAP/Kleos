@@ -24,7 +24,7 @@ use kleos_lib::memory;
 use kleos_lib::memory::facts_channel::search_facts_fts;
 use kleos_lib::memory::fts::fts_or_match_query;
 use kleos_lib::memory::search::{faceted_search, hybrid_search, invalidate_search_cache};
-use kleos_lib::memory::types::{FacetedSearchRequest, SearchRequest, StoreRequest};
+use kleos_lib::memory::types::{FacetedSearchRequest, ListOptions, SearchRequest, StoreRequest};
 use kleos_lib::pack::{self, PackFormat};
 use kleos_lib::personality::synthesize_personality_profile;
 use kleos_lib::prompts;
@@ -391,6 +391,47 @@ async fn recall_static_and_important_tiers_withhold_superseded() {
         .expect("list important");
     assert!(statics.iter().any(|m| m.id == retired), "static tier once the mark is cleared");
     assert!(important.iter().any(|m| m.id == retired), "important tier once the mark is cleared");
+}
+
+async fn list_ids(db: &Database, offset: usize, limit: usize, exclude_superseded: bool) -> Vec<i64> {
+    let opts = ListOptions {
+        limit,
+        offset,
+        user_id: Some(USER),
+        exclude_superseded,
+        ..Default::default()
+    };
+    memory::list(db, opts)
+        .await
+        .expect("list")
+        .iter()
+        .map(|m| m.id)
+        .collect()
+}
+
+#[tokio::test]
+async fn listing_excludes_superseded_on_request_with_exact_pages() {
+    let db = Database::connect_memory().await.expect("in-mem db");
+    let l1 = store(&db, "listing one amberley", false, 5).await;
+    let s1 = store(&db, "listing retired bexhill", false, 5).await;
+    let l2 = store(&db, "listing two carnforth", false, 5).await;
+    let l3 = store(&db, "listing three dunmore", false, 5).await;
+    let s2 = store(&db, "listing retired elsworth", false, 5).await;
+    let l4 = store(&db, "listing four fennick", false, 5).await;
+    mark_superseded(&db, l1, s1).await;
+    mark_superseded(&db, l4, s2).await;
+
+    assert_eq!(
+        list_ids(&db, 0, 50, false).await,
+        vec![l4, s2, l3, l2, s1, l1]
+    );
+
+    assert_eq!(list_ids(&db, 0, 2, true).await, vec![l4, l3]);
+    assert_eq!(list_ids(&db, 2, 2, true).await, vec![l2, l1]);
+    assert!(list_ids(&db, 4, 2, true).await.is_empty());
+
+    clear_superseded(&db, s2).await;
+    assert_eq!(list_ids(&db, 0, 2, true).await, vec![l4, s2]);
 }
 
 /// Filter-only faceted search (no query) runs a direct DB scan.
