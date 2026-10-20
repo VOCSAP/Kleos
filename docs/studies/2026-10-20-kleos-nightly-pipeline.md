@@ -32,9 +32,10 @@ Trois explorations independantes du code, en lecture seule (Kleos #30300, #30301
    `correction.rs:61`), consolidates 3 912, contradicts 0.
 2. **Les retraits automatiques ne lisent pas le sens.** Deux retraits par regle :
    - la dedup du dreamer pose `is_superseded` sur un cosinus >= 0,9 et garde la memoire
-     d'**importance la plus haute sans regarder la date** (`duplicates.rs:80-88`) : une
-     decision recente d'importance plus basse, proche de l'ancienne (negation, retour en
-     arriere), est retiree au profit de l'ancienne. Frequence inconnue (M-N12). Cadence :
+     d'**importance la plus haute**, la plus recente seulement a importance egale
+     (`duplicates.rs:78-88`, Patch 60, en prod depuis le 2026-10-19 ; avant, l'ancienne
+     a egalite) : une decision recente d'importance plus basse, proche de l'ancienne
+     (negation, retour en arriere), est retiree au profit de l'ancienne. Cadence :
      chaque tick du dreamer, 300 s par defaut, seulement apres 60 s sans requete HTTP
      (`config.rs:729-736`, `dreamer.rs:193-206`), 500 paires au plus par passe
      (`duplicates.rs:65`) ;
@@ -124,6 +125,11 @@ retraits du consensus ont moins d'une heure d'ecart entre l'ancienne et la nouve
 remplacement d'une decision se produit surtout **dans la meme session** : le marquage en
 direct couvre a la fois la bonne population et le bon moment. kleos-ingest, une fois
 reactive, sera la premiere source automatique hors de sa portee.
+
+Cout sur le quota Claude (M-N15, transcripts du 2026-09-18 au 2026-10-18) : 54 stores
+sur 1 841 ont un candidat (2,9 %) ; ajoute 0,005 % de la fenetre de 5 h en moyenne,
+0,056 % au maximum, et dans le pire cas (chaque candidat coute un tour d'outil de plus,
+contexte median 249 k tokens) 0,05 % en moyenne, 0,41 % au maximum. Negligeable.
 
 ### 4.2 Table d'etat par etape
 
@@ -300,8 +306,8 @@ Entree : une memoire, son espace, sa date. Sortie JSON stricte :
   disparait au premier tick inactif. Et hors decisions, faute de consensus defini
   (4.6), il ne serait jamais retire.
 - Option retenue a mesurer : la variante hybride du principe 2. La dedup garde le
-  retrait pour la classe sure et ne propose que le reste ; elle corrige au passage le
-  choix par importance sans la date (section 1, point 2).
+  retrait pour la classe sure et ne propose que le reste ; la date prime alors sur
+  l'importance dans la classe sure (le Patch 60 ne la fait primer qu'a egalite).
 - Volume : les 987 `supersedes` comprennent ceux de `/correct` ; la part de la dedup
   (`similarity < 1.0`) et son rythme par jour se mesurent par M-N12 (requetes R1a a
   R1c, R3).
@@ -424,7 +430,7 @@ Deduits du code, aucun reproduit (Kleos #30301) :
 | N5 | `temporal_patterns`, `reflections` reinseres a chaque tick (`temporal.rs:257`, `reflections.rs:62`) | croissance sans fin | placer sous la table d'etat, ou couper si aucun lecteur (non verifie) |
 | N6 | Ligne parasite `- Relevant memories:` du sidecar (`kleos-sidecar/src/routes.rs:833`, `user_prompt_lean.rs:357`) | bruit dans le contexte | correction du hook |
 | N7 | Derives jamais nettoyes au forget / delete : `current_state`, faits, liens (`memory/mod.rs:1446`, `:1942`) | un fait d'une memoire supprimee survit | a traiter avec la table des faits du tri |
-| N8 | La dedup garde l'importance la plus haute sans regarder la date (`duplicates.rs:80-88`) | **mesure (M-N12)** : a importance egale (852 paires sur 904), elle garde l'ancienne ; sur le flux depuis juillet, la plus recente n'est gardee que 6 fois sur 51 (11,8 %). Une decision corrigee dans la meme session perd donc sa version recente | corriger avec la variante hybride (4.7) : a egalite, garder la plus recente |
+| N8 | La dedup garde l'importance la plus haute ; la date ne joue qu'a egalite (`duplicates.rs:78-88`) | **mesure sur la copie figee, ANTERIEURE au Patch 60** : a egalite (852 paires sur 904) elle gardait l'ancienne ; 9 des 20 retraits de la fenetre ont garde la mauvaise version. Le Patch 60 (2f592b75, prod le 2026-10-19, liens repares par le Patch 61) en evite 8 (deduit). **Residuel sous Patch 60 : 2 sur 20** : la paire 1 (importance 9 contre 8, la plus recente retiree) et la paire 14 (distinctes, ecart de 1,5 min) | aucun code tant que la preuve tient en un cas ; la paire 1 plaide pour faire primer la date, la paire 14 pour un juge. Re-mesurer sur une copie posterieure au 2026-10-19 |
 | N9 | PageRank regroupe par `MAX(ml.type)` (`pagerank.rs:58`) et garde `contradicts` a 1,3 (`pagerank.rs:17`) | les types `extends`, `contradicts`, `corrects`, `caused_by` disparaissent de PageRank des qu'un lien `similarity` existe ; ecart avec le Patch 66 | a traiter si des liens types sont ecrits (4.6) |
 
 Challenge (H4) : ces noeuds, N1 et N9 surtout, signifient que les liens types ecrits
@@ -440,16 +446,17 @@ lien type, pas seulement pour `contradicts`.
 | M-N1 | nouvelles memoires par jour, par source, par categorie, par espace | copie figee, SQL | le budget quotidien et l'echelle de tout le reste. **Faite le 2026-10-20** : 2 515 non archivees en 31 jours (81 par jour calendaire, 110 par jour ouvre, 20 le week-end) ; discovery 1 249, decision 369, state 357, issue 282, task 198, reference 52 ; 15 espaces, koryphaios 1 273 en tete, `default` 184, aucun NULL ; la portee `is_archived = 0` exclut tout `dreamer-growth` |
 | M-N2 | part ecrite par un agent (MCP, CLI) face aux chemins automatiques | copie figee | la portee du marquage en direct (4.1). **Faite** : 2 511 `claude-session` et 4 `unknown`, aucune autre source non archivee ; aucun hook n'ecrit sous `claude-session` (deduit des hooks lus) ; part agent 99,8 % ou plus |
 | M-N3 | precision des retraits proposes : paires 6, 20, 23 de la feuille operateur, puis un echantillon des 12 autres | etiquetage operateur | si un retrait automatique est possible. **Faite le 2026-10-20 sur les 3 premieres** : 6 R, 20 R, 23 D, soit 2 sur 3 et un faux retrait (paire 23). Le consensus tombe comme critere de retrait automatique (regle de la spec phase 2 : un seul `distinct` suffit) ; Kleos #30829 |
-| M-N4 | cout reel et verdicts d'un groupe de voisinage, Haiku et Sonnet ; d'abord 20 groupes reels en Sonnet, puis 200 memoires | copie figee via LiteLLM | la repartition des modeles et le cout du global ; criteres en section 6 |
-| M-N5 | accord Qwen / Sonnet sur le tri, 200 memoires ; plus, sur les 40 paires de la fixture 4.4 et les 3 paires `remplace` de l'operateur, la part des paires qui partagent une cle `(sujet, attribut)` normalisee, et le taux de JSON valide sous schema impose | idem | ce que Qwen peut garder ; critere : >= 50 % de paires reliees, >= 0,8 fois Sonnet, >= 99 % de JSON valide |
-| M-N6 | debit de Qwen (appels par heure) avec `dreamer-growth` actif, sur un vrai appel de tri | Ollama 192.168.10.50 | la duree du retraitement global |
+| M-N4 | cout reel et verdicts d'un groupe de voisinage, Haiku et Sonnet ; d'abord 20 groupes reels en Sonnet, puis 200 memoires | copie figee via LiteLLM | la repartition des modeles et le cout du global ; criteres en section 6. **20 groupes faits** (2026-10-20, Kleos #30835) : 275 paires, 0,0151 USD par groupe en moyenne, p90 0,0163 ; quotidien environ 1,7 USD par jour ouvre ; global Sonnet partout environ 115 USD sur les actives (sous 150), environ 182 sur les non archivees (au-dessus). Verdicts : distinct 121, prolonge 102, met_a_jour 37, partiel 11, doublon 4, remplace 0, contredit 0. JSON invalide 1 groupe sur 20 : schema impose et relance obligatoires. `prolonge` a environ 5 par memoire : ne pas l'ecrire en lien |
+| M-N5 | accord Qwen / Sonnet sur le tri, 200 memoires ; plus, sur les 40 paires de la fixture 4.4 et les 3 paires `remplace` de l'operateur, la part des paires qui partagent une cle `(sujet, attribut)` normalisee, et le taux de JSON valide sous schema impose | idem | ce que Qwen peut garder ; critere : >= 50 % de paires reliees, >= 0,8 fois Sonnet, >= 99 % de JSON valide. **Faite** (2026-10-20, Kleos #30852) : JSON valide Qwen 92,3 % sous schema impose (critere manque), Sonnet 100 % avec un contrat de sortie compact ; cles partagees sur 36 vraies paires Qwen 3, Sonnet 1 (borne basse : un seul fait par memoire) ; accord sur 100 memoires kind 81, importance a +-1 73, change_marker 62, durable 7. Qwen ne garde pas le tri en l'etat, et le canal par faits libres ne relie presque rien, quel que soit le modele |
+| M-N6 | debit de Qwen (appels par heure) avec `dreamer-growth` actif, sur un vrai appel de tri | Ollama 192.168.10.50 | la duree du retraitement global. **Faite** : 1 587 appels par heure en sequentiel, p50 1,9 s, p90 3,8 s ; tri des 12 043 non archivees environ 7,6 h, des 7 623 actives environ 4,8 h |
 | M-N7 | fuite de `memory::list` (N2) | banc | l'extension de la phase 1 |
 | M-N8 | `agent_ok` avec dates et pointeurs, rendu fixe | fixture 4.4, API | l'effet du rendu |
 | M-N9 | latence d'un reranker dans le cache | poste | 4.9 |
 | M-N10 | delai de l'API Batch : un lot de 100 requetes soumis vers 22 h via LiteLLM, 5 soirs, `ended_at - created_at` | API | 4.4 ; critere : < 2 h les 5 soirs pour garder Batch au quotidien, sinon Batch pour l'arriere seulement |
 | M-N11 | rappel ajoute par le canal de faits : part des vraies paires de remplacement (40 de la fixture 4.4, 39 chaines de la phase 2) qu'aucun lien `similarity` ni le detecteur M1 n'atteint | copie figee, SQL | H2 : <= 5 % hors d'atteinte, le tri se replie dans le voisinage ; >= 10 %, Qwen sur ces seules memoires, le tri tient si ses cles en relient la moitie. **Non mesurable tel que pose** (2026-10-20) : les ids de la fixture 4.4 sont posterieurs au gel (29 607 a 29 826, copie au max 29 606), et les 39 chaines de la phase 2 sont toutes des candidats M1 par construction. Indicatif : le canal `similarity` seul rate 2 des 33 paires que la chaine Sonnet classe R (6,1 %, entre les deux seuils). A refaire sur une verite terrain independante de M1 |
-| M-N12 | precision et rythme de la dedup : requetes R1a a R1c et R3 (annexe A), puis lecture de 30 paires `supersedes` a `similarity < 1.0` | copie figee, SQL, lecture | principe 2 et H3 : la regle tient si `newer_kept` >= 95 %, ecart < 1 h pour >= 80 % des paires et <= 1 retrait faux sur 30 ; le juge est justifie a >= 3 sur 30 ; H3 tombe en volume a >= 3 retraits dedup par jour ouvre a ecart < 1 h. **Partielle** (2026-10-20) : 853 des 904 liens dedup datent d'un passage de juin sur des traces d'outils `[Bash]`, `[Read]` de mai (source `sidecar`), qui dominent R1b ; le tirage au hasard en est le reflet et ne vaut rien. Flux courant (lien depuis le 2026-07-01) : 51 liens, 48 a ecart < 1 h (94 %), plus recente gardee 6 fois sur 51 (critere de 95 % tres loin, N8) ; dans la fenetre de 31 jours, 20 liens, environ 0,9 par jour ouvre (H3 ne tombe pas en volume). Reste a etiqueter les 20 liens de la fenetre, pas un tirage sur les 904 |
+| M-N12 | precision et rythme de la dedup : requetes R1a a R1c et R3 (annexe A), puis lecture de 30 paires `supersedes` a `similarity < 1.0` | copie figee, SQL, lecture | principe 2 et H3 : la regle tient si `newer_kept` >= 95 %, ecart < 1 h pour >= 80 % des paires et <= 1 retrait faux sur 30 ; le juge est justifie a >= 3 sur 30 ; H3 tombe en volume a >= 3 retraits dedup par jour ouvre a ecart < 1 h. **Partielle** (2026-10-20) : 853 des 904 liens dedup datent d'un passage de juin sur des traces d'outils `[Bash]`, `[Read]` de mai (source `sidecar`), qui dominent R1b ; le tirage au hasard en est le reflet et ne vaut rien. Flux courant (lien depuis le 2026-07-01) : 51 liens, 48 a ecart < 1 h (94 %), plus recente gardee 6 fois sur 51 (critere de 95 % tres loin, N8) ; dans la fenetre de 31 jours, 20 liens, environ 0,9 par jour ouvre (H3 ne tombe pas en volume). **Etiquetage operateur des 20 liens de la fenetre** (2026-10-20, Kleos #30841) : 10 O, 9 P, 1 D, soit **10 retraits fautifs sur 20**. Dans les 9 P, la retiree est toujours la plus recente : une correction explicite (#19155 corrige #19154), un etat plus recent (#27235), et 3 versions re-stockees par l'agent apres une troncature des backticks par le shell (#19581, #21028, #27186). **Reserve (Kleos #30850)** : la copie figee precede le Patch 60 ; sous la regle deployee, 2 retraits fautifs sur 20 (10 %) au lieu de 10. Le critere de la regle (<= 1 faux sur 30) reste manque ; le juge reste justifie (>= 3 sur 30 par extrapolation) |
 | M-N13 | part intra-journee : sur les 194 paires candidates M1 et les 15 retraits du consensus, part dont l'ecart de creation est < 24 h ; puis rejeu de `out-hook-*.jsonl`, blocs servis contenant une memoire remplacee plus tot le meme jour | copie figee, journaux de hook | H1 : < 5 % des blocs et < 10 % des paires, le soir suffit ; >= 20 %, cadence continue au moins pour les decisions. **Partie SQL faite** (2026-10-20) : 161 des 194 candidats a moins de 24 h (83 %, dont 62 % a moins d'une heure), 15 des 15 retraits du consensus (100 %). Seuil de 20 % largement depasse sur les paires ; le volet des blocs servis reste a faire, mais il ne peut plus renverser la cadence continue retenue en D2 |
+| M-N15 | cout du marquage en direct sur la fenetre de quota Claude de 5 h : stores retrouves dans les transcripts, drapeau candidat depuis la copie figee, tokens ajoutes ponderes comme le tarif face aux tokens consommes par fenetre | transcripts Claude Code, copie figee | l'activation de 4.1. **Faite** (2026-10-20, Kleos #30845) : 0,005 % en moyenne, 0,41 % au pire ; regle d'ouverture des fenetres approximee, limite absolue du quota inconnue |
 | M-N14 | effet de 40 liens `updates` (nouvelle vers ancienne) de la fixture 4.4 sur le chemin serveur (`/search`, `kleos-cli context`), avec et sans | copie du banc, jamais la base vive | H4 cote serveur : tient si la nouvelle servie gagne >= 5 / 40 sans que l'ancienne servie augmente ; cote cache, effet nul par construction |
 
 Contraintes de mesure inchangees : lectures sur la copie figee, jamais la base vive ;
@@ -477,8 +484,8 @@ secrets via `cred exec` ; juge via LiteLLM.
   annotations, faits du tri, `transcript_staging` ; modules de tri, de voisinage, de
   juges ; job du soir hors DAG, appele depuis `run_cycle` / `run_cycle_tenants` comme le
   lot B.
-- **Patchs chirurgicaux** : dedup hybride (classe sure retiree, reste propose, date
-  prise en compte, N8), forme a fixer apres M-N12 ;
+- **Patchs chirurgicaux** : dedup hybride (classe sure retiree, reste propose ; la date
+  au-dela du Patch 60, N8), forme a fixer apres une re-mesure posterieure au Patch 60 ;
   correction de la reconsolidation (N1, candidat upstream) ; filtre `is_superseded` de
   `memory::list` (N2, candidat upstream) ; route d'envoi des transcripts ; en-tete
   d'authentification de kleos-ingest.
@@ -494,12 +501,12 @@ H2 a H4, l'autre sur H1 et H5 a H7. Les corrections sont portees dans le corps.
 
 | # | Hypothese | Verdict | Premisse cachee | Test qui tranche |
 |---|---|---|---|---|
-| P | Les regles proposent, le modele tranche (principe 2) | indecidable | la dedup retirerait a tort assez souvent pour justifier un juge, lui-meme non mesure. Depuis M-N3, le juge par consensus a 1 faux retrait sur 3 : "le modele tranche" ne vaut plus pour un retrait, seulement pour un pointeur ou une annotation | M-N12 |
+| P | Les regles proposent, le modele tranche (principe 2) | indecidable | la dedup retirerait a tort assez souvent pour justifier un juge, lui-meme non mesure. Depuis M-N3, le juge par consensus a 1 faux retrait sur 3 : "le modele tranche" ne vaut plus pour un retrait, seulement pour un pointeur ou une annotation. M-N12 tranche cote regle : sous la regle deployee (Patch 60), la dedup se tromperait encore 2 fois sur 20 ; ni la regle seule ni le juge seul ne retirent sans erreur | M-N12 fait ; P devient : la regle propose et retire la classe sure, le juge annote |
 | H1 | Le soir vaut mieux que le continu | **tombe** | attendre reduirait le volume ; le continu concurrencerait le chemin servi. Les deux cedent : le volume ne depend pas de la cadence, la garde d'inactivite regle la contention ; et le lot B de la phase 2 juge deja toutes les 6 h. M-N13 le confirme : 83 % des candidats M1 et 100 % des retraits du consensus a moins de 24 h | D2 amendee : cadence parametree sous la garde d'inactivite (4.4) |
-| H2 | Le tri par memoire vaut son cout face au voisinage seul | indecidable | des cles libres de Qwen se recouperaient entre memoires ecrites a des mois d'ecart | M-N11, M-N5 amende |
+| H2 | Le tri par memoire vaut son cout face au voisinage seul | **tombe** (M-N5) | des cles libres de Qwen se recouperaient entre memoires ecrites a des mois d'ecart ; mesure : 3 paires sur 36 avec Qwen, 1 avec Sonnet. Le canal de candidats par faits n'apporte rien | replier `kind`, `change_marker`, `title` dans la sortie du juge de voisinage ; pas de table de faits |
 | H3 | La dedup en simple proposition ne laisse pas grossir les doublons | **tombe** telle qu'ecrite | la passe du soir retirerait les doublons ; or `dry_run` ne rend aucune paire et le consensus hors decisions n'existe pas. En volume, elle tiendrait (environ 0,9 retrait dedup par jour ouvre, M-N12) : c'est le mecanisme qui tombe, pas l'echelle | etiquetage des 20 liens de la fenetre |
 | H4 | Les liens types ameliorent le classement servi | **tombe** | un lien nouvelle vers ancienne ferait remonter la nouvelle ; le cache ignore les liens et, cote serveur, expansion, PageRank et reconsolidation jouent pour l'ancienne | M-N14 |
-| H5 | Qwen suffit pour le tri | indecidable | volet contexte de 16k : tient sur les donnees (6 663 caracteres au plus) ; volet cles de faits et JSON : non mesure | M-N5 amende |
+| H5 | Qwen suffit pour le tri | **tombe** (M-N5) | volet contexte de 16k : tient ; volet JSON : 92,3 % valide sous schema impose (critere 99 %) ; accord avec Sonnet 7 % sur `durable`, 62 % sur `change_marker` | Qwen reste rapide (1 587 appels par heure) mais ne tranche rien sans relance et validation ; le tri suit H2 |
 | H6 | Le budget de 3,5 USD par soir et environ 150 USD en global tient | tient, sous condition | « nouvelles memoires » = toutes les insertions ; avec `dreamer-growth`, le budget tombe | portee `is_archived = 0`, M-N4 |
 | H7 | L'API Batch est compatible avec la passe du soir | tient | un seul aller-retour par nuit ; il en faut deux, et le cout n'est connu qu'au retour | M-N10 |
 
