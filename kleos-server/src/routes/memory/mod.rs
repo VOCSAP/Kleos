@@ -834,6 +834,7 @@ async fn recall(
         from: None,
         to: None,
         include_pending: false,
+        exclude_superseded: false,
     };
     let recent_extra = memory::list(&db, recent_extra_opts).await?;
     let recent_items: Vec<Value> = recent_extra
@@ -949,6 +950,7 @@ async fn list_memories(
         from: params.from,
         to: params.to,
         include_pending: false,
+        exclude_superseded: params.exclude_superseded.unwrap_or(false),
     };
     let memories = memory::list(&db, opts).await?;
     let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
@@ -1163,6 +1165,7 @@ async fn synthesize_profile(
             from: None,
             to: None,
             include_pending: false,
+            exclude_superseded: false,
         },
     )
     .await?;

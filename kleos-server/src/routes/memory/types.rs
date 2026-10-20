@@ -100,6 +100,9 @@ pub(super) struct ListQuery {
     pub from: Option<String>,
     /// Exclusive upper bound on created_at (YYYY-MM-DD), or None.
     pub to: Option<String>,
+    /// Absent preserves raw rows for replication consumers.
+    #[serde(default)]
+    pub exclude_superseded: Option<bool>,
 }
 
 /// Query params for GET /memories/calendar.

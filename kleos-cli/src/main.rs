@@ -1,5 +1,6 @@
 mod hook;
 mod import_plugins;
+mod listing;
 mod space;
 use hook::{run_hook, HookCommands};
 use kleos_client::{truncate, Client};
@@ -1614,7 +1615,10 @@ async fn main() {
                 space.as_deref(),
                 *space_id,
             );
-            let mut url = format!("/list?limit={}&offset={}", limit, offset);
+            let mut url = format!(
+                "/list?limit={}&offset={}&exclude_superseded=true",
+                limit, offset
+            );
             if let Some(id) = sid {
                 url.push_str(&format!("&space_id={}", id));
             }
@@ -1635,6 +1639,7 @@ async fn main() {
                             .cloned()
                             .unwrap_or_default()
                     });
+                    let items = listing::live_rows(items);
                     if items.is_empty() {
                         println!("No memories.");
                     }
