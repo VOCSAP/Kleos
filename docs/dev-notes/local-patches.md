@@ -5464,6 +5464,8 @@ fait deja via `$KLEOS_SPACE`). A retirer si upstream cable un mecanisme de scope
 MCP equivalent (recablage `dispatch`, header serveur, ou lecture `KLEOS_SPACE`
 dans la voie nominale).
 
+Extension : Patch 68 (meme regle pour chaque element d'un batch JSON-RPC).
+
 ---
 
 ## Patch 48 -- timeout reranker HTTP/TEI surchargeable par env var (2026-06-29)
@@ -7143,3 +7145,50 @@ SDK python/go lisent `/list` sans le parametre ; le contournement de
 retirees et l'utilise pour ses chemins agent (CLI, outil MCP), ou filtre
 `is_superseded` dans `memory::list` tout en exposant un flux distinct a la
 replique.
+
+---
+
+## Patch 68 -- kleos-mcp injecte `KLEOS_SPACE` dans chaque `tools/call` d'un batch JSON-RPC (2026-10-20)
+
+Extension du Patch 47. Carte roadmap 93b17966.
+
+**Symptome sous Patch 47 seul :** `inject_space` teste `method == "tools/call"`
+sur la valeur de tete. Un batch JSON-RPC (tableau) n'a pas de `method` : il
+traversait le pont sans injection. Chaque `tools/call` sans espace explicite
+du lot partait sans espace, donc ecriture en `default` et `memory_list` / `memory_search` non
+cloisonnes au projet. Le serveur execute bien chaque element d'un batch
+(`kleos-server/src/routes/mcp/mod.rs`).
+
+**Approche :** patch chirurgical dans `inject_space` (`kleos-mcp/src/lib.rs`),
+code deja local (Patch 47), aucun site upstream ouvert. Si la valeur est un
+tableau, chaque element objet passe par la meme regle qu'un appel isole
+(`space` / `space_id` explicite conserve, rien hors `tools/call`, rien si
+`arguments` n'est pas un objet) ; un element non objet est relaye tel quel,
+sans recursion. `inject_space_for_tool_calls` reste no-op si `KLEOS_SPACE` est
+vide, pour le lot entier. Pas de niveau inferieur : l'injection vit deja dans
+le pont, et le serveur n'a pas de canal de scope par requete MCP.
+
+**Fichiers :** `kleos-mcp/src/lib.rs` (`inject_space` + 4 tests),
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-mcp --features kleos-lib/bundled-sqlite --lib`
+- `injects_space_into_each_tools_call_of_a_batch` : deux `tools/call` sans
+  espace et une notification ; les deux appels recoivent `space`, la
+  notification est intacte.
+- `batch_preserves_explicit_space_and_space_id`.
+- `batch_leaves_non_tools_call_elements_intact` : `tools/list`, notification,
+  nombre.
+- `empty_batch_is_forwarded_unchanged`.
+- Avant le correctif, seul `injects_space_into_each_tools_call_of_a_batch`
+  etait rouge ; les trois autres gardent les limites de la transformation et
+  passaient deja. Mutation (elements du tableau relayes sans traitement) : ce
+  meme test echoue.
+- E2E, banc 192.168.10.21:4290, `KLEOS_SPACE=kleos`, batch de deux
+  `memory_list` par stdio : binaire patche = espaces 2 et 3, comme un appel
+  isole ; binaire 0.3.2 installe = espace 71 (bug reproduit). Le meme controle
+  avec `KLEOS_SPACE=supersession-bench` n'etait pas discriminant : les 100
+  memoires les plus recentes du banc sont toutes dans cet espace.
+
+**Conditions de retrait :** celles du Patch 47 (upstream cable un scope MCP
+equivalent), ou upstream traite lui-meme les batchs dans une injection de
+scope cote pont ou serveur.
