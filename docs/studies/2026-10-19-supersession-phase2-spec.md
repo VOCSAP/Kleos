@@ -342,6 +342,10 @@ non-regression du hook), budget respecte.
    retraits proposes** par le consensus (15 sur la copie), en commencant par les paires
    6, 20 et 23 de `phase2-labels-operator.md`, deja dans sa feuille. Une seule reponse
    `distinct` fait tomber le consensus tel quel.
+   **Resultat du 2026-10-20** : 6 R, 20 R, 23 D. La paire 23 est un faux retrait : le
+   consensus tombe comme critere de retrait automatique, et le lot B tel que specifie
+   ci-dessous est bloque (Kleos #30829). Sa reprise passe par l'etude
+   `2026-10-20-kleos-nightly-pipeline.md` (retrait sur signal explicite, pointeur sinon).
 3. Lot B sur le banc avec le vrai juge (cout attendu environ 2 USD pour l'arriere) ;
    porte : 0 controle retire, precision des retraits acceptee par l'operateur sur
    l'echantillon du point 2, idempotence prouvee (second passage : 0 appel) ; puis
