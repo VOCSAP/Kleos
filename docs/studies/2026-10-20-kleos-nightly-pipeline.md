@@ -177,6 +177,17 @@ et le résumé client décrits par la phase 0 du plan de supersession (section 4
 des préalables à revérifier
 avant cette réactivation, pas des travaux déclarés achevés ici.
 
+**Décision opérateur du 2026-10-20, complément à D6** (source consultée :
+`memory_get(30938)`, décision rapportée, sans nouvelle mesure de sécurité) : la sécurité
+des transcripts n'est pas un frein à cette cible. Les transcripts doivent être stockés
+côté serveur, éventuellement réduits, puis traités en tâche de fond pendant l'inactivité.
+La première marche est la carte **must `3f45e0f8`**, portage Windows de kleos-ingest ;
+la cible serveur reste suivie par **`f18dc3c4`**. Cet arbitrage ne déclare pas le staging
+ni le traitement serveur déjà implémentés. **DÉDUIT du périmètre actuel rapporté par
+kleos-7 :** le démon d'extraction lexicale, POST `/memories` et résumé Ollama local
+n'est pas cette cible. Kleos #21290 consigne qu'il n'a jamais été déployé ; un binaire
+compilable n'est donc pas une preuve de déploiement. Voir l'[étude d'usage](2026-10-20-kleos-agent-usage.md), section 5.
+
 ### 4.4 Cadence, priorité et budget
 
 **Décision D2 amendée, étayée par M-N13 :** une cadence paramétrée sous la garde
@@ -514,6 +525,20 @@ pas le retrait par faits abandonné en 6.0 (M-N5 confirme l'abandon du canal tes
 | Phase 3, marqueurs | `change_marker` sort du jugement de voisinage ; pas de passe de tri séparée (M-N5) |
 | Phase 5, commits git | Hors de cette étude ; aucune nouvelle autorisation de retrait introduite ici |
 
+**Complément d'architecture du 2026-10-20, canal de livraison dominant :**
+**MESURÉ par kleos-7, sources #30932/#30933 consultées et détaillées dans
+l'[étude d'usage](2026-10-20-kleos-agent-usage.md)** : environ 12 700 récupérations
+automatiques par prompt contre environ 1 230 recherches choisies par les agents en
+30 jours. Le premier chemin est `UserPromptSubmit -> kleos-cache local /v1/retrieve`,
+puis repli sidecar `/recall`, puis CLI. `kleos-cli context` appelle POST `/recall`, pas
+POST `/context` ; l'audit #30932 ne trouve aucun appelant de `/context` dans CLI,
+sidecar, kleos-sh, hooks et registre MCP (absence rapportée sur ce périmètre, non
+recherchée à nouveau ici). **DÉDUIT :** un mécanisme serveur de supersession ou de
+redirection n'atteint le chemin principal local que par la réplique kleos-cache ;
+une amélioration de `/search` ou `/recall` ne prouve pas une amélioration des injections
+locales. Les mesures de livraison doivent couvrir cache, synchronisation et rendu,
+au-delà du serveur. M-N16d doit précisément couvrir ce canal avant le nouvel arbitrage.
+
 **Limite de cette livraison :** les deux études précédentes ne sont pas réécrites dans
 ce lot documentaire. Toute future spec d'implémentation doit citer M-N3/M-N8 et les
 portes v2 plutôt que recopier leur consensus ou leur pointeur sans texte historiques.
@@ -693,6 +718,37 @@ le protocole initial ni son verdict. La décision valide l'utilité du rendu sou
 pas la résolution des chaînes en production. M-N16b doit encore établir l'accessibilité
 réelle, les gains, la latence et la sûreté ; aucune option d'index n'est choisie ici.
 
+#### M-N16b : chemin réel sans mécanisme, 2026-10-20
+
+**MESURÉ, lecture de `~/.agent-forge/scratch/m_n16b_report.json`, Kleos #30928 :**
+`jq '{selection: (.selection | del(.rows)), passes: [.passes[] | del(.rows)], total_cost_usd, total_duration_seconds}' C:/Users/Olivier/.agent-forge/scratch/m_n16b_report.json`
+rend notamment `"agent_ok": 7` à chacune des trois passes Haiku. Le chemin testé est
+`kleos-cli context --limit 8 --space supersession-bench`, après retraits phase 1,
+**sans mécanisme de redirection ni projection candidate**.
+
+| Mesure | Résultat du chemin servi |
+|---|---|
+| Portée sur les 7 éligibles M-N16a | 0/7 remplaçantes servies ; seule N08 est servie parmi les nouvelles de la fixture |
+| `agent_ok`, trois passes | 7/40, 7/40, 7/40 |
+| Régressions contre B sous oracle | Les 7 éligibles à chaque passe, avec `input_differs_from_B: true` |
+| Anciennes servies / citées Haiku | 0 / 0 |
+| Latence de sélection | p50 359,5 ms, p95 407 ms, 40 requêtes |
+
+**DÉDUIT du rapport et de la règle amendée #30923 :** les sept régressions comptent,
+puisque leurs entrées diffèrent de B ; elles ne sont pas assimilables au bruit N10.
+Ce résultat mesure le chemin sans mécanisme, pas l'échec d'un résolveur implémenté.
+
+**MESURÉ par kleos-5, précision postérieure à #30928, rapportée sans refaire l'audit :**
+les 120 cibles étiquetées « hors propriétaire ou espace » sont toutes dans l'espace
+`default` #3, avec le même propriétaire. La vue par espace les inclut ; elles prennent
+3 des 8 places pour chacune des 40 requêtes. Le libellé brut ne démontre donc pas une
+fuite inter-propriétaires. **DÉDUIT :** distinguer cette inclusion de `default` d'un
+contrat de recherche strictement limité à l'espace demandé lors de la prochaine mesure.
+
+**DÉDUIT du périmètre chronométré :** la p50 de 359,5 ms est de bout en bout sur le
+chemin CLI ; elle n'est pas comparable à la porte de 250 ms proposée pour le résolveur
+seul. Ni validation ni invalidation de cette porte de latence par M-N16b.
+
 ### 13.2 M-N10 et complément M-N4 avant l'arriéré global
 
 **M-N10 conservée :** 100 requêtes soumises vers 22 h via LiteLLM, cinq soirs, avec
@@ -715,8 +771,44 @@ La prévision de 182 USD synchrone sur toutes les non-archivées ne respecte pas
 | Décision | Option A | Option B | Recommandation et mesure manquante |
 |---|---|---|---|
 | Résidu déduplication | Garder Patch 60, audit et validation explicite ; faible coût, faux retraits encore possibles | Suspendre avant retrait un ensemble de paires et attendre validation ; plus de doublons servis, nouveau raccordement | A provisoirement, sans promesse de prévention. Mesurer le juge sur les 25 paires étiquetées et une nouvelle cohorte indépendante ; si le besoin est zéro retrait fautif, consultant avant B (N8/M-N12 bis) |
-| Recherche des alias | Résoudre des références après la sélection ; changement local mais portée potentiellement nulle après filtrage phase 1 | Projection de recherche dédiée aux alias de retirées confirmées ; plus de maintenance et risque de contenu périmé | M-N16b débloqué par décision opérateur du 2026-10-20 (Kleos #30923, 13.1), avec règle de régression amendée ; aucune option choisie par le succès sous oracle de M-N16a. Ne figer aucune des deux avant M-N16b. Consultant si B est nécessaire, car il modifie le contrat de l'index et sa purge (N2/N7) |
+| Recherche des alias | Résoudre des références après la sélection ; changement local mais portée potentiellement nulle après filtrage phase 1 | Projection de recherche dédiée aux alias de retirées confirmées ; plus de maintenance et risque de contenu périmé | M-N16b débloqué par décision opérateur du 2026-10-20 (Kleos #30923, 13.1), avec règle de régression amendée ; aucune option choisie par le succès sous oracle de M-N16a. Ne figer aucune des deux avant M-N16b. Consultant si B est nécessaire, car il modifie le contrat de l'index et sa purge (N2/N7). **Suite du 2026-10-20 :** avis consultant #30930, option 3 sans mécanisme provisoirement ; M-N16c #30940 manque le seuil de 90 % sur les trois chemins. M-N16d en cours, puis retour au consultant ; aucune option figée. Détail ci-dessous |
 | Modèle et enveloppe | Sonnet de référence, arriéré actif borné ; coût connu sur 20 groupes | Routage mixte Haiku ou périmètre étendu via Batch ; moindre coût supposé, qualité/transport à valider | A pour le pilote. M-N4 élargi et M-N10 avant extension ; consultant si réduire le coût exige une nouvelle politique de qualité |
+
+#### Recherche des alias : avis consultant, M-N16c et suite ouverte
+
+**Avis consultant consigné, non décision définitive** (`memory_get(30930)`) :
+**option 3, aucun mécanisme pour l'instant, confiance 75 %** ; recommandation
+« jamais de projection d'alias ». L'option 2 consiste à garder les retirées comme
+candidates, puis résoudre au service, extension envisagée du Patch 62 dans
+`kleos-lib/src/memory/search.rs`, uniquement si une mesure réelle la justifie.
+**DÉDUIT par le consultant :** les remplaçantes lexicalement disjointes de la fixture
+4.4 ne représentent pas nécessairement les paires voisines produites par déduplication
+et correction ; le 0/7 ne suffit pas à justifier un nouvel index. Les seuils de rappel
+proposés sans mécanisme sont **90 % pour la déduplication, 80 % pour les corrections**.
+Ce sont ses critères d'arbitrage, pas des performances garanties.
+
+**MESURÉ, lecture du rapport `m_n16c_report.json`, Kleos #30940 :**
+`jq '{pair_inventory, paths, tables, path_divergence}' C:/Users/Olivier/.agent-forge/scratch/m_n16c_report.json`
+rend `"n": 83`, `"dedup": 83` et `"returned_top10_divergent_pairs": 83`.
+Le banc contient 83 paires réelles hors fixture, même propriétaire et espace, gardienne
+active et retirée supersédée ; la requête reprend le contenu de la retirée.
+
+| Chemin | Gardienne dans le top 10 | Retirée servie | Seuil dédup 90 % |
+|---|---|---|---|
+| CLI `search` | 66/83, soit 79,5 % | 0 | Manqué |
+| CLI `context` | 55/83, soit 66,3 % | 0 | Manqué |
+| MCP `memory_search` | 71/83, soit 85,5 % | 0 | Manqué |
+
+**MESURÉ :** aucune paire de correction dans ce banc, donc seuil de 80 % non évalué.
+Les top 10 diffèrent entre chemins sur **83/83 paires** ; la présence de la gardienne
+diffère sur 19/83. Les 57 échecs sont **17 + 28 + 12 observations chemin-paire**, pas
+57 paires distinctes garanties. **DÉDUIT :** le seuil manqué motive un retour à
+l'arbitrage, pas le choix automatique de l'option 2 ni une projection d'alias.
+
+**Statut communiqué par le team-lead le 2026-10-20 : M-N16d en cours**, pour qualifier
+la nature des 57 échecs, mesurer le canal kleos-cache et essayer une requête courte.
+Retour au consultant avec ces mesures ; **aucune option n'est figée**. Les propositions
+historiques de la ligne du tableau sont conservées comme historique, non comme un go.
 
 **Autres inconnues explicites :** rappel réel des candidats (M-N11), précision des
 confirmations en direct (non couverte par M-N15), fréquence des invalidations et
