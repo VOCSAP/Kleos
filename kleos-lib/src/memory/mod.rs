@@ -1391,13 +1391,12 @@ pub async fn list_important(
 /// Compose recall tiers under `limit`, reserving up to `min_semantic_slots` for the
 /// query-relevant semantic tier so the always-on static/important tiers cannot starve it.
 ///
-/// Emission order: always-on rows (static then important) fill up to `limit - reserve`, then
-/// semantic rows fill the reserved space, then any always-on rows the cap deferred backfill
-/// the remaining slots (in case semantic came up short), then recent filler closes out. The
-/// reserve is capped at the number of semantic items actually available, so no slot is wasted
-/// when the query produced few or no semantic hits. Inputs are assumed already deduplicated
-/// across tiers by the caller; this function only orders and truncates. Generic over the row
-/// payload so callers can compose either domain rows or serialized values.
+/// Emission order: semantic rows retained under the reservation and always-on caps come first,
+/// then the retained always-on rows (static then important), deferred always-on rows, and
+/// recent filler. The reserve is capped at the number of semantic items actually available, so
+/// no slot is wasted when the query produced few or no semantic hits. Inputs are assumed
+/// already deduplicated across tiers by the caller; this function only orders and truncates.
+/// Generic over the row payload so callers can compose either domain rows or serialized values.
 pub fn compose_recall_tiers<T>(
     static_items: Vec<T>,
     important_items: Vec<T>,
@@ -1406,27 +1405,29 @@ pub fn compose_recall_tiers<T>(
     limit: usize,
     min_semantic_slots: usize,
 ) -> Vec<T> {
-    // Reserve only as many semantic slots as there are semantic items to fill them.
     let semantic_reserve = semantic_items.len().min(min_semantic_slots);
     let always_on_cap = limit.saturating_sub(semantic_reserve);
-    let mut output: Vec<T> = Vec::with_capacity(limit);
+    let mut selected_always_on: Vec<T> = Vec::new();
     let mut deferred_always_on: Vec<T> = Vec::new();
 
-    // Always-on rows first, but only up to the cap that protects the semantic reserve.
     for item in static_items.into_iter().chain(important_items) {
-        if output.len() < always_on_cap {
-            output.push(item);
+        if selected_always_on.len() < always_on_cap {
+            selected_always_on.push(item);
         } else {
             deferred_always_on.push(item);
         }
     }
-    // Semantic (query-relevant) rows fill the reserved space next.
-    for item in semantic_items {
-        if output.len() >= limit {
-            break;
-        }
+
+    let mut output: Vec<T> = Vec::with_capacity(limit);
+    let mut semantic_items = semantic_items.into_iter();
+    for item in semantic_items
+        .by_ref()
+        .take(limit.saturating_sub(selected_always_on.len()))
+    {
         output.push(item);
     }
+    output.extend(selected_always_on);
+
     // Backfill always-on rows the cap deferred, in case semantic was short.
     for item in deferred_always_on {
         if output.len() >= limit {
@@ -2554,6 +2555,130 @@ pub async fn get_user_stats(db: &Database, user_id: i64) -> Result<UserStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_recall_tiers_emits_semantic_items_before_always_on_items() {
+        let output = compose_recall_tiers(
+            vec!["static-1", "static-2", "static-3"],
+            vec!["important-1", "important-2", "important-3"],
+            vec![
+                "semantic-1",
+                "semantic-2",
+                "semantic-3",
+                "semantic-4",
+                "semantic-5",
+            ],
+            vec!["recent-1"],
+            10,
+            5,
+        );
+
+        assert_eq!(
+            output,
+            vec![
+                "semantic-1",
+                "semantic-2",
+                "semantic-3",
+                "semantic-4",
+                "semantic-5",
+                "static-1",
+                "static-2",
+                "static-3",
+                "important-1",
+                "important-2",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_recall_tiers_emits_all_retained_semantic_items_before_always_on_items() {
+        let output = compose_recall_tiers(
+            vec!["static-1", "static-2", "static-3"],
+            vec![],
+            vec![
+                "semantic-1",
+                "semantic-2",
+                "semantic-3",
+                "semantic-4",
+                "semantic-5",
+                "semantic-6",
+                "semantic-7",
+                "semantic-8",
+                "semantic-9",
+                "semantic-10",
+                "semantic-11",
+                "semantic-12",
+            ],
+            vec![],
+            10,
+            5,
+        );
+
+        assert_eq!(
+            output,
+            vec![
+                "semantic-1",
+                "semantic-2",
+                "semantic-3",
+                "semantic-4",
+                "semantic-5",
+                "semantic-6",
+                "semantic-7",
+                "static-1",
+                "static-2",
+                "static-3",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_recall_tiers_reserves_only_available_semantic_items() {
+        let output = compose_recall_tiers(
+            vec!["static-1", "static-2", "static-3"],
+            vec![
+                "important-1",
+                "important-2",
+                "important-3",
+                "important-4",
+                "important-5",
+                "important-6",
+            ],
+            vec!["semantic-1", "semantic-2"],
+            vec![],
+            10,
+            5,
+        );
+
+        assert_eq!(
+            output,
+            vec![
+                "semantic-1",
+                "semantic-2",
+                "static-1",
+                "static-2",
+                "static-3",
+                "important-1",
+                "important-2",
+                "important-3",
+                "important-4",
+                "important-5",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_recall_tiers_respects_limits_below_the_semantic_reserve() {
+        let output = compose_recall_tiers(
+            vec!["static-1"],
+            vec!["important-1"],
+            vec!["semantic-1", "semantic-2", "semantic-3", "semantic-4"],
+            vec!["recent-1"],
+            3,
+            5,
+        );
+
+        assert_eq!(output, vec!["semantic-1", "semantic-2", "semantic-3"]);
+    }
 
     /// The source allowlist parser trims, lower-cases, and drops blank entries.
     #[test]

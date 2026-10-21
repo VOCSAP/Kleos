@@ -7280,3 +7280,40 @@ zero requete vers Ollama et Kleos; le hash du ledger existant reste identique.
 **Conditions de retrait :** upstream utilise un ledger ephemere et saute la
 summarisation dans le watcher `--dry-run`, par exemple via une PR issue de ce
 patch.
+
+---
+
+## Patch 71 -- kleos /recall : sémantique avant les tiers always-on
+
+Carte roadmap ae3b0f21. Candidat à une PR upstream.
+
+**Symptôme sous upstream pur :** `compose_recall_tiers` réserve jusqu'à cinq
+places aux résultats sémantiques, mais émet static et important avant eux. À
+`--limit 10`, les cinq premiers rangs sont donc always-on et masquent le
+sémantique du top 3. Consommateurs touchés : `kleos-cli context` (défaut
+`--limit 5`) et les hooks qui l'appellent avec une limite plus grande, dont
+`session-start-kleos.sh` (`--limit 8`).
+
+**Approche :** patch chirurgical dans `kleos-lib/src/memory/mod.rs`. Tous les
+résultats sémantiques retenus sont émis avant les tiers static et important ;
+les quotas, la réserve minimale, la déduplication effectuée par l'appelant et
+la composition des tiers restent inchangés, donc l'ensemble des ids retenus est
+celui de l'upstream et seul l'ordre change. Une variable d'environnement ne
+convient pas : elle réglerait le nombre de places réservées, pas leur ordre.
+
+**Fichiers :** `kleos-lib/src/memory/mod.rs`,
+`docs/dev-notes/local-patches.md`,
+`docs/studies/2026-10-20-kleos-nightly-pipeline.md`.
+
+**Tests :** `compose_recall_tiers_emits_semantic_items_before_always_on_items`
+fige les cinq résultats sémantiques réservés en tête à `limit = 10`.
+`compose_recall_tiers_emits_all_retained_semantic_items_before_always_on_items`
+protège l'ordre du suffixe sémantique retenu quand les always-on sont rares.
+`compose_recall_tiers_reserves_only_available_semantic_items` protège la réserve
+plafonnée au nombre de résultats sémantiques disponibles.
+`compose_recall_tiers_respects_limits_below_the_semantic_reserve` est un test de
+caractérisation : il protège le cap à `limit` quand celui-ci est inférieur à la
+réserve, et passe aussi sur l'upstream.
+
+**Conditions de retrait :** upstream émet le sémantique réservé avant les tiers
+always-on, par exemple via une PR issue de ce patch.
