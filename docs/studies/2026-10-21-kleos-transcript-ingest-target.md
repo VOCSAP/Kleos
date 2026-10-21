@@ -1,10 +1,16 @@
 # Étude d'architecture : cible de l'ingestion des transcripts Claude Code
 
-Statut : **conception seulement, aucun code livré**. Révision 3 du 2026-10-21 : la
+Statut : **conception seulement, aucun code livré**. Révision 5 du 2026-10-21 (dédup de
+fond, space par session, juge amont Haiku, bande grise Sonnet, condition de licence ;
+voir la table ci-dessous).
+Historique : la
 révision 2 répondait à un challenge au verdict « tombe » et à trois mesures (T1 à T3,
 section 0) ; la révision 3 intègre le verdict du consultant sur l'embranchement de la
-section 1.3. Décisions opérateur du 2026-10-21 : R, règle de bump et variante (a')
-validées (Q5, 4.4). Cette étude détaille la section 4.3 de
+section 1.3 ; la révision 4 retire toute dépendance à la porte de revue. Décisions
+opérateur du 2026-10-21 : R et règle de bump validées (Q5) ; **la porte de revue
+(`KLEOS_REVIEW_GATE_*`, statut `pending`, inbox) ne sera jamais activée** (21:57, Kleos
+#31722), donc la variante (a') et la carte 6ee2297f sont abandonnées. La protection
+contre les faits faux passe par le relais et par le juge (section 4.4). Cette étude détaille la section 4.3 de
 l'[étude nightly](2026-10-20-kleos-nightly-pipeline.md) (« Transcripts en attente :
 extension distincte ») et en **amende un point** : la zone `transcript_staging` ne vit
 pas dans Kleos (overlay Patch 41) mais dans un relais à côté du serveur, dépôt séparé
@@ -15,13 +21,15 @@ transcripts.
 
 Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt brutal),
 `3f45e0f8` (portage Windows, livré), `19671bc8` (dry-run du watcher), `6ee2297f`
-(dédup et porte d'attente, ouverte par T1).
+(dédup et porte d'attente, archivée en wontfix le 2026-10-21).
 
-### Ce que les révisions 2 et 3 changent
+### Ce que les révisions 2 à 5 changent
 
-| Point du challenge ou du consultant | Réponse | Section |
+| Point du challenge, du consultant ou de l'opérateur | Réponse | Section |
 |---|---|---|
-| (1) Une ligne `pending` absorbe les stores ultérieurs de l'agent | Parade : correctif chirurgical de la dédup, candidat PR ; tant qu'il n'est pas livré, la porte reste éteinte et rien n'écrit dans Kleos | 4.4 |
+| (1) Une ligne `pending` absorbe les stores ultérieurs de l'agent | **Sans objet depuis la révision 4** : la porte ne sera jamais activée, aucune ligne `pending` n'est écrite | 4.4 |
+| Opérateur (révision 5) : dédup de fond comme couche principale contre le transcript publié avant l'agent ; space par session ; juge cloud admis ; licence upstream | Niveau déterministe déjà assuré par le Patch 60 à 0,9, bande grise [0,80 ; 0,90[ jugée par Sonnet dans le relais (décision opérateur du 2026-10-22, 4.8), file `to_dedup` en table du relais ; résiduel réécrit (le mauvais ordre n'existe qu'au-delà de 8 h) ; space résolu sur le poste depuis le fichier de session du hook ; juge amont Haiku ; rev épinglé conditionné au gel ELv2 | 1.3, 4.4, 4.5, 4.8, 8, Q5 |
+| Opérateur (révision 4) : pas de porte ; des faits de Qwen peut-être faux seraient servis dès publication ; aucune relecture humaine possible | Protection autonome à zéro delta en quatre couches : juge amont dans le relais (fidélité et voisinage) avant toute publication, importance plafonnée à 5, provenance par source et tags, juge nightly qui archive a posteriori ses seules mémoires de transcript. Les couches 1 à 3 bloquent la mise en service, la couche 4 et le nettoyage des mémoires d'agents non | 4.4, 4.6, 4.7 |
 | (2) La règle « non révisé après 45 min » ne tient pas à la reprise | Parade : état par lignée hérité à la reprise, publication à la stabilisation (8 h), révision des faits publiés par la chaîne de versions de Kleos | 4.2, 4.3 |
 | (3) Coût du relais sous-estimé : secrets, chiffrement, authentification | Parade pour chacun, coût chiffré ; limite nommée : la rédaction des secrets est incomplète par nature | 1.4 |
 | (4) Le budget Ollama ignore `KLEOS_LLM_THINK` | Parade : `think: false` explicite et rejet des réponses tronquées ; budget recalculé sur T2 | 3.2, 4.2 |
@@ -53,7 +61,7 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | F8 | Le résumé lit depuis la première ligne et s'arrête à 3 000 caractères, `max_tokens` 300 | DÉDUIT (rapporté, #31653, `kleos-ingest/src/summarizer.rs:16-67`) |
 | F9 | Le classifieur du mode auto refuse aux agents la lecture analytique des transcripts : toute mesure sur les transcripts réels est un geste opérateur | MESURÉ (rapporté, #31658) |
 | F10 | Cible LLM serveur : `qwen3:8b-ctx16k`, contexte 16 384 tokens, sur Ollama 192.168.10.50 | DÉDUIT (`CLAUDE.local.md`, section Cible LLM) |
-| **T1** | Porte active, `KLEOS_REVIEW_GATE_SOURCES=kleos-transcript` : un store `claude-session` quasi identique à une ligne `pending` rend `created=false, duplicate_of=<id pending>` ; aucune ligne approuvée n'est créée | MESURÉ (rapporté, #31707, test d'intégration jetable) |
+| **T1** (historique, sans objet depuis la révision 4) | Porte active, `KLEOS_REVIEW_GATE_SOURCES=kleos-transcript` : un store `claude-session` quasi identique à une ligne `pending` rend `created=false, duplicate_of=<id pending>` ; aucune ligne approuvée n'est créée | MESURÉ (rapporté, #31707, test d'intégration jetable) |
 | T1-a | Cause : la requête de dédup exclut `is_archived = 1` et `status = 'rejected'`, pas `pending` ; le chemin doublon rend l'id existant sans toucher la ligne | DÉDUIT (`kleos-lib/src/memory/mod.rs:586-590`, `:607-616`) |
 | T1-b | En production, `/etc/kleos/kleos.env` ne contient aucune variable `REVIEW_GATE` ; `KLEOS_REVIEW_GATE_ENABLED` vaut `false` par défaut : **la porte est éteinte aujourd'hui** | MESURÉ (rapporté, brief du lead) ; défaut DÉDUIT (`mod.rs:777-781`) |
 | **T2** | `qwen3:8b-ctx16k` par `/api/chat`, fenêtre de 36 000 caractères = 9 084 tokens, raisonnement coupé : ingestion du prompt à froid 6,2 s (environ 1 470 tokens/s), génération environ 49 tokens/s ; environ 12 s pour 300 tokens de sortie, 22 s pour 800. Un préfixe identique est servi par le cache KV (18 à 46 ms), donc un appel répété sous-estime le coût réel. Avec `think: true` et `num_predict` 800, le budget part dans le raisonnement et l'appel s'arrête en `length` | MESURÉ (rapporté, #31706) |
@@ -62,6 +70,10 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | T3-a | Lignée resume/fork : 6 copies sur 687 sessions ; la copie démarre p50 16 min après la source ; 2 cas sur 7 au-delà de 45 min ; aucune source n'a continué après le fork | MESURÉ (rapporté, brief du lead ; le brief donne 6 copies et 7 cas, écart non résolu ici) |
 | F11 | `POST /memory` désérialise `StoreRequest` tel quel : `parent_memory_id`, `created_at`, `space`, `session_id`, `tags` et `sync_id` passent par l'API publique ; corps limité à 256 Kio | DÉDUIT (`kleos-server/src/routes/memory/mod.rs:74`, `:110-136` ; `kleos-lib/src/memory/types.rs:306-342`) |
 | F12 | Un store avec `parent_memory_id` crée la version suivante, passe l'ancienne à `is_latest = 0`, saute la dédup, et **refuse** (`Conflict`) si le parent n'est plus la tête de chaîne | DÉDUIT (`mod.rs:578`, `:855-890`) |
+| F13 | La porte de revue ne sera jamais activée ; l'inbox d'approbation existe et se consulte depuis l'interface web GUI de Kleos, pas depuis kleos-cli ni le serveur MCP | Décision opérateur du 2026-10-21 (Kleos #31722) |
+| F14 | Tiers servis sans requête : le tier « important » de `/recall` prend `importance >= 7` (`RECALL_IMPORTANT_MIN`, `kleos-server/src/routes/memory/mod.rs:681`, appel `:770`) ; `/context` ne remonte d'office que les statiques d'importance au moins 9 (`kleos-lib/src/context/mod.rs:601`) et les insights d'importance au moins 8 (`kleos-lib/src/context/deps.rs:117`) | DÉDUIT (lignes lues) |
+| F15 | Filtres de lecture existants : `source_filter` et `tags` sont des filtres **positifs** (égalité de source, `kleos-lib/src/memory/search.rs:1543-1575`) ; aucun filtre d'**exclusion** par source n'existe. Seules les catégories `activity` et `growth` sont exclues par défaut de la recherche (`search.rs:1101-1107`) | DÉDUIT (lignes lues) ; absence d'un filtre d'exclusion SUPPOSÉE (lecture de `search.rs` seulement) |
+| F16 | La dédup de fond (Patch 60) garde l'importance la plus haute, et à égalité l'id le plus haut | DÉDUIT (`docs/dev-notes/local-patches.md:6606-6613`) |
 
 ---
 
@@ -102,7 +114,7 @@ flowchart LR
 | Claude Code | Les transcripts bruts, seule copie complète | | hors périmètre |
 | Démon poste `kleos-transcript-agent` | Curseur par fichier (offset acquitté, époque, empreintes), version de purge du fil. **Aucune copie** du transcript : le fichier source sert de tampon | Contenu purgé persistant, mémoires, appel LLM | **Zéro delta** si dépôt séparé (Q5) |
 | Relais `kleos-transcript-relay` | Enregistrements B rédigés (rétention 14 jours), index des uuid (longue durée), état de lignée, résumés de fenêtre et de session, faits candidats, correspondance fait vers id et version Kleos | Les mémoires canoniques, l'autorité de retrait sur une mémoire qu'il n'a pas écrite | Option R : **zéro delta**. Option S : voir 1.3 |
-| kleos-server | Mémoires canoniques, statut `pending`/`approved`, chaîne de versions, voisinage et annotations de l'étude nightly | Le transcript, même réduit (option R) | Correctif chirurgical de la dédup requis avant la porte (4.4), dans les deux options |
+| kleos-server | Mémoires canoniques, chaîne de versions, archivage réversible, voisinage et annotations de l'étude nightly | Le transcript, même réduit (option R) ; aucune mémoire de transcript en statut `pending` (F13) | **Zéro delta** pour la cible : publication, révision, recherche des voisins et archivage passent par l'API existante (4.4) |
 | Ollama | Rien de persistant | | hors périmètre |
 
 ### 1.3 Embranchement pour le consultant : relais séparé (R) contre staging dans Kleos (S), tranché R
@@ -124,8 +136,7 @@ jours, avant que des faits n'en sortent vers les mémoires Kleos. Deux emplaceme
 
 **Ce qui ne dépend pas du choix.** Le démon poste, son protocole (curseur, époque,
 idempotence par `(file_key, epoch, start)`, réponses 409, section 2), la règle de purge,
-le fenêtrage et la règle de publication sont identiques dans R et S. Le correctif de
-dédup de la section 4.4 touche `memory::store` et s'impose dans les deux. Le démon est
+le fenêtrage et la règle de publication sont identiques dans R et S. Le démon est
 la partie la plus délicate (Windows, arrêts brutaux, F4 à F6) : **si le contrat HTTP
 démon vers serveur est figé d'abord, l'embranchement n'engage que le côté serveur.**
 
@@ -148,7 +159,7 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
 
 | | R, relais séparé | S, staging dans Kleos |
 |---|---|---|
-| Fichiers upstream touchés | Aucun (hors correctif 4.4, commun) ; pas d'entrée dans `members` (E10) | Enregistrement des routes dans le routeur serveur et branchement d'un job dans le dreamer : deux patchs chirurgicaux, dont un dans le fichier classé « ELEVE » (E9) |
+| Fichiers upstream touchés | Aucun ; pas d'entrée dans `members` (E10) | Enregistrement des routes dans le routeur serveur et branchement d'un job dans le dreamer : deux patchs chirurgicaux, dont un dans le fichier classé « ELEVE » (E9) |
 | Tables | Base propre | Overlay Patch 41 : zéro delta par construction |
 | Coût récurrent | Un bump du rev épinglé de kleos-lib après chaque merge upstream du fork ; ne casse que si l'API publique utilisée change (`think_setting`, `load_prompt`, `connect_encrypted`, `scrub_credentials`) ou si l'API HTTP `/memory` change | Chaque pull upstream qui modifie le dreamer, le client LLM ou la signature de `memory::store` casse la compilation du module, même sans conflit de texte ; coût proportionnel à la cadence upstream (E9) |
 | Patch numéroté à tenir dans `local-patches.md` | Non | Oui |
@@ -195,9 +206,20 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
   3. Une mise en service qui ne survivrait à aucun pull.
 - **À figer avant tout code.**
   1. Le contrat HTTP démon vers relais (sections 2.3 et 2.4).
-  2. Le correctif (a') de la dédup (section 4.4).
+  2. Retiré en révision 4 : le correctif (a') de la dédup n'a plus d'objet sans porte
+     (F13).
   3. Le rev épinglé de kleos-lib et sa règle de bump : à chaque merge upstream du fork,
-     après un build vert du fork.
+     après un build vert du fork. **Condition de licence, non tranchée** : upstream est
+     passé à PolyForm Noncommercial à partir de `f1db1cf7` (Kleos #31725), et
+     l'opérateur envisage de geler le fork sur la dernière version ELv2. Dans ce cas, le
+     rev épinglé doit rester sur un commit du fork qui ne contient pas `f1db1cf7`, et la
+     règle de bump ne porte plus que sur les commits propres au fork. Aujourd'hui,
+     `f1db1cf7` est connu du dépôt local mais n'est pas un ancêtre de `HEAD` (MESURÉ :
+     `git merge-base --is-ancestor f1db1cf7 HEAD` rend faux, `git cat-file -t f1db1cf7`
+     rend `commit`). Si le gel est retenu, l'API de kleos-lib que le relais utilise
+     cesse aussi de bouger côté upstream, ce qui renforce le verdict R (condition 1 de
+     renversement levée) ; si le fork suit upstream au-delà, le relais hérite de la
+     licence non commerciale par sa dépendance.
   4. La liste des champs de `StoreRequest` utilisés par le relais (`content`,
      `category`, `source`, `importance`, `tags`, `session_id`, `space`,
      `parent_memory_id`, `created_at`), avec un test d'intégration jetable rejoué à
@@ -257,6 +279,8 @@ CREATE TABLE files (
   kind            TEXT NOT NULL,             -- 'main' | 'subagent'
   parent_session  TEXT,                      -- pour kind = 'subagent'
   project_dir     TEXT NOT NULL,             -- dossier <projet> sous projects/
+  space           TEXT,                      -- résolu une fois par session (4.5)
+  space_rule      TEXT,                      -- règle qui l'a produit, ou 'none'
   epoch           INTEGER NOT NULL DEFAULT 0,-- incrémenté à chaque réécriture détectée
   acked_end       INTEGER NOT NULL DEFAULT 0,-- offset d'octets acquitté par le relais
   acked_tail_sha  TEXT,                      -- sha256 des <= 4 096 octets avant acked_end
@@ -280,6 +304,7 @@ Aucune table d'envoi en attente : un segment est reconstruit depuis le fichier e
 {
   "file_key": "…", "session_id": "…", "kind": "main", "parent_session": null,
   "project_dir": "C--Users-Olivier-workspace-Kleos", "host_id": "…",
+  "space": "kleos", "space_rule": "session_file", // 4.5 : session_file | marker | git | dir | none
   "epoch": 0, "start": 1048576, "end": 1310720,
   "raw_sha256": "…",            // empreinte des octets BRUTS [start, end)
   "prev_tail_sha256": "…",      // = acked_tail_sha, chaîne le segment au précédent
@@ -578,11 +603,10 @@ suivante d'une lignée rouverte, il compare l'état final à ce qu'il a publié 
 
 | Changement | Action du relais | Fondement |
 |---|---|---|
-| Fait nouveau | `POST /memory`, `source=kleos-transcript` | F11 |
-| Fait révisé, mémoire en attente ou approuvée | `POST /memory` avec `parent_memory_id` = tête connue : nouvelle version, l'ancienne passe à `is_latest = 0`, la dédup est sautée | DÉDUIT (F12, `mod.rs:578`, `:873-890`) |
-| Fait révisé, mais la tête a changé (une autre écriture a versionné la mémoire) | Kleos refuse (`Conflict`) ; le relais publie le fait révisé comme mémoire neuve et laisse le juge trancher (`met_a_jour` ou `contredit`, 4.5) | DÉDUIT (`mod.rs:885-889`) |
-| Fait annulé, mémoire en attente | `reject_memory` | DÉDUIT (`kleos-lib/src/inbox.rs:92-132`) |
-| Fait annulé, mémoire approuvée | **Proposition soumise à l'opérateur (Q2)** : archivage par `POST /memory/{id}/archive`, seulement sur une mémoire que le relais a écrite et que personne n'a versionnée depuis | Route DÉDUITE (`routes/memory/mod.rs:62`) |
+| Fait nouveau | Passage par le juge amont (4.4, couche 1), puis `POST /memory`, `source=kleos-transcript` | F11 |
+| Fait révisé, mémoire publiée | Juge amont sur la version révisée, puis `POST /memory` avec `parent_memory_id` = tête connue : nouvelle version, l'ancienne passe à `is_latest = 0`, la dédup est sautée | DÉDUIT (F12, `mod.rs:578`, `:873-890`) |
+| Fait révisé, mais la tête a changé (une autre écriture a versionné la mémoire) | Kleos refuse (`Conflict`) ; le relais publie le fait révisé comme mémoire neuve, après le juge amont, et le juge nightly annote la relation (4.6) | DÉDUIT (`mod.rs:885-889`) |
+| Fait annulé, mémoire publiée | **Proposition soumise à l'opérateur (Q2)** : archivage par `POST /memory/{id}/archive`, réversible par `POST /memory/{id}/unarchive`, seulement sur une mémoire que le relais a écrite et que personne n'a versionnée depuis | Routes DÉDUITES (`routes/memory/mod.rs:62-63`) |
 
 Règle d'autorité : **le relais ne révise, n'annule ou n'archive que ses propres
 publications**, identifiées par sa correspondance et par `source=kleos-transcript`.
@@ -592,67 +616,125 @@ Jamais une mémoire d'agent.
 correspondance avec l'état `intention` avant l'appel, puis l'id rendu. Les mémoires
 portent le tag `fact:<lineage8>-<id local>`. Après une coupure entre l'appel et
 l'inscription, le relais cherche ses propres mémoires par ce tag avant de republier
-(SUPPOSÉ : un filtre par tag est exposé par `/list` ou `/search` ; porte du lot 5). En
-dernier recours, le correctif de dédup de 4.4 laisse la dédup absorber le renvoi
-identique d'une source en attente sur une autre ligne en attente.
-
-**Limite nommée, porte active.** Si `kleos-transcript` est en attente et que le relais
-révise une mémoire déjà approuvée, la nouvelle version naît `pending` alors que
-l'ancienne passe à `is_latest = 0` : le fait peut disparaître des vues qui filtrent sur
-`is_latest` jusqu'à l'approbation (SUPPOSÉ : non vérifié pour chaque vue ; les tiers de
-`recall` filtrent `status` et `is_superseded`, `mod.rs:1276-1358`). La fenêtre vaut au
-plus un passage du juge nightly. Volume borné par T3 : la révision d'un fait approuvé
-ne survient que dans les reprises après 8 h.
+(le filtre `tags` de la recherche existe, `search.rs:1543-1575`, DÉDUIT ; son
+exposition par `POST /search` est SUPPOSÉE, porte du lot 5). En dernier recours, un
+renvoi identique est absorbé par la dédup à l'écriture sur la mémoire déjà publiée :
+même espace, distance de Hamming inférieure à 3, rien de nouveau écrit (DÉDUIT,
+`mod.rs:586-616`).
 
 **Ce qui devient une mémoire :** un fait de l'état final de lignée, au statut `décidé`
-ou `mesuré`, ni annulé ni révisé ensuite, et absent des stores de l'agent (liste vue en
-fenêtre, puis dédup, puis juge). Un fait `proposé` ou `abandonné` reste dans le relais.
+ou `mesuré`, ni annulé ni révisé ensuite, absent des stores de l'agent (liste vue en
+fenêtre), et **accepté par le juge amont** (4.4). Un fait `proposé` ou `abandonné`, ou
+refusé par le juge amont, reste dans le relais.
 **C'est la réponse à l'inquiétude de l'opérateur :** une décision contredite trois tours
 plus tard, ou dans une reprise, ne sort pas de l'état de lignée ; et si elle est déjà
 sortie, sa révision suit.
 
-### 4.4 Statut « en attente » : la porte existe, mais sa dédup absorbe (point 1 du challenge)
+### 4.4 Protection sans porte contre les faits faux
 
-**DÉDUIT de `kleos-lib/src/memory/mod.rs:646-652` et `:777-835` :** `memory::store`
-résout un statut initial `pending` quand `KLEOS_REVIEW_GATE_ENABLED` est actif et que la
-source figure dans `KLEOS_REVIEW_GATE_SOURCES` (ou que l'importance dépasse un seuil
-optionnel). **DÉDUIT de `:1052-1059`, `:1160`, `:1276-1358`, `:2222`, `:2243` :** les
-lectures servies filtrent `status != 'pending'`. **DÉDUIT de `kleos-lib/src/inbox.rs:92-132` :**
-`approve_memory` et `reject_memory` existent. La porte est **éteinte en production**
-(T1-b).
+**Le problème que la porte réglait reste entier.** La porte de revue ne sera jamais
+activée (F13). Toute mémoire publiée par le relais est donc servie aux agents dès son
+écriture. Or l'extraction par Qwen n'est pas mesurée (4.2), et M-N5 mesure 7,7 % de
+JSON invalide avant relance (MESURÉ rapporté, étude nightly, section 8). Un fait faux, mal attribué ou périmé peut sortir.
+L'option (c) de l'ancienne carte 6ee2297f devient la seule voie, et l'objection qu'on
+lui faisait (« le relais devient seul juge avant publication ») devient le principe de
+la protection.
 
-**Le défaut (T1).** La requête de dédup (`mod.rs:586-590`) cherche les doublons parmi
-les lignes `pending`. Quand un agent stocke plus tard un fait déjà publié en attente par
-le relais, son store rend `created=false, duplicate_of=<id pending>` : aucune ligne
-servie n'est créée, et le chemin doublon ne modifie pas la ligne existante
-(`mod.rs:607-616`). L'écriture explicite de l'agent, la plus précieuse, devient
-invisible jusqu'à l'approbation de la copie de transcript ; si le juge la laisse en
-attente (`contredit`) ou tombe en panne, indéfiniment. Avec la publication à 8 h (4.3),
-le cas n'est pas seulement intra-session : n'importe quel agent qui stocke le même fait
-le lendemain y tombe.
+**Pistes évaluées.**
 
-**Lecture par la discipline de patching du dépôt.** Toutes les lectures servies
-excluent `pending` ; la dédup est l'exception. Selon
-`.claude/rules/kleos-patching-discipline.md`, l'exception est en général le bug, ce qui
-fait du correctif un candidat PR upstream légitime (DÉDUIT des call sites ci-dessus).
+| Piste | Ce qu'elle protège | Fondement | Delta upstream | Verdict |
+|---|---|---|---|---|
+| Importance plafonnée | Un fait de transcript n'est jamais poussé sans requête ; il ne sort que si une recherche le juge pertinent | F14 : tier important de `/recall` à partir de 7, statiques de `/context` à partir de 9, insights à partir de 8 | Nul | **Retenue (couche 2)**, mais elle ne retire pas un fait faux d'une recherche pertinente |
+| Source et tags distincts, filtre de lecture existant | Provenance visible dans la réponse JSON (`source`, `kleos-server/src/routes/memory/mod.rs:88`) ; listage exact des mémoires de transcript par `source_filter` | F15 | Nul pour le marquage | **Retenue (couche 3)**. Mais le seul filtre existant est positif : **exclure** les transcripts d'une lecture demanderait un champ neuf dans `SearchRequest`, `search.rs` et les routes, soit au moins trois fichiers upstream, et chaque lecteur devrait s'y abonner. Écarté |
+| Catégorie de bruit (`activity`, `growth`) | Exclue de la recherche par défaut | `search.rs:1101-1107` | Nul | **Écartée** : détournement de sens, et un fait caché partout équivaut à la porte refusée |
+| Publication seulement après le juge nightly | Le juge voit le fait avant qu'il soit servi | Le juge nightly a pour racines des mémoires déjà dans Kleos (étude nightly 4.6) : sans statut caché, un fait présent dans Kleos est déjà servi | Exigerait un statut caché, c'est-à-dire la porte | **Transformée** : le juge tourne en amont, dans le relais (couche 1) |
+| Juge qui rétrograde ou retire a posteriori par la chaîne de versions | Un fait faux déjà servi en sort au passage nightly suivant | Archivage et désarchivage par l'API (`routes/memory/mod.rs:62-63`) ; mise à jour en nouvelle version (`:59`, `kleos-lib/src/memory/mod.rs:1821-1839`) | Nul | **Retenue (couche 4)**, bornée aux mémoires de transcript |
 
-**Options de la carte 6ee2297f, et une variante :**
+**Protection retenue : cinq couches, zéro delta upstream.** Contre le fait faux, la
+couche principale est la 1 ; contre le doublon « transcript publié avant l'agent »,
+c'est la 5 (section 4.8), à la demande de l'opérateur.
 
-| Option | Effet | Coût de rebase | Verdict |
-|---|---|---|---|
-| (a) Exclure `pending` de la dédup | Le store de l'agent crée sa ligne servie ; la copie en attente devient un doublon d'une mémoire servie, rejetée par le juge (4.5). Mais un renvoi d'une source en attente n'est plus absorbé non plus, ce qui remplit la boîte de revue de copies pour toute source en attente | Chirurgical, une condition | Correct, trop large |
-| **(a') Exclure `pending` seulement quand l'écriture entrante n'est pas en attente** | Résoudre `initial_status` avant la dédup (fonction pure, déjà calculée plus bas, `mod.rs:646-652`) et ajouter `AND (status != 'pending' OR ?3 = 'pending')`. L'agent n'est plus absorbé ; une copie de transcript reste absorbée par une ligne en attente identique (renvoi) et par une mémoire servie (direction voulue, #31639) | Chirurgical, 3 à 5 lignes dans `memory::store`, aucun renommage ; candidat PR | **Recommandée** |
-| (b) Promouvoir la ligne en attente en `approved` quand une source non gardée la touche | Une seule ligne, visible tout de suite ; mais elle garde la source `kleos-transcript` et son importance plafonnée à 6, alors que le chemin doublon ne relève rien (`mod.rs:607-616`) : l'attribution et l'importance de l'agent sont perdues | Chirurgical, un peu plus de lignes | Écartée |
-| (c) Ne pas activer la porte | Zéro delta ; mais alors aucune attente n'existe dans Kleos, et le relais devient seul juge avant publication, en double du juge nightly | Nul | Repli si (a') est refusé, voir Q2 |
+1. **Juge amont dans le relais, avant toute publication.** Le juge est **Claude Haiku**,
+   et non Qwen : la confidentialité n'est plus un frein, puisque les transcripts sont
+   déjà des échanges avec des modèles cloud (décision opérateur, Kleos #31730), et un
+   juge d'une autre famille que l'extracteur ne partage pas ses biais d'extraction
+   (SUPPOSÉ, à mesurer au lot 4). Pour chaque fait candidat de l'état final de lignée,
+   le relais :
+   - récupère ses voisins par `POST /search` : même propriétaire, même espace, environ 8
+     résultats hybrides (F11 pour l'API ; taille SUPPOSÉE, calibrée au lot 4) ;
+   - joint au fait les tours sources du transcript, extraits de la vue A+ par leurs uuid ;
+   - appelle le juge avec le prompt du juge nightly, partagé par `load_prompt` (1.3),
+     plus une question de **fidélité** : le fait est-il affirmé par les tours sources,
+     sans ajout ?
 
-**Parade retenue :** (a'), patch numéroté chirurgical, proposé en PR upstream. **Tant
-qu'il n'est pas livré, la porte reste éteinte et le lot 5 ne démarre pas** ; les lots 0
-à 4 n'écrivent rien dans Kleos, donc rien n'est exposé entre-temps. **SUPPOSÉ, à
-vérifier avant le lot 5 :** que kleos-cache ne réplique pas les lignes `pending`
-(contrat `/list`, étude nightly 4.9 et Patch 67).
+   Effets :
+   - fidélité `infidèle` ou `invérifiable` : le fait n'est pas publié ;
+   - `doublon` d'une mémoire servie : non publié ;
+   - `contredit` une mémoire servie : non publié, conflit gardé dans le relais et
+     réévalué automatiquement si la mémoire contradictoire est archivée ou versionnée ;
+     le rapport quotidien du relais est informatif, aucune action humaine n'est attendue
+     (4.7) ;
+   - `distinct`, `prolonge`, `met_a_jour`, `partiel` : publié, et la relation est
+     transmise en tag pour l'annotation nightly.
 
-**Ce que la dédup ne couvre pas.** Elle ne voit que les quasi-identiques (distance de
-Hamming inférieure à 3) ; une reformulation passe et va au juge.
+   **C'est la couche qui répond au risque de fait faux**, les trois autres en bornent
+   l'effet résiduel.
+2. **Importance plafonnée à 5**, au lieu de 6 en révision 3. Le fait reste sous les trois
+   seuils de F14, et sous l'importance minimale des stores d'agent : 6 par la convention
+   `-i 6-9` des sessions, SUPPOSÉ que tous les agents la suivent. Avec F16, la dédup de
+   fond garde alors toujours la copie de l'agent face à une copie de transcript ; à
+   importance égale, elle garderait l'id le plus haut, souvent celui du transcript
+   publié après coup (DÉDUIT de F16). `is_static` n'est jamais posé.
+3. **Provenance** : `source=kleos-transcript`, tags `transcript`,
+   `turn:<uuid>` et `fact:<lineage8>-<id local>`. La provenance est dans la donnée et
+   dans la réponse JSON (F15). **Limite nommée** : un rendu qui n'affiche que la
+   catégorie, comme le bloc injecté par les hooks de session (`[decision] [local]`),
+   ne montre pas la source à l'agent qui lit (SUPPOSÉ, observé sur le rendu de
+   kleos-cache, non vérifié dans son code ; question Q2).
+4. **Juge nightly a posteriori**, avec une autorité bornée aux mémoires de transcript
+   (section 4.6).
+5. **Dédup de fond**, couche principale contre le doublon publié avant l'agent : niveau
+   déterministe existant (Patch 60) et bande grise jugée par Sonnet dans le relais
+   (section 4.8).
+
+**Ordre des écritures : dans quel cas le transcript passe avant l'agent.** La
+publication attend 8 h sans nouveau segment dans la lignée (4.3). Un store fait par
+l'agent pendant la session précède donc toujours la publication du fait de transcript
+correspondant. Le juge amont l'écarte alors en `doublon`, et s'il passe, la dédup à
+l'écriture absorbe la copie de transcript sur la mémoire de l'agent (`mod.rs:586-616`) :
+c'est le bon sens (DÉDUIT de 4.3 et du code ; l'observation du lead est juste). **Le
+mauvais ordre n'arrive que si un agent stocke le même fait plus de 8 h après le dernier
+segment de la lignée** : une autre session, ou une reprise tardive (0,73 % des sessions,
+T3).
+
+**Résiduel nommé, réécrit.** Dans ce mauvais ordre, deux cas :
+
+- **Texte quasi identique** (distance de Hamming de simhash inférieure à 3) : le store de
+  l'agent est absorbé par la ligne de transcript (`created=false`, `duplicate_of`), car
+  la dédup à l'écriture ne distingue pas les sources et son chemin doublon ne relève
+  rien (`mod.rs:586-616`, `:607-616`). Le fait reste servi, mais à l'importance 5 et
+  sous la source du transcript. **Aucune couche ne le rattrape**, puisqu'aucune seconde
+  ligne n'existe. Fréquence SUPPOSÉE faible : il faut un agent qui réécrit, plus de 8 h
+  après, un texte presque mot pour mot identique à l'extraction de Qwen. Le lot 5 la
+  mesure ; un correctif chirurgical (relever l'importance au maximum des deux dans le
+  chemin doublon) ne se rouvre que si elle n'est pas marginale.
+- **Reformulation** : deux lignes coexistent ; la couche 5 garde l'agent (4.8).
+
+**Coût des juges, SUPPOSÉ.**
+
+| Juge | Modèle | Volume par jour ouvré | Coût unitaire | Coût par jour |
+|---|---|---|---|---|
+| Juge amont, couche 1 | Haiku | 30 à 60 candidats | environ 0,0003 USD (environ 2 000 tokens d'entrée, 150 de sortie ; tarif Haiku 5.5 de 0,10 et 0,50 USD par million de tokens, vérifié sur la page tarifaire, Kleos #30268) | environ 0,01 à 0,02 USD |
+| Bande grise, couche 5 | Sonnet (4.8) | 5 à 30 paires (SUPPOSÉ, mesuré au lot 5) | environ 0,004 USD (environ 1 500 tokens d'entrée, 100 de sortie ; tarif Sonnet 5.5 de 2 et 10 USD par million de tokens, même source), hors tokens de raisonnement | moins de 0,12 USD |
+| Juge nightly, couche 4 | celui de l'étude nightly (Sonnet) | 30 mémoires publiées | 0,0151 USD par groupe (M-N4, MESURÉ rapporté) | environ 0,45 USD |
+| Juge de mesure des lots 4 et 5 | Sonnet, tirage de 40, ponctuel | | idem | environ 0,60 USD par mesure |
+
+Total courant : environ 0,5 à 0,6 USD par jour, dominé par le juge nightly, sous le
+budget D5 d'environ 3,5 USD par nuit (Kleos #30326) et dans les 100 USD mensuels d'API
+inclus à l'abonnement (#31729) : environ 18 USD par mois au plus haut (DÉDUIT des lignes
+ci-dessus). Le client LLM de
+kleos-lib est SUPPOSÉ capable d'appeler l'API Anthropic, sinon le relais ajoute ce
+client. Le volume réel sort des portes des lots 4 et 5.
 
 ### 4.5 Typage des mémoires issues des transcripts
 
@@ -661,13 +743,46 @@ la même taxonomie de catégories que les agents.**
 
 | Champ | Valeur | Raison |
 |---|---|---|
-| `source` | `kleos-transcript` (nouvelle) | Distincte de `claude-session` (agents) et de `kleos-ingest` (ancien démon) ; clé de la porte d'attente (4.4), de l'autorité de révision (4.3), du budget et des mesures par source (M-N2) |
+| `source` | `kleos-transcript` (nouvelle) | Distincte de `claude-session` (agents) et de `kleos-ingest` (ancien démon) ; clé de l'autorité de révision et d'archivage (4.3, 4.6), du filtre positif `source_filter` (F15), du budget et des mesures par source (M-N2) |
 | `category` | Ensemble des agents : `decision`, `discovery`, `state`, `issue`, `task`, `reference`, `general` | Le juge compare des mémoires de même vocabulaire. Les catégories lexicales `infrastructure` et `session-summary` disparaissent (DÉDUIT de `kleos-ingest/src/writer.rs:198`, `extractor.rs:84`) |
-| `importance` | Proposée par le modèle, **plafonnée à 6** | Un fait de transcript ne doit pas l'emporter sur le store explicite d'un agent ; le relèvement d'importance de Patch 60 n'a pas lieu dans le chemin doublon de `memory::store` (`mod.rs:607-616`), s'il existe c'est ailleurs, non relu |
+| `importance` | Proposée par le modèle, **plafonnée à 5** | Sous les seuils des tiers servis sans requête (F14) et sous les stores d'agent, pour que la dédup de fond (Patch 60, F16) garde la copie de l'agent (4.4, couche 2) |
 | `created_at` | Timestamp du tour source | Champ accepté par l'API (F11) ; l'ordre temporel des voisinages reste juste malgré un traitement différé de plusieurs heures |
 | `session_id`, `tags` | Session source ; `transcript`, projet, `turn:<uuid>`, `fact:<lineage8>-<id local>` | Provenance pour la revue, pour l'annotation du juge et pour l'idempotence (4.3) |
-| `space` | Résolu depuis `cwd` des enregistrements, table de correspondance du relais | D1 : jamais d'espace croisé ; la dédup est aussi bornée à l'espace (`mod.rs:571-572`). L'ancien écrivain n'envoie aucun espace (DÉDUIT de `kleos-ingest/src/writer.rs:100-107`) |
-| `status` | `pending` à l'écriture, une fois (a') livré | Section 4.4 |
+| `space` | Résolu **par session, côté démon poste**, selon la règle ci-dessous, et transmis dans le segment | D1 : jamais d'espace croisé ; la dédup à l'écriture (`mod.rs:571-572`) et la dédup de fond (`duplicates.rs:31-32`) sont bornées à l'espace. L'ancien écrivain n'envoie aucun espace (DÉDUIT de `kleos-ingest/src/writer.rs:100-107`) |
+| `status` | Celui par défaut de Kleos (`approved`), puisque la porte n'est jamais activée | F13 ; protection en 4.4 |
+
+**Résolution du space d'une session.** Elle se fait sur le poste, parce que seul le
+poste voit le système de fichiers de la session ; le relais sur LXC 121 ne peut pas
+remonter l'arborescence Windows (DÉDUIT de 1.1). Règle, dans l'ordre :
+
+1. **Le space exact de la session**, s'il existe : le hook de démarrage écrit le space
+   résolu dans `~/.kleos/sessions/<session_id>/space_name`
+   (`~/.claude/hooks/lib-kleos-space.sh:133-144`, DÉDUIT). C'est le même space que
+   celui des stores de l'agent dans cette session, donc le seul qui garantit que la dédup
+   compare les bonnes lignes.
+2. **Sinon, la résolution du hook appliquée au `cwd` du premier enregistrement de la
+   session** : marqueur `.kleos-space` en remontant, puis nom du dépôt git, puis nom du
+   dossier, normalisé en `[a-z0-9_-]` (`lib-kleos-space.sh:49-78` ; même règle en Rust
+   dans `kleos-cli/src/space.rs:56-85`, tenue en parité par un test, DÉDUIT des en-têtes).
+   Le démon la réimplémente sur ce modèle avec les mêmes fixtures, puisque
+   `kleos-cli` est un binaire et non une bibliothèque (SUPPOSÉ). **Le démon ne crée
+   jamais de marqueur** : il lit seulement, alors que le hook en crée un s'il manque
+   (`lib-kleos-space.sh:84-99`).
+3. Un `cd` en cours de session ne change pas le space : la session garde celui de son
+   démarrage, comme le hook.
+
+**Un `cwd` sans space.** La règle 2 rend toujours un nom (dossier en dernier recours).
+En pratique, le hook a déjà posé un marqueur dans le `cwd` au démarrage de la session
+quand il n'y avait ni marqueur ni dépôt (`lib-kleos-space.sh:90-99`) : le dernier recours
+est donc rare (DÉDUIT). Il reste deux cas à traiter :
+- **Le `cwd` est le dossier personnel ou une racine** (`C:\Users\Olivier`, `C:\`) :
+  le nom obtenu ne désigne aucun projet, et Kleos créerait un space au premier store
+  (Patch 33, `routes/memory/mod.rs:124-127`). Les faits de ces sessions sont **gardés
+  dans le relais, non publiés** en v1. Ils ne vont pas non plus en mémoire sans space :
+  l'absence de space signifie « fait transverse » pour l'opérateur (Kleos #18425), ce
+  qu'une extraction de session ne garantit pas.
+- **Session dont le `space_name` et la résolution divergent** : le `space_name` l'emporte
+  (règle 1), la divergence est consignée dans le rapport du relais.
 
 **Résumés de session : pas de mémoire en v1.** Ils restent dans le relais, comme
 matériau de travail. F7 montre ce que vaut un résumé servi comme mémoire ; un résumé de
@@ -675,29 +790,152 @@ session est épisodique et concurrence les faits au classement. Question Q3.
 
 ### 4.6 Branchement sur le juge, la supersession et la contradiction
 
-Trois barrières contre le doublon agent/transcript, de la moins chère à la plus chère :
+Quatre barrières contre le doublon agent/transcript, de la moins chère à la plus chère :
 
 1. **Dans le prompt** : les stores de l'agent vus dans la fenêtre (gardés en entier par
    A+) sont fournis au modèle comme « déjà stocké » ;
-2. **À l'écriture** : la dédup de 4.4, une fois (a') livré ;
-3. **Au juge nightly** : la mémoire de transcript en attente est une racine du
-   voisinage de l'étude nightly 4.6, avec les mêmes candidats (`similarity`, M1,
-   déduplication), le même propriétaire et le même espace.
+2. **Au juge amont** (4.4, couche 1) : un `doublon` d'une mémoire servie n'est pas
+   publié ;
+3. **À l'écriture** : la dédup de `memory::store` absorbe une copie quasi identique
+   d'une mémoire déjà servie (distance de Hamming inférieure à 3, même espace,
+   `mod.rs:586-616`, DÉDUIT) ;
+4. **Au juge nightly**, a posteriori, selon la table ci-dessous.
 
-Proposition de règle de sortie d'attente, **qui crée une autorité nouvelle et demande
+**Rôle du juge nightly sans porte : il annote toujours ; il révise ou retire seulement
+une mémoire de transcript.** Une mémoire de transcript publiée est une racine du
+voisinage de l'étude nightly 4.6, avec les mêmes candidats (`similarity`, M1,
+déduplication), le même propriétaire et le même espace. Le principe 4 de l'étude
+nightly (« un faux retrait est pire qu'un retrait manqué ») reste entier pour les
+mémoires d'agent : le juge ne les retire jamais sur la foi d'un transcript. Pour une
+mémoire de transcript, le retrait est un **archivage réversible** (`unarchive`,
+`routes/memory/mod.rs:63`), justifié parce que la mémoire est dérivée et que son
+original reste dans le relais 14 jours. Cette autorité est nouvelle et **demande
 l'accord de l'opérateur (Q2)** :
 
 | Verdict du juge pour la racine de transcript | Effet |
 |---|---|
-| `doublon` d'une mémoire servie | `reject_memory` sur la copie de transcript. Ce n'est pas un retrait au sens du principe 4 de l'étude nightly : la copie n'a jamais été servie |
-| `distinct`, `prolonge` | `approve_memory` |
-| `met_a_jour`, `partiel`, `remplace` face à une mémoire plus ancienne | `approve_memory` + annotation de relation ; le retrait de l'ancienne exige toujours le signal explicite de l'étude nightly 4.1 et 4.6, sauf si l'ancienne est une publication du même relais dans la même lignée (chaîne de versions, 4.3) |
-| `contredit` | Reste en attente, conflit ouvert dans les annotations, pour l'opérateur ou l'agent. Grâce à (a'), cela ne masque plus aucun store d'agent |
-| Juge en panne ou budget épuisé | Reste en attente : échec fermé, les mémoires des agents ne sont pas touchées |
+| `distinct`, `prolonge` | Annotation seulement |
+| `doublon` d'une mémoire d'agent | Laissé à la dédup de fond (Patch 60), qui garde la copie de l'agent grâce au plafond de 5 (F16) ; annotation |
+| `met_a_jour`, `partiel`, `remplace` face à une mémoire d'agent plus ancienne | Annotation de relation ; aucun retrait de la mémoire d'agent sans le signal explicite de l'étude nightly 4.1 et 4.6 |
+| `met_a_jour` ou `remplace` venant d'une mémoire d'agent **plus récente** que la mémoire de transcript | **Archivage** de la mémoire de transcript : l'agent a écrit après elle, son écriture explicite l'emporte |
+| `contredit` par une mémoire d'agent | **Archivage** de la mémoire de transcript, avec annotation du conflit ; la mémoire d'agent n'est pas touchée |
+| `contredit` par une autre mémoire de transcript | Annotation du conflit et **archivage de la plus ancienne** des deux, selon le `created_at` du tour source (4.5) : le fait le plus récent l'emporte, sans arbitrage humain (4.7). Limite nommée : si la plus récente est elle-même fausse, l'archivage retire le vrai ; il reste réversible |
+| Version de transcript plus ancienne que la tête d'une lignée du relais | Rien à faire : la chaîne de versions (4.3) l'a déjà retirée par `is_latest = 0` |
+| Juge en panne ou budget épuisé | Rien n'est archivé : échec fermé, les mémoires restent servies au plafond de 5, comme avant le passage |
 
-**Coût, SUPPOSÉ :** à 30 mémoires de transcript par jour ouvré, environ 0,45 USD par jour
-au coût M-N4 de 0,0151 USD par groupe, à ajouter au plafond quotidien de D5. Le volume
-réel sort de la porte du lot 4.
+**Rétrograder** une mémoire de transcript, c'est-à-dire baisser son importance par une
+nouvelle version (`POST /memory/{id}/update`, `routes/memory/mod.rs:59`), reste
+possible mais n'est pas une règle par défaut : au plafond de 5, la mémoire est déjà
+hors des tiers poussés (F14), et l'archivage est le seul geste qui la sort d'une
+recherche pertinente.
+
+**Inbox.** L'inbox d'approbation de Kleos existe et se consulte depuis l'interface web
+GUI (F13). Cette cible ne s'en sert pas, puisqu'aucune mémoire de transcript n'est en
+statut `pending`, et aucune relecture humaine n'est prévue (4.7) : tout conflit est
+tranché par une règle de cette table, et les annotations du juge en gardent la trace.
+
+**Coût, SUPPOSÉ :** au juge nightly, à 30 mémoires de transcript publiées par jour ouvré,
+environ 0,45 USD par jour au coût M-N4, en plus du juge amont (4.4). Le volume réel sort
+de la porte du lot 4.
+
+### 4.7 Autonomie : ce qui bloque la mise en service, ce qui ne la bloque pas
+
+**Contrainte opérateur (2026-10-21) : aucune relecture humaine des mémoires n'est
+possible.** Toute la chaîne doit trancher seule ; un rapport peut informer, il ne doit
+jamais attendre une décision. Les règles de 4.4 et 4.6 sont écrites dans ce sens.
+
+| Niveau | Contenu | Autonome | Bloque la mise en service |
+|---|---|---|---|
+| **(a) Minimum pour publier sans porte** | Couche 1, juge amont du relais (fidélité et voisinage, 4.4) ; couche 2, importance au plus 5 ; couche 3, provenance par source et tags ; révision et archivage par le relais de ses propres publications dans la même lignée (4.3) | Oui : aucun verdict n'attend un humain, et un juge en panne bloque la publication sans rien exposer | **Oui.** Sans la couche 1, un fait faux de Qwen est servi sans aucun contrôle ; les couches 2 et 3 sont des réglages de publication, sans coût de développement propre |
+| **(a') Dédup de fond, niveau déterministe** | Auto-linker et dédup du Patch 60 à 0,9, déjà en place (4.8) | Oui | **Oui, mais déjà présente** : la porte se limite à vérifier son activation en production (lot 0) |
+| **(b0) Dédup de fond, bande grise** | File `to_dedup` du relais et jugement Sonnet entre 0,80 et 0,90 (4.8) | Oui | **Non** : sans elle, une reformulation reste servie en double, la copie de transcript au plafond de 5 |
+| **(b) Nettoyage autonome a posteriori, mémoires de transcript** | Couche 4, juge nightly avec archivage réversible des mémoires de transcript contredites ou remplacées (4.6) | Oui | **Non.** Elle dépend de l'étape 2 de l'étude nightly (4.10) ; sans elle, un fait faux qui a passé la couche 1 reste servi au plafond de 5, hors des tiers poussés (F14). C'est un risque borné, pas une exposition ouverte |
+| **(b') Nettoyage autonome des mémoires d'agents existantes** | Repérer et sortir les mémoires inutiles déjà présentes dans Kleos, que l'opérateur constate | À concevoir | **Non.** Hors de cette étude : c'est le terrain du juge de voisinage de l'étude nightly, dont le principe 4 interdit aujourd'hui tout retrait sans signal explicite. Ce que cette étude peut lui prêter : l'archivage **réversible** comme geste autonome, qui réduit le coût d'un faux retrait ; la question de fidélité ne s'applique pas, une mémoire d'agent n'ayant pas de source à relire. Assouplir le principe 4 pour les agents est une décision à prendre dans l'étude nightly, pas ici |
+
+**Mesures sans relecture humaine.** Les portes des lots 4 et 5 qui demandaient un
+étiquetage par l'opérateur passent à un juge indépendant aveugle : un autre modèle que
+le juge amont, qui ne voit pas son verdict (section 8). L'opérateur peut ajouter un
+échantillon s'il le souhaite ; aucune porte n'en dépend. **Limite nommée :** deux
+modèles peuvent partager le même biais ; le juge indépendant mesure l'accord, pas la
+vérité, et la porte de 5 % de faits faux est une borne sur cet accord. Le juge de mesure
+est Sonnet, d'une autre famille que l'extracteur (Qwen) et d'un autre modèle que le juge
+amont (Haiku). La bande grise est elle aussi jugée par Sonnet (4.8), mais sa porte du
+lot 5 repose sur des fixtures, pas sur le juge de mesure : l'indépendance tient.
+
+### 4.8 Dédup de fond : couche principale contre le doublon publié avant l'agent
+
+**Ce qui existe déjà, et qui couvre le niveau déterministe sans rien écrire.**
+
+| Mécanisme | Quand | Seuil et règle | Fondement |
+|---|---|---|---|
+| Dédup à l'écriture | À chaque `POST /memory` | Simhash, distance de Hamming inférieure à 3, même propriétaire et même espace ; la nouvelle écriture est absorbée par la ligne existante | DÉDUIT (`kleos-lib/src/memory/mod.rs:563-616`) |
+| Auto-linker | À chaque tick du dreamer, par lot de 50 mémoires encore sans lien | Plus proches voisins par ANN, cosinus au moins 0,55, au plus 6 liens `similarity` bidirectionnels par mémoire | DÉDUIT (`kleos-lib/src/intelligence/linker.rs:14-47`, `kleos-config/src/config.rs:162-172`) |
+| Dédup de fond (Patch 60) | Juste après l'auto-linker, dans le même tick | Paires de liens `similarity` à au moins **0,9**, au plus 500 paires par tick ; deux mémoires servies, `is_latest`, même propriétaire, **même espace** (filtre du Patch 33) ; garde l'importance la plus haute, puis l'id le plus haut ; l'autre passe à `is_superseded = 1` avec un lien `supersedes` | DÉDUIT (`kleos-lib/src/intelligence/scheduler.rs:235-250`, `duplicates.rs:10-131`) |
+| Cadence du dreamer | Un tick toutes les 300 s, seulement si le serveur est resté 60 s sans requête | | DÉDUIT (`config.rs:147-160`, `kleos-server/src/dreamer.rs:193-215`, `:284-289`) |
+| Consolidation | Même pipeline, après la dédup | Cosinus au moins 0,85, **désactivée par défaut** | DÉDUIT (`scheduler.rs:252-264`, `config.rs:902`) ; valeur en production SUPPOSÉE |
+
+**Lecture pour le cas transcript contre agent.** Une mémoire d'agent stockée après une
+mémoire de transcript est liée à ses voisins au premier tick qui la traite ; si la
+mémoire de transcript est parmi eux à au moins 0,9, la dédup de fond garde l'agent,
+puisque le plafond de 5 la place sous toute mémoire d'agent (4.4, couche 2). **Le niveau
+déterministe demandé par l'opérateur existe donc déjà**, avec une cadence de quelques
+minutes plutôt que 24 h, et sans fenêtre de temps : l'ANN compare à tout l'espace, ce qui
+couvre largement une fenêtre de 24 h ou plus (DÉDUIT). Il retire par supersession et non
+par archivage, avec le même effet sur les lectures servies (filtres `is_superseded = 0`,
+`mod.rs:1276-1358`).
+
+**Ce qu'il manque pour la bande grise.** Rien n'agit sous 0,9 : une paire à 0,85 reste
+servie en double. Les limites nommées du niveau existant :
+- au plus 6 voisins par mémoire : dans un voisinage dense, la paire peut ne jamais être
+  liée (DÉDUIT de `linker.rs:28`) ;
+- l'auto-linker ne lie qu'une fois, à l'arrivée de la mémoire ; une mémoire d'agent
+  arrivée après est liée de son côté, puisque le lien est bidirectionnel, donc la paire
+  est vue (DÉDUIT de `linker.rs:28-31`) ;
+- son activation en production est SUPPOSÉE (défaut `true`, `config.rs:164-166`), à
+  vérifier au lot 0.
+
+**Bande grise proposée, dans le relais, zéro delta.**
+1. **Détection.** Chaque nuit, pour chaque mémoire de transcript publiée depuis moins de
+   14 jours, le relais lit ses liens par `GET /links/{id}` (`routes/memory/mod.rs:56`).
+   Toute voisine servie dans la bande **[0,80 ; 0,90[** entre dans une file `to_dedup`
+   (bornes SUPPOSÉES, calibrées au lot 5 sur la distribution réelle des similarités).
+   SUPPOSÉ : la réponse de `/links` porte la similarité et le type de lien.
+2. **Jugement.** Sonnet reçoit les deux contenus et rend `doublon`, `distinct` ou
+   `incertain`. Sonnet plutôt que Haiku (décision opérateur du 2026-10-22) : ce juge
+   retire des mémoires servies, et Kleos #30268 a mesuré Haiku à 1 à 3 faux retraits
+   sur 10 contrôles contre 0 pour Sonnet medium, pour un coût environ 8 fois plus élevé
+   sur le même lot (0,935 contre 0,124 USD, MESURÉ rapporté) ; au volume de la bande
+   grise, l'écart reste sous 0,12 USD par jour.
+3. **Effet**, borné aux mémoires de transcript :
+   - `doublon` d'une mémoire d'agent : la mémoire de transcript est archivée,
+     réversiblement (`routes/memory/mod.rs:62-63`) ;
+   - `doublon` entre deux mémoires de transcript : la plus ancienne est archivée ;
+   - `distinct` : la paire est close et n'est plus reposée, tant qu'aucune des deux
+     n'a de nouvelle version ;
+   - `incertain` : la paire reste servie, close ; la mesure du lot 5 dit si un
+     second avis d'un autre modèle (Opus, ou GPT par `codex exec` sur l'abonnement
+     OpenAI) vaut son coût.
+
+**Où ranger `to_dedup`.**
+
+| Emplacement | Delta | Verdict |
+|---|---|---|
+| Tag sur la mémoire (`PUT /memory/{id}/tags`, `routes/memory/mod.rs:60`) | Nul | **Écarté** : écrit sur des lignes servies, y compris des mémoires d'agent, visible de tous les lecteurs et de kleos-cache, et sans place pour le verdict ni la similarité |
+| **Table du relais** `dedup_queue(memory_id, neighbour_id, similarity, found_at, verdict, judged_at, versions)` | Nul | **Retenue** : le relais ne file que des paires dont un membre est à lui, et garde la trace des verdicts |
+| Table overlay VOCSAP et passe dans kleos-server | Additif pour la table (Patch 41), plus un branchement dans le dreamer, fichier classé « ELEVE » (1.3, E9) | Réservé au cas agent contre agent, s'il est retenu par l'étude nightly |
+
+**Agent contre agent.** Le niveau déterministe s'applique déjà à toutes les sources : la
+dédup de fond ne regarde pas la source (`duplicates.rs:17-35`, DÉDUIT). La bande grise
+entre deux mémoires d'agents, que l'opérateur constate, demande de retirer des mémoires
+d'agent : c'est le terrain du juge de voisinage de l'étude nightly et de son principe 4
+(4.7, niveau b'). Ce que la cible peut fournir sans autorité nouvelle : le relais peut
+**mesurer** la bande grise agent contre agent, en lecture seule, et donner à l'étude
+nightly le volume réel avant toute décision. Non bloquant.
+
+**Mise en service.** Le niveau déterministe est **bloquant mais déjà présent** : la
+porte est de vérifier en production que l'auto-linker et la dédup tournent (lot 0). La
+bande grise est **non bloquante** : sans elle, une reformulation entre 0,80 et 0,90
+reste servie en double, au plafond de 5 pour la copie de transcript.
 
 ---
 
@@ -742,7 +980,11 @@ des mémoires d'agent plus récentes au juge pour un gain non mesuré, et coûte
 | Reprise après la stabilisation (0,73 % des sessions, T3) | Lignée rouverte, état hérité de l'instantané, révision des faits publiés par chaîne de versions (4.3) | Aucune ; fenêtre de masquage si la porte est active (limite nommée en 4.3) |
 | Tête de chaîne déplacée par une autre écriture | `Conflict` ; publication en mémoire neuve, juge | Aucune ; un doublon possible, rejeté ou annoté par le juge |
 | Vraie branche (source et copie continuent) | Deux branches depuis le même instantané ; seconde révision en `Conflict`, voir ligne précédente | Aucune ; jamais observée (T3-a) |
-| Store d'agent identique à une copie en attente | Avant (a') : absorbé (T1), d'où la porte éteinte ; après (a') : ligne servie créée, copie rejetée par le juge | Aucune une fois (a') livré |
+| Fait faux, infidèle ou contredit en sortie de Qwen | Refusé par le juge amont, gardé dans le relais (4.4, couche 1) ; s'il passe, servi au plafond de 5, hors des tiers poussés, puis archivé par le juge nightly s'il est contredit par une mémoire d'agent (4.6) | **Exposition résiduelle** : servi aux recherches pertinentes jusqu'au passage nightly suivant |
+| Store d'agent plus de 8 h après la lignée, texte quasi identique à une publication de transcript | Absorbé par la ligne de transcript (`created=false`) ; le fait reste servi, avec l'importance 5 et la source du transcript | Aucune perte ; sous-classement nommé en 4.4, fréquence mesurée au lot 5 |
+| Store d'agent plus de 8 h après la lignée, reformulation | Deux lignes ; à au moins 0,9 la dédup de fond garde l'agent ; entre 0,80 et 0,90, la bande grise du relais archive la copie de transcript (4.8) | Aucune ; doublon servi jusqu'au tick ou à la nuit suivante |
+| Session sans space exploitable (`cwd` personnel ou racine) | Faits gardés dans le relais, non publiés (4.5) | Faits non publiés, consignés |
+| Juge amont en panne ou budget épuisé | Aucune publication ; candidats gardés dans le relais jusqu'au retour du juge | Aucune ; retard |
 | Secret non reconnu par la rédaction | Stocké chiffré au relais, au plus 14 jours ; présenté au modèle seulement s'il tombe dans la vue A+ | **Exposition résiduelle, limite nommée (1.4)** |
 | Fichier réécrit ou tronqué | Détection 2.5, nouvelle époque, renvoi complet ; uuid connus ignorés | Aucune |
 | `/compact` | Même fichier, ajout simple ; résumé de compaction retiré, marqueur gardé | Aucune |
@@ -779,7 +1021,8 @@ Cartes (recommandations, non appliquées par cette étude) :
 - **f18dc3c4 : à recentrer** sur la cible (lots de la section 8). Le verrou « X-API-Key
   non lu par le serveur » reste un bug upstream réel de kleos-ingest, à garder comme
   candidat PR, mais ne bloque plus la cible.
-- **6ee2297f : trancher en (a')** (4.4) ; prérequis du lot 5.
+- **6ee2297f : archivée en wontfix** le 2026-10-21, la porte n'étant jamais activée
+  (F13) ; la cible ne dépend plus d'aucun correctif de la dédup.
 - **3f45e0f8** et **19671bc8** : livrés, sans suite dans la cible.
 
 ---
@@ -788,13 +1031,13 @@ Cartes (recommandations, non appliquées par cette étude) :
 
 | Lot | Contenu | Porte mesurable |
 |---|---|---|
-| **F. Gel avant tout code** (verdict 1.3) | (1) contrat HTTP démon vers relais, sections 2.3 et 2.4, versionné dans le dépôt du relais ; (2) correctif (a') de la dédup (4.4), patch numéroté et PR upstream ; (3) rev git épinglé de kleos-lib sur le fork VOCSAP et règle de bump écrite (à chaque merge upstream du fork, après un build vert) ; (4) liste des champs de `StoreRequest` et des quatre fonctions de kleos-lib utilisés, avec un test d'intégration jetable | (1) schéma JSON du segment et table des réponses figés, relus par le lead ; (2) test d'intégration : un store `claude-session` identique à une ligne en attente rend `created=true`, et un renvoi en attente sur une ligne en attente reste absorbé ; (3) le relais compile contre le rev épinglé, hors des `members` du `Cargo.toml` racine (`git diff Cargo.toml` vide) ; (4) le test jetable passe sur le rev épinglé |
-| **0. Mesures opérateur** (F9 : geste opérateur) | (a) second passage ajout seul : sha256 du préfixe `[0, taille_T0)` à T0 puis T0 + 24 h sur tous les fichiers ; (b) taille A+ et taille B sur les 7 Go ; (c) part des enregistrements gardés sans uuid, par type ; (d) présence du rapport de sous-agent dans le `tool_result` parent, 20 sessions ; (e) lignes partielles observées en fin de fichier ; (f) rappel de la rédaction : nombre de secrets connus de l'opérateur (inventaire `cred list`, noms seulement) retrouvés en clair après rédaction, sur 14 jours ; (g) les deux points non vérifiés par le consultant : `GET /api/ps` sur l'Ollama 192.168.10.50, et chiffrement de `kleos.db` en production | (a) 0 préfixe modifié hors `/compact` documenté, sinon la réécriture (2.5) devient le chemin nominal et passe en tête du lot 2 ; (b) A+ au plus 3 % du brut ; (c) chiffre consigné ; (d) au moins 18 sur 20, sinon option `subagent` de 3.4 ; (e) chiffre consigné ; (f) 0 valeur du coffre retrouvée en clair ; (g) `/api/ps` rend la liste des modèles chargés, sinon la garde de 4.1 passe à un repli (fenêtre horaire fixe) ; état de chiffrement de `kleos.db` consigné, pour fixer E7 |
+| **F. Gel avant tout code** (verdict 1.3) | (1) contrat HTTP démon vers relais, sections 2.3 et 2.4, versionné dans le dépôt du relais ; (2) contrat du juge amont : prompt partagé, question de fidélité, schéma de verdict et effets (4.4, couche 1) ; (3) rev git épinglé de kleos-lib sur le fork VOCSAP et règle de bump écrite (à chaque merge upstream du fork, après un build vert) ; (4) liste des champs de `StoreRequest` et des quatre fonctions de kleos-lib utilisés, avec un test d'intégration jetable | (1) schéma JSON du segment et table des réponses figés, relus par le lead ; (2) schéma de verdict figé et fixtures écrites : un fait inventé, un fait déformé, un doublon d'agent, une contradiction d'agent, un fait fidèle et distinct ; (3) le relais compile contre le rev épinglé, hors des `members` du `Cargo.toml` racine (`git diff Cargo.toml` vide) ; (4) le test jetable passe sur le rev épinglé |
+| **0. Mesures opérateur** (F9 : geste opérateur) | (a) second passage ajout seul : sha256 du préfixe `[0, taille_T0)` à T0 puis T0 + 24 h sur tous les fichiers ; (b) taille A+ et taille B sur les 7 Go ; (c) part des enregistrements gardés sans uuid, par type ; (d) présence du rapport de sous-agent dans le `tool_result` parent, 20 sessions ; (e) lignes partielles observées en fin de fichier ; (f) rappel de la rédaction : nombre de secrets connus de l'opérateur (inventaire `cred list`, noms seulement) retrouvés en clair après rédaction, sur 14 jours ; (g) les deux points non vérifiés par le consultant : `GET /api/ps` sur l'Ollama 192.168.10.50, et chiffrement de `kleos.db` en production ; (h) activation en production de l'auto-linker, de la dédup de fond et de la consolidation (`KLEOS_AUTO_LINK_ENABLED`, `consolidation_enabled`), et distribution des similarités des liens `similarity` par paires de sources | (a) 0 préfixe modifié hors `/compact` documenté, sinon la réécriture (2.5) devient le chemin nominal et passe en tête du lot 2 ; (b) A+ au plus 3 % du brut ; (c) chiffre consigné ; (d) au moins 18 sur 20, sinon option `subagent` de 3.4 ; (e) chiffre consigné ; (f) 0 valeur du coffre retrouvée en clair ; (g) `/api/ps` rend la liste des modèles chargés, sinon la garde de 4.1 passe à un repli (fenêtre horaire fixe) ; état de chiffrement de `kleos.db` consigné, pour fixer E7 ; (h) le rapport du dreamer montre des ticks `auto_link` et `deduplicate` réussis sur 24 h, sinon le niveau déterministe de 4.8 manque et la mise en service attend ; distribution consignée pour borner la bande grise |
 | **1. Contrat de purge et rédaction** | Spécification de la purge B, de la rédaction et de `wire_purge_version` 1 côté démon ; spécification de la vue A+ et de `model_view_version` 1 côté serveur ; fixtures synthétiques (injections du harnais, `<channel>`, `send_message`, stores Kleos, compaction, jetons de chaque format listé en 1.4) | Tests de fixtures : 100 % des motifs d'injection listés retirés de la vue A+, 100 % du texte user tapé conservé, 100 % des jetons de fixture rédigés, sortie identique au fichier de référence |
 | **2. Réception seule** | Endpoints 2.4, jeton par poste, base ouverte par `connect_encrypted` (feature `sqlcipher` de kleos-lib), `uuid_index`, `lineage`, curseur ; aucun traitement | Banc : copie de 50 transcripts, démon tué 20 fois au hasard puis relancé, réception redémarrée 5 fois ; contenu identique octet pour octet à un passage unique ; 0 enregistrement dupliqué ; 1 réécriture et 1 fork injectés traités selon 2.5 et 2.6 ; une requête sans jeton reçoit `401` ; la base est illisible sans la clé |
 | **3. Démon poste** | Scan par stat, `notify`, rédaction, tâche planifiée à l'ouverture de session, sans console, jeton par `cred exec` | Scan stat de 4 751 fichiers en moins de 2 s ; régime permanent sous 1 % CPU sur 1 h ; le banc du lot 2 passe avec le vrai démon |
-| **4. Traitement en ombre** | Fenêtrage, map, état de lignée et instantanés, stabilisation, `think: false` vérifié ; écriture dans une table du relais seulement, aucune écriture Kleos | Sur le corpus de calibration (section 5), étiquetage opérateur d'un tirage de 40 faits publiables : au moins 60 % utiles (contre environ 10 % aujourd'hui, F7) ; JSON valide après relance au moins 99 % ; 0 réponse acceptée avec `done_reason = length` ; une journée de flux traitée en moins de 2 h d'Ollama, mesurée en conditions réelles de partage ; au moins 95 % des faits annulés ou révisés dans la lignée absents de l'état final ; sur les sessions du corpus reprises après plus de 45 min, au moins 95 % des révisions faites dans la reprise appliquées à l'état hérité |
-| **5. Publication en attente et juge** | Prérequis : correctif (a') livré et déployé (lot F, 4.4). `source=kleos-transcript`, porte d'attente, règle 4.6, révision par chaîne de versions (4.3). Dépend de l'étape 2 de l'étude nightly 4.10 | Second passage : 0 nouvelle mémoire ; 0 mémoire de transcript renvoyée par `/recall` ou `/list` avant approbation ; un store `claude-session` identique à une ligne en attente rend `created=true` (inverse de T1) ; sur une fixture où l'agent a stocké X et le transcript contient X, au moins 90 % des copies rejetées ou absorbées ; une lignée rouverte après publication produit une version 2 et aucune seconde tête ; une coupure simulée entre l'appel et l'inscription ne produit aucun doublon |
+| **4. Traitement en ombre** | Fenêtrage, map, état de lignée et instantanés, stabilisation, `think: false` vérifié ; écriture dans une table du relais seulement, aucune écriture Kleos | Sur le corpus de calibration (section 5), jugement aveugle d'un tirage de 40 faits publiables par un juge indépendant (autre modèle que le juge amont, sans voir son verdict ; un échantillon opérateur reste facultatif, 4.7) : au moins 60 % utiles (contre environ 10 % aujourd'hui, F7) ; JSON valide après relance au moins 99 % ; 0 réponse acceptée avec `done_reason = length` ; une journée de flux traitée en moins de 2 h d'Ollama, mesurée en conditions réelles de partage ; au moins 95 % des faits annulés ou révisés dans la lignée absents de l'état final ; sur les sessions du corpus reprises après plus de 45 min, au moins 95 % des révisions faites dans la reprise appliquées à l'état hérité |
+| **5. Juge amont, publication et juge nightly** | Juge amont (4.4, couche 1), `source=kleos-transcript`, importance au plus 5, révision par chaîne de versions (4.3), règle d'archivage 4.6. Aucune écriture en `pending`. Dépend de l'étape 2 de l'étude nightly 4.10 pour la couche 4 | Space : 100 % des sessions de fixture reçoivent le space de leur fichier `space_name`, ou celui de la règle 2 du hook en son absence, et 0 publication pour un `cwd` personnel ou racine (4.5) ; bande grise : bornes recalées sur la distribution du lot 0 (h), au moins 90 % des doublons de fixture entre 0,80 et 0,90 archivés côté transcript et 0 mémoire d'agent archivée ; fixtures du lot F : 100 % des faits inventés ou déformés non publiés, 100 % des faits fidèles et distincts publiés ; sur le corpus de calibration, au plus 5 % de faits publiés jugés faux par le juge indépendant aveugle sur un tirage de 40 ; second passage : 0 nouvelle mémoire ; 0 mémoire de transcript dans le tier important de `/recall` ni dans les statiques de `/context` ; sur une fixture où l'agent a stocké X et le transcript contient X, au moins 90 % des copies non publiées ou absorbées ; sur une fixture où un agent contredit après coup une mémoire de transcript, elle est archivée au passage nightly suivant et la mémoire d'agent est intacte ; une lignée rouverte produit une version 2 et aucune seconde tête ; une coupure simulée entre l'appel et l'inscription ne produit aucun doublon ; fréquence du sous-classement de 4.4 consignée |
 | **6. Rétention et rattrapage borné** | Purge à 14 jours, index et correspondance conservés, rattrapage de 14 jours | Après purge, `claude --resume` d'une session purgée : 0 réextraction ; volume disque du relais sous 1,5 Go |
 
 ---
@@ -807,13 +1050,22 @@ petit mais figé au démon. Vue du modèle : **A+, recommandé**, environ 1 à 2
 par jour ; B coûterait 4 à 8 h (3.2). Raison : le calcul serveur décide la vue, la
 réversibilité décide le stockage.
 
-**Q2. Sortie d'attente et autorité du relais.** (a) Revue manuelle dans la boîte de
-revue : sûr, mais quelques dizaines par jour ne seront pas relues ; (b) **le juge
-nightly approuve ou rejette selon 4.6, et le relais archive ses propres publications
-annulées dans la même lignée (4.3), recommandé** : deux autorités nouvelles, bornées à
-ce que le relais a écrit ; (c) pas de porte (option (c) de 4.4) : servables tout de
-suite, le relais seul vérifie le voisinage par l'API avant publication, en double du
-juge.
+**Q2. Autorité d'archivage sur les mémoires de transcript (sans porte).**
+(a) **Recommandé** : le juge nightly archive une mémoire de transcript contredite ou
+remplacée par une mémoire d'agent plus récente (4.6), et le relais archive ses propres
+publications annulées dans la même lignée (4.3). Deux autorités nouvelles, bornées à
+`source=kleos-transcript`, réversibles par `unarchive`, sans aucun retrait de mémoire
+d'agent.
+(b) Annotation seulement : principe 4 appliqué aussi aux transcripts ; comme aucune
+relecture humaine n'est possible (4.7), un fait faux qui a passé le juge amont reste
+servi au plafond de 5 indéfiniment.
+(c) Archivage sans juge, dès qu'une mémoire d'agent du même voisinage est plus récente :
+moins cher, mais retire des faits distincts.
+Sous-question liée : faut-il rendre la provenance visible dans le contenu lui-même (par
+exemple un suffixe court), pour les rendus qui n'affichent que la catégorie (4.4,
+couche 3) ? Le coût est un léger écart de simhash et d'embedding face à un store
+d'agent identique ; recommandation : non en v1, à revoir si le lot 5 montre des agents
+qui citent des mémoires de transcript comme des faits établis.
 
 **Q3. Résumés de session.** (a) **Restent dans le relais, recommandé** ; (b) une mémoire
 `state` par session, au risque de concurrencer les faits au classement (F7) ; (c) un
@@ -827,9 +1079,13 @@ un afflux d'anciens faits au juge, pour un gain non mesuré.
 R : relais séparé dans un dépôt séparé, dépendant de kleos-lib par un rev git épinglé
 sur le fork VOCSAP, hors des `members` du `Cargo.toml` racine. **Validé par l'opérateur
 le 2026-10-21**, ainsi que la règle de bump : à chaque merge upstream du fork, après un
-build vert, avec le test d'intégration jetable de 1.3. Correctif de dédup retenu par
-l'opérateur : variante (a') de 4.4 (carte 6ee2297f). S et la réécriture sur place de
-kleos-ingest sont écartés.
+build vert, avec le test d'intégration jetable de 1.3. **Condition ouverte : licence.**
+Si l'opérateur gèle le fork sur la dernière version ELv2 (upstream passé à PolyForm
+Noncommercial à partir de `f1db1cf7`, Kleos #31725), le rev épinglé reste avant ce
+commit et la règle de bump ne suit plus upstream (1.3, point 3 du gel) ; non tranché
+ici. La variante (a') de la dédup,
+validée un temps, est abandonnée avec la porte (F13, carte 6ee2297f en wontfix). S et
+la réécriture sur place de kleos-ingest sont écartés.
 
 ---
 
@@ -838,12 +1094,23 @@ kleos-ingest sont écartés.
 - Étude nightly : `docs/studies/2026-10-20-kleos-nightly-pipeline.md`, sections 3, 4.1 à
   4.10, 6, 8 et 10.
 - Kleos : #31653, #31639, #31658, #31675, #31676, #31682, #31699, #31706, #31707,
-  #31716, #30938.
+  #31716, #31720, #31722, #31725, #31729, #31730, #30326, #18425, #30938.
+- Dédup de fond et space : `kleos-lib/src/intelligence/duplicates.rs` ;
+  `kleos-lib/src/intelligence/scheduler.rs:1-60`, `:200-270`, `:330-370` ;
+  `kleos-lib/src/intelligence/linker.rs:1-60` ; `kleos-server/src/dreamer.rs:170-230`,
+  `:265-300` ; `kleos-config/src/config.rs:146-175`, `:735-750`, `:900-912` ;
+  `kleos-cli/src/space.rs` (signature) ; `~/.claude/hooks/lib-kleos-space.sh` ;
+  `~/.claude/hooks/session-start-kleos.sh:71-86`.
 - Code lu : `kleos-ingest/src/{tailer,writer,ledger}.rs` ;
   `kleos-lib/src/conversations.rs` ; `kleos-server/src/routes/conversations/mod.rs` ;
   `kleos-server/src/routes/memory/mod.rs:60-147` ;
   `kleos-lib/src/memory/mod.rs:560-660`, `:775-836`, `:850-895` ;
-  `kleos-lib/src/memory/types.rs:300-342` ; `kleos-lib/src/inbox.rs` ;
+  `kleos-lib/src/memory/types.rs:300-342` ; `kleos-lib/src/inbox.rs` (inbox, cliente :
+  interface web GUI) ; `kleos-lib/src/memory/search.rs:1090-1125`, `:1535-1575` ;
+  `kleos-lib/src/memory/mod.rs:1255-1360` ; `kleos-server/src/routes/memory/mod.rs:40-63`,
+  `:681`, `:760-775` ; `kleos-lib/src/context/mod.rs:590-603` ;
+  `kleos-lib/src/context/deps.rs:117` ; `docs/dev-notes/local-patches.md:6594-6621`
+  (Patch 60) ;
   `kleos-lib/src/prompts.rs:255-289` ; `kleos-lib/src/llm/mod.rs:40-50` ;
   `kleos-lib/src/llm/prompts.rs:95-100` ; `kleos-lib/src/db/mod.rs:55-66` ;
   `kleos-lib/src/lib.rs` (modules publics) ; `kleos-lib/Cargo.toml:30` ;
