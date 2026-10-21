@@ -17,6 +17,16 @@ use crate::tailer;
 use crate::writer::KleosWriter;
 
 pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: bool) {
+    run_with_completion(config, ledger, writer, dry_run, None).await;
+}
+
+async fn run_with_completion(
+    config: Config,
+    ledger: Ledger,
+    writer: KleosWriter,
+    dry_run: bool,
+    completed: Option<mpsc::UnboundedSender<()>>,
+) {
     let config = Arc::new(config);
     let ledger = Arc::new(ledger);
     let writer = Arc::new(Mutex::new(writer));
@@ -116,9 +126,13 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                     let config = Arc::clone(&config);
                     let ledger = Arc::clone(&ledger);
                     let writer = Arc::clone(&writer);
+                    let completed = completed.clone();
                     let path_clone = path.clone();
                     let handle = tokio::spawn(async move {
                         tailer::tail_file(path_clone, config, ledger, writer, dry_run).await;
+                        if let Some(completed) = completed {
+                            let _ = completed.send(());
+                        }
                     });
                     active_tails.insert(path, TailSlot { handle, pending: false });
                 } else {
@@ -151,11 +165,13 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                     }
                 }
                 for (path, project, session_id) in to_summarize {
-                    let path_str = path.to_string_lossy().to_string();
-                    summarizer::summarize_session(
-                        &session_id, &project, &path, &ledger, Arc::clone(&writer)
-                    ).await;
-                    ledger.mark_summarized(&path_str);
+                    if !dry_run {
+                        let path_str = path.to_string_lossy().to_string();
+                        summarizer::summarize_session(
+                            &session_id, &project, &path, &ledger, Arc::clone(&writer)
+                        ).await;
+                        ledger.mark_summarized(&path_str);
+                    }
                     last_activity.remove(&path);
                 }
             }
@@ -175,9 +191,13 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                     let config = Arc::clone(&config);
                     let ledger = Arc::clone(&ledger);
                     let writer = Arc::clone(&writer);
+                    let completed = completed.clone();
                     let path_clone = path.clone();
                     let handle = tokio::spawn(async move {
                         tailer::tail_file(path_clone, config, ledger, writer, dry_run).await;
+                        if let Some(completed) = completed {
+                            let _ = completed.send(());
+                        }
                     });
                     active_tails.insert(path, TailSlot { handle, pending: false });
                 }
@@ -197,5 +217,126 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: String) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    async fn serve_one(listener: TcpListener, requests: Arc<AtomicUsize>, response_body: &str) {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        requests.fetch_add(1, Ordering::SeqCst);
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body,
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dry_run_leaves_absent_ledger_and_skips_summary_requests() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "kleos-ingest-watcher-dry-run-{}",
+            std::process::id()
+        ));
+        let watch_dir = temp_dir.join("transcripts");
+        let ledger_path = temp_dir.join("ledger.db");
+        std::fs::create_dir_all(&watch_dir).unwrap();
+
+        let ollama_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ollama_url = format!("http://{}", ollama_listener.local_addr().unwrap());
+        let kleos_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let kleos_url = format!("http://{}", kleos_listener.local_addr().unwrap());
+        let ollama_requests = Arc::new(AtomicUsize::new(0));
+        let kleos_requests = Arc::new(AtomicUsize::new(0));
+        let ollama_task = tokio::spawn(serve_one(
+            ollama_listener,
+            Arc::clone(&ollama_requests),
+            r#"{"choices":[{"message":{"content":"summary"}}]}"#,
+        ));
+        let kleos_task = tokio::spawn(serve_one(kleos_listener, Arc::clone(&kleos_requests), "{}"));
+
+        let config = Config {
+            watch_dir: watch_dir.clone(),
+            kleos_url,
+            api_key: None,
+            summary_idle_secs: 0,
+            novelty_drop_threshold: 0.92,
+            ledger_path: ledger_path.clone(),
+            host: "test-host".to_string(),
+        };
+        let ledger = crate::open_ledger(&config, true);
+        let writer = KleosWriter::new(&config);
+        let _ollama_url = EnvVarGuard::set("KLEOS_INGEST_OLLAMA_URL", ollama_url);
+        let (completed_tx, mut completed_rx) = mpsc::unbounded_channel();
+        let watcher_task = tokio::spawn(run_with_completion(
+            config,
+            ledger,
+            writer,
+            true,
+            Some(completed_tx),
+        ));
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let session_path = watch_dir
+            .join("project")
+            .join("sessions")
+            .join("session.jsonl");
+        std::fs::create_dir_all(session_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &session_path,
+            "{\"type\":\"user\",\"message\":{\"content\":\"Please summarize this completed development session, including its implementation details, test evidence, and any decisions that were recorded for follow-up.\"}}\n",
+        )
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), completed_rx.recv())
+            .await
+            .expect("watcher must process the transcript event")
+            .expect("watcher completion channel must stay open");
+        tokio::time::sleep(Duration::from_secs(31)).await;
+        watcher_task.abort();
+        let _ = watcher_task.await;
+        ollama_task.abort();
+        kleos_task.abort();
+
+        let ollama_request_count = ollama_requests.load(Ordering::SeqCst);
+        let kleos_request_count = kleos_requests.load(Ordering::SeqCst);
+        let ledger_exists = ledger_path.exists();
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+
+        assert!(!ledger_exists, "dry-run must not create the disk ledger");
+        assert_eq!(ollama_request_count, 0, "dry-run must not request Ollama");
+        assert_eq!(kleos_request_count, 0, "dry-run must not request Kleos");
     }
 }

@@ -7243,3 +7243,40 @@ le mode watcher est traite par la carte 19671bc8 (futur Patch 70).
 **Conditions de retrait :** upstream gate les appels Unix et maintient un
 chemin d'arret Ctrl+C compilable sous Windows, par exemple via une PR issue de
 ce patch.
+
+---
+
+## Patch 70 -- kleos-ingest : `--dry-run` du watcher sans effet de bord
+
+Carte roadmap 19671bc8. Candidat a une PR upstream.
+
+**Symptome sous upstream pur :** le watcher garde le ledger persistant en
+`--dry-run`, donc `tail_file` avance les offsets et le prochain run reel saute
+des lignes. Apres l'inactivite, il appelle aussi le summarizer, qui poste le
+transcript a Ollama puis le resume a Kleos. Le mode annonce un essai a blanc
+mais modifie l'etat disque et emet des requetes reseau.
+
+**Approche :** patch chirurgical. `main.rs` choisit le ledger en memoire avant
+`Ledger::open` quand `dry_run` est actif, ce qui couvre le watcher et
+`--one-shot` sans jamais ouvrir le chemin configure. `one_shot.rs` ne refait
+plus cette substitution. Le watcher saute seulement `summarize_session` en
+mode dry-run et retire toujours le chemin inactif de `last_activity`. Pas de
+niveau inferieur : un overlay ou une configuration externe ne peut ni empecher
+l'ouverture du ledger ni supprimer les appels reseau du binaire.
+
+**Fichiers :** `kleos-ingest/src/main.rs`, `kleos-ingest/src/one_shot.rs`,
+`kleos-ingest/src/watcher.rs`, `docs/dev-notes/local-patches.md`.
+
+**Preuves obtenues sous Windows MSVC :** le test cible
+`dry_run_leaves_absent_ledger_and_skips_summary_requests` attend le signal de
+traitement du transcript, utilise un texte depassant le seuil du summarizer,
+verifie que le chemin de ledger reste absent et expose deux listeners locaux.
+Une mutation qui retablit la summarisation fait echouer le test avec
+`dry-run must not request Ollama` et un compteur a 1. Le banc CLI externe
+`~/.agent-forge/scratch/patch70_cli/dry_run_cli.py` lance le binaire reel en
+mode watcher, avec ledger existant puis absent, et constate dans les deux cas
+zero requete vers Ollama et Kleos; le hash du ledger existant reste identique.
+
+**Conditions de retrait :** upstream utilise un ledger ephemere et saute la
+summarisation dans le watcher `--dry-run`, par exemple via une PR issue de ce
+patch.
