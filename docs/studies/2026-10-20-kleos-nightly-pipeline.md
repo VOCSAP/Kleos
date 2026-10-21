@@ -823,6 +823,8 @@ La gardienne est présente comme suit, par requête intégrale puis courte :
 | `context` | 0/83 / 62/83 | 0/83 / 51/83 |
 | kleos-cache | 81/81 / 81/81 | 60/81 / 69/81 |
 
+**Correction de lecture, Kleos #31625 et #31626 :** le 0/83 du top 3 `context` de M-N16d est un artefact de `--limit 10`, où les tiers always-on occupaient les cinq premiers rangs avant les résultats sémantiques. Le Patch 71 émet le sémantique retenu en tête sans modifier les quotas ni la composition des tiers. L'amélioration attendue du top 3 `context` est une hypothèse tant que le banc n'a pas été rejoué.
+
 **MESURÉ :** 0 retirée servie. Parmi les échecs top 10, le classement est a0, c3,
 b4, d4 pour `search` et MCP, et a0, c11, b0, d10 pour `context`. Le banc a dérivé de
 24 lignes entre M-N16c et ce matin, avec 57 puis 43 échecs ; la cause n'a pas été lue.
