@@ -7192,3 +7192,54 @@ le pont, et le serveur n'a pas de canal de scope par requete MCP.
 **Conditions de retrait :** celles du Patch 47 (upstream cable un scope MCP
 equivalent), ou upstream traite lui-meme les batchs dans une injection de
 scope cote pont ou serveur.
+
+---
+
+## Patch 69 -- kleos-ingest : compatibilite Windows du watcher
+
+Carte roadmap 3f45e0f8. Candidat a une PR upstream.
+
+**Symptome sous upstream pur :** `kleos-ingest` ne compile pas sous Windows
+MSVC : `watcher.rs` importe `std::os::unix::net::UnixDatagram` et cree un
+signal `tokio::signal::unix::SignalKind::terminate()` hors garde de plateforme.
+Le daemon ne peut donc pas traiter les transcripts Claude Code locaux sur le
+poste Windows.
+
+**Approche :** patch chirurgical dans `kleos-ingest/src/watcher.rs`. Les imports,
+le ping systemd et l'enregistrement SIGTERM restent limites a `cfg(unix)`. Sur
+une cible non-Unix, la branche SIGTERM du `select!` attend un future infini. Le
+future Ctrl+C est cree et pinne une seule fois avant la boucle, puis selectionne
+par reference. Cette amelioration du chemin console maintient le receiver Windows
+pendant les `await` des autres branches. Sa branche fait `break`, donc un future
+Ctrl+C resolu n'est pas re-polle. Pas de niveau inferieur : le code Unix est
+compile dans le binaire, et ni un overlay ni une configuration externe ne peut
+retirer ces symboles du build Windows.
+
+**Fichiers :** `kleos-ingest/src/watcher.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Preuves obtenues sous Windows MSVC :** `cargo test -p kleos-ingest --features
+kleos-lib/bundled-sqlite`, `cargo build --release -p kleos-ingest --features
+kleos-lib/bundled-sqlite`, dry-run `--one-shot` isole avec
+`KLEOS_URL=http://127.0.0.1:9`, et `--status`.
+
+**Resultats mesures (kleos-10, banc local, Kleos #31585) :**
+- Arret brutal (`taskkill /F`) pendant un resume en vol : aucune ligne perdue
+  ni dupliquee. Le resume en vol est abandonne et n'est regenere qu'a la
+  prochaine ecriture du fichier.
+- Arret pendant une passe d'ingestion : aucune perte, mais les POST deja envoyes
+  de la passe interrompue sont rejoues a la relance (15 sur 45 sur le banc).
+- Ces deux comportements sont upstream et preexistants : l'offset est ecrit en
+  fin de passe (`tailer.rs:128`) et il n'y a pas de scan au demarrage. Ils sont
+  hors Patch 69 et suivis par la carte 20d18577.
+- Banc rejouable : `~/.agent-forge/scratch/patch69_kill/run_scenario.py all`.
+
+**Non-regression Linux :** `cargo check -p kleos-ingest` sous WSL, vert
+(operateur, 2026-10-21).
+
+**Limite :** `--dry-run` n'est garanti sans effet de bord qu'avec `--one-shot` ;
+le mode watcher est traite par la carte 19671bc8 (futur Patch 70).
+
+**Conditions de retrait :** upstream gate les appels Unix et maintient un
+chemin d'arret Ctrl+C compilable sous Windows, par exemple via une PR issue de
+ce patch.
