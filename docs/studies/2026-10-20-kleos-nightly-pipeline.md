@@ -810,6 +810,40 @@ la nature des 57 échecs, mesurer le canal kleos-cache et essayer une requête c
 Retour au consultant avec ces mesures ; **aucune option n'est figée**. Les propositions
 historiques de la ligne du tableau sont conservées comme historique, non comme un go.
 
+#### M-N16d F1, avis consultant et décision opérateur du 2026-10-21
+
+**MESURÉ, lecture de `~/.agent-forge/scratch/m_n16d_report.json`, Kleos #31597 :**
+le banc comporte 83 paires pour `search`, MCP et `context`, et 81 pour kleos-cache.
+La gardienne est présente comme suit, par requête intégrale puis courte :
+
+| Chemin | Intégrale top 3 / top 10 | Courte top 3 / top 10 |
+|---|---|---|
+| `search` | 61/83 / 72/83 | 51/83 / 69/83 |
+| MCP | 61/83 / 72/83 | 51/83 / 69/83 |
+| `context` | 0/83 / 62/83 | 0/83 / 51/83 |
+| kleos-cache | 81/81 / 81/81 | 60/81 / 69/81 |
+
+**MESURÉ :** 0 retirée servie. Parmi les échecs top 10, le classement est a0, c3,
+b4, d4 pour `search` et MCP, et a0, c11, b0, d10 pour `context`. Le banc a dérivé de
+24 lignes entre M-N16c et ce matin, avec 57 puis 43 échecs ; la cause n'a pas été lue.
+
+**DÉDUIT par le consultant, Kleos #31604 :** option 1, aucun mécanisme, confiance
+70 %. Son argument principal est que l'option 2 impose d'inverser Patch 64 dans
+`kleos-cache/src/sync_worker.rs:468`, `is_projectable`. Sur kleos-cache en requête
+courte, 69/81, soit 85 %, reste sous le seuil de déduplication de 90 % ; le verdict
+repose sur le coût de l'option 2, non sur l'atteinte de ce seuil.
+
+**Décision opérateur du 2026-10-21, Kleos #31605 :** option 1, aucun mécanisme.
+La décision bascule seulement si l'une des conditions suivantes est satisfaite :
+
+1. Banc rejoué avec `is_superseded` désactivé : au moins 8/81 paires où la retirée est
+   dans le top 10 sans la gardienne, sur kleos-cache en requête courte.
+2. Au moins 20 paires de corrections réelles sous 80 % de top 10 : le mécanisme passe
+   alors par `parent_memory_id`.
+3. `/context` devient le canal dominant.
+
+Le tier important aux rangs 1 à 5 de `/context` est un sujet séparé.
+
 **Autres inconnues explicites :** rappel réel des candidats (M-N11), précision des
 confirmations en direct (non couverte par M-N15), fréquence des invalidations et
 affamement sous garde d'inactivité (M-N13 ne mesure que les écarts temporels), qualité
