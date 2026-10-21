@@ -2,6 +2,7 @@ use notify::{
     Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::os::unix::net::UnixDatagram;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -85,11 +86,19 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
     // (NEW-2/BF-2). Decoupled from the 30s idle/summarize cadence so coalesced
     // events are picked up within ~2s instead of waiting up to 30s.
     let mut respawn_interval = tokio::time::interval(Duration::from_secs(2));
+    #[cfg(unix)]
     let notify_socket = std::env::var("NOTIFY_SOCKET").ok();
 
     // Signal handler
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("failed to register SIGTERM");
+    #[cfg(unix)]
+    let mut sigterm = {
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM");
+        Box::pin(async move { signal.recv().await })
+    };
+    #[cfg(not(unix))]
+    let mut sigterm = Box::pin(std::future::pending::<()>());
+    let mut ctrl_c = Box::pin(tokio::signal::ctrl_c());
 
     loop {
         tokio::select! {
@@ -121,6 +130,7 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                 }
             }
             _ = idle_interval.tick() => {
+                #[cfg(unix)]
                 if let Some(ref sock_path) = notify_socket {
                     if let Ok(sock) = UnixDatagram::unbound() {
                         let _ = sock.send_to(b"WATCHDOG=1", sock_path);
@@ -178,11 +188,11 @@ pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: b
                 // fresh slot (the absent-entry branch treats "no slot" as "spawn").
                 active_tails.retain(|_, slot| !slot.handle.is_finished() || slot.pending);
             }
-            _ = tokio::signal::ctrl_c() => {
+            _ = &mut ctrl_c => {
                 tracing::info!("received SIGINT, shutting down");
                 break;
             }
-            _ = sigterm.recv() => {
+            _ = &mut sigterm => {
                 tracing::info!("received SIGTERM, shutting down");
                 break;
             }
