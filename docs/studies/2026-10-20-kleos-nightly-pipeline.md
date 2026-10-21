@@ -187,6 +187,7 @@ ni le traitement serveur déjà implémentés. **DÉDUIT du périmètre actuel r
 kleos-7 :** le démon d'extraction lexicale, POST `/memories` et résumé Ollama local
 n'est pas cette cible. Kleos #21290 consigne qu'il n'a jamais été déployé ; un binaire
 compilable n'est donc pas une preuve de déploiement. Voir l'[étude d'usage](2026-10-20-kleos-agent-usage.md), section 5.
+**Cible détaillée (2026-10-21) :** [étude cible ingestion des transcripts](2026-10-21-kleos-transcript-ingest-target.md), qui place `transcript_staging` dans un relais à côté du serveur plutôt que dans Kleos (verdict du consultant, section 1.3 de cette étude).
 
 ### 4.4 Cadence, priorité et budget
 
