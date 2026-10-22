@@ -317,22 +317,16 @@ impl HandoffsDb {
         })
     }
 
-    /// Stores a handoff and then automatically extracts and persists context atoms.
+    /// Stores a handoff and persists explicitly supplied context atoms.
     ///
-    /// Wraps [`HandoffsDb::store`] with optional atom extraction. If
-    /// `pre_extracted_atoms` is supplied those atoms are used directly; otherwise
-    /// [`atoms::extract`] is called with the handoff content. Mechanical
-    /// handoffs are stored as normal but atom extraction is skipped entirely
-    /// because git-state dumps do not contain semantic atoms worth indexing.
-    ///
-    /// If atom extraction or storage fails a warning is logged but the original
-    /// [`StoreResult`] is still returned -- atom failure is non-fatal.
+    /// An absent or null `atoms` field does not trigger extraction. Mechanical
+    /// handoffs are stored as normal but never receive atoms.
     pub async fn store_with_atoms(
         &self,
         params: StoreParams,
         user_id: i64,
         pre_extracted_atoms: Option<Vec<atoms::ExtractedAtom>>,
-        sidecar_url: Option<&str>,
+        _sidecar_url: Option<&str>,
     ) -> Result<StoreResult> {
         let params = normalize_store_params(params)?;
         let result = self.store(params.clone(), user_id).await?;
@@ -342,32 +336,28 @@ impl HandoffsDb {
             return Ok(result);
         }
 
+        let Some(extracted) = pre_extracted_atoms.filter(|atoms| !atoms.is_empty()) else {
+            return Ok(result);
+        };
         let handoff_id = match result.id {
             Some(id) => id,
             // Skipped (duplicate mechanical) -- nothing to attach atoms to.
             None => return Ok(result),
         };
 
-        let extracted = match pre_extracted_atoms {
-            Some(atoms) => atoms,
-            None => atoms::extract(&params.content, sidecar_url).await,
-        };
-
-        if !extracted.is_empty() {
-            let count = extracted.len();
-            let workstream = params.workstream.as_deref().expect("normalized workstream");
-            if let Err(e) = self
-                .store_atoms(handoff_id, workstream, &extracted, user_id)
-                .await
-            {
-                warn!(
-                    handoff_id,
-                    error = %e,
-                    "atom storage failed; handoff was saved but atoms were not indexed"
-                );
-            } else {
-                info!(handoff_id, atom_count = count, "atoms indexed for handoff");
-            }
+        let count = extracted.len();
+        let workstream = params.workstream.as_deref().expect("normalized workstream");
+        if let Err(e) = self
+            .store_atoms(handoff_id, workstream, &extracted, user_id)
+            .await
+        {
+            warn!(
+                handoff_id,
+                error = %e,
+                "atom storage failed; handoff was saved but atoms were not indexed"
+            );
+        } else {
+            info!(handoff_id, atom_count = count, "atoms indexed for handoff");
         }
 
         Ok(result)
@@ -1428,6 +1418,53 @@ mod tests {
         let handoff = db.get(id, 7).await.expect("get repository").unwrap();
         assert_eq!(handoff.scope, "repository");
         assert_eq!(handoff.workstream, "kleos");
+    }
+
+    #[tokio::test]
+    async fn store_without_atoms_does_not_extract() {
+        let db = fresh_db().await;
+        let content = "We decided to use Postgres for the main database.";
+        assert!(
+            !extract_heuristic(content).is_empty(),
+            "fixture must trigger heuristic extraction"
+        );
+
+        db.store_with_atoms(store_params("proj-a", content), 7, None, None)
+            .await
+            .expect("store handoff");
+
+        let atoms = db
+            .list_atoms("proj-a", None, None, 10, 7)
+            .await
+            .expect("list atoms");
+        assert!(atoms.is_empty());
+    }
+
+    #[tokio::test]
+    async fn store_with_explicit_atoms_persists_them() {
+        let db = fresh_db().await;
+        let expected = ExtractedAtom {
+            atom_type: AtomType::Decision,
+            content: "Use Postgres".to_string(),
+            canonical_form: "use postgres".to_string(),
+            confidence: 0.9,
+        };
+
+        db.store_with_atoms(
+            store_params("proj-a", "handoff content"),
+            7,
+            Some(vec![expected]),
+            None,
+        )
+        .await
+        .expect("store handoff");
+
+        let atoms = db
+            .list_atoms("proj-a", None, None, 10, 7)
+            .await
+            .expect("list atoms");
+        assert_eq!(atoms.len(), 1);
+        assert_eq!(atoms[0].canonical_form, "use postgres");
     }
 
     #[tokio::test]

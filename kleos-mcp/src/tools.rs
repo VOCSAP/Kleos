@@ -184,18 +184,8 @@ pub async fn dispatch(app: &App, name: &str, args: Value) -> Result<Value, Strin
         return Err(format!("tool '{name}' is not available over MCP"));
     }
     let route = resolve_tool_name(name).ok_or_else(|| format!("unknown tool: {name}"))?;
-    let args = maybe_disable_handoff_atom_extraction(route.name, maybe_inject_space(args));
+    let args = maybe_inject_space(args);
     app.client.call_route(route, args).await
-}
-
-fn maybe_disable_handoff_atom_extraction(name: &str, mut args: Value) -> Value {
-    if name != "handoffs.store" {
-        return args;
-    }
-    if let Some(map) = args.as_object_mut() {
-        map.entry("atoms".to_string()).or_insert_with(|| json!([]));
-    }
-    args
 }
 
 /// Read the per-session space file written by `session-start-kleos.sh`
@@ -247,16 +237,6 @@ fn maybe_inject_space(mut args: Value) -> Value {
 mod tests {
     use super::*;
     use std::collections::HashSet;
-
-    #[test]
-    fn handoff_store_defaults_to_no_atom_extraction() {
-        let args = maybe_disable_handoff_atom_extraction(
-            "handoffs.store",
-            json!({"content": "handoff content"}),
-        );
-
-        assert_eq!(args.get("atoms"), Some(&json!([])));
-    }
 
     /// Every advertised tool name must be dot-free (VS Code's MCP validator
     /// rejects dots), unique, and resolvable back to its route so `tools/call`
