@@ -1,11 +1,39 @@
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11
-**Dernière mise à jour :** 2026-09-12 (Patch 53 -- toolbox, catalogue d'outils indexes). Merge upstream de reference : 7ce95482 du 2026-08-23 (156 commits, 21 conflits, 6 patches abandonnes absorbes, 8 patches re-accroches)
+**Dernière mise à jour :** 2026-10-22. Merge upstream de reference : 8182e57f du 2026-10-22 (13 commits, 1 conflit textuel, 1 incoherence cross-region corrigee).
 **Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
 sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
 rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
 re-appliquer si perdus.
+
+---
+
+## Statut apres merge upstream 8182e57f (2026-10-22)
+
+**Branche :** `ccr-bfdfcf62-1j7z1k`. Commit de merge `418cdd26`. Perimetre : 13 commits Ghost-Frame/Kleos depuis `7ce95482` jusqu'a `8182e57f` inclus, dont PR #221. La borne de relicence `f1db1cf7` est exclue.
+
+### Resolutions et patches impactes
+
+- **`kleos-server/src/dreamer.rs`** : unique conflit textuel. Upstream n'ajoutait qu'un doc-comment a `recent_memory_contents`, helper deja present dans la base `7ce95482`. Patch 35 avait remplace ce helper par `recent_memory_contents_for_space`; la resolution conserve la boucle per-space et le filtrage `user_id`, `space_id` et `status != 'pending'`. **Patch 35 est conserve**, aucun patch n'est absorbe par ce merge.
+- **`kleos-lib/src/db/mod.rs`** : incoherence semantique invisible pour git. Upstream ajoutait `tenant_write_policy` au struct et a quatre constructeurs, mais le littéral read-only restait dans un hunk disjoint et causait `E0063`. Ajout de `tenant_write_policy: OnceLock::new()` sans bind, car ce coffre est read-only et non tenant.
+
+### Pieges et points ouverts
+
+- Un merge propre textuellement ne garantit pas la coherence cross-region : le `cargo check -p kleos-lib --features bundled-sqlite` a ete necessaire pour trouver `E0063`.
+- `/broca/ingest` est desormais authentifie upstream ; verifier les clients et relais qui l'appellent avant deploy.
+- Le mode `read_only` des quotas est inerte en production : l'operateur a mesure le 2026-10-22 qu'aucune variable `QUOTA` n'est definie dans `/etc/kleos/kleos.env`.
+- Suivi : carte `63e84473`.
+
+---
+
+## Gel upstream
+
+**Borne :** dernier commit upstream merge `8182e57f`; `f1db1cf7` (`Relicense under PolyForm Noncommercial 1.0.0`) et tout commit posterieur sont exclus.
+
+**Raison et regle :** l'usage professionnel interne est permis par ELv2 et interdit par PolyForm NC. Plus aucun merge ne doit prendre `f1db1cf7` ni un commit posterieur. Tout correctif upstream necessaire doit etre reecrit localement sans reprendre de code recu sous PolyForm NC. Ne plus ouvrir de PR upstream sans relire le `CONTRIBUTING` post-relicence.
+
+**Relais de transcripts :** le rev epingle de `kleos-lib` doit rester anterieur a `f1db1cf7` tant que ce gel tient. La condition de levee est une relicence upstream compatible ou une decision explicite de l'operateur. Cette lecture est celle du lead et ne constitue pas un avis juridique.
 
 ---
 
