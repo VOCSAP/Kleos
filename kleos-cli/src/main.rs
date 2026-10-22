@@ -3764,8 +3764,9 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
     }
 }
 
-/// Detects a project only inside a Git worktree, using the origin name or Git
-/// root basename. Ordinary directory names are never promoted to projects.
+/// Detects a project only inside a Git worktree, named like the space
+/// (`.kleos-space` marker, then Git root basename). Ordinary directory names
+/// are never promoted to projects.
 fn detect_project(dir: Option<&str>) -> Option<String> {
     let dir = dir
         .map(std::path::PathBuf::from)
@@ -3797,31 +3798,7 @@ fn detect_project_at_path(dir: &std::path::Path) -> Option<String> {
     if git_root.as_os_str().is_empty() {
         return None;
     }
-
-    let output = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(&git_root)
-        .output();
-    if let Ok(output) = output {
-        if output.status.success() {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Some(name) = project_from_remote(&url) {
-                return Some(name);
-            }
-        }
-    }
-
-    git_root
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .filter(|name| !name.is_empty())
-}
-
-/// Extracts a repository name from HTTPS, filesystem, or SCP-style Git URLs.
-fn project_from_remote(url: &str) -> Option<String> {
-    let tail = url.rsplit(['/', ':']).next()?.trim();
-    let name = tail.strip_suffix(".git").unwrap_or(tail).trim();
-    (!name.is_empty()).then(|| name.to_string())
+    space::resolve_project_name(dir)
 }
 
 /// Detects the current git branch name.
@@ -5419,7 +5396,7 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_project_at_path, dump_scope, is_safe_materialization_path, project_from_remote,
+        detect_project_at_path, dump_scope, is_safe_materialization_path,
         resolve_credential_authority_url, restore_requires_exact_session, sanitize_download_name,
     };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
@@ -5506,18 +5483,56 @@ mod tests {
         std::fs::remove_dir(&path).expect("remove isolated empty test directory");
     }
 
-    /// Repository names are parsed consistently from common Git remote forms.
+    /// A Git worktree resolves its project like its space: the marker wins,
+    /// otherwise the normalized Git root basename, whatever the remote name.
     #[test]
-    fn project_detection_parses_remote_names() {
+    fn project_detection_follows_space_resolution() {
+        let parent = std::env::temp_dir().join(format!(
+            "kleos-handoff-git-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let repo = parent.join("Kleos");
+        std::fs::create_dir_all(&repo).expect("create test repository");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("run git")
+                .status;
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/Other-Name.git",
+        ]);
+        let nested = repo.join("src");
+        std::fs::create_dir(&nested).expect("create nested directory");
+
+        assert_eq!(detect_project_at_path(&nested).as_deref(), Some("kleos"));
+
+        std::fs::write(repo.join(".kleos-space"), "# comment\nVOCSAP Space\n")
+            .expect("write marker");
         assert_eq!(
-            project_from_remote("https://github.com/example/Kleos.git").as_deref(),
-            Some("Kleos")
+            detect_project_at_path(&nested).as_deref(),
+            Some("vocsapspace")
         );
-        assert_eq!(
-            project_from_remote("git@github.com:example/Kleos.git").as_deref(),
-            Some("Kleos")
-        );
-        assert_eq!(project_from_remote(""), None);
+
+        std::fs::remove_dir_all(&parent).expect("remove test repository");
+    }
+
+    /// This repository resolves to its `kleos` space.
+    #[test]
+    fn project_detection_matches_this_repository_space() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(detect_project_at_path(crate_dir).as_deref(), Some("kleos"));
     }
 
     /// A project label does not make a non-Git restore safe; callers outside

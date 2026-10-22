@@ -207,7 +207,7 @@ impl HandoffsDb {
             let exists: bool = conn
                 .interact(move |conn| {
                     let count: i64 = conn.query_row(
-                        "SELECT COUNT(*) FROM handoffs WHERE content_hash = ?1 AND project = ?2 AND type = 'mechanical' AND user_id = ?3",
+                        "SELECT COUNT(*) FROM handoffs WHERE content_hash = ?1 AND lower(project) = ?2 AND type = 'mechanical' AND user_id = ?3",
                         rusqlite::params![hash2, project2, user_id],
                         |row| row.get(0),
                     )?;
@@ -516,7 +516,7 @@ impl HandoffsDb {
                                 snippet(handoffs_fts, 0, '>>>', '<<<', '...', 48)
                          FROM handoffs_fts fts
                          JOIN handoffs h ON h.id = fts.rowid
-                         WHERE handoffs_fts MATCH ?1 AND h.project = ?2 AND h.user_id = ?3
+                         WHERE handoffs_fts MATCH ?1 AND (h.project = ?2 OR lower(h.project) = ?4) AND h.user_id = ?3
                          ORDER BY rank
                          LIMIT {}",
                             limit
@@ -525,6 +525,7 @@ impl HandoffsDb {
                             Box::new(query) as Box<dyn rusqlite::types::ToSql>,
                             Box::new(p.clone()),
                             Box::new(user_id),
+                            Box::new(crate::space::normalize_space_name(p)),
                         ],
                     )
                 } else {
@@ -855,11 +856,15 @@ impl HandoffsDb {
         let status = status.map(|s| s.to_string());
 
         conn.interact(move |conn| {
-            let mut conditions: Vec<String> =
-                vec!["user_id = ?1".to_string(), "project = ?2".to_string()];
+            let mut conditions: Vec<String> = vec![
+                "user_id = ?1".to_string(),
+                "(project = ?2 OR lower(project) = ?3)".to_string(),
+            ];
+            let normalized = crate::space::normalize_space_name(&project);
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
                 Box::new(user_id) as Box<dyn rusqlite::types::ToSql>,
                 Box::new(project),
+                Box::new(normalized),
             ];
 
             if let Some(ref t) = atom_type {
@@ -1004,6 +1009,7 @@ impl HandoffsDb {
             })?;
 
         let project = project.to_string();
+        let normalized = crate::space::normalize_space_name(&project);
 
         conn.interact(move |conn| {
             // Compute the decay factor once and pass it as a parameter so that
@@ -1014,21 +1020,21 @@ impl HandoffsDb {
                 "UPDATE handoff_atoms
                  SET salience = MAX(0.01, salience * ?1)
                  WHERE user_id = ?2
-                   AND project = ?3
+                   AND (project = ?3 OR lower(project) = ?4)
                    AND status  = 'active'
                    AND decay_immune = 0",
-                rusqlite::params![factor, user_id, project],
+                rusqlite::params![factor, user_id, project, normalized],
             )? as u64;
 
             let resolve_affected = conn.execute(
                 "UPDATE handoff_atoms
                  SET status = 'resolved'
                  WHERE user_id = ?1
-                   AND project = ?2
+                   AND (project = ?2 OR lower(project) = ?3)
                    AND status  = 'active'
                    AND decay_immune = 0
                    AND salience < 0.05",
-                rusqlite::params![user_id, project],
+                rusqlite::params![user_id, project, normalized],
             )? as u64;
 
             Ok::<u64, EngError>(decay_affected + resolve_affected)
@@ -1049,8 +1055,13 @@ fn build_handoff_filter_clause(
         vec![Box::new(user_id) as Box<dyn rusqlite::types::ToSql>];
 
     if let Some(ref project) = filters.project {
-        conditions.push(format!("project = ?{}", params.len() + 1));
+        conditions.push(format!(
+            "(project = ?{} OR lower(project) = ?{})",
+            params.len() + 1,
+            params.len() + 2
+        ));
         params.push(Box::new(project.clone()));
+        params.push(Box::new(crate::space::normalize_space_name(project)));
     }
     if let Some(ref scope) = filters.scope {
         conditions.push(format!("scope = ?{}", params.len() + 1));
@@ -1058,10 +1069,13 @@ fn build_handoff_filter_clause(
     }
     if let Some(ref workstream) = filters.workstream {
         conditions.push(format!(
-            "COALESCE(NULLIF(workstream, ''), project) = ?{}",
-            params.len() + 1
+            "(COALESCE(NULLIF(workstream, ''), project) = ?{0} \
+             OR lower(COALESCE(NULLIF(workstream, ''), project)) = ?{1})",
+            params.len() + 1,
+            params.len() + 2
         ));
         params.push(Box::new(workstream.clone()));
+        params.push(Box::new(crate::space::normalize_space_name(workstream)));
     }
     if let Some(ref agent) = filters.agent {
         conditions.push(format!("agent = ?{}", params.len() + 1));
@@ -1121,6 +1135,9 @@ fn normalize_store_params(mut params: StoreParams) -> Result<StoreParams> {
         )));
     }
 
+    if scope == "repository" {
+        params.project = crate::space::normalize_space_name(&params.project);
+    }
     if scope == "repository" && params.project.is_empty() {
         return Err(EngError::InvalidInput(
             "repository handoffs require a non-empty project".to_string(),
@@ -1418,6 +1435,67 @@ mod tests {
         let handoff = db.get(id, 7).await.expect("get repository").unwrap();
         assert_eq!(handoff.scope, "repository");
         assert_eq!(handoff.workstream, "kleos");
+    }
+
+    fn repository_filters(value: &str) -> HandoffFilters {
+        HandoffFilters {
+            project: Some(value.to_string()),
+            workstream: Some(value.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    /// A repository project is stored in the space-normalized form and is
+    /// found whatever the case of the reader's project.
+    async fn repository_project_matches_space_normalization() {
+        let db = fresh_db().await;
+        let id = db
+            .store(store_params("Kleos", "repository state"), 7)
+            .await
+            .expect("store repository")
+            .id
+            .unwrap();
+        let handoff = db.get(id, 7).await.expect("get").unwrap();
+        assert_eq!(handoff.project, "kleos");
+        assert_eq!(handoff.workstream, "kleos");
+
+        for reader in ["kleos", "Kleos"] {
+            let rows = db.list(repository_filters(reader), 7).await.expect("list");
+            assert_eq!(rows.len(), 1, "reader project {reader}");
+            let hits = db
+                .search("repository", Some(reader), 10, 7)
+                .await
+                .expect("search");
+            assert_eq!(hits.len(), 1, "search project {reader}");
+        }
+    }
+
+    #[tokio::test]
+    /// Rows written before normalization keep their original case and stay
+    /// reachable from a normalized reader.
+    async fn legacy_mixed_case_rows_match_normalized_reader() {
+        let db = fresh_db().await;
+        let conn = db.writer().get().await.expect("writer");
+        conn.interact(|conn| {
+            conn.execute(
+                "INSERT INTO handoffs (user_id, project, scope, workstream, content)
+                 VALUES (7, 'Kleos', 'repository', 'Kleos', 'legacy state')",
+                [],
+            )
+        })
+        .await
+        .expect("interact")
+        .expect("insert legacy row");
+
+        let rows = db.list(repository_filters("kleos"), 7).await.expect("list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].project, "Kleos");
+        let latest = db
+            .get_latest(repository_filters("kleos"), 7)
+            .await
+            .expect("latest");
+        assert!(latest.is_some());
     }
 
     #[tokio::test]
