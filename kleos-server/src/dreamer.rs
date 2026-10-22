@@ -80,6 +80,7 @@ async fn existing_growth_context(
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+/// Reports the latest background cycle and accumulated outcomes.
 pub struct DreamerStats {
     pub running: bool,
     pub cycles_total: u64,
@@ -97,6 +98,7 @@ pub struct DreamerStats {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+/// Accumulates successful and failed background operations.
 pub struct DreamerTotals {
     pub pipeline_ok: u64,
     pub pipeline_failed: u64,
@@ -133,14 +135,21 @@ pub struct SkillEvolutionReport {
     pub derives_attempted: u64,
     pub derives_succeeded: u64,
     pub derives_failed: u64,
+    /// Concurrent selection lost the persistent pair claim to another cycle.
+    pub derives_skipped_cooldown: u64,
+    /// Persistence failures prevented an autonomous attempt from starting.
+    pub derives_claim_failed: u64,
 }
 
+/// Shares dreamer observations between the worker and HTTP readers.
 pub type DreamerStatsHandle = Arc<RwLock<DreamerStats>>;
 
+/// Creates an initially idle dreamer statistics handle.
 pub fn new_stats_handle() -> DreamerStatsHandle {
     Arc::new(RwLock::new(DreamerStats::default()))
 }
 
+/// Lists active database owners for individually scoped background work.
 pub(crate) async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
     db.read(|conn| {
         let mut stmt = conn.prepare("SELECT id FROM users ORDER BY id")?;
@@ -150,6 +159,7 @@ pub(crate) async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError>
     .await
 }
 
+/// Starts the cancellable background worker and its tenant cycle gates.
 pub fn start_dreamer_task(
     db: Arc<Database>,
     config: Arc<Config>,
@@ -233,6 +243,7 @@ pub fn start_dreamer_task(
     (token, handle)
 }
 
+/// Checks whether the evolution interval has elapsed since the previous pass.
 fn should_run_evolution(last_run: &Option<Instant>, interval_secs: u64) -> bool {
     if interval_secs == 0 {
         return true;
@@ -243,6 +254,7 @@ fn should_run_evolution(last_run: &Option<Instant>, interval_secs: u64) -> bool 
     }
 }
 
+/// Compares monotonic request activity with the configured idle threshold.
 fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
     if threshold_secs == 0 {
         return true;
@@ -256,6 +268,7 @@ fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
     elapsed_secs >= threshold_secs
 }
 
+/// Runs one monolithic intelligence cycle and updates shared observations.
 async fn run_cycle(
     db: &Arc<Database>,
     brain: Option<&Arc<dyn BrainBackend>>,
@@ -624,6 +637,18 @@ async fn run_skill_evolution(
             }
         };
         for (parents, direction) in derive_pairs {
+            match analyzer::claim_derive_attempt(db, user_id, &parents).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    report.derives_skipped_cooldown += 1;
+                    continue;
+                }
+                Err(error) => {
+                    report.derives_claim_failed += 1;
+                    warn!(user_id, parents = ?parents, error = %error, "dreamer: derive attempt claim failed");
+                    continue;
+                }
+            }
             report.derives_attempted += 1;
             match evolver::derive_skill(db, Some(llm), &parents, &direction, "dreamer", user_id)
                 .await
