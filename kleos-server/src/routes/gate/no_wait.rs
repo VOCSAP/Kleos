@@ -5,30 +5,25 @@
 //! `KLEOS_GATE_NO_WAIT_AGENTS` get their allowed result back immediately;
 //! `requires_approval` stays set so the client can escalate to its own prompt.
 //! The list is server-side on purpose: a client must not exempt itself.
-//! The agent name is declared by the client, so a skipped approval is flagged
-//! with `approval_waived: true` for clients that cannot prompt a human.
+//! The agent name is declared by the client and several other returns also
+//! skip the wait, so only a human approval is marked, with
+//! `approval_granted: true`; a client that cannot prompt refuses the rest.
 
 use kleos_lib::gate::GateCheckResult;
 use serde_json::{json, Value};
 
 const ENV_VAR: &str = "KLEOS_GATE_NO_WAIT_AGENTS";
 
-/// Body of the early /gate/check return for a listed agent, or `None` when
-/// the handler must go on to the approval wait (or to its final deny).
-pub(super) fn early_response(result: &GateCheckResult, agent: &str) -> Option<Value> {
+pub(super) fn agent_skips_approval_wait(agent: &str) -> bool {
     let raw = std::env::var(ENV_VAR).unwrap_or_default();
-    early_response_for(result, list_contains(&raw, agent))
+    list_contains(&raw, agent)
 }
 
-fn early_response_for(result: &GateCheckResult, agent_listed: bool) -> Option<Value> {
-    if !result.allowed || !agent_listed {
-        return None;
-    }
+/// Body of the /gate/check return once a human approved the pending request.
+pub(super) fn approved_response(result: &GateCheckResult) -> Value {
     let mut body = json!(result);
-    if result.requires_approval {
-        body["approval_waived"] = Value::Bool(true);
-    }
-    Some(body)
+    body["approval_granted"] = Value::Bool(true);
+    body
 }
 
 fn list_contains(raw: &str, agent: &str) -> bool {
@@ -42,8 +37,9 @@ fn list_contains(raw: &str, agent: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{early_response_for, list_contains};
+    use super::{approved_response, list_contains};
     use kleos_lib::gate::GateCheckResult;
+    use serde_json::json;
 
     fn result(allowed: bool, requires_approval: bool) -> GateCheckResult {
         GateCheckResult {
@@ -57,27 +53,17 @@ mod tests {
     }
 
     #[test]
-    fn listed_agent_with_blocked_command_gets_no_early_allow() {
-        assert!(early_response_for(&result(false, false), true).is_none());
-    }
-
-    #[test]
-    fn listed_agent_with_required_approval_returns_waived_at_once() {
-        let body = early_response_for(&result(true, true), true).expect("early return");
+    fn human_approval_is_marked_granted() {
+        let body = approved_response(&result(true, true));
         assert_eq!(body["allowed"], true);
         assert_eq!(body["requires_approval"], true);
-        assert_eq!(body["approval_waived"], true);
+        assert_eq!(body["approval_granted"], true);
     }
 
     #[test]
-    fn listed_agent_without_required_approval_is_not_marked_waived() {
-        let body = early_response_for(&result(true, false), true).expect("early return");
-        assert!(body.get("approval_waived").is_none());
-    }
-
-    #[test]
-    fn unlisted_agent_goes_on_to_the_approval_wait() {
-        assert!(early_response_for(&result(true, true), false).is_none());
+    fn result_returned_without_a_wait_carries_no_grant() {
+        let body = json!(result(true, true));
+        assert!(body.get("approval_granted").is_none());
     }
 
     #[test]

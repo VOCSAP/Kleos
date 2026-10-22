@@ -17,10 +17,10 @@ pub struct GateCheckResult {
     pub gate_id: i64,
     pub requires_approval: bool,
     pub enrichment: Option<String>,
-    /// Set by the server when it returned without waiting for the approval
-    /// that `requires_approval` asks for.
+    /// Set by the server only when a human approved the request; absent from
+    /// older servers, which therefore read as not granted.
     #[serde(default)]
-    pub approval_waived: bool,
+    pub approval_granted: bool,
 }
 
 pub enum GateOutcome {
@@ -59,7 +59,7 @@ pub async fn check_remote(
 }
 
 /// Outside the Claude Code hook nobody can answer an "ask", so an approval
-/// the server waived for the declared agent becomes a deny.
+/// the server does not report as granted becomes a deny.
 fn outcome_from_result(
     result: GateCheckResult,
     request_command: &str,
@@ -69,11 +69,11 @@ fn outcome_from_result(
         let command = result
             .resolved_command
             .unwrap_or_else(|| request_command.to_string());
-        if result.requires_approval && result.approval_waived && !claude_hook {
+        if result.requires_approval && !result.approval_granted && !claude_hook {
             return GateOutcome::Deny {
-                reason: "approval required but not awaited by the server for this agent; \
-                         use the Claude Code hook (--claude-hook) or an --agent name the \
-                         server does not list in KLEOS_GATE_NO_WAIT_AGENTS"
+                reason: "approval required but no human approval was granted; kleos-sh \
+                         cannot ask for one, so run this command where a human confirms it \
+                         (Claude Code permission prompt or a manual shell)"
                     .to_string(),
                 gate_id: result.gate_id,
             };
@@ -145,7 +145,7 @@ fn gate_timeout() -> std::time::Duration {
 mod tests {
     use super::{outcome_from_result, GateCheckResult, GateOutcome};
 
-    fn result(allowed: bool, requires_approval: bool, approval_waived: bool) -> GateCheckResult {
+    fn result(allowed: bool, requires_approval: bool, approval_granted: bool) -> GateCheckResult {
         GateCheckResult {
             allowed,
             reason: Some("matches systemctl".to_string()),
@@ -153,31 +153,31 @@ mod tests {
             gate_id: 7,
             requires_approval,
             enrichment: None,
-            approval_waived,
+            approval_granted,
         }
     }
 
     #[test]
     fn required_approval_maps_to_ask_in_hook_mode() {
-        let outcome = outcome_from_result(result(true, true, true), "cmd", true);
+        let outcome = outcome_from_result(result(true, true, false), "cmd", true);
         assert!(matches!(outcome, GateOutcome::Ask { .. }));
     }
 
     #[test]
-    fn waived_approval_is_denied_outside_hook_mode() {
-        let outcome = outcome_from_result(result(true, true, true), "cmd", false);
+    fn ungranted_approval_is_denied_outside_hook_mode() {
+        let outcome = outcome_from_result(result(true, true, false), "cmd", false);
         match outcome {
             GateOutcome::Deny { reason, gate_id } => {
                 assert_eq!(gate_id, 7);
-                assert!(reason.contains("not awaited"), "reason: {reason}");
+                assert!(reason.contains("no human approval"), "reason: {reason}");
             }
-            _ => panic!("waived approval must not reach exec or gate-only allow"),
+            _ => panic!("ungranted approval must not reach exec or gate-only allow"),
         }
     }
 
     #[test]
-    fn approval_granted_after_a_real_wait_still_runs_outside_hook_mode() {
-        let outcome = outcome_from_result(result(true, true, false), "cmd", false);
+    fn granted_approval_maps_to_ask_outside_hook_mode() {
+        let outcome = outcome_from_result(result(true, true, true), "cmd", false);
         assert!(matches!(outcome, GateOutcome::Ask { .. }));
     }
 
@@ -194,9 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn response_without_waived_field_parses_as_not_waived() {
+    fn response_without_granted_field_is_denied_outside_hook_mode() {
         let json = r#"{"allowed":true,"reason":null,"resolved_command":null,"gate_id":1,"requires_approval":true}"#;
         let parsed: GateCheckResult = serde_json::from_str(json).expect("older server body");
-        assert!(!parsed.approval_waived);
+        assert!(matches!(
+            outcome_from_result(parsed, "cmd", false),
+            GateOutcome::Deny { .. }
+        ));
     }
 }

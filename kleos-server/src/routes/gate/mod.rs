@@ -494,8 +494,8 @@ async fn check_handler(
     // Note: `has_secret_placeholders` also sets `requires_approval=true` but
     // pairs it with `allowed=false`, so the outer `result.allowed` guard keeps
     // it on its own "client must resolve secrets and retry" path.
-    if let Some(early) = no_wait::early_response(&result, &body.agent) {
-        return Ok((StatusCode::CREATED, Json(early)));
+    if result.allowed && no_wait::agent_skips_approval_wait(&body.agent) {
+        return Ok((StatusCode::CREATED, Json(json!(result))));
     }
 
     let tool_name = body.tool_name.as_deref().unwrap_or("");
@@ -627,7 +627,7 @@ async fn check_handler(
                     tool_name,
                     body.agent
                 );
-                return Ok((StatusCode::CREATED, Json(json!(result))));
+                return Ok((StatusCode::CREATED, Json(no_wait::approved_response(&result))));
             } else {
                 tracing::warn!(
                     "gate: DENIED/TIMEOUT gate_id={} tool={} agent={}",

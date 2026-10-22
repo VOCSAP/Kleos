@@ -2276,7 +2276,7 @@ Les hooks repo sont copies (pas symlinks) dans `~/.claude/hooks/`. Etat reel apr
 | `UserPromptSubmit` | `""` | `user-prompt-lean.sh` | VOCSAP | actif (audite + patche 2026-05-21) |
 | `PostToolUse` | `.*` | `track-agent-forge.sh` | VOCSAP | actif (audite OK 2026-05-21, aucun patch) |
 | `PreToolUse` | `.*` | `enforce-kleos-search.sh` | VOCSAP | actif (audite + patche 2026-05-21, gate BLOQUANT) |
-| `PreToolUse` | `Bash\|Write\|Edit\|MultiEdit` | `kleos-sh.exe --claude-hook` | upstream Ghost-Frame | actif (active 2026-05-21, gate BLOQUANT via /gate/check + /approvals) |
+| `PreToolUse` | `Bash\|Write\|Edit\|MultiEdit` | `kleos-sh.exe --claude-hook --agent claude-code` (Patch 75) | upstream Ghost-Frame | actif (active 2026-05-21, gate BLOQUANT via /gate/check + /approvals) |
 
 **Fix connexe 2026-05-21 -- session-start-kleos.sh : bloc Mnemonic Node.js legacy remplace par lancement detache du binaire Rust `kleos-sidecar.exe`**. L'ancien bloc (lignes 155-167) cherchait `~/.local/lib/mnemonic/index.ts` (Node.js legacy upstream Ghost-Frame) qui n'a jamais existe sur les postes VOCSAP -> log "Mnemonic binary not found", sidecar jamais lance. Nouveau bloc `ensure_kleos_sidecar_running` calque sur `ensure_eidolon_running` (PowerShell `Start-Process` detache, cascade URL `KLEOS_URL -> KLEOS_SERVER_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL`, fallback `KLEOS_API_KEY` via fichier `~/.config/eidolon/kleos-api-key.txt`). Niveau delta : chirurgical sur fichier VOCSAP-only. Necessite que `KLEOS_SIDECAR_WATCH` soit `true|false` (pas `0|1`) cote env operateur -- clap `bool` strict, contrairement a `KLEOS_SIDECAR_LLM_THINK` qui accepte `1|true|yes|on`.
 
@@ -6388,11 +6388,12 @@ Pourquoi pas un champ de requete : c'est exactement ce que le
 `skip_deserializing` upstream interdit, a raison. La liste serveur garde la
 decision chez l'operateur.
 
-Contrainte a connaitre : un agent liste qui utilise aussi `kleos-sh` en mode
-exec (`-c`) execute une commande `require_approval` sans approbation humaine,
-puisque le mode exec traite `Ask` comme `Allow` (comportement inchange apres
-une vraie approbation, ou le serveur rend aussi `requires_approval=true`). Ne
-lister que des agents de hook.
+Contrainte a connaitre : depuis le Patch 75, `kleos-sh` hors `--claude-hook`
+refuse toute commande `require_approval` que le serveur ne marque pas
+`approval_granted: true` (pose seulement apres une approbation humaine pendant
+l'attente). Lister un agent qui utilise `kleos-sh` en mode exec (`-c`) ou
+`--gate-only` est donc sur, a condition que ses postes aient un `kleos-sh` qui
+inclut le Patch 75 ; un `kleos-sh` plus ancien traite `Ask` comme `Allow`.
 
 Les lignes `gate_requests` creees en `pending_approval` pour un agent liste ne
 sont plus resolues par personne ; elles restent en l'etat.
@@ -7542,3 +7543,64 @@ mémoires dans le shard de l'admin et 5 dans la monolithe, puis vérifie que
 
 **Conditions de retrait :** upstream route lui-même `/stats` vers la base
 tenant.
+
+---
+
+## Patch 75 -- `kleos-sh` hors hook refuse toute approbation non accordée
+
+Carte roadmap 42251a7b. Patch local VOCSAP, complète le Patch 55.
+
+**Symptôme :** la liste `KLEOS_GATE_NO_WAIT_AGENTS` (Patch 55) repose sur le
+nom d'agent que le client déclare, et `kleos-sh` déclarait `claude-code` par
+défaut. Hors `--claude-hook`, le mode exec et `--gate-only` fusionnent `Ask`
+avec `Allow` : `kleos-sh --gate-only -c "systemctl status x"` rendait rc 0
+sans aucune approbation. D'autres retours anticipés de `check_handler`
+sautent aussi l'attente avec `requires_approval` posé (chemins forge
+Write/Edit : fail-open, chemin exempté, spec couvrante, mode warn), et un
+serveur ancien ne signale rien.
+
+**Approche :** marqueur positif, fail-closed côté client.
+- `kleos-server` pose `approval_granted: true` uniquement sur le retour
+  approuvé après une vraie attente ; aucun autre retour ne le porte.
+- `kleos-sh`, hors `--claude-hook`, transforme `requires_approval &&
+  !approval_granted` en refus ; un champ absent (serveur ancien) vaut refus.
+  En mode hook, `ask` reste émis comme avant.
+- `--agent` vaut `kleos-sh` par défaut ; le hook passe `--agent claude-code`.
+
+Le marqueur négatif d'une première version (`approval_waived`, posé sur le
+seul retour no-wait) est retiré : il laissait passer les autres retours
+anticipés et les serveurs anciens.
+
+Usage exec : sans être listé, tout check `Bash` entre dans l'attente
+(`TOOLS_REQUIRING_APPROVAL`), plus longue que le timeout client, et finit en
+refus « gate unreachable », même pour une commande bénigne (mesuré : 49,9 s
+puis rc 2 pour `kleos-sh --gate-only --tool-name Bash -c "echo probe"`).
+Pour rendre exec et `--gate-only` utilisables, lister `kleos-sh` dans
+`KLEOS_GATE_NO_WAIT_AGENTS` : grâce au refus ci-dessus, une commande
+`require_approval` reste refusée et seule une commande sans approbation
+requise passe. Contrepartie : une commande `require_approval` lancée via
+`kleos-sh` en exec n'est plus approuvable depuis la TUI ; elle se lance là où
+un humain la confirme.
+
+**Fichiers :** `kleos-server/src/routes/gate/no_wait.rs`
+(`approved_response`), `kleos-server/src/routes/gate/mod.rs` (retour
+approuvé), `kleos-sh/src/gate.rs` (`approval_granted`,
+`outcome_from_result`), `kleos-sh/src/main.rs` (défaut `--agent`),
+`docs/KLEOS_OPERATIONS_MANUAL.md`.
+
+**Tests :** `no_wait::tests::human_approval_is_marked_granted` et
+`result_returned_without_a_wait_carries_no_grant` côté serveur ;
+côté `kleos-sh`, `ungranted_approval_is_denied_outside_hook_mode`,
+`response_without_granted_field_is_denied_outside_hook_mode`,
+`granted_approval_maps_to_ask_outside_hook_mode`,
+`required_approval_maps_to_ask_in_hook_mode`.
+
+**Déploiement :** installer le nouveau `kleos-sh.exe` sur les postes avant
+d'ajouter `kleos-sh` à `KLEOS_GATE_NO_WAIT_AGENTS` (un `kleos-sh` ancien
+exécuterait une commande `require_approval` sans approbation). Le serveur
+peut suivre : tant qu'il n'est pas redéployé, `kleos-sh` refuse aussi les
+approbations réellement accordées hors hook.
+
+**Conditions de retrait :** upstream signale lui-même une approbation
+humaine dans la réponse de `/gate/check`, ou retire la fusion `Ask`/`Allow`
+du mode exec.
