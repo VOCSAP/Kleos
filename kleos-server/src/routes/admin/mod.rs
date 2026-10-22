@@ -394,11 +394,21 @@ async fn bootstrap(
 async fn get_stats(
     State(state): State<AppState>,
     Auth(auth): Auth,
+    crate::extractors::ResolvedDb(db): crate::extractors::ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
+    let memories = db
+        .read(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM memories", [], |row| {
+                row.get::<_, i64>(0)
+            })?)
+        })
+        .await
+        .map_err(AppError)?;
+
     Ok(Json(json!({
-        "memories": count_rows(&state, "SELECT COUNT(*) FROM memories").await?,
+        "memories": memories,
         "tasks": count_rows(&state, "SELECT COUNT(*) FROM tasks").await?,
         "events": count_rows(&state, "SELECT COUNT(*) FROM events").await?,
         "actions": count_rows(&state, "SELECT COUNT(*) FROM action_log").await?,
