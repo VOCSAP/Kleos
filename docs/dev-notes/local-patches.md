@@ -7357,9 +7357,9 @@ Carte roadmap e03ca1de. Patch local VOCSAP.
 **Symptôme sous upstream pur :** `store_with_atoms` appelle
 `atoms::extract` lorsque le champ `atoms` est absent ou `null`. Cela alimente
 `handoff_atoms` depuis tout appelant, y compris les clients MCP, GUI et les
-anciens clients non redéployés. Le chemin `handoff mechanical` n'extrayait déjà
-pas d'atomes (`kleos-lib/src/handoffs/mod.rs`, lignes 340-343), donc il ne
-constituait pas un chemin d'alimentation.
+anciens clients non redéployés. Le chemin `handoff mechanical` passe déjà par
+le retour anticipé de `store_with_atoms`, donc il ne constitue pas un chemin
+d'alimentation.
 
 **Approche :** `store_with_atoms` ne persiste que les atomes explicitement
 fournis et non vides. Un champ absent, `null` ou un tableau vide ne produit
@@ -7380,91 +7380,86 @@ existant ne supposait l'extraction implicite, donc aucun n'a été ajusté.
 
 **Procédure de purge de production, à exécuter par l'opérateur seulement :**
 précondition : le binaire serveur contenant ce patch est déployé, sinon les
-nouveaux handoffs recréent des atomes. Ne pas lancer cette procédure depuis
-Claude. La base du shard est
-`/var/lib/kleos/tenants/handoffs/kleos.db`. Avec SQLCipher, ne jamais mettre la
-clé dans une ligne de commande : dans chaque prompt SQLCipher, appliquer la
-même clé brute `ENGRAM_DB_KEY` que le service sous la forme
-`PRAGMA key = "x'<64-hex>'";`.
+nouveaux handoffs recréent des atomes. Exécuter pendant la fenêtre de
+déploiement, avec `kleos-server` arrêté. Ne pas lancer cette procédure depuis
+Claude. La base du shard est `/var/lib/kleos/tenants/handoffs/kleos.db`.
+
+Le mode `env` décode `KLEOS_DB_KEY` comme 64 caractères hexadécimaux, puis
+`format_pragma_key` fournit à SQLCipher la forme brute `"x'<64-hex>'"`. Ne
+jamais mettre cette clé dans une ligne de commande ou un prompt interactif. Les
+scripts opérateur prêts à transférer dans un répertoire root-only sont hors
+dépôt : `C:\Users\Olivier\.agent-forge\scratch\handoff_atoms_purge.sql`
+et `C:\Users\Olivier\.agent-forge\scratch\handoff_atoms_purge.sh`.
+
+La sauvegarde est une copie à froid du shard et de ses sidecars, vérifiée par
+`cmp` avant toute suppression :
 
 ```text
-# shell root LXC
+# shell root LXC, après systemctl stop kleos-server
 DB=/var/lib/kleos/tenants/handoffs/kleos.db
-BACKUP=/var/lib/kleos/backups/handoff-atoms-pre-purge.db
+STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
+BACKUP=/var/lib/kleos/backups/handoff-atoms-pre-purge-$STAMP
 
-if [ -f "$BACKUP" ]; then
-    printf 'Refus : la sauvegarde existe déjà : %s\n' "$BACKUP"
-else
-    printf 'La destination de sauvegarde est libre : %s\n' "$BACKUP"
-fi
+test ! -e "$BACKUP"
+install -d -m 700 "$BACKUP"
+for SOURCE in "$DB" "$DB-wal" "$DB-shm"; do
+    if [ -e "$SOURCE" ]; then
+        cp -a "$SOURCE" "$BACKUP/"
+        cmp -s "$SOURCE" "$BACKUP/${SOURCE##*/}"
+    fi
+done
 ```
 
-Si le message de refus s'affiche, ne pas continuer cette procédure dans cette
-session SSH. Sinon, arrêter le service et ouvrir la base du shard :
+Exécuter le SQL de purge de manière non interactive. `-bail` arrête SQLCipher
+sur la première erreur et la clé ne quitte jamais le pipe vers SQLCipher :
 
 ```text
-systemctl stop kleos-server
-sqlcipher /var/lib/kleos/tenants/handoffs/kleos.db
-
--- prompt SQLCipher
-.bail on
--- PRAGMA key = "x'<64-hex>'"; si chiffré
-SELECT COUNT(*) AS atoms_before FROM handoff_atoms;
-SELECT COUNT(*) AS links_before FROM atom_entity_links;
-VACUUM INTO '/var/lib/kleos/backups/handoff-atoms-pre-purge.db';
-.quit
-
-sqlcipher /var/lib/kleos/backups/handoff-atoms-pre-purge.db
-
--- prompt SQLCipher de la sauvegarde
-.bail on
--- PRAGMA key = "x'<64-hex>'"; si chiffré
-SELECT COUNT(*) AS backup_atoms_before FROM handoff_atoms;
-SELECT COUNT(*) AS backup_links_before FROM atom_entity_links;
-.quit
+PURGE_SQL=/root/handoff_atoms_purge.sql
+(
+    set -a
+    . /etc/kleos/kleos.env
+    set +a
+    { printf 'PRAGMA key = "x'"'"'%s'"'"'";\n' "$KLEOS_DB_KEY"; cat "$PURGE_SQL"; } |
+        sqlcipher -bail "$DB"
+)
 ```
 
-Comparer les deux comptages avant de supprimer quoi que ce soit. Puis rouvrir
-la base du shard, activer `.bail on`, appliquer la clé si nécessaire et exécuter
-la transaction suivante :
+`purge.sql` doit compter `handoff_atoms` et `atom_entity_links` avant la
+transaction, supprimer d'abord `handoff_atoms` puis `atom_entity_links`,
+recompter les deux tables, lancer `PRAGMA integrity_check`, puis compter
+`handoffs`. Les deux comptages après doivent être `0` et l'intégrité doit être
+`ok`.
+
+Avant de décider si la base monolithe doit aussi être purgée, compter ses
+tables de migration 63 en lecture seule, avec la même clé :
 
 ```text
-BEGIN IMMEDIATE;
-DELETE FROM handoff_atoms;
-DELETE FROM atom_entity_links;
-COMMIT;
-SELECT COUNT(*) AS atoms_after FROM handoff_atoms;
-SELECT COUNT(*) AS links_after FROM atom_entity_links;
-.quit
-```
-
-Les deux comptages après doivent être `0`. Avant de décider si la base
-monolithe doit aussi être purgée, compter ses tables de la migration 63 :
-
-```text
-sqlcipher /var/lib/kleos/kleos.db
-
--- prompt SQLCipher
-.bail on
--- PRAGMA key = "x'<64-hex>'"; si chiffré
-SELECT COUNT(*) AS monolith_atoms_before FROM handoff_atoms;
-SELECT COUNT(*) AS monolith_links_before FROM atom_entity_links;
-.quit
+MONOLITH=/var/lib/kleos/kleos.db
+(
+    set -a
+    . /etc/kleos/kleos.env
+    set +a
+    {
+        printf 'PRAGMA key = "x'"'"'%s'"'"'";\n' "$KLEOS_DB_KEY"
+        printf '%s\n' 'PRAGMA query_only = ON;'
+        printf '%s\n' 'SELECT COUNT(*) AS monolith_atoms_before FROM handoff_atoms;'
+        printf '%s\n' 'SELECT COUNT(*) AS monolith_links_before FROM atom_entity_links;'
+    } | sqlcipher -bail "$MONOLITH"
+)
 ```
 
 Ne purger la base monolithe que si ces comptages sont non nuls et après une
-sauvegarde vérifiée par le même procédé. Enfin, démarrer le service et vérifier
-son état :
+sauvegarde à froid vérifiée selon le même procédé. Enfin, démarrer le service
+et vérifier son état :
 
 ```text
 systemctl start kleos-server
 curl -sf http://127.0.0.1:4200/health
 ```
 
-**Retour arrière :** arrêter le service, conserver la base purgée sous un nom
-daté, recopier la sauvegarde vérifiée vers le shard, supprimer
-`kleos.db-wal` et `kleos.db-shm` s'ils existent, puis démarrer le service et
-recompter les deux tables.
+**Retour arrière :** avec le serveur arrêté, supprimer les sidecars courants,
+recopier `kleos.db` puis tout sidecar présent depuis la sauvegarde vérifiée,
+puis redémarrer le service et recompter les deux tables.
 
 **Conditions de retrait :** upstream rend l'extraction d'atomes explicitement
 opt-in par défaut et conserve les atomes fournis par l'appelant.
