@@ -716,8 +716,12 @@ Important options:
 - `-c`: command string
 - `--agent`: agent identity label, default `kleos-sh`; the Claude hook passes
   `--agent claude-code`. Outside `--claude-hook`, a command that requires
-  approval is denied when the server skipped the wait for the declared agent
-  (`KLEOS_GATE_NO_WAIT_AGENTS`).
+  approval is denied unless the server reports `approval_granted: true`, which
+  it only does after a human approved it during the wait.
+  Direct execution and `--gate-only` need the agent (`kleos-sh` by default)
+  listed in the server's `KLEOS_GATE_NO_WAIT_AGENTS`: otherwise every `Bash`
+  check waits for an approval longer than the client timeout and ends in a
+  "gate unreachable" deny, even for a benign command.
 - `--tool-name`: reported tool name, default `Bash`
 - `--gate-only`
 - `--claude-hook`
