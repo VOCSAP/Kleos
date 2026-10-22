@@ -1,4 +1,4 @@
-use super::types::VectorHit;
+use super::types::{SearchRequest, VectorHit};
 use crate::db::Database;
 use crate::Result;
 use std::collections::HashSet;
@@ -17,6 +17,52 @@ const MIN_POOL_BUFFER: usize = 32;
 /// Extra distinct memories collected beyond `limit` in chunk search before the
 /// owner/visibility filter, bounding the size of the follow-up IN query.
 const COLLECT_BUFFER: usize = 128;
+
+/// Predicates every hybrid_search result satisfies whatever the request says.
+pub(super) const REVIEWED_CURRENT_SQL: &str = "status != 'pending' AND is_superseded = 0";
+
+const NOISE_CATEGORIES: [&str; 2] = ["activity", "growth"];
+
+/// Request-dependent returnability, shared by the vector pre-filter and the
+/// downstream candidate filter of hybrid_search so neither keeps a memory the
+/// other drops.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReturnableFilter {
+    pub include_noise: bool,
+    pub include_archived: bool,
+    pub exclude_consolidated: bool,
+}
+
+impl ReturnableFilter {
+    pub(super) fn from_request(req: &SearchRequest) -> Self {
+        Self {
+            include_noise: req.include_noise.unwrap_or(false),
+            include_archived: req.include_archived.unwrap_or(false),
+            exclude_consolidated: req.exclude_consolidated.unwrap_or(false),
+        }
+    }
+
+    pub(super) fn keeps(&self, category: &str, is_archived: bool, is_consolidated: bool) -> bool {
+        (self.include_noise || !NOISE_CATEGORIES.contains(&category))
+            && (self.include_archived || !is_archived)
+            && !(self.exclude_consolidated && is_consolidated)
+    }
+
+    fn sql_predicates(&self) -> String {
+        let mut sql = format!(" AND {REVIEWED_CURRENT_SQL}");
+        if !self.include_noise {
+            let quoted: Vec<String> = NOISE_CATEGORIES.iter().map(|c| format!("'{c}'")).collect();
+            let _ = write!(sql, " AND category NOT IN ({})", quoted.join(","));
+        }
+        if !self.include_archived {
+            sql.push_str(" AND is_archived = 0");
+        }
+        if self.exclude_consolidated {
+            sql.push_str(" AND is_consolidated = 0");
+        }
+        sql
+    }
+}
 
 /// Serialize a query embedding to the `[f1,f2,...]` string form that
 /// libsql's `vector()` parser accepts. Single pre-allocated String +
@@ -124,6 +170,7 @@ pub async fn chunk_vector_search(
     embedding: &[f32],
     limit: usize,
     user_id: i64,
+    filter: &ReturnableFilter,
 ) -> Result<Vec<VectorHit>> {
     let Some(index) = db.chunk_vector_index.as_ref() else {
         return Ok(Vec::new());
@@ -134,10 +181,10 @@ pub async fn chunk_vector_search(
 
     // Dedup chunk hits down to distinct parent memories in distance order. The
     // chunk index carries no tenant identity, so we OVER-COLLECT candidates
-    // (beyond `limit`) and then drop any that are not owned by the caller and
-    // currently visible (is_latest, not forgotten). Without this filter foreign
-    // or superseded memories occupy the `limit` slots and are only discarded
-    // later at hydration -- recall starvation in monolith mode.
+    // (beyond `limit`) and then drop any that are not owned by the caller or
+    // that hybrid_search would not return. Without this filter those memories
+    // occupy the `limit` slots and are only discarded later at hydration --
+    // recall starvation.
     let collect_cap = limit.saturating_add(COLLECT_BUFFER);
     let mut seen: HashSet<i64> = HashSet::with_capacity(collect_cap);
     // (memory_id, chunk_idx, distance) preserving distance order.
@@ -154,7 +201,7 @@ pub async fn chunk_vector_search(
     }
 
     let candidate_ids: Vec<i64> = candidates.iter().map(|(id, _, _)| *id).collect();
-    let owned = filter_owned_visible(db, &candidate_ids, user_id).await?;
+    let owned = filter_owned_visible(db, &candidate_ids, user_id, filter).await?;
 
     let mut out: Vec<VectorHit> = Vec::with_capacity(limit);
     let mut winners: Vec<(i64, usize)> = Vec::with_capacity(limit);
@@ -187,26 +234,29 @@ pub async fn chunk_vector_search(
     Ok(out)
 }
 
-/// Return the subset of `ids` that belong to `user_id` and are currently
-/// visible (is_latest, not forgotten). One batched query; preserves nothing
-/// about order (caller re-orders against its candidate list).
+/// Return the subset of `ids` that belong to `user_id`, are currently visible
+/// (is_latest, not forgotten) and that hybrid_search would return under
+/// `filter`. One batched query; preserves nothing about order (caller
+/// re-orders against its candidate list).
 /// `pub(super)` so search.rs's centroid path can apply the same shared-index
 /// ownership filter (finding [87]).
 pub(super) async fn filter_owned_visible(
     db: &Database,
     ids: &[i64],
     user_id: i64,
+    filter: &ReturnableFilter,
 ) -> Result<HashSet<i64>> {
     if ids.is_empty() {
         return Ok(HashSet::new());
     }
     let ids_owned: Vec<i64> = ids.to_vec();
+    let returnable = filter.sql_predicates();
     db.read(move |conn| {
         let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id FROM memories \
              WHERE id IN ({placeholders}) AND user_id = ? \
-               AND is_forgotten = 0 AND is_latest = 1"
+               AND is_forgotten = 0 AND is_latest = 1{returnable}"
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids_owned.len() + 1);
@@ -327,7 +377,9 @@ mod tests {
             .await
             .unwrap();
 
-        let owned = super::filter_owned_visible(&db, &ids, 1).await.unwrap();
+        let owned = super::filter_owned_visible(&db, &ids, 1, &Default::default())
+            .await
+            .unwrap();
         assert!(owned.contains(&ids[0]), "owned + visible must be kept");
         assert!(!owned.contains(&ids[1]), "foreign user excluded");
         assert!(

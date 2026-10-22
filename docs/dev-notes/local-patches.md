@@ -7625,3 +7625,49 @@ approbations réellement accordées hors hook.
 **Conditions de retrait :** upstream signale lui-même une approbation
 humaine dans la réponse de `/gate/check`, ou retire la fusion `Ask`/`Allow`
 du mode exec.
+
+---
+
+## Patch 76 -- le pré-filtre du canal vecteur applique les exclusions de l'aval
+
+Carte roadmap c548bd00. Patch local VOCSAP.
+
+**Symptôme :** `POST /memories/search` en budget `low` rend 0 résultat, sans
+erreur, pour certaines requêtes (environ une sur dix sur le jeu d'évaluation
+kleos-cache). Le pré-filtre `filter_owned_visible` ne testait que `user_id`,
+`is_forgotten = 0` et `is_latest = 1`, puis la boucle coupait à
+`candidate_target` (64 à limit 12). Les mémoires archivées, de catégorie
+`growth` ou `activity`, `is_superseded = 1` ou `status = 'pending'` passaient
+ce filtre, occupaient les places de sortie, puis étaient jetées en aval
+(`hydrate_candidates` et le `retain` de `hybrid_search`). En production, les
+7857 auto-réflexions `growth` archivées dominaient le voisinage. Le budget
+`low` retire seulement le repli FTS qui masquait le défaut en `mid`.
+
+**Approche :** une définition unique de « retournable » dans
+`kleos-lib/src/memory/vector.rs` : la constante `REVIEWED_CURRENT_SQL`
+(`status != 'pending' AND is_superseded = 0`), reprise par la requête de
+`hydrate_candidates`, et `ReturnableFilter` (construit depuis `include_noise`,
+`include_archived` et `exclude_consolidated` de `SearchRequest`), qui fournit
+les prédicats SQL du pré-filtre et le test `keeps` du `retain` aval.
+`filter_owned_visible` reçoit ce filtre sur les deux chemins, chunks
+(`chunk_vector_search`) et centroïde (`centroid_or_sqlite_vector`).
+
+**Hors périmètre :** le repli sqlite-vec `vector_search` garde son filtre. Il
+est aussi appelé par `intelligence/linker.rs::auto_link`, dont le filtre
+`filter_linkable_hits` garde les catégories `growth`/`activity` et les
+mémoires `is_superseded` : y ajouter les exclusions de recherche changerait
+les liens créés.
+
+**Fichiers :** `kleos-lib/src/memory/vector.rs`,
+`kleos-lib/src/memory/search.rs`, `docs/dev-notes/local-patches.md`.
+
+**Tests :** `memory::search::tests::vector_prefilter_skips_unreturnable_neighbours`
+(index ANN factice à classement fixe, 100 leurres archived, growth, activity,
+superseded ou pending plus proches que la cible, budget low, limit 12 :
+la cible est retrouvée sur les chemins chunk et centroïde ; avant correctif
+n=0), `vector_prefilter_keeps_returnable_neighbours` (contrôle : 100 leurres
+sains, la cible hors fenêtre reste exclue, n=12),
+`vector_prefilter_honours_include_flags`.
+
+**Conditions de retrait :** upstream aligne lui-même le pré-filtre ANN sur les
+filtres de résultat de `hybrid_search`.
