@@ -317,10 +317,10 @@ impl HandoffsDb {
         })
     }
 
-    /// Stores a handoff and persists explicitly supplied context atoms.
+    /// Stores a handoff and persists only explicit, nonempty context atoms.
     ///
-    /// An absent or null `atoms` field does not trigger extraction. Mechanical
-    /// handoffs are stored as normal but never receive atoms.
+    /// Absent, null, and empty `atoms` fields do not trigger extraction.
+    /// `_sidecar_url` is retained for API compatibility and ignored.
     pub async fn store_with_atoms(
         &self,
         params: StoreParams,
@@ -331,7 +331,7 @@ impl HandoffsDb {
         let params = normalize_store_params(params)?;
         let result = self.store(params.clone(), user_id).await?;
 
-        // Mechanical handoffs are git-state dumps; skip atom extraction.
+        // Mechanical handoffs are git-state dumps; do not store atoms.
         if params.handoff_type.as_deref() == Some("mechanical") {
             return Ok(result);
         }
@@ -1429,9 +1429,11 @@ mod tests {
             "fixture must trigger heuristic extraction"
         );
 
-        db.store_with_atoms(store_params("proj-a", content), 7, None, None)
+        let result = db
+            .store_with_atoms(store_params("proj-a", content), 7, None, None)
             .await
             .expect("store handoff");
+        assert!(result.id.is_some());
 
         let atoms = db
             .list_atoms("proj-a", None, None, 10, 7)
