@@ -3916,6 +3916,35 @@ fn dump_scope(in_git_worktree: bool) -> &'static str {
     }
 }
 
+fn build_handoff_dump_body(
+    scope: &str,
+    workstream: &str,
+    title: Option<String>,
+    branch: Option<String>,
+    directory: Option<String>,
+    agent: String,
+    handoff_type: String,
+    content: String,
+    session_id: Option<String>,
+    model: Option<String>,
+    host: String,
+) -> Value {
+    json!({
+        "scope": scope,
+        "workstream": workstream,
+        "title": title,
+        "branch": branch,
+        "directory": directory,
+        "agent": agent,
+        "type": handoff_type,
+        "content": content,
+        "session_id": session_id,
+        "model": model,
+        "host": host,
+        "atoms": [],
+    })
+}
+
 /// Dispatches session handoff subcommands (dump, restore, list, gc, etc.).
 async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
     match cmd {
@@ -3972,19 +4001,23 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                 std::process::exit(1);
             }
 
-            let mut body = json!({
-                "scope": scope,
-                "workstream": workstream,
-                "title": title,
-                "branch": branch,
-                "directory": dir.clone().or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())),
-                "agent": agent.clone().unwrap_or_else(detect_agent),
-                "type": handoff_type.clone().unwrap_or_else(|| "manual".to_string()),
-                "content": content_str,
-                "session_id": session_id,
-                "model": model.clone().or_else(detect_model),
-                "host": host.clone().unwrap_or_else(detect_host),
-            });
+            let mut body = build_handoff_dump_body(
+                scope,
+                &workstream,
+                title.clone(),
+                branch,
+                dir.clone().or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .map(|p| p.to_string_lossy().to_string())
+                }),
+                agent.clone().unwrap_or_else(detect_agent),
+                handoff_type.clone().unwrap_or_else(|| "manual".to_string()),
+                content_str,
+                session_id,
+                model.clone().or_else(detect_model),
+                host.clone().unwrap_or_else(detect_host),
+            );
             if let Some(ref project) = project {
                 body["project"] = json!(project);
             }
@@ -4253,6 +4286,7 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                 "model": model.clone().or_else(detect_model),
                 "host": host.clone().unwrap_or_else(detect_host),
                 "metadata": json!({"cwd": work_dir, "auto": true}),
+                "atoms": [],
             });
 
             match client.post("/handoffs", body).await {
@@ -5419,8 +5453,9 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
 #[cfg(test)]
 mod tests {
     use super::{
-        detect_project_at_path, dump_scope, is_safe_materialization_path, project_from_remote,
-        resolve_credential_authority_url, restore_requires_exact_session, sanitize_download_name,
+        build_handoff_dump_body, detect_project_at_path, dump_scope, is_safe_materialization_path,
+        project_from_remote, resolve_credential_authority_url, restore_requires_exact_session,
+        sanitize_download_name,
     };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
 
@@ -5518,6 +5553,25 @@ mod tests {
             Some("Kleos")
         );
         assert_eq!(project_from_remote(""), None);
+    }
+
+    #[test]
+    fn handoff_dump_body_disables_server_atom_extraction() {
+        let body = build_handoff_dump_body(
+            "repository",
+            "Kleos",
+            None,
+            None,
+            None,
+            "claude-code".to_string(),
+            "manual".to_string(),
+            "handoff content".to_string(),
+            None,
+            None,
+            "host".to_string(),
+        );
+
+        assert_eq!(body.get("atoms"), Some(&serde_json::json!([])));
     }
 
     /// A project label does not make a non-Git restore safe; callers outside

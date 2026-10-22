@@ -7347,3 +7347,73 @@ réserve, et passe aussi sur l'upstream.
 
 **Conditions de retrait :** upstream émet le sémantique réservé avant les tiers
 always-on, par exemple via une PR issue de ce patch.
+
+---
+
+## Patch 72 -- désactiver l'extraction d'atomes de handoff côté client
+
+Carte roadmap e03ca1de. Patch local VOCSAP.
+
+**Symptôme sous upstream pur :** une requête `POST /handoffs` sans champ
+`atoms` déclenche l'extraction heuristique serveur. Les fragments générés sont
+inexploitables et aucun consommateur VOCSAP ne les utilise encore. Les deux
+chemins directs de `kleos-cli` (`handoff dump` et `handoff mechanical`) et le
+proxy `kleos-mcp` pouvaient donc continuer à alimenter `handoff_atoms`.
+
+**Approche :** `kleos-cli` envoie systématiquement `"atoms": []` dans ses deux
+corps `POST /handoffs`. Le proxy `kleos-mcp` ajoute le même défaut au routeur
+`handoffs.store`, sans écraser un champ `atoms` explicitement fourni. Aucun
+flag de réactivation n'est ajouté : la politique VOCSAP abandonne les atomes,
+et un client volontaire peut encore fournir son propre tableau. Une option
+d'environnement ou un changement serveur ne convient pas : l'opt-out fait
+partie du corps de chaque appelant et le serveur conserve son contrat API.
+
+**Fichiers :** `kleos-cli/src/main.rs`, `kleos-mcp/src/tools.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `handoff_dump_body_disables_server_atom_extraction` vérifie le
+corps construit et échoue si le champ est omis. Sa mutation manuelle sans
+`"atoms": []` échoue avec `left: None`, `right: Some(Array [])`.
+`handoff_store_defaults_to_no_atom_extraction` vérifie l'injection du proxy
+MCP.
+
+**Procédure de purge de production, à exécuter par l'opérateur seulement :**
+aucune route API ou sous-commande existante ne purge tous les atomes. Sur LXC
+121, opérer sur `/var/lib/kleos/tenants/handoffs/engram.db`, après déploiement
+de ce patch, avec `sqlcipher` si l'instance est chiffrée. Ne jamais mettre la
+clé dans la ligne de commande : dans le prompt SQLCipher, appliquer d'abord la
+même clé brute `ENGRAM_DB_KEY` que le service, sous la forme
+`PRAGMA key = "x'<64-hex>'";`. Puis exécuter :
+
+```text
+# shell root LXC -- ne pas lancer depuis Claude
+DB=/var/lib/kleos/tenants/handoffs/engram.db
+BACKUP=/var/lib/kleos/backups/handoff-atoms-pre-purge.db
+test ! -e "$BACKUP" || exit 1
+systemctl stop kleos-server
+sqlcipher "$DB"
+
+-- prompt SQLCipher; après PRAGMA key si chiffré
+SELECT COUNT(*) AS atoms_before FROM handoff_atoms;
+SELECT COUNT(*) AS links_before FROM atom_entity_links;
+.backup /var/lib/kleos/backups/handoff-atoms-pre-purge.db
+BEGIN IMMEDIATE;
+DELETE FROM atom_entity_links;
+DELETE FROM handoff_atoms;
+COMMIT;
+SELECT COUNT(*) AS atoms_after FROM handoff_atoms;
+SELECT COUNT(*) AS links_after FROM atom_entity_links;
+.quit
+sha256sum "$BACKUP" "$DB"
+systemctl start kleos-server
+curl -sf http://127.0.0.1:4200/health
+```
+
+Le comptage après doit être `0` pour les deux tables. Retour arrière : arrêter
+le service, conserver le fichier purgé sous un nom daté, recopier `BACKUP` vers
+`DB`, supprimer les sidecars `engram.db-wal` et `engram.db-shm` s'ils existent,
+puis démarrer le service et recompter les deux tables. La sauvegarde `.backup`
+est la référence de rollback, pas une simple copie du fichier SQLite ouvert.
+
+**Conditions de retrait :** le serveur rend l'extraction d'atomes opt-in par
+défaut et les clients amont appliquent ce défaut à leurs corps `POST /handoffs`.
