@@ -7463,3 +7463,52 @@ puis redémarrer le service et recompter les deux tables.
 
 **Conditions de retrait :** upstream rend l'extraction d'atomes explicitement
 opt-in par défaut et conserve les atomes fournis par l'appelant.
+
+---
+
+## Patch 73 -- le `project` d'un handoff suit la résolution du space (Patch 33)
+
+Carte roadmap 62e01fcc. Patch local VOCSAP.
+
+**Symptôme sous upstream pur :** `detect_project` nomme le projet d'après le
+remote `origin` en gardant sa casse (`Kleos`), alors que le space du même dépôt
+vaut `kleos`. Les filtres de lecture des handoffs sont des égalités exactes :
+`handoff restore --project kleos` ne voit pas les lignes rangées sous `Kleos`,
+et la reprise de session rate sans erreur.
+
+**Approche :** côté serveur, pour couvrir tous les clients (CLI, MCP, GUI).
+`normalize_store_params` passe le `project` d'un handoff `repository` par
+`space::normalize_space_name` (minuscules, `[a-z0-9_-]`) ; le `workstream` par
+défaut en hérite. Le `project` d'un handoff `standalone` reste le workstream
+brut. Chaque filtre de lecture (`project` et `workstream` de la clause
+partagée, recherche FTS, atomes listés et décroissance) compare
+`col = <valeur brute> OR lower(col) = <valeur normalisée>`. La dédup
+mécanique compare `lower(project)` à la valeur normalisée. Les lignes déjà
+stockées ne sont pas migrées : `lower()` suffit pour les variantes mesurées
+(`Kleos`/`kleos`, `Argus`/`argus`, `AiDex`/`aidex`), qui ne diffèrent que par la
+casse, et la comparaison brute garde les valeurs historiques à caractères
+spéciaux (`github.com/VOCSAP/koryphaios`) accessibles par leur nom exact. Pas
+d'index : `lower()` empêche l'usage d'un index sur `project`, coût négligeable
+à quelques centaines de lignes par utilisateur. Côté client, `detect_project`
+garde `SESSION_HANDOFF_PROJECT` en priorité et rend toujours `None` hors Git
+(la portée `standalone` en dépend) ; dans un dépôt Git, il délègue à
+`space::resolve_project_name` (marqueur `.kleos-space`, puis basename de la
+racine Git). Le repli sur le basename du cwd n'est jamais atteint, puisqu'un
+dépôt Git a toujours une racine nommée.
+
+**Fichiers :** `kleos-lib/src/handoffs/mod.rs`, `kleos-cli/src/main.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `repository_project_matches_space_normalization` stocke `Kleos`,
+vérifie la forme stockée `kleos` et la relecture par `kleos` et `Kleos` (liste
+et recherche). `legacy_mixed_case_rows_match_normalized_reader` insère en SQL
+une ligne `Kleos` et la retrouve par `kleos` (liste et dernier handoff).
+`project_detection_follows_space_resolution` crée un dépôt Git `Kleos` au
+remote `Other-Name` (résolu `kleos`), puis un marqueur (résolu par le
+marqueur). `project_detection_matches_this_repository_space` fige `kleos` pour
+ce dépôt. `project_detection_parses_remote_names` est retiré avec
+`project_from_remote`, devenu sans appelant.
+
+**Conditions de retrait :** une migration normalise les `project` historiques
+(après vérification qu'aucun couple de projets ne diffère que par la casse), ce
+qui rend les comparaisons `lower()` superflues.
