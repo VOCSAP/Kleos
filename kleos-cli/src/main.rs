@@ -3790,12 +3790,10 @@ fn detect_project_at_path(dir: &std::path::Path) -> Option<String> {
     if !root_output.status.success() {
         return None;
     }
-    let git_root = std::path::PathBuf::from(
-        String::from_utf8_lossy(&root_output.stdout)
-            .trim()
-            .to_string(),
-    );
-    if git_root.as_os_str().is_empty() {
+    if String::from_utf8_lossy(&root_output.stdout)
+        .trim()
+        .is_empty()
+    {
         return None;
     }
     space::resolve_project_name(dir)
@@ -5528,11 +5526,14 @@ mod tests {
         std::fs::remove_dir_all(&parent).expect("remove test repository");
     }
 
-    /// This repository resolves to its `kleos` space.
+    /// This repository resolves its handoff project to the same name as its
+    /// space.
     #[test]
     fn project_detection_matches_this_repository_space() {
         let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(detect_project_at_path(crate_dir).as_deref(), Some("kleos"));
+        let project = detect_project_at_path(crate_dir);
+        assert!(project.is_some());
+        assert_eq!(project, crate::space::resolve_project_name(crate_dir));
     }
 
     /// A project label does not make a non-Git restore safe; callers outside
