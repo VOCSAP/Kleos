@@ -17,6 +17,10 @@ pub struct GateCheckResult {
     pub gate_id: i64,
     pub requires_approval: bool,
     pub enrichment: Option<String>,
+    /// Set by the server when it returned without waiting for the approval
+    /// that `requires_approval` asks for.
+    #[serde(default)]
+    pub approval_waived: bool,
 }
 
 pub enum GateOutcome {
@@ -46,45 +50,60 @@ pub async fn check_remote(
     server_url: &str,
     api_key: &str,
     req: &GateCheckRequest,
+    claude_hook: bool,
 ) -> Result<GateOutcome, String> {
     let url = format!("{}/gate/check", server_url.trim_end_matches('/'));
 
     let result = send_request(client, &url, api_key, req).await?;
+    Ok(outcome_from_result(result, &req.command, claude_hook))
+}
 
+/// Outside the Claude Code hook nobody can answer an "ask", so an approval
+/// the server waived for the declared agent becomes a deny.
+fn outcome_from_result(
+    result: GateCheckResult,
+    request_command: &str,
+    claude_hook: bool,
+) -> GateOutcome {
     if result.allowed {
         let command = result
             .resolved_command
-            .unwrap_or_else(|| req.command.clone());
+            .unwrap_or_else(|| request_command.to_string());
+        if result.requires_approval && result.approval_waived && !claude_hook {
+            return GateOutcome::Deny {
+                reason: "approval required but not awaited by the server for this agent; \
+                         use the Claude Code hook (--claude-hook) or an --agent name the \
+                         server does not list in KLEOS_GATE_NO_WAIT_AGENTS"
+                    .to_string(),
+                gate_id: result.gate_id,
+            };
+        }
         if result.requires_approval {
-            return Ok(GateOutcome::Ask {
+            return GateOutcome::Ask {
                 command,
                 reason: result.reason.unwrap_or_else(|| {
                     "Kleos gate: this command matches a require-approval pattern".to_string()
                 }),
                 enrichment: result.enrichment,
                 gate_id: result.gate_id,
-            });
+            };
         }
-        Ok(GateOutcome::Allow {
+        GateOutcome::Allow {
             command,
             enrichment: result.enrichment,
             gate_id: result.gate_id,
-        })
+        }
     } else {
         let reason = result
             .reason
             .unwrap_or_else(|| "denied by gate (no reason given)".to_string());
-        Ok(GateOutcome::Deny {
+        GateOutcome::Deny {
             reason,
             gate_id: result.gate_id,
-        })
+        }
     }
 }
 
-// Windows used to spawn curl.exe here: reqwest timed out on this host while
-// return packets to low source ports were dropped by the router. With that
-// rule fixed, one in-process client serves every platform and saves a process
-// spawn per tool call.
 async fn send_request(
     client: &reqwest::Client,
     url: &str,
@@ -120,4 +139,64 @@ fn gate_timeout() -> std::time::Duration {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(12);
     std::time::Duration::from_secs(secs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{outcome_from_result, GateCheckResult, GateOutcome};
+
+    fn result(allowed: bool, requires_approval: bool, approval_waived: bool) -> GateCheckResult {
+        GateCheckResult {
+            allowed,
+            reason: Some("matches systemctl".to_string()),
+            resolved_command: Some("systemctl status x".to_string()),
+            gate_id: 7,
+            requires_approval,
+            enrichment: None,
+            approval_waived,
+        }
+    }
+
+    #[test]
+    fn required_approval_maps_to_ask_in_hook_mode() {
+        let outcome = outcome_from_result(result(true, true, true), "cmd", true);
+        assert!(matches!(outcome, GateOutcome::Ask { .. }));
+    }
+
+    #[test]
+    fn waived_approval_is_denied_outside_hook_mode() {
+        let outcome = outcome_from_result(result(true, true, true), "cmd", false);
+        match outcome {
+            GateOutcome::Deny { reason, gate_id } => {
+                assert_eq!(gate_id, 7);
+                assert!(reason.contains("not awaited"), "reason: {reason}");
+            }
+            _ => panic!("waived approval must not reach exec or gate-only allow"),
+        }
+    }
+
+    #[test]
+    fn approval_granted_after_a_real_wait_still_runs_outside_hook_mode() {
+        let outcome = outcome_from_result(result(true, true, false), "cmd", false);
+        assert!(matches!(outcome, GateOutcome::Ask { .. }));
+    }
+
+    #[test]
+    fn plain_allow_and_deny_are_unchanged() {
+        assert!(matches!(
+            outcome_from_result(result(true, false, false), "cmd", false),
+            GateOutcome::Allow { .. }
+        ));
+        assert!(matches!(
+            outcome_from_result(result(false, false, false), "cmd", false),
+            GateOutcome::Deny { .. }
+        ));
+    }
+
+    #[test]
+    fn response_without_waived_field_parses_as_not_waived() {
+        let json = r#"{"allowed":true,"reason":null,"resolved_command":null,"gate_id":1,"requires_approval":true}"#;
+        let parsed: GateCheckResult = serde_json::from_str(json).expect("older server body");
+        assert!(!parsed.approval_waived);
+    }
 }
