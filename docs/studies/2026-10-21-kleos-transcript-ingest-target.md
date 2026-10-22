@@ -1,12 +1,18 @@
 # Étude d'architecture : cible de l'ingestion des transcripts Claude Code
 
-Statut : **conception seulement, aucun code livré**. Révision 5 du 2026-10-21 (dédup de
-fond, space par session, juge amont Haiku, bande grise Sonnet, condition de licence ;
-voir la table ci-dessous).
+Statut : **conception seulement, aucun code livré**. Révision 6 du 2026-10-22 (vue A+
+calculée au démon, le relais ne stocke plus B ; détecteur de secrets avant toute
+publication ; injections du harnais repérées par la structure ; « extraire là où c'est
+écrit » généralisé ; renvoi motivé par époque pour une montée de vue ; voir la table
+ci-dessous).
 Historique : la
 révision 2 répondait à un challenge au verdict « tombe » et à trois mesures (T1 à T3,
 section 0) ; la révision 3 intègre le verdict du consultant sur l'embranchement de la
-section 1.3 ; la révision 4 retire toute dépendance à la porte de revue. Décisions
+section 1.3 ; la révision 4 retire toute dépendance à la porte de revue ; la révision 5
+pose la dédup de fond, le space par session et les juges cloud ; la révision 6 répond à
+une attaque de challenger sur la rédaction des secrets et sur les injections du harnais,
+validée par deux mesures sur le corpus du poste (Kleos #32359, #32381), et à la décision
+opérateur du 2026-10-22 de calculer la vue A+ sur le poste. Décisions
 opérateur du 2026-10-21 : R et règle de bump validées (Q5) ; **la porte de revue
 (`KLEOS_REVIEW_GATE_*`, statut `pending`, inbox) ne sera jamais activée** (21:57, Kleos
 #31722), donc la variante (a') et la carte 6ee2297f sont abandonnées. La protection
@@ -23,17 +29,33 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 `3f45e0f8` (portage Windows, livré), `19671bc8` (dry-run du watcher), `6ee2297f`
 (dédup et porte d'attente, archivée en wontfix le 2026-10-21).
 
-### Ce que les révisions 2 à 5 changent
+### Historique des révisions
+
+| Révision | Date | Objet |
+|---|---|---|
+| 1 | 2026-10-21 | Cible initiale : démon poste, relais, publication à 45 min |
+| 2 | 2026-10-21 | Challenge « tombe » et mesures T1 à T3 ; B stocké au relais, A+ présenté au modèle ; publication à la stabilisation |
+| 3 | 2026-10-21 | Verdict du consultant : R, relais séparé sur kleos-lib épinglé |
+| 4 | 2026-10-21 | Porte de revue jamais activée ; protection par le juge amont |
+| 5 | 2026-10-21 | Dédup de fond, space par session, juge amont Haiku, bande grise Sonnet, gel ELv2 |
+| 6 | 2026-10-22 | A+ calculé au démon, plus de B au relais ; détecteur de secrets avant publication ; injections repérées par la structure ; « extraire là où c'est écrit » généralisé ; renvoi motivé (`rewrite`, `view_upgrade`) ; points secondaires du challenger (erreurs Windows en français, ligne illisible, `/rewind`, enregistrement énorme) |
+
+### Ce que les révisions 2 à 6 changent
 
 | Point du challenge, du consultant ou de l'opérateur | Réponse | Section |
 |---|---|---|
+| Opérateur (révision 6) : A+ au démon, le relais ne stocke plus B. Motif mesuré : des secrets réels sont dans les sorties d'outils (Kleos #32381, F17) et le poste garde les transcripts 180 jours (F20) | La décision « B stocké, A+ présenté » de la révision 2 est **remplacée** : le démon calcule la vue A+ et n'envoie qu'elle ; la seconde copie en B disparaît ; un retraitement avec une vue plus large passe par un renvoi depuis la source sous une nouvelle époque motivée (`view_upgrade`), borné aux fichiers encore sur le poste, poste allumé | 1.2, 1.4, 2.8, 3.2, 5, 6, Q1 |
+| Challenger (révision 6, a) : la rédaction prévue laisse passer les secrets propres à Kleos et efface des faits (Kleos #32359, F19) | Rédaction **au niveau du jeton** (jamais la ligne), formats ajoutés (`kleos_`, `gh[opsur]_`, valeurs après `*_KEY`, `*_SECRET`, `*_PEPPER`, `*_TOKEN`, URL à identifiants, `PrivateKey =`), fixtures `env`, `Get-ChildItem Env:`, `docker inspect`, `.env`, `kleos.env`, `sqlite3` en `|` ; **détecteur de secrets côté relais avant toute publication Kleos**, en échec fermé, parce qu'une mémoire n'expire pas | 1.4, 4.4 (couche 0), 8 |
+| Challenger (révision 6, b) : les injections du harnais passent pour du texte user (F18) | Texte user défini **par la structure** et en échec fermé ; corps de skill, `<task-notification>`, blocs `=== … ===`, refus de hook dans les `tool_result` classés harnais ; tout préfixe de 40 caractères répété dans au moins 5 sessions classé injection ; alerte si la part de texte user gardé double après une mise à jour de Claude Code | 3.3, 6, 8 |
+| Challenger (révision 6, c) : « extraire là où c'est écrit » n'était appliqué qu'aux `<channel>` | Généralisé : un store Kleos de l'agent devient un marqueur `{stored: id}` qui sert de liste négative au juge ; un `send_message` identique envoyé à plusieurs pairs est dédupliqué dans la session ; un `<channel>` sans original transmis (émetteur `operator`, Deck, pair hors parc des démons) reste en entier ; `subagents/` envoyés dès la v1 | 3.3, 3.4, 4.2, 4.6 |
+| Challenger (révision 6, points secondaires) | Erreurs Windows en français dans le filtre des lignes d'erreur ; ligne complète illisible traitée explicitement ; branches abandonnées par `/rewind` non extraites comme valides ; un enregistrement énorme ne bloque pas le fichier | 2.3, 3.3, 4.3, 6 |
 | (1) Une ligne `pending` absorbe les stores ultérieurs de l'agent | **Sans objet depuis la révision 4** : la porte ne sera jamais activée, aucune ligne `pending` n'est écrite | 4.4 |
 | Opérateur (révision 5) : dédup de fond comme couche principale contre le transcript publié avant l'agent ; space par session ; juge cloud admis ; licence upstream | Niveau déterministe déjà assuré par le Patch 60 à 0,9, bande grise [0,80 ; 0,90[ jugée par Sonnet dans le relais (décision opérateur du 2026-10-22, 4.8), file `to_dedup` en table du relais ; résiduel réécrit (le mauvais ordre n'existe qu'au-delà de 8 h) ; space résolu sur le poste depuis le fichier de session du hook ; juge amont Haiku ; rev épinglé conditionné au gel ELv2 | 1.3, 4.4, 4.5, 4.8, 8, Q5 |
 | Opérateur (révision 4) : pas de porte ; des faits de Qwen peut-être faux seraient servis dès publication ; aucune relecture humaine possible | Protection autonome à zéro delta en quatre couches : juge amont dans le relais (fidélité et voisinage) avant toute publication, importance plafonnée à 5, provenance par source et tags, juge nightly qui archive a posteriori ses seules mémoires de transcript. Les couches 1 à 3 bloquent la mise en service, la couche 4 et le nettoyage des mémoires d'agents non | 4.4, 4.6, 4.7 |
 | (2) La règle « non révisé après 45 min » ne tient pas à la reprise | Parade : état par lignée hérité à la reprise, publication à la stabilisation (8 h), révision des faits publiés par la chaîne de versions de Kleos | 4.2, 4.3 |
-| (3) Coût du relais sous-estimé : secrets, chiffrement, authentification | Parade pour chacun, coût chiffré ; limite nommée : la rédaction des secrets est incomplète par nature | 1.4 |
+| (3) Coût du relais sous-estimé : secrets, chiffrement, authentification | Parade pour chacun, coût chiffré ; limite nommée : la rédaction des secrets est incomplète par nature. **Révision 6** : la seconde copie en B disparaît, un détecteur avant publication s'ajoute | 1.4 |
 | (4) Le budget Ollama ignore `KLEOS_LLM_THINK` | Parade : `think: false` explicite et rejet des réponses tronquées ; budget recalculé sur T2 | 3.2, 4.2 |
-| Idée du challenger : stocker B, ne présenter que A+ au modèle | Retenue | 3.2 |
+| Idée du challenger : stocker B, ne présenter que A+ au modèle | Retenue en révision 2 ; **remplacée en révision 6** par A+ calculé au démon (voir la première ligne de cette table) | 3.2 |
 | Consultant (révision 3) : R, mais le relais dépend de kleos-lib par un rev épinglé | Intégré : E3 et E7 neutres, effort de 1.4 ramené à 0,5 à 1 jour, lot F de gel avant tout code | 1.3, 1.4, 8, Q5 |
 
 ### Légende des étiquettes
@@ -74,6 +96,10 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | F14 | Tiers servis sans requête : le tier « important » de `/recall` prend `importance >= 7` (`RECALL_IMPORTANT_MIN`, `kleos-server/src/routes/memory/mod.rs:681`, appel `:770`) ; `/context` ne remonte d'office que les statiques d'importance au moins 9 (`kleos-lib/src/context/mod.rs:601`) et les insights d'importance au moins 8 (`kleos-lib/src/context/deps.rs:117`) | DÉDUIT (lignes lues) |
 | F15 | Filtres de lecture existants : `source_filter` et `tags` sont des filtres **positifs** (égalité de source, `kleos-lib/src/memory/search.rs:1543-1575`) ; aucun filtre d'**exclusion** par source n'existe. Seules les catégories `activity` et `growth` sont exclues par défaut de la recherche (`search.rs:1101-1107`) | DÉDUIT (lignes lues) ; absence d'un filtre d'exclusion SUPPOSÉE (lecture de `search.rs` seulement) |
 | F16 | La dédup de fond (Patch 60) garde l'importance la plus haute, et à égalité l'id le plus haut | DÉDUIT (`docs/dev-notes/local-patches.md:6606-6613`) |
+| **F17** | Secrets réels dans le corpus du poste (4 777 fichiers, 7,1 Go le 2026-10-22 ; comptes de valeurs distinctes, aucune valeur affichée) : 3 clés `kleos_<hex32>`, 4 valeurs `KLEOS_*_KEY` suivies de 32 hex ou plus, 12 jetons GitHub `gh[ousr]_` (les formats `gho`/`ghu`/`ghs`/`ghr` manquaient à la passe prévue, qui ne connaissait que `ghp_` et `github_pat_`), 51 URL de forme `scheme://user:secret@` (candidats, faux positifs possibles), 0 clé WireGuard | MESURÉ (rapporté, #32381) |
+| **F18** | Injections du harnais dans le corpus : `=== RECENT MEMORIES ===` 7 948 fois en lignes `attachment` et 37 fois en lignes `user` ; corps de skill « Base directory for this skill » 2 673 fois en lignes `user` ; `<task-notification>` 1 037 fois en lignes `user` ; refus de hook `PreToolUse:… hook error` 6 285 fois dans des `tool_result` de lignes `user` | MESURÉ (rapporté, #32381) |
+| **F19** | `scrub_credentials` : le lexique `credential_keywords` (`en.toml`) contient `password`, `passwd`, `passphrase`, `secret`, `api_key`, `apikey`, `token`, `bearer`, `authorization`, `credential`, `private_key`, `ssh_key`, `client_secret`, mais **ni `key` seul, ni `privatekey`, ni `api-key`** ; la passe exige `=` ou `:` sans `://` sur la ligne et **remplace la ligne entière**. Donc `KLEOS_DB_KEY`, `KLEOS_IDENTITY_KEY`, `KLEOS_SESSION_KEY` et les clés `kleos_<hex>` passent, et une ligne de fait contenant `token` (« 9 084 tokens ») est effacée | DÉDUIT (rapporté, #32359, `kleos-lib/src/prompts.rs:262-289` et lexique `en.toml`) |
+| **F20** | Le poste garde les transcripts Claude Code 180 jours : `"cleanupPeriodDays": 180,` dans `~/.claude/settings.json` | MESURÉ (`grep cleanupPeriodDays ~/.claude/settings.json`, ligne 3) |
 
 ---
 
@@ -102,19 +128,23 @@ flowchart LR
     R -- "POST /memory, Bearer<br/>source=kleos-transcript" --> K
   end
   O["Ollama 192.168.10.50<br/>qwen3:8b-ctx16k"]
-  D -- "segments B rédigés<br/>Bearer par poste" --> R
-  R -- "vue A+ <= 16k<br/>think: false" --> O
+  D -- "segments A+ rédigés<br/>Bearer par poste" --> R
+  R -- "fenêtres A+ <= 16k<br/>think: false" --> O
   K -- "juge nightly<br/>(étude 4.6)" --> K
 ```
+
+Révision 6 : le démon calcule la vue A+ (3.3) et la rédaction (1.4) ; le relais ne
+reçoit ni ne stocke B. Avant `POST /memory`, le relais passe chaque fait candidat par
+le détecteur de secrets (1.4, couche 0 de 4.4) puis par le juge amont (4.4, couche 1).
 
 ### 1.2 Qui détient quoi
 
 | Composant | Détient | Ne détient jamais | Écart upstream (table CLAUDE.md) |
 |---|---|---|---|
-| Claude Code | Les transcripts bruts, seule copie complète | | hors périmètre |
-| Démon poste `kleos-transcript-agent` | Curseur par fichier (offset acquitté, époque, empreintes), version de purge du fil. **Aucune copie** du transcript : le fichier source sert de tampon | Contenu purgé persistant, mémoires, appel LLM | **Zéro delta** si dépôt séparé (Q5) |
-| Relais `kleos-transcript-relay` | Enregistrements B rédigés (rétention 14 jours), index des uuid (longue durée), état de lignée, résumés de fenêtre et de session, faits candidats, correspondance fait vers id et version Kleos | Les mémoires canoniques, l'autorité de retrait sur une mémoire qu'il n'a pas écrite | Option R : **zéro delta**. Option S : voir 1.3 |
-| kleos-server | Mémoires canoniques, chaîne de versions, archivage réversible, voisinage et annotations de l'étude nightly | Le transcript, même réduit (option R) ; aucune mémoire de transcript en statut `pending` (F13) | **Zéro delta** pour la cible : publication, révision, recherche des voisins et archivage passent par l'API existante (4.4) |
+| Claude Code | Les transcripts bruts, seule copie complète, gardée 180 jours sur le poste (F20) | | hors périmètre |
+| Démon poste `kleos-transcript-agent` | Curseur par fichier (offset acquitté, époque et son motif, empreintes), version de purge du fil (`wire_purge_version`, qui couvre depuis la révision 6 la vue A+ et la rédaction), table des préfixes répétés (3.3). **Aucune copie** du transcript : le fichier source sert de tampon et de source de tout retraitement (2.8) | Contenu purgé persistant, mémoires, appel LLM | **Zéro delta** si dépôt séparé (Q5) |
+| Relais `kleos-transcript-relay` | Enregistrements **A+ rédigés** (rétention 14 jours ; révision 6, plus de B), index des uuid (longue durée), état de lignée, résumés de fenêtre et de session, faits candidats, correspondance fait vers id et version Kleos, index des `send_message` émis (3.4), file de dédup (4.8) | Les mémoires canoniques, l'autorité de retrait sur une mémoire qu'il n'a pas écrite ; **B, les `tool_result` entiers, les contenus de fichiers lus** (révision 6) | Option R : **zéro delta**. Option S : voir 1.3 |
+| kleos-server | Mémoires canoniques, chaîne de versions, archivage réversible, voisinage et annotations de l'étude nightly | Le transcript, même réduit (option R) ; aucune mémoire de transcript en statut `pending` (F13) ; **aucun secret** : le détecteur de 1.4 bloque la publication (révision 6) | **Zéro delta** pour la cible : publication, révision, recherche des voisins et archivage passent par l'API existante (4.4) |
 | Ollama | Rien de persistant | | hors périmètre |
 
 ### 1.3 Embranchement pour le consultant : relais séparé (R) contre staging dans Kleos (S), tranché R
@@ -149,8 +179,8 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
 | E3 | Le réglage du raisonnement et la résolution `prompts-overrides` sont des fonctions publiques de kleos-lib : `llm::think_setting` lit `KLEOS_LLM_THINK` (`kleos-lib/src/llm/mod.rs:45`), `llm::prompts::load_prompt` applique la cascade et le cache (`kleos-lib/src/llm/prompts.rs:97`). Avec le raisonnement actif, l'appel s'arrête en `length` (T2) | DÉDUIT (lignes lues) ; T2 MESURÉ (rapporté, #31706) | **Neutre** avec la prémisse corrigée : R les appelle via la dépendance épinglée ; il doit seulement porter `KLEOS_LLM_THINK=0` dans son propre environnement, puisque un processus séparé n'hérite pas de celui de kleos-server (T2-a) |
 | E4 | La garde d'inactivité du dreamer mesure le trafic HTTP de kleos-server (`dreamer.rs:193-206`) | DÉDUIT par l'étude nightly 4.4, non relu ici | S : garde gratuite ; R : la remplace par `/api/ps` d'Ollama (SUPPOSÉ disponible) |
 | E5 | La contention de calcul porte sur l'hôte Ollama 192.168.10.50, partagé par les deux options ; LXC 121 ne fait que du I/O et du JSON | DÉDUIT (F10, 1.1) | neutre : l'isolement de R protège le processus et la base de Kleos, pas le GPU |
-| E6 | Volume stocké en B : environ 44 Mo par jour, soit environ 620 Mo sur 14 jours, plus l'index des uuid | DÉDUIT (F1, F3) | R : hors de `kleos.db` ; S : dans la base principale, sa WAL et ses sauvegardes |
-| E7 | Chiffrement au repos et rédaction : `Database::connect_encrypted` applique une clé de 32 octets par `PRAGMA key` (`kleos-lib/src/db/mod.rs:57-65`), avec la feature `sqlcipher` de kleos-lib (`kleos-lib/Cargo.toml:30`) ; `prompts::scrub_credentials` est public (`kleos-lib/src/prompts.rs:262`, module `pub mod prompts`, `lib.rs:48`). L'authentification démon vers relais reste à fournir par R (1.4) | DÉDUIT (lignes lues). Chiffrement de `kleos.db` en production SUPPOSÉ, non vérifié non plus par le consultant | **Neutre** pour le chiffrement et la rédaction ; S garde l'avantage sur l'authentification seulement |
+| E6 | Volume stocké en B : environ 44 Mo par jour, soit environ 620 Mo sur 14 jours, plus l'index des uuid. **Révision 6** : le relais ne stocke plus que A+, au plus 9 Mo par jour (cible 3.2), soit environ 130 Mo sur 14 jours ; le chiffre B reste comme borne haute | DÉDUIT (F1, F3) | R : hors de `kleos.db` ; S : dans la base principale, sa WAL et ses sauvegardes ; l'écart se réduit avec A+ mais ne change pas le sens |
+| E7 | Chiffrement au repos et rédaction : `Database::connect_encrypted` applique une clé de 32 octets par `PRAGMA key` (`kleos-lib/src/db/mod.rs:57-65`), avec la feature `sqlcipher` de kleos-lib (`kleos-lib/Cargo.toml:30`) ; `prompts::scrub_credentials` est public (`kleos-lib/src/prompts.rs:262`, module `pub mod prompts`, `lib.rs:48`). L'authentification démon vers relais reste à fournir par R (1.4). **Révision 6** : `scrub_credentials` n'est plus réutilisé tel quel, parce qu'il remplace la ligne entière (F19) ; seul son lexique `credential_keywords` est repris (1.4). La rédaction redevient du code propre au démon, dans R comme dans S | DÉDUIT (lignes lues). Chiffrement de `kleos.db` en production SUPPOSÉ, non vérifié non plus par le consultant | **Neutre** pour le chiffrement ; neutre aussi pour la rédaction depuis la révision 6, puisqu'aucune option ne la réutilise ; S garde l'avantage sur l'authentification seulement |
 | E8 | Les routes mémoire limitent le corps à 256 Kio ; la réception de segments demande sa propre route et sa propre limite | DÉDUIT (`routes/memory/mod.rs:74`) | neutre : route neuve dans les deux options |
 | E9 | **Force décisive.** Upstream a touché `kleos-server/src/dreamer.rs` dans chacun des 4 merges de juin à août (`50e03774`, `61fd2acf`, `cb1bff54`, `733a9466`), et `docs/dev-notes/local-patches.md:125` classe déjà ce fichier « ELEVE (2 blocs) ». L'API publique de kleos-lib a bougé aussi (`llm/mod.rs` : `f857f7cd`, `2a6f0f9a`, `7e207b90`), mais bien moins que l'intérieur du dreamer | Ligne `local-patches.md:125` DÉDUITE (lue) ; liste des commits MESURÉE (rapporté, consultant) | R : dépend de l'API publique de kleos-lib, pas de l'intérieur du dreamer |
 | E10 | La ligne `members` du `Cargo.toml` racine liste 26 crates sur une seule ligne ; upstream l'a modifiée 8 fois en deux mois | Forme DÉDUITE (`Cargo.toml:3`) ; fréquence MESURÉE (rapporté, consultant) | R hors workspace : un crate ajouté à cette ligne serait un conflit à presque chaque pull |
@@ -161,7 +191,7 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
 |---|---|---|
 | Fichiers upstream touchés | Aucun ; pas d'entrée dans `members` (E10) | Enregistrement des routes dans le routeur serveur et branchement d'un job dans le dreamer : deux patchs chirurgicaux, dont un dans le fichier classé « ELEVE » (E9) |
 | Tables | Base propre | Overlay Patch 41 : zéro delta par construction |
-| Coût récurrent | Un bump du rev épinglé de kleos-lib après chaque merge upstream du fork ; ne casse que si l'API publique utilisée change (`think_setting`, `load_prompt`, `connect_encrypted`, `scrub_credentials`) ou si l'API HTTP `/memory` change | Chaque pull upstream qui modifie le dreamer, le client LLM ou la signature de `memory::store` casse la compilation du module, même sans conflit de texte ; coût proportionnel à la cadence upstream (E9) |
+| Coût récurrent | Un bump du rev épinglé de kleos-lib après chaque merge upstream du fork ; ne casse que si l'API publique utilisée change (`think_setting`, `load_prompt`, `connect_encrypted`, `scrub_credentials` ; révision 6 : `scrub_credentials` sort de la liste, remplacé par le chargeur du lexique `credential_keywords`, voir 1.4) ou si l'API HTTP `/memory` change | Chaque pull upstream qui modifie le dreamer, le client LLM ou la signature de `memory::store` casse la compilation du module, même sans conflit de texte ; coût proportionnel à la cadence upstream (E9) |
 | Patch numéroté à tenir dans `local-patches.md` | Non | Oui |
 
 **Coût propre de chaque option.**
@@ -219,28 +249,42 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
   4. La liste des champs de `StoreRequest` utilisés par le relais (`content`,
      `category`, `source`, `importance`, `tags`, `session_id`, `space`,
      `parent_memory_id`, `created_at`), avec un test d'intégration jetable rejoué à
-     chaque bump.
+     chaque bump. Révision 6 : les fonctions de kleos-lib couvertes par ce test sont
+     `think_setting`, `load_prompt`, `connect_encrypted` et le chargeur du lexique
+     `credential_keywords` ; `scrub_credentials` n'en fait plus partie (1.4, F19).
 - **Non vérifié par le consultant, et toujours SUPPOSÉ ici :** l'existence de `/api/ps`
   sur la version d'Ollama déployée (4.1), et le chiffrement de `kleos.db` en production
   (E7).
 
 **Conséquence sur la réversibilité.** Comme R appelle les mêmes fonctions de kleos-lib
 que S appellerait, la bascule R vers S ne réécrit plus de client LLM ni de chiffrement :
-l'asymétrie en faveur de R s'accentue (DÉDUIT).
+l'asymétrie en faveur de R s'accentue (DÉDUIT). La révision 6 ne touche pas ce verdict :
+la rédaction et la vue A+ vivent dans le démon, hors de l'embranchement R contre S ; le
+détecteur de secrets avant publication (1.4) est du code du relais, qui se déplacerait
+avec lui dans une bascule vers S.
 
 ### 1.4 Sécurité et exploitation du relais (point 3 du challenge)
 
 La décision opérateur du 2026-10-20 dit que la sécurité des transcripts n'est pas un
 frein, parce que les sessions Claude Code détiennent déjà tous les secrets lisibles
-(MESURÉ rapporté, #30938). Le relais ajoute pourtant **une seconde copie sur une
-seconde machine**, et le stockage en B (section 3.2) garde les `tool_result`, donc des
-sorties de commandes et des contenus de fichiers. Chaque manque nommé par le challenge
-reçoit une parade.
+(MESURÉ rapporté, #30938). Les révisions 2 à 5 faisaient pourtant du relais **une
+seconde copie sur une seconde machine**, en B, avec les `tool_result` entiers, donc des
+sorties de commandes et des contenus de fichiers. **Révision 6 : cette seconde copie
+disparaît.** Le relais ne reçoit que la vue A+ (3.3), où les `tool_result` sont réduits
+à 200 caractères et à leurs lignes d'erreur ; la mesure F17 montre que les secrets réels
+du corpus vivent surtout dans ces sorties d'outils (`env`, `Get-ChildItem Env:`,
+`docker inspect`, `cat .env`, `kleos.env`, `sqlite3` en colonnes `|`), et la mesure F19
+montre que la passe par mots-clés prévue ne les reconnaissait pas. Deux barrières
+distinctes en découlent : la **rédaction au démon**, avant tout envoi, et le
+**détecteur de secrets au relais**, avant toute publication Kleos, parce qu'une mémoire
+n'expire pas alors qu'un enregistrement du relais expire en 14 jours. Chaque manque
+nommé par le challenge reçoit une parade.
 
 | Manque | Parade | Coût, SUPPOSÉ | Limite restante |
 |---|---|---|---|
-| Purge des secrets | **Rédaction à la source**, dans le démon, avant tout envoi : (1) formats de jetons connus (`ghp_`, `github_pat_`, `sk-`, `xox[bpas]-`, `AKIA`, JWT `eyJ…`, blocs PEM, en-têtes `Authorization`/`Bearer`) ; (2) passe par mots-clés sur la ligne, **en appelant `kleos_lib::prompts::scrub_credentials`** par la dépendance épinglée (DÉDUIT : `kleos-lib/src/prompts.rs:262-289`, lexique `credential_keywords` multilingue, ligne entière remplacée) ; (3) candidats d'entropie sur les jetons longs. Remplacement par `[REDACTED:<type>]`. La version de rédaction et le rev de kleos-lib entrent dans `wire_purge_version` | Passes (1) et (3) à écrire, passe (2) réutilisée ; fixtures (lot 1). kleos-lib compile sous Windows MSVC, puisque kleos-ingest, qui en dépend, y a été porté (DÉDUIT, Patch 69) | **Nommée : la rédaction est incomplète par construction.** Un secret sans format connu, sans mot-clé sur sa ligne et sous le seuil d'entropie passe. Exposition bornée par la rétention de 14 jours et par le chiffrement |
-| Chiffrement au repos | Base du relais ouverte par `kleos_lib::db::Database::connect_encrypted` avec la feature `sqlcipher` de kleos-lib (DÉDUIT : `kleos-lib/src/db/mod.rs:57-65`, `kleos-lib/Cargo.toml:30`) ; clé de 32 octets dans un `EnvironmentFile` systemd en 0600 root, comme les secrets de kleos-server | Une feature de build et une clé, plus rien à écrire | La clé vit sur la même machine que la base, comme pour Kleos : protège une copie volée du disque, pas un accès root |
+| Purge des secrets, au démon | **Rédaction à la source**, dans le démon, **avant la réduction A+** (sinon les 200 premiers caractères d'un `tool_result` emportent le début d'une sortie `env`), **au niveau du jeton : la valeur est masquée, jamais la ligne** (révision 6 ; F19 montre qu'un remplacement de ligne efface des faits comme « 9 084 tokens »). Trois passes : (1) formats de jetons connus : `ghp_`, `github_pat_`, **`gh[opsur]_` (12 jetons `gho`/`ghu`/`ghs`/`ghr` dans le corpus, F17)**, `sk-`, `xox[bpas]-`, `AKIA`, JWT `eyJ…`, blocs PEM, en-têtes `Authorization`/`Bearer`, **`kleos_[0-9a-f]{32,64}`** (3 clés dans le corpus, F17), **identifiants dans les URL `scheme://user:secret@`** (51 candidats, F17 ; seul `secret` est masqué, l'hôte et le chemin restent), **`PrivateKey =`** (0 dans le corpus, F17, gardé par principe) ; (2) passe par mots-clés **au niveau de la valeur** : la valeur qui suit un nom se terminant par `_KEY`, `_SECRET`, `_PEPPER`, `_TOKEN` (4 valeurs `KLEOS_*_KEY` dans le corpus, F17), ou un mot du lexique `credential_keywords` de kleos-lib (repris par la dépendance épinglée, **sans appeler `scrub_credentials`**, qui remplace la ligne, F19), avec `=`, `:`, des espaces en colonnes (`Get-ChildItem Env:`, `docker inspect`) ou `|` (`sqlite3`) comme séparateurs ; (3) candidats d'entropie sur les jetons longs. Remplacement par `[REDACTED:<type>]` à la place de la valeur seule. La version de rédaction, celle de la vue A+ et le rev de kleos-lib entrent dans `wire_purge_version` ; un changement de version ouvre une montée de vue (2.8) | Passes (1), (2) et (3) à écrire ; la révision 2 réutilisait la passe (2), ce n'est plus le cas ; fixtures `env`, `Get-ChildItem Env:`, `docker inspect`, `.env`, `kleos.env`, `sqlite3` en `|` (lot 1). kleos-lib compile sous Windows MSVC, puisque kleos-ingest, qui en dépend, y a été porté (DÉDUIT, Patch 69) | **Nommée : la rédaction est incomplète par construction.** Un secret sans format connu, sans nom reconnu devant lui et sous le seuil d'entropie passe. Exposition bornée par la surface A+ (plus de `tool_result` entier), par la rétention de 14 jours et par le chiffrement. Un faux positif masque une valeur, jamais une ligne : le fait autour survit |
+| **Secret dans un fait publié** (révision 6) | **Détecteur de secrets côté relais, avant toute publication Kleos**, en échec fermé : chaque fait candidat de l'état final de lignée passe par les trois passes ci-dessus (mêmes formats, même lexique, même version partagée `secret_patterns_version` entre démon et relais, plus la passe d'entropie) ; un fait qui déclenche le détecteur **n'est pas publié**, reste dans le relais avec le type détecté, et compte au rapport quotidien. Une publication déjà faite n'est jamais réexaminée par ce détecteur : la couche 4 (4.6) ne lit pas les secrets. Couche 0 de 4.4 | Un appel de fonction partagé entre démon et relais (même crate de rédaction, dépendance commune), une table de refus, fixtures (lot 1) | Mêmes angles morts que la rédaction : les deux barrières partagent les formats, donc un secret inconnu des deux passe jusqu'à Kleos ; seule la passe d'entropie sur un texte court (un fait fait rarement plus de 500 caractères) ajoute du rappel. Un faux positif retient un fait vrai dans le relais, consigné, jamais perdu avant 14 jours |
+| Chiffrement au repos | Base du relais ouverte par `kleos_lib::db::Database::connect_encrypted` avec la feature `sqlcipher` de kleos-lib (DÉDUIT : `kleos-lib/src/db/mod.rs:57-65`, `kleos-lib/Cargo.toml:30`) ; clé de 32 octets dans un `EnvironmentFile` systemd en 0600 root, comme les secrets de kleos-server | Une feature de build et une clé, plus rien à écrire | La clé vit sur la même machine que la base, comme pour Kleos : protège une copie volée du disque, pas un accès root. Révision 6 : le contenu protégé est A+ seulement |
 | Raisonnement du modèle | `kleos_lib::llm::think_setting` et l'injection associée (DÉDUIT : `kleos-lib/src/llm/mod.rs:45-50`), avec `KLEOS_LLM_THINK=0` posé dans l'`EnvironmentFile` du relais ; la vérification de `done_reason` (3.2) reste à écrire | Une variable et un contrôle | Si la variable manque, `think_setting` rend `None` et l'injection ne fait rien (DÉDUIT, même fonction) : le contrôle de `done_reason` est le filet |
 | Authentification démon vers relais | Jeton Bearer **par poste**, stocké dans `cred` côté poste et injecté par `cred exec` ; le relais ne garde que son sha256 et le `host_id` associé ; un jeton révoqué rend 401 | Une table et un contrôle | Transport HTTP sur le LAN, comme Kleos aujourd'hui (DÉDUIT : `CLAUDE.local.md` appelle `http://192.168.10.21:4200`). TLS en option, non requis pour atteindre la posture de Kleos |
 | Authentification relais vers Kleos | Clé API Kleos dédiée, portée écriture, dans l'`EnvironmentFile` | Une clé | Aucune au-delà de celles de Kleos |
@@ -252,6 +296,13 @@ Ce qui reste à écrire : le jeton par poste et sa table, les passes de rédacti
 (3), le contrôle de `done_reason`, l'unité systemd et le test de bump. Le chiffrement,
 la passe par mots-clés, le réglage du raisonnement et la résolution des prompts sont
 réutilisés.
+
+**Effort révisé en révision 6, SUPPOSÉ : environ 1,5 à 2,5 jours.** S'ajoutent : la
+passe (2) au niveau du jeton (plus réutilisée), les formats de F17, les fixtures de
+sorties d'outils, le détecteur au relais et sa table de refus, le crate de rédaction
+partagé entre démon et relais. Le chiffrement, le réglage du raisonnement et la
+résolution des prompts restent réutilisés. En contrepartie, la vue A+ côté serveur
+(`model_view_version`, révision 2) disparaît, puisqu'elle est calculée au démon (3.2).
 
 ---
 
@@ -265,6 +316,14 @@ acquitte un segment seulement après l'avoir écrit dans une transaction. L'effe
 « au moins une fois » sur le réseau, « exactement une fois » dans le stockage du relais
 grâce à une clé d'idempotence.
 
+**Révision 6 : la mécanique de cette section est conservée telle quelle**, bien que le
+segment transporte désormais la vue A+ et non plus B (3.2). Elle reste valide parce que
+les empreintes et les offsets portent sur le **brut** (règle 4 de 2.3) : le contenu
+purgé peut changer de forme sans que le curseur, la chaîne des segments ni la dédup par
+uuid ne changent. Ce qui s'ajoute : un **motif d'époque** (`epoch_reason`), qui
+distingue une réécriture détectée d'une montée de vue demandée (2.8), et une règle sur
+les faits déjà extraits lors d'une montée de vue (2.8).
+
 ### 2.2 Table d'état du démon (SQLite poste, `%LOCALAPPDATA%\kleos-transcript\state.db`)
 
 ```sql
@@ -277,7 +336,10 @@ CREATE TABLE files (
   project_dir     TEXT NOT NULL,             -- dossier <projet> sous projects/
   space           TEXT,                      -- résolu une fois par session (4.5)
   space_rule      TEXT,                      -- règle qui l'a produit, ou 'none'
-  epoch           INTEGER NOT NULL DEFAULT 0,-- incrémenté à chaque réécriture détectée
+  epoch           INTEGER NOT NULL DEFAULT 0,-- incrémenté à chaque réécriture détectée ou montée de vue (2.8)
+  epoch_reason    TEXT NOT NULL DEFAULT 'initial', -- initial | rewrite | view_upgrade (révision 6)
+  sent_purge_ver  INTEGER NOT NULL DEFAULT 0,-- wire_purge_version sous laquelle l'époque courante est envoyée
+  cc_version      TEXT,                      -- champ `version` de Claude Code lu sur la première ligne (3.3, alerte)
   acked_end       INTEGER NOT NULL DEFAULT 0,-- offset d'octets acquitté par le relais
   acked_tail_sha  TEXT,                      -- sha256 des <= 4 096 octets avant acked_end
   head_sha        TEXT,                      -- sha256 des <= 4 096 premiers octets
@@ -289,10 +351,17 @@ CREATE TABLE files (
 );
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 -- meta : host_id, wire_purge_version, relay_url (le jeton vit dans cred, pas ici)
+CREATE TABLE user_prefixes (              -- révision 6, 3.3 : préfixes de texte user répétés
+  prefix40        TEXT PRIMARY KEY,         -- 40 premiers caractères normalisés d'un bloc text user
+  sessions        INTEGER NOT NULL,         -- nombre de sessions distinctes où il apparaît
+  classified      TEXT NOT NULL             -- 'user' | 'injection' (>= 5 sessions)
+);
 ```
 
 Aucune table d'envoi en attente : un segment est reconstruit depuis le fichier entre
-`acked_end` et la dernière fin de ligne.
+`acked_end` et la dernière fin de ligne. La table `user_prefixes` est la seule donnée
+dérivée du contenu que le démon conserve : des préfixes de 40 caractères, jamais un
+bloc entier (révision 6, 3.3).
 
 ### 2.3 Segment
 
@@ -301,16 +370,25 @@ Aucune table d'envoi en attente : un segment est reconstruit depuis le fichier e
   "file_key": "…", "session_id": "…", "kind": "main", "parent_session": null,
   "project_dir": "C--Users-Olivier-workspace-Kleos", "host_id": "…",
   "space": "kleos", "space_rule": "session_file", // 4.5 : session_file | marker | git | dir | none
-  "epoch": 0, "start": 1048576, "end": 1310720,
+  "epoch": 0, "epoch_reason": "initial", // révision 6 : initial | rewrite | view_upgrade (2.5, 2.8)
+  "start": 1048576, "end": 1310720,
   "raw_sha256": "…",            // empreinte des octets BRUTS [start, end)
   "prev_tail_sha256": "…",      // = acked_tail_sha, chaîne le segment au précédent
-  "wire_purge_version": 1,      // purge B + rédaction des secrets (1.4, 3.2)
+  "wire_purge_version": 2,      // révision 6 : vue A+ + rédaction des secrets (1.4, 3.2, 3.3)
+  "cc_version": "2.1.x",        // champ `version` des lignes Claude Code, pour l'alerte de 3.3
+  "stats": { "user_text_chars": 0, "user_text_kept_chars": 0, "unparsable_lines": 0 },
   "records": [ { "offset": 1048576, "uuid": "…", "parent_uuid": "…", "type": "user",
                  "ts": "…", "cwd": "…", "role": "user", "text": "…",
                  "tool": null, "tool_result": null, "is_error": null,
-                 "marker": null } ]
+                 "marker": null, "truncated": false } ]
 }
 ```
+
+Types de `marker` (révision 6, 3.3 et 3.4) : `compact_boundary`, `subagent_start`,
+`subagent_end`, `{from_peer, sent_at}` pour un `<channel>` reçu, `{stored: id}` pour un
+store Kleos de l'agent, `{sent_to: [peer…]}` sur un `send_message` dédupliqué,
+`{unparsable: {len, sha256}}` pour une ligne complète illisible, `{truncated_at: n}`
+sur un enregistrement coupé au plafond dur.
 
 Règles :
 
@@ -321,11 +399,27 @@ Règles :
    comme un fragment illisible et l'enregistrement est perdu. La fréquence réelle est
    SUPPOSÉE faible (une ligne s'écrit probablement en un seul appel), mais le nouveau
    démon ne doit pas reproduire ce défaut.
+   **Ligne complète illisible (révision 6).** Deux cas distincts, traités
+   explicitement : (a) un **fragment** en fin de fichier, sans `\n` : jamais lu, le
+   démon attend ; (b) une **ligne terminée par `\n` qui ne se parse pas** (JSON invalide,
+   encodage cassé) : le démon émet un enregistrement `{marker: {unparsable: {len,
+   sha256}}}` à son offset, l'inclut dans `stats.unparsable_lines`, et **avance** ; le
+   fichier n'est jamais bloqué par une ligne. Le cas « fragment + ligne » (un fragment
+   complété plus tard par le reste de la ligne) relève de (a) : rien n'est consommé
+   avant le `\n`, donc la ligne est lue entière au passage suivant.
 2. Taille bornée : au plus 256 Kio purgés ou 2 000 enregistrements par segment
-   (paramètres, SUPPOSÉS suffisants).
+   (paramètres, SUPPOSÉS suffisants). **Enregistrement énorme (révision 6) :** si un
+   seul enregistrement A+ dépasse à lui seul 256 Kio (texte assistant très long,
+   `send_message` volumineux), il part **seul dans son segment**, jusqu'à un plafond dur
+   de 4 Mio (paramètre, SUPPOSÉ) ; au-delà, son texte est coupé à ce plafond avec
+   `truncated: true` et `{marker: {truncated_at: n}}`. La route de réception du relais
+   accepte 4 Mio (E8 : route neuve, limite propre). Dans aucun cas un enregistrement ne
+   bloque le fichier.
 3. Un seul segment en vol par fichier, au plus 4 fichiers en parallèle.
 4. L'empreinte porte sur le brut : changer la purge ou la rédaction ne crée pas de
-   conflit.
+   conflit. C'est la règle qui rend la révision 6 (A+ au démon) compatible avec tout le
+   reste de la section : la vue envoyée peut changer, le curseur et la chaîne des
+   segments ne bougent pas.
 
 ### 2.4 Réponses du relais et idempotence
 
@@ -340,10 +434,16 @@ valide reçoit `401` avant ce tableau (1.4).
 | `start > acked_end` du relais | `409 gap {expected_start}` | Reculer à `expected_start` et renvoyer depuis le fichier |
 | `start < acked_end` hors segment connu | `409 overlap {expected_start}` | Idem |
 | Époque inférieure à l'époque connue | `409 stale_epoch {epoch}` | Adopter l'époque du relais |
+| Époque supérieure, `epoch_reason = rewrite` | `200 accepted` ; l'époque précédente passe `superseded` (2.5) | `acked_end = end` |
+| Époque supérieure, `epoch_reason = view_upgrade`, `wire_purge_version` **supérieur** à celui de l'époque connue | `200 accepted` ; l'époque précédente passe `superseded_by_view`, la lignée est marquée `reopen_for_view` (2.8) | `acked_end = end` |
+| Époque supérieure, `epoch_reason = view_upgrade`, `wire_purge_version` **égal ou inférieur** | `409 same_view {wire_purge_version}` : un renvoi sans vue plus large n'a pas d'objet | Rester sur l'époque connue, consigner |
 | Disque relais plein | `507` | Backoff, curseur inchangé |
 
-`GET /v1/files/{file_key}/cursor` renvoie `{epoch, acked_end, tail_sha256}` : il
-reconstruit l'état du démon si sa base est perdue ou réinstallée.
+`GET /v1/files/{file_key}/cursor` renvoie `{epoch, epoch_reason, wire_purge_version,
+acked_end, tail_sha256}` : il reconstruit l'état du démon si sa base est perdue ou
+réinstallée. `GET /v1/files/stale?purge_version_lt=N` (révision 6) liste les `file_key`
+du poste appelant dont la dernière époque a été envoyée sous une version de purge
+inférieure à N : c'est la liste de travail d'une montée de vue (2.8).
 
 ### 2.5 Réécriture détectée
 
@@ -353,10 +453,12 @@ Avant chaque lecture d'un fichier modifié, le démon compare :
 - sha256 des 4 096 octets avant `acked_end` différent de `acked_tail_sha` : réécriture ;
 - sha256 des 4 096 premiers octets différent de `head_sha` : fichier remplacé.
 
-Dans les trois cas : `epoch += 1`, `acked_end = 0`, renvoi complet sous la nouvelle
-époque. Le relais marque l'époque précédente `superseded` ; la dédup par uuid (2.6)
-empêche de réextraire ce qui a déjà été traité. Coût : une lecture de 4 Kio par fichier
-modifié (DÉDUIT du schéma).
+Dans les trois cas : `epoch += 1`, `epoch_reason = rewrite`, `acked_end = 0`, renvoi
+complet sous la nouvelle époque. Le relais marque l'époque précédente `superseded` ; la
+dédup par uuid (2.6) empêche de réextraire ce qui a déjà été traité. Coût : une lecture
+de 4 Kio par fichier modifié (DÉDUIT du schéma). Une montée de vue (2.8) emprunte le
+même chemin avec `epoch_reason = view_upgrade`, mais la dédup par uuid y joue à
+l'inverse : elle **remplace** l'enregistrement connu au lieu de l'ignorer.
 
 ### 2.6 Dédup des historiques recopiés et lignées
 
@@ -374,6 +476,7 @@ CREATE TABLE uuid_index (           -- conservé bien après le contenu (section
   session_id   TEXT NOT NULL,
   lineage_id   TEXT NOT NULL,       -- session racine de la lignée
   first_seen   INTEGER NOT NULL,
+  purge_version INTEGER NOT NULL,   -- révision 6 : wire_purge_version de l'enregistrement conservé (2.8)
   PRIMARY KEY (owner, uuid)
 );
 CREATE TABLE lineage (
@@ -402,6 +505,78 @@ mesurer en lot 0.
    vérité.
 3. Un arrêt brutal à n'importe quel point produit au pire un renvoi, absorbé par la clé
    d'idempotence.
+
+### 2.8 Renvoi motivé : montée de vue (`view_upgrade`), révision 6
+
+**Pourquoi.** En révision 2, le relais stockait B et dérivait A+ : élargir la vue
+présentée au modèle était un réglage serveur, sans renvoi. En révision 6, le relais ne
+détient que A+ : **élargir la vue demande de relire la source**. La source est le
+fichier sur le poste, gardé 180 jours (F20), bien plus que les 14 jours du relais ; une
+montée de vue est donc possible plus longtemps qu'avant, au prix d'un renvoi.
+
+**Limite assumée (décision opérateur du 2026-10-22).** Le retraitement ne couvre que
+les fichiers **encore sur le poste, poste allumé**. Un fichier supprimé par Claude Code
+(au-delà de 180 jours, ou purge manuelle) ou un poste éteint pendant la montée ne sont
+pas retraités : la lignée garde ses faits extraits sous l'ancienne vue. Le rapport du
+relais liste les `file_key` non remontés.
+
+**Déclenchement.** Une montée de vue est toujours **déclenchée par le poste**, jamais
+par le relais : elle suit un déploiement du démon qui incrémente `wire_purge_version`
+(nouvelle règle A+ de 3.3, nouveau format de rédaction de 1.4). Au démarrage, le démon
+compare sa version à `meta.wire_purge_version` ; si elle est supérieure, il demande
+`GET /v1/files/stale?purge_version_lt=<version>`, filtre les `file_key` dont le fichier
+existe encore sur le disque, et pour chacun : `epoch += 1`, `epoch_reason =
+view_upgrade`, `acked_end = 0`, renvoi complet sous la nouvelle époque, à raison d'au
+plus 4 fichiers en parallèle (règle 3 de 2.3), après les fichiers actifs. Un
+`409 same_view` arrête la montée pour ce fichier. Le relais ne redemande jamais un
+fichier de lui-même : il répond seulement à la liste.
+
+**Ce que le relais fait d'un segment `view_upgrade`.**
+
+1. Les enregistrements dont l'uuid est déjà dans `uuid_index` sous le **même
+   `file_key`** ne reçoivent pas `copy_of` : l'enregistrement A+ stocké est **remplacé**
+   par la nouvelle forme, `uuid_index.purge_version` et `epoch` sont mis à jour. Un uuid
+   connu sous un **autre** `file_key` (historique recopié, F5) garde sa règle de 2.6 :
+   `copy_of`, hors extraction, parce que l'original sera lui-même remonté par son propre
+   fichier s'il est encore sur le poste.
+2. La lignée passe `reopen_for_view` : l'état de lignée et ses instantanés sont
+   **recalculés depuis le début** sous la nouvelle vue (nouveau fenêtrage, nouvelle
+   map, 4.2), parce qu'une vue plus large déplace les frontières de fenêtres. Les
+   instantanés de l'ancienne vue sont conservés jusqu'à la stabilisation suivante, puis
+   expirent avec le contenu (section 5). La correspondance `(lineage_id, id local) →
+   (memory_id, version)` et le contenu publié sont conservés : ils sont l'entrée de la
+   règle 3.
+3. **Règle sur les faits déjà extraits.** Sans cette règle, la dédup par uuid de 2.5 et
+   2.6 interdit toute réextraction, et sans elle une réextraction naïve publierait deux
+   fois le même fait. À la stabilisation d'une lignée rouverte pour montée de vue, le
+   relais compare l'état final recalculé à **ses propres publications de la lignée**
+   (correspondance, contenu conservé localement, jamais une recherche sur tout
+   l'espace) :
+
+   | Fait de l'état final recalculé | Action | Fondement |
+   |---|---|---|
+   | Quasi identique à un fait publié de la lignée (même simhash à distance de Hamming inférieure à 3, ou mêmes `turn:<uuid>` sources et même statut) | **Rien** ; le fait reprend l'id local et le tag `fact:` de la publication existante, pour que l'idempotence de 4.3 tienne | Dédup à l'écriture, `mod.rs:586-616` (DÉDUIT) |
+   | Reformulé ou complété, jugé `met_a_jour` ou `prolonge` d'un fait publié de la lignée par le juge amont (4.4, couche 1, avec la liste des publications de la lignée comme liste négative) | **Nouvelle version** par `parent_memory_id` = tête connue (4.3) ; `Conflict` traité comme en 4.3 | F12 |
+   | `distinct` de tout fait publié de la lignée | **Fait nouveau** : détecteur de secrets (couche 0), juge amont (couche 1), publication ; id local au-delà du maximum précédent | 4.4 |
+   | Fait publié de la lignée **absent** de l'état recalculé | **Aucun archivage** : une vue plus large ajoute de l'information, elle n'en invalide pas ; l'absence peut venir d'un nouveau fenêtrage. Le fait reste servi, consigné au rapport | Principe « un faux retrait est pire qu'un retrait manqué » (étude nightly) |
+   | Fait publié de la lignée **annulé** par l'état recalculé (`annule #local`, ou toutes ses sources sur une branche abandonnée, 4.3) | Archivage réversible, comme en 4.3 | Q2 |
+
+   Deux filets de plus contre le doublon : la dédup à l'écriture de Kleos absorbe un
+   renvoi quasi identique sur la mémoire déjà publiée (même espace, Hamming inférieure
+   à 3, DÉDUIT `mod.rs:586-616`), et la dédup de fond (4.8) traite une reformulation
+   au-delà de 0,9. Au-dessous, deux mémoires de transcript peuvent coexister : la bande
+   grise de 4.8 archive alors **la plus ancienne**, c'est-à-dire celle de l'ancienne
+   vue, ce qui est le sens voulu.
+4. Une montée de vue coûte un passage Ollama complet sur la lignée (3.2 : 50 à 90 min
+   d'Ollama par jour de flux remonté, DÉDUIT de T2) et un passage du juge amont sur les
+   seuls faits `distinct` ou `met_a_jour`. Elle se planifie donc comme un rattrapage
+   (section 5), pas comme un flux : au plus N jours remontés par nuit (paramètre).
+
+**Ce que cette règle ne couvre pas.** Une montée de vue sur une lignée dont le contenu
+du relais a expiré mais dont la correspondance subsiste (section 5) suit la même table :
+la correspondance suffit, le contenu publié est conservé sans limite avec elle.
+Une montée de vue **plus étroite** (réduire A+) n'existe pas : `409 same_view` la refuse,
+parce que rien ne la justifie et qu'elle ferait disparaître des faits sans les invalider.
 
 ---
 
@@ -434,6 +609,30 @@ modèle. Raisons :
 
 Le prix est la surface de secrets côté serveur, traitée en 1.4.
 
+**Révision 6 : la décision ci-dessus est remplacée. Le démon calcule la vue A+ et
+n'envoie qu'elle ; le relais ne stocke plus B** (décision opérateur du 2026-10-22). Les
+trois raisons de la révision 2 sont pesées à nouveau :
+
+- la surface de secrets n'était pas théorique : F17 compte 3 clés `kleos_`, 4 valeurs
+  `KLEOS_*_KEY`, 12 jetons GitHub et 51 URL à identifiants dans le corpus, surtout dans
+  des sorties d'outils que B conserve en entier et que A+ réduit (MESURÉ rapporté,
+  #32381) ; F19 montre que la rédaction prévue ne les voyait pas. Garder B au relais,
+  c'est garder une copie de ces sorties sur une seconde machine pendant 14 jours, à
+  chaque fois que la rédaction manque un format ;
+- le retraitement « sans perte » de la révision 2 reposait sur B. Il est remplacé par un
+  renvoi depuis la source (2.8), possible tant que le fichier est sur le poste : 180
+  jours (F20), soit plus que les 14 jours du relais. Ce qui est perdu : le retraitement
+  d'un fichier supprimé ou d'un poste éteint, limite assumée ;
+- le coût réseau et disque baisse : au plus 9 Mo par jour (cible A+), environ 130 Mo
+  sur 14 jours au lieu de 620 (DÉDUIT de F1 et F3).
+
+Conséquences sur le reste de l'étude : `model_view_version` disparaît comme paramètre
+serveur ; la vue est portée par `wire_purge_version` dans le segment (2.3), et un
+changement de vue est un déploiement du démon suivi d'une montée de vue (2.8). Le
+tableau des vues ci-dessous reste valide : il chiffre ce que le modèle voit, et le
+modèle voit toujours A+. La ligne B y reste comme borne de ce qu'un élargissement
+coûterait.
+
 **Budget de calcul recalculé sur T2 (point 4 du challenge).** Une fenêtre de 36 000
 caractères fait 9 084 tokens (T2), soit 3,96 caractères par token ; l'hypothèse de 3,5
 de la révision 1 est remplacée. Fenêtre, état de session (au plus 2 000 tokens),
@@ -444,14 +643,17 @@ rapporté, T2).
 | Vue présentée au modèle | Volume par jour | Fenêtres par jour | Temps Ollama par jour, `think: false` (DÉDUIT de T2) | Ce qui est perdu |
 |---|---|---|---|---|
 | A | environ 6 Mo | environ 170 | 35 à 60 min | Commandes, sorties d'erreur, rapports de sous-agents, envois inter-agents, stores de l'agent |
-| **A+ (recommandé)** | au plus 9 Mo (cible) | au plus 250 | **50 à 90 min**, plus environ 8 % de relances (M-N5) et environ 50 appels de réduction (687 sessions sur 14 jours, T3), soit **environ 1 à 2 h** | Contenu des lectures de fichiers et sorties volumineuses, qui restent stockés |
+| **A+ (recommandé)** | au plus 9 Mo (cible) | au plus 250 | **50 à 90 min**, plus environ 8 % de relances (M-N5) et environ 50 appels de réduction (687 sessions sur 14 jours, T3), soit **environ 1 à 2 h** | Contenu des lectures de fichiers et sorties volumineuses, qui restaient stockés en révision 2 et qui, depuis la révision 6, restent **sur le poste seulement** |
 | B | environ 44 Mo | environ 1 220 | 4 à 7,5 h, plus relances et réductions | Presque rien |
 
 **Conséquence sur la décision de la révision 1.** B présenté au modèle n'est plus
 « impossible » (10 à 20 h estimées) : il coûte 4 à 8 h de GPU partagé par jour, soit
 environ cinq fois A+. A+ reste recommandé pour la vue du modèle, parce que le gain de B
 porte sur des contenus que l'assistant reformule déjà (3.1, SUPPOSÉ) ; le stockage en B
-garde l'option ouverte.
+garde l'option ouverte. **Révision 6 :** l'option reste ouverte par un autre chemin, la
+montée de vue depuis la source (2.8) ; elle n'est plus gratuite, puisqu'elle demande un
+renvoi et un nouveau passage Ollama, et elle est bornée aux fichiers encore sur le
+poste.
 
 **Raisonnement coupé : obligatoire et vérifié.** Le relais n'hérite pas de
 l'environnement de kleos-server (T2-a) : il porte `KLEOS_LLM_THINK=0` dans son propre
@@ -470,29 +672,94 @@ session sont nouveaux à chaque appel, donc l'ingestion à froid est la bonne ba
 mesure porte sur un appel isolé : la contention avec `dreamer-growth`, Broca et les
 autres usages de l'hôte n'est pas mesurée. La porte du lot 4 la mesure sur une journée.
 
-### 3.3 Contenu de la vue A+ (dérivée côté serveur)
+### 3.3 Contenu de la vue A+ (révision 6 : calculée côté démon, après rédaction)
+
+Jusqu'à la révision 5, cette vue était dérivée côté serveur depuis B. Depuis la révision
+6, **le démon la calcule** et c'est la seule forme envoyée ; la liste ci-dessous est
+donc le contrat du fil, versionné par `wire_purge_version`. Ordre des passes dans le
+démon : parse de la ligne, rédaction des secrets sur l'enregistrement entier (1.4),
+puis réduction A+. La rédaction précède la réduction pour qu'un extrait de 200
+caractères ne porte jamais le début d'une sortie `env`.
 
 Gardé :
 
-- texte user **tapé**, après retrait des injections du harnais (`<system-reminder>`,
-  `<channel …>`, blocs `MANDATORY RULES`, contexte de hook, préambule de reprise après
-  compaction, `<local-command-*>`, `<command-*>`) ;
+- texte user **tapé**, défini **par la structure** et non par une liste de motifs à
+  retirer (révision 6, amendement b du challenger ; F3 mesure 73 % de texte user
+  injecté, F18 en nomme les formes) : est du texte user tapé un bloc `text` d'une ligne
+  de type `user`, **sans `isMeta`**, **hors `tool_result`**, qui ne commence par aucune
+  balise de harnais (`<system-reminder>`, `<channel …>`, `<task-notification>`,
+  `<local-command-*>`, `<command-*>`, bloc `MANDATORY RULES`, préambule de reprise après
+  compaction) et dont le préfixe de 40 caractères n'est pas classé injection (ci-dessous).
+  **Échec fermé** : un bloc qui ne satisfait pas toutes les conditions est traité comme
+  harnais et retiré ; un doute retire, il ne garde pas. Sont classés harnais par leur
+  forme, au-delà des balises : le corps de skill (« Base directory for this skill »,
+  2 673 occurrences en lignes `user`, F18), les blocs `=== … ===` du hook de démarrage
+  (`=== RECENT MEMORIES ===` : 37 en lignes `user`, 7 948 en `attachment`, F18), et les
+  refus de hook dans les `tool_result` (`PreToolUse:… hook error`, 6 285, F18), qui ne
+  sont pas du texte user mais sortent aussi du filtre des lignes d'erreur ci-dessous
+  (un refus de hook n'est pas une erreur de la commande) ;
+- **préfixes répétés** : le démon tient la table `user_prefixes` (2.2) des 40 premiers
+  caractères normalisés (espaces réduits, casse pliée) de chaque bloc `text` user ; tout
+  préfixe vu dans **au moins 5 sessions distinctes** est classé `injection` et ses blocs
+  sont retirés, y compris rétroactivement à la prochaine montée de vue (2.8). Un humain
+  retape rarement 40 caractères identiques dans 5 sessions ; un hook le fait à chaque
+  session. Seuils SUPPOSÉS, calibrés au lot 0 (i) ; la liste des préfixes classés est
+  remontée au relais dans le rapport, jamais les blocs ;
+- **alerte de dérive** : le segment porte `cc_version` (champ `version` des lignes
+  Claude Code) et `stats.user_text_chars` / `stats.user_text_kept_chars` (2.3). Le
+  relais agrège la part gardée par version de Claude Code ; si, sur les 100 premières
+  sessions d'une nouvelle version, elle **double ou tombe à la moitié** de la version
+  précédente, le rapport quotidien lève une alerte : la structure des lignes a
+  probablement changé et le filtre, en échec fermé, retire ou garde trop. Seuil
+  SUPPOSÉ ;
 - texte assistant ;
 - `tool_use` réduit : nom de l'outil et arguments clés (commande Bash, chemin, motif,
   description), tronqués à 300 caractères ;
 - `tool_result` réduit : `is_error`, les 200 premiers caractères, et les lignes qui
   contiennent `error`, `failed`, `panic` ou un code de sortie non nul, dans la limite de
-  600 caractères ;
+  600 caractères. **Révision 6** : le filtre des lignes d'erreur reconnaît aussi les
+  erreurs Windows en français (« n'est pas reconnu », « Accès refusé », « introuvable »),
+  « Caused by: », les codes HTTP 4xx et 5xx en tête de ligne ou après `HTTP/`, et le
+  résumé final d'une suite de tests (`test result:`, `Tests:`, `passed`, `failed`,
+  `ok`, `FAILED`, comptes `N passed, M failed`), parce qu'un résultat mesuré est un fait
+  (3.1) ;
 - **gardés en entier**, parce qu'ils sont du texte écrit par un agent : l'argument
-  `message` de `send_message` (claude-peers), le résultat final d'un outil de sous-agent,
-  et le contenu d'un store Kleos de l'agent (`kleos-cli store …`, `memory_store`) ;
+  `message` de `send_message` (claude-peers) et le résultat final d'un outil de
+  sous-agent. **Révision 6 (amendement c) :** un `send_message` dont le `message` est
+  identique (même sha256) à un envoi précédent de la **même session** est dédupliqué :
+  le premier est gardé en entier, les suivants deviennent `{marker: {sent_to:
+  [peer…]}}` sur le premier. Le démon tient cette dédup en mémoire par fichier ouvert,
+  sans table ;
+- **store Kleos de l'agent** (`kleos-cli store …`, `memory_store`) : en révisions 2 à 5,
+  gardé en entier. **Révision 6 (amendement c) : remplacé par le marqueur `{stored:
+  id}`**, où `id` est lu dans la sortie de l'outil (`kleos-cli store` imprime l'id ;
+  `memory_store` le rend dans son résultat, formes SUPPOSÉES, fixtures au lot 1). Le
+  fait est déjà écrit là où l'agent l'a écrit, dans Kleos ; le marqueur sert de **liste
+  négative** au juge (4.2, 4.6), que le relais résout par `GET /memory/{id}` (route
+  SUPPOSÉE, `routes/memory/mod.rs:40-63` non relu pour ce point). Si aucun id n'est
+  lisible (store en échec, `created=false` sans `duplicate_of`), le marqueur vaut
+  `{stored: null}` et l'argument est réduit comme tout `tool_use`, à 300 caractères ;
 - marqueurs : `compact_boundary`, début et fin de sous-agent, `{from_peer, sent_at}`
-  pour un message reçu.
+  pour un message reçu (3.4), `{stored: id}`, `{sent_to: […]}`, `{unparsable: …}`,
+  `{truncated_at: n}` (2.3).
 
 Retiré dès le démon (jamais envoyé) : `thinking`, `attachment`, `api-request*`, doublon
 `toolUseResult`, images, enveloppe des lignes `message`, ligne `isCompactSummary`
-(dérivée des tours déjà transmis ; F5). Retiré par la vue A+ seulement (stocké en B) :
-le reste des `tool_result` et des arguments d'outils.
+(dérivée des tours déjà transmis ; F5), et, depuis la révision 6, le reste des
+`tool_result` et des arguments d'outils, qui n'existent plus qu'à la source. La phrase
+« retiré par la vue A+ seulement (stocké en B) » des révisions 2 à 5 n'a plus d'objet.
+
+**Branches abandonnées par `/rewind` (révision 6, point secondaire).** Un `/rewind`
+laisse dans le fichier les lignes de la branche abandonnée et poursuit avec un
+`parentUuid` qui pointe avant elles (SUPPOSÉ sur la forme exacte, à confirmer au lot 0
+(j) ; la mécanique `parentUuid` est MESURÉE rapportée, F4 et F5). Le démon envoie tout
+(le curseur ne saute jamais), avec `parent_uuid` sur chaque enregistrement. Le relais
+reconstruit, à chaque map et à la stabilisation, la **chaîne des parents depuis la
+dernière feuille** (dernier enregistrement par offset) ; un enregistrement hors de cette
+chaîne est `abandoned`. Un fait dont **toutes** les sources `turn:<uuid>` sont
+`abandoned` reçoit `annule` à la réduction (4.3) et n'est jamais publié comme valide ;
+s'il l'était déjà (rewind après stabilisation, cas d'une reprise), il suit la ligne
+« fait annulé » de 4.3. Un fait dont une source au moins est sur la chaîne reste valide.
 
 ### 3.4 Statut des `<channel>` et des sous-agents
 
@@ -503,11 +770,43 @@ le reste des `tool_result` et des arguments d'outils.
   brief de team-lead produise N mémoires dans N sessions réceptrices. Le marqueur
   compte : la moitié des reprises après un long écart sont déclenchées par un message
   injecté (T3), et le tour qui suit doit rester rattaché à sa cause.
-- **Sous-agents : non envoyés en v1.** Leur rapport final arrive dans le `tool_result`
-  de l'outil d'agent du parent, gardé en entier par A+. **SUPPOSÉ** : que le rapport soit
-  bien dans ce `tool_result` ; à vérifier sur 20 sessions en lot 0 (geste opérateur, F9).
-  Si la vérification échoue, les fichiers `subagents/` passent par le même protocole avec
-  `kind = 'subagent'`, et seul leur dernier message assistant est extrait.
+  **Révision 6 (amendement c) : un `<channel>` dont l'original n'est pas transmis reste
+  en entier.** C'est le cas d'un émetteur `operator` (message tapé dans le Deck, aucune
+  session Claude Code ne le porte), du Deck lui-même, ou d'un pair dont le poste n'a pas
+  de démon (hors parc). Le démon ne connaît pas le parc : il applique une règle locale
+  et laisse l'arbitrage au relais. Règle locale : `from_peer_id = operator` → bloc gardé
+  en entier avec son marqueur ; tout autre émetteur → marqueur **et corps** envoyés,
+  le corps portant `channel_body: true`. Au relais, un index `sent_index(owner,
+  sha256(message), sender_host, session_id, sent_at)` est alimenté par chaque
+  `send_message` reçu en A+. À la **stabilisation** de la lignée réceptrice (8 h après
+  son dernier segment, 4.1, donc bien après l'arrivée du segment émetteur si le poste
+  émetteur a un démon), le relais cherche l'original par `sha256(message)` : trouvé, le
+  corps est retiré de la vue présentée au modèle et seul le marqueur reste ; non
+  trouvé, le corps reste en entier et le fait s'extrait dans la session réceptrice,
+  faute d'autre endroit où il soit écrit. Le corps est donc stocké au relais 14 jours
+  dans tous les cas, ce qui est la surface de B pour ces seuls blocs : acceptée, parce
+  qu'un message de pair est du texte d'agent, pas une sortie d'outil (F17 situe les
+  secrets dans les sorties d'outils). Décision prise dans cette révision sans mesure du
+  volume de ces blocs ; lot 0 (k) le compte.
+- **Sous-agents : non envoyés en v1** (révisions 1 à 5). Leur rapport final arrive dans
+  le `tool_result` de l'outil d'agent du parent, gardé en entier par A+. **SUPPOSÉ** :
+  que le rapport soit bien dans ce `tool_result` ; à vérifier sur 20 sessions en lot 0
+  (geste opérateur, F9). Si la vérification échoue, les fichiers `subagents/` passent
+  par le même protocole avec `kind = 'subagent'`, et seul leur dernier message assistant
+  est extrait.
+  **Révision 6 (amendement c) : les fichiers `subagents/` sont envoyés dès la v1**, par
+  le même protocole, avec `kind = 'subagent'` et `parent_session`, sans attendre la
+  mesure du lot 0 (d), qui devient informative. Vue A+ d'un sous-agent, plus étroite que
+  celle d'une session principale : **au moins** son dernier message assistant (le
+  rapport, là où il est écrit) et ses `tool_use` Bash **réussis** (`is_error` faux :
+  la commande qui marche est un fait de 3.1), avec les 200 premiers caractères de leur
+  résultat ; le reste de ses tours est retiré. Le `tool_result` du parent qui recopie le
+  rapport devient alors une **copie** : il est réduit comme tout `tool_result`, et le
+  marqueur `subagent_end` du parent renvoie à la session du sous-agent. Si un rapport
+  n'est pas dans le dernier message assistant du sous-agent (lot 0 (d) le dit), la vue
+  du sous-agent s'élargit par une montée de vue (2.8), sans toucher au protocole. Coût :
+  les sous-agents font 10 % du stock (F1) et leur vue est plus étroite ; volume SUPPOSÉ
+  sous 1 Mo par jour, mesuré au lot 0 (b).
 
 ---
 
@@ -540,7 +839,10 @@ Une session de 58 Mo réduite en vue A+ fait environ 1,2 à 1,7 Mo (DÉDUIT de F
    long est coupé à une frontière d'enregistrement, jamais au milieu d'un texte.
 2. **Map, une fenêtre par appel.** Entrée : consignes, **état de lignée** reporté (au
    plus 2 000 tokens : résumé courant et faits courants avec leur id local), la liste des
-   stores Kleos faits par l'agent dans la fenêtre, puis la fenêtre. Sortie JSON sous
+   stores Kleos faits par l'agent dans la fenêtre (révision 6 : les marqueurs `{stored:
+   id}` de la fenêtre, résolus en contenu par le relais par `GET /memory/{id}`, 3.3 ;
+   un id introuvable est présenté comme « stocké, contenu inconnu »), puis la fenêtre.
+   Sortie JSON sous
    schéma imposé : résumé de fenêtre (au plus 1 500 caractères) ; faits nouveaux avec
    `statut ∈ {proposé, décidé, mesuré, abandonné}`, catégorie, uuid des tours sources ;
    révisions de faits courants (`révise #local`, `annule #local`). Un instantané de
@@ -559,7 +861,11 @@ même porte.
 
 **Version du contrat :** chaque fenêtre porte `(modèle, prompt, think, model_view_version,
 contract_version)` ; un changement rouvre le travail encore en rétention, comme l'état
-de traitement de l'étude nightly 4.2. Les prompts passent par le canal
+de traitement de l'étude nightly 4.2. **Révision 6 :** `model_view_version` est
+remplacé par le `wire_purge_version` du segment (la vue est calculée au démon, 3.2) ;
+un changement de modèle, de prompt ou de `think` rouvre les lignées encore en rétention
+sans renvoi, puisque le relais détient A+ ; un changement de vue passe par une montée de
+vue depuis le poste (2.8). Les prompts passent par le canal
 `prompts-overrides` : le relais appelle `kleos_lib::llm::prompts::load_prompt`
 (`kleos-lib/src/llm/prompts.rs:97`, DÉDUIT), avec `KLEOS_LLM_PROMPT_REPOSITORY` pointé
 sur le clone `/var/lib/kleos/prompts` de LXC 121 ; les ids du relais vivent sous un
@@ -603,6 +909,8 @@ suivante d'une lignée rouverte, il compare l'état final à ce qu'il a publié 
 | Fait révisé, mémoire publiée | Juge amont sur la version révisée, puis `POST /memory` avec `parent_memory_id` = tête connue : nouvelle version, l'ancienne passe à `is_latest = 0`, la dédup est sautée | DÉDUIT (F12, `mod.rs:578`, `:873-890`) |
 | Fait révisé, mais la tête a changé (une autre écriture a versionné la mémoire) | Kleos refuse (`Conflict`) ; le relais publie le fait révisé comme mémoire neuve, après le juge amont, et le juge nightly annote la relation (4.6) | DÉDUIT (`mod.rs:885-889`) |
 | Fait annulé, mémoire publiée | **Proposition soumise à l'opérateur (Q2)** : archivage par `POST /memory/{id}/archive`, réversible par `POST /memory/{id}/unarchive`, seulement sur une mémoire que le relais a écrite et que personne n'a versionnée depuis | Routes DÉDUITES (`routes/memory/mod.rs:62-63`) |
+| Fait dont toutes les sources `turn:<uuid>` sont sur une branche abandonnée par `/rewind` (révision 6, 3.3) | Reçoit `annule` à la réduction ; jamais publié comme valide ; s'il l'était déjà, ligne « fait annulé » ci-dessus | Chaîne des parents depuis la dernière feuille (3.3) |
+| Lignée rouverte pour montée de vue (`view_upgrade`, révision 6) | Table de 2.8 : rien pour un fait identique, version pour un fait révisé, publication pour un fait distinct, **aucun archivage** pour un fait absent de l'état recalculé | 2.8 |
 
 Règle d'autorité : **le relais ne révise, n'annule ou n'archive que ses propres
 publications**, identifiées par sa correspondance et par `source=kleos-transcript`.
@@ -646,10 +954,22 @@ la protection.
 | Publication seulement après le juge nightly | Le juge voit le fait avant qu'il soit servi | Le juge nightly a pour racines des mémoires déjà dans Kleos (étude nightly 4.6) : sans statut caché, un fait présent dans Kleos est déjà servi | Exigerait un statut caché, c'est-à-dire la porte | **Transformée** : le juge tourne en amont, dans le relais (couche 1) |
 | Juge qui rétrograde ou retire a posteriori par la chaîne de versions | Un fait faux déjà servi en sort au passage nightly suivant | Archivage et désarchivage par l'API (`routes/memory/mod.rs:62-63`) ; mise à jour en nouvelle version (`:59`, `kleos-lib/src/memory/mod.rs:1821-1839`) | Nul | **Retenue (couche 4)**, bornée aux mémoires de transcript |
 
-**Protection retenue : cinq couches, zéro delta upstream.** Contre le fait faux, la
-couche principale est la 1 ; contre le doublon « transcript publié avant l'agent »,
-c'est la 5 (section 4.8), à la demande de l'opérateur.
+**Protection retenue : cinq couches, zéro delta upstream, plus une couche 0 depuis la
+révision 6.** Contre le fait faux, la couche principale est la 1 ; contre le doublon
+« transcript publié avant l'agent », c'est la 5 (section 4.8), à la demande de
+l'opérateur ; contre le secret publié, c'est la couche 0.
 
+0. **Détecteur de secrets, avant le juge (révision 6, 1.4).** Chaque fait candidat de
+   l'état final de lignée passe par les passes de rédaction partagées avec le démon
+   (formats, noms de variables, lexique, entropie). Un fait qui déclenche le détecteur
+   **n'est pas publié**, quel que soit le verdict du juge ; il reste au relais avec le
+   type détecté et compte au rapport quotidien. Échec fermé : si le détecteur ne répond
+   pas (crate indisponible, version de patterns inconnue), rien n'est publié. Raison
+   d'une couche distincte du juge : le juge est un modèle, qui peut laisser passer ; le
+   détecteur est déterministe, et une mémoire n'expire pas. Les publications
+   antérieures à l'activation d'un nouveau format ne sont pas rebalayées par cette
+   couche ; un rebalayage ponctuel par `source_filter = kleos-transcript` (F15) est un
+   geste d'exploitation, consigné en Q6.
 1. **Juge amont dans le relais, avant toute publication.** Le juge est **Claude Haiku**,
    et non Qwen : la confidentialité n'est plus un frein, puisque les transcripts sont
    déjà des échanges avec des modèles cloud (décision opérateur, Kleos #31730), et un
@@ -789,7 +1109,10 @@ session est épisodique et concurrence les faits au classement. Question Q3.
 Quatre barrières contre le doublon agent/transcript, de la moins chère à la plus chère :
 
 1. **Dans le prompt** : les stores de l'agent vus dans la fenêtre (gardés en entier par
-   A+) sont fournis au modèle comme « déjà stocké » ;
+   A+ jusqu'à la révision 5 ; depuis la révision 6, marqueurs `{stored: id}` résolus par
+   le relais, 3.3) sont fournis au modèle comme « déjà stocké », et la même liste est la
+   **liste négative** du juge amont : un fait dont le contenu recouvre un id stocké est
+   `doublon` sans recherche ;
 2. **Au juge amont** (4.4, couche 1) : un `doublon` d'une mémoire servie n'est pas
    publié ;
 3. **À l'écriture** : la dédup de `memory::store` absorbe une copie quasi identique
@@ -842,7 +1165,7 @@ jamais attendre une décision. Les règles de 4.4 et 4.6 sont écrites dans ce s
 
 | Niveau | Contenu | Autonome | Bloque la mise en service |
 |---|---|---|---|
-| **(a) Minimum pour publier sans porte** | Couche 1, juge amont du relais (fidélité et voisinage, 4.4) ; couche 2, importance au plus 5 ; couche 3, provenance par source et tags ; révision et archivage par le relais de ses propres publications dans la même lignée (4.3) | Oui : aucun verdict n'attend un humain, et un juge en panne bloque la publication sans rien exposer | **Oui.** Sans la couche 1, un fait faux de Qwen est servi sans aucun contrôle ; les couches 2 et 3 sont des réglages de publication, sans coût de développement propre |
+| **(a) Minimum pour publier sans porte** | Couche 0, détecteur de secrets (révision 6, 1.4) ; couche 1, juge amont du relais (fidélité et voisinage, 4.4) ; couche 2, importance au plus 5 ; couche 3, provenance par source et tags ; révision et archivage par le relais de ses propres publications dans la même lignée (4.3) | Oui : aucun verdict n'attend un humain, et un juge ou un détecteur en panne bloque la publication sans rien exposer | **Oui.** Sans la couche 0, un secret manqué par la rédaction du démon devient une mémoire sans expiration (F17 montre que le cas est réel) ; sans la couche 1, un fait faux de Qwen est servi sans aucun contrôle ; les couches 2 et 3 sont des réglages de publication, sans coût de développement propre |
 | **(a') Dédup de fond, niveau déterministe** | Auto-linker et dédup du Patch 60 à 0,9, déjà en place (4.8) | Oui | **Oui, mais déjà présente** : la porte se limite à vérifier son activation en production (lot 0) |
 | **(b0) Dédup de fond, bande grise** | File `to_dedup` du relais et jugement Sonnet entre 0,80 et 0,90 (4.8) | Oui | **Non** : sans elle, une reformulation reste servie en double, la copie de transcript au plafond de 5 |
 | **(b) Nettoyage autonome a posteriori, mémoires de transcript** | Couche 4, juge nightly avec archivage réversible des mémoires de transcript contredites ou remplacées (4.6) | Oui | **Non.** Elle dépend de l'étape 2 de l'étude nightly (4.10) ; sans elle, un fait faux qui a passé la couche 1 reste servi au plafond de 5, hors des tiers poussés (F14). C'est un risque borné, pas une exposition ouverte |
@@ -939,13 +1262,15 @@ reste servie en double, au plafond de 5 pour la copie de transcript.
 
 | Objet | Rétention proposée | Raison |
 |---|---|---|
-| Enregistrements B rédigés (relais) | 14 jours après la dernière stabilisation qui les couvre (X = 14, paramètre) | Retraiter après un changement de vue, de prompt ou de modèle ; couvrir une reprise tardive ; borner l'exposition des secrets résiduels (1.4) |
-| Instantanés d'état de lignée | Comme les enregistrements, et au moins tant que la lignée peut être reprise dans la fenêtre de 14 jours | Héritage à la reprise (4.3) |
+| Enregistrements B rédigés (relais), révisions 2 à 5 | 14 jours après la dernière stabilisation qui les couvre (X = 14, paramètre) | Retraiter après un changement de vue, de prompt ou de modèle ; couvrir une reprise tardive ; borner l'exposition des secrets résiduels (1.4). **Remplacé en révision 6 par la ligne suivante** |
+| **Enregistrements A+ rédigés (relais), révision 6** | 14 jours après la dernière stabilisation qui les couvre (X = 14, paramètre) | Retraiter après un changement de prompt ou de modèle sans renvoi ; couvrir une reprise tardive ; borner l'exposition des secrets résiduels. Un changement de **vue** passe par un renvoi depuis le poste (2.8), donc la rétention n'a plus à le couvrir. Le volume (environ 130 Mo, E6) permettrait plus long ; la borne reste 14 jours par la surface de secrets (Q6) |
+| Corps des `<channel>` sans original trouvé (3.4) | Comme les enregistrements A+ | Seul endroit où un message de l'opérateur ou d'un pair hors parc est écrit |
+| Instantanés d'état de lignée | Comme les enregistrements, et au moins tant que la lignée peut être reprise dans la fenêtre de 14 jours ; les instantanés d'une vue remplacée (2.8) jusqu'à la stabilisation suivante | Héritage à la reprise (4.3) |
 | `uuid_index`, `lineage` | 400 jours (paramètre) | **La dédup des reprises dépend de l'index, pas du contenu** : un `claude --resume` après la suppression du contenu ne doit pas réextraire l'historique recopié |
 | Résumés et faits candidats | Comme les enregistrements | Matériau de travail |
-| Correspondance fait vers id et version Kleos | Sans limite | Idempotence des publications, révision (4.3), provenance |
+| Correspondance fait vers id et version Kleos, **avec le contenu publié** (révision 6) | Sans limite | Idempotence des publications, révision (4.3), provenance ; entrée de la règle de montée de vue (2.8), qui doit pouvoir comparer après l'expiration du contenu A+ |
 | Mémoires publiées | Cycle de vie Kleos ordinaire | Hors relais |
-| Côté poste | Aucune copie ; le démon ne supprime jamais un transcript Claude Code | Le fichier est la source |
+| Côté poste | Aucune copie ; le démon ne supprime jamais un transcript Claude Code ; table `user_prefixes` (préfixes de 40 caractères, 2.2) sans limite | Le fichier est la source, gardée **180 jours** par Claude Code (F20) : c'est la borne réelle de tout retraitement depuis la révision 6 (2.8) |
 
 **Reprise après expiration du contenu.** Une reprise d'une lignée dont les
 enregistrements ont expiré ne retrouve pas d'instantané : ses nouveaux tours partent
@@ -955,7 +1280,8 @@ p50 16 min de la source.
 
 **Rattrapage des 7 Go : borné.** Recommandation : les 14 derniers jours (environ 4 Go
 bruts au flux moyen, environ 600 Mo en B et environ 100 Mo en vue A+, DÉDUIT de F1 et
-F3), d'abord comme **corpus de calibration** du lot 4, puis publication si la porte
+F3 ; révision 6 : seuls les environ 100 Mo de A+ transitent et sont stockés, le chiffre
+B reste comme repère), d'abord comme **corpus de calibration** du lot 4, puis publication si la porte
 passe : environ 2 800 fenêtres, soit 9 à 17 h d'Ollama étalées sur plusieurs nuits
 (DÉDUIT de T2). Le reste n'est pas traité par défaut : l'historique ancien concurrencerait
 des mémoires d'agent plus récentes au juge pour un gain non mesuré, et coûterait environ
@@ -981,8 +1307,18 @@ des mémoires d'agent plus récentes au juge pour un gain non mesuré, et coûte
 | Store d'agent plus de 8 h après la lignée, reformulation | Deux lignes ; à au moins 0,9 la dédup de fond garde l'agent ; entre 0,80 et 0,90, la bande grise du relais archive la copie de transcript (4.8) | Aucune ; doublon servi jusqu'au tick ou à la nuit suivante |
 | Session sans space exploitable (`cwd` personnel ou racine) | Faits gardés dans le relais, non publiés (4.5) | Faits non publiés, consignés |
 | Juge amont en panne ou budget épuisé | Aucune publication ; candidats gardés dans le relais jusqu'au retour du juge | Aucune ; retard |
-| Secret non reconnu par la rédaction | Stocké chiffré au relais, au plus 14 jours ; présenté au modèle seulement s'il tombe dans la vue A+ | **Exposition résiduelle, limite nommée (1.4)** |
-| Fichier réécrit ou tronqué | Détection 2.5, nouvelle époque, renvoi complet ; uuid connus ignorés | Aucune |
+| Secret non reconnu par la rédaction (révisions 2 à 5) | Stocké chiffré au relais, au plus 14 jours ; présenté au modèle seulement s'il tombe dans la vue A+ | **Exposition résiduelle, limite nommée (1.4)** |
+| Secret non reconnu par la rédaction (révision 6) | N'atteint le relais que s'il tombe dans la vue A+ (200 premiers caractères ou ligne d'erreur d'un `tool_result`, texte user ou assistant) ; stocké chiffré au plus 14 jours ; présenté au modèle ; **s'il ressort dans un fait candidat, le détecteur de la couche 0 (4.4) le bloque s'il reconnaît un format, sinon il atteint Kleos** | **Exposition résiduelle, limite nommée (1.4)** : les deux barrières partagent leurs formats ; la surface A+ et la passe d'entropie sur les faits courts la réduisent sans l'annuler |
+| Secret détecté dans un fait candidat (révision 6) | Non publié, gardé au relais avec le type détecté, consigné au rapport | Un fait vrai retenu sur faux positif ; jamais une ligne entière effacée (rédaction au jeton) |
+| Mise à jour de Claude Code qui change la structure des lignes (révision 6) | Le filtre structurel de 3.3 est en échec fermé : du texte user tapé peut être retiré ; l'alerte de dérive (part gardée qui double ou tombe à la moitié sur 100 sessions d'une nouvelle `cc_version`) le signale au rapport ; correction par une nouvelle `wire_purge_version` puis montée de vue (2.8) sur les fichiers encore sur le poste | Texte user non extrait entre la mise à jour et la montée de vue ; rien n'est publié à tort |
+| Injection du harnais non listée et non répétée dans 5 sessions (révision 6) | Passe pour du texte user ; le juge amont (couche 1) la traite comme tout texte ; le compteur de préfixes la classe dès la cinquième session | Un fait extrait d'un texte de hook, au plafond de 5, jusqu'au classement |
+| `/rewind` (révision 6) | Branche abandonnée détectée par la chaîne des parents depuis la dernière feuille (3.3) ; ses faits reçoivent `annule` ; s'ils étaient publiés, archivage réversible (4.3) | Aucune ; un fait publié entre la stabilisation et un rewind tardif reste servi jusqu'à la stabilisation suivante |
+| Ligne complète illisible (JSON invalide terminé par `\n`) (révision 6) | Marqueur `{unparsable}` à son offset, comptée, le curseur avance (2.3) | Le contenu de cette seule ligne |
+| Enregistrement A+ de plus de 256 Kio (révision 6) | Part seul dans son segment, plafond dur de 4 Mio avec `truncated` au-delà (2.3) | Au-delà de 4 Mio, la fin du texte de cet enregistrement |
+| Montée de vue (`view_upgrade`) sur un fichier supprimé du poste ou poste éteint (révision 6) | Non retraité ; la lignée garde ses faits de l'ancienne vue ; `file_key` listé au rapport | Pas de retraitement pour ce fichier, limite assumée (2.8) |
+| Montée de vue sur une lignée déjà publiée (révision 6) | État recalculé, comparé aux publications de la lignée (2.8) : rien, version ou publication neuve ; aucun archivage par absence | Un doublon sous 0,9 et hors Hamming 3 possible, traité par la bande grise (4.8), qui archive la plus ancienne |
+| `send_message` identique envoyé à N pairs, ou `<channel>` dont l'original est transmis (révision 6) | Dédupliqué dans la session émettrice ; corps retiré de la vue à la stabilisation réceptrice si l'original est dans `sent_index` (3.3, 3.4) | Aucune ; si le segment émetteur arrive plus de 8 h après celui du récepteur, le corps est extrait deux fois et la dédup de Kleos ou la bande grise absorbe |
+| Fichier réécrit ou tronqué | Détection 2.5, nouvelle époque `rewrite`, renvoi complet ; uuid connus ignorés | Aucune |
 | `/compact` | Même fichier, ajout simple ; résumé de compaction retiré, marqueur gardé | Aucune |
 | Ligne en cours d'écriture | Jamais envoyée avant son `\n` (2.3) | Aucune |
 | Disque plein, relais | `507`, aucune écriture partielle ; alerte | Aucune ; retard |
@@ -990,7 +1326,9 @@ des mémoires d'agent plus récentes au juge pour un gain non mesuré, et coûte
 | Deux postes, même projet | `file_key` inclut `host_id` ; l'index uuid est par propriétaire, pas par poste | Aucune |
 | Horloge ou timestamps non monotones | Ordre par offset ; `T_settle` mesuré à l'horloge du relais (F4) | Aucune |
 | Bump de kleos-lib qui casse la compilation ou le test jetable | Le relais reste sur l'ancien rev, qui continue de parler à Kleos par l'API HTTP ; le bump attend une adaptation | Aucune ; retard du bump. Répété à chaque pull, ce cas rouvre le verdict 1.3 |
-| Changement de vue, de prompt ou de modèle | `model_view_version` ou `contract_version` rouvre les lignées encore en rétention ; les écarts avec la correspondance passent par 4.3 | Au-delà de 14 jours : pas de retraitement |
+| Changement de vue, de prompt ou de modèle (révisions 2 à 5) | `model_view_version` ou `contract_version` rouvre les lignées encore en rétention ; les écarts avec la correspondance passent par 4.3 | Au-delà de 14 jours : pas de retraitement |
+| Changement de prompt ou de modèle (révision 6) | `contract_version` rouvre les lignées encore en rétention au relais, sans renvoi ; écarts par 4.3 | Au-delà de 14 jours : pas de retraitement sans renvoi |
+| Changement de vue (révision 6) | Nouvelle `wire_purge_version` au démon, montée de vue par renvoi depuis le poste (2.8), lignées rouvertes `reopen_for_view` ; écarts par la table de 2.8 | Au-delà de 180 jours (F20), fichier supprimé ou poste éteint : pas de retraitement |
 
 ---
 
@@ -1027,14 +1365,14 @@ Cartes (recommandations, non appliquées par cette étude) :
 
 | Lot | Contenu | Porte mesurable |
 |---|---|---|
-| **F. Gel avant tout code** (verdict 1.3) | (1) contrat HTTP démon vers relais, sections 2.3 et 2.4, versionné dans le dépôt du relais ; (2) contrat du juge amont : prompt partagé, question de fidélité, schéma de verdict et effets (4.4, couche 1) ; (3) rev git épinglé de kleos-lib sur le fork VOCSAP et règle de bump écrite (à chaque merge upstream du fork, après un build vert) ; (4) liste des champs de `StoreRequest` et des quatre fonctions de kleos-lib utilisés, avec un test d'intégration jetable | (1) schéma JSON du segment et table des réponses figés, relus par le lead ; (2) schéma de verdict figé et fixtures écrites : un fait inventé, un fait déformé, un doublon d'agent, une contradiction d'agent, un fait fidèle et distinct ; (3) le relais compile contre le rev épinglé, hors des `members` du `Cargo.toml` racine (`git diff Cargo.toml` vide) ; (4) le test jetable passe sur le rev épinglé |
-| **0. Mesures opérateur** (F9 : geste opérateur) | (a) second passage ajout seul : sha256 du préfixe `[0, taille_T0)` à T0 puis T0 + 24 h sur tous les fichiers ; (b) taille A+ et taille B sur les 7 Go ; (c) part des enregistrements gardés sans uuid, par type ; (d) présence du rapport de sous-agent dans le `tool_result` parent, 20 sessions ; (e) lignes partielles observées en fin de fichier ; (f) rappel de la rédaction : nombre de secrets connus de l'opérateur (inventaire `cred list`, noms seulement) retrouvés en clair après rédaction, sur 14 jours ; (g) les deux points non vérifiés par le consultant : `GET /api/ps` sur l'Ollama 192.168.10.50, et chiffrement de `kleos.db` en production ; (h) activation en production de l'auto-linker, de la dédup de fond et de la consolidation (`KLEOS_AUTO_LINK_ENABLED`, `consolidation_enabled`), et distribution des similarités des liens `similarity` par paires de sources | (a) 0 préfixe modifié hors `/compact` documenté, sinon la réécriture (2.5) devient le chemin nominal et passe en tête du lot 2 ; (b) A+ au plus 3 % du brut ; (c) chiffre consigné ; (d) au moins 18 sur 20, sinon option `subagent` de 3.4 ; (e) chiffre consigné ; (f) 0 valeur du coffre retrouvée en clair ; (g) `/api/ps` rend la liste des modèles chargés, sinon la garde de 4.1 passe à un repli (fenêtre horaire fixe) ; état de chiffrement de `kleos.db` consigné, pour fixer E7 ; (h) le rapport du dreamer montre des ticks `auto_link` et `deduplicate` réussis sur 24 h, sinon le niveau déterministe de 4.8 manque et la mise en service attend ; distribution consignée pour borner la bande grise |
-| **1. Contrat de purge et rédaction** | Spécification de la purge B, de la rédaction et de `wire_purge_version` 1 côté démon ; spécification de la vue A+ et de `model_view_version` 1 côté serveur ; fixtures synthétiques (injections du harnais, `<channel>`, `send_message`, stores Kleos, compaction, jetons de chaque format listé en 1.4) | Tests de fixtures : 100 % des motifs d'injection listés retirés de la vue A+, 100 % du texte user tapé conservé, 100 % des jetons de fixture rédigés, sortie identique au fichier de référence |
-| **2. Réception seule** | Endpoints 2.4, jeton par poste, base ouverte par `connect_encrypted` (feature `sqlcipher` de kleos-lib), `uuid_index`, `lineage`, curseur ; aucun traitement | Banc : copie de 50 transcripts, démon tué 20 fois au hasard puis relancé, réception redémarrée 5 fois ; contenu identique octet pour octet à un passage unique ; 0 enregistrement dupliqué ; 1 réécriture et 1 fork injectés traités selon 2.5 et 2.6 ; une requête sans jeton reçoit `401` ; la base est illisible sans la clé |
-| **3. Démon poste** | Scan par stat, `notify`, rédaction, tâche planifiée à l'ouverture de session, sans console, jeton par `cred exec` | Scan stat de 4 751 fichiers en moins de 2 s ; régime permanent sous 1 % CPU sur 1 h ; le banc du lot 2 passe avec le vrai démon |
+| **F. Gel avant tout code** (verdict 1.3) | (1) contrat HTTP démon vers relais, sections 2.3 et 2.4, versionné dans le dépôt du relais (révision 6 : avec `epoch_reason`, `stats`, `cc_version`, les marqueurs de 2.3, les réponses `same_view` et la route `stale`) ; (2) contrat du juge amont : prompt partagé, question de fidélité, schéma de verdict et effets (4.4, couche 1) ; (3) rev git épinglé de kleos-lib sur le fork VOCSAP et règle de bump écrite (à chaque merge upstream du fork, après un build vert) ; (4) liste des champs de `StoreRequest` et des fonctions de kleos-lib utilisés (révision 6 : trois fonctions plus le chargeur du lexique, 1.3), avec un test d'intégration jetable ; (5) **révision 6** : contrat du crate de rédaction partagé démon et relais : liste des formats de 1.4, `secret_patterns_version`, sémantique « valeur masquée, ligne conservée » | (1) schéma JSON du segment et table des réponses figés, relus par le lead ; (2) schéma de verdict figé et fixtures écrites : un fait inventé, un fait déformé, un doublon d'agent, une contradiction d'agent, un fait fidèle et distinct ; (3) le relais compile contre le rev épinglé, hors des `members` du `Cargo.toml` racine (`git diff Cargo.toml` vide) ; (4) le test jetable passe sur le rev épinglé ; (5) liste des formats relue par le lead contre F17 et F19 : chacun des cinq comptes de F17 (3, 4, 12, 51, 0) a un format qui le couvre, et `key`, `privatekey`, `api-key` (F19) y figurent |
+| **0. Mesures opérateur** (F9 : geste opérateur) | (a) second passage ajout seul : sha256 du préfixe `[0, taille_T0)` à T0 puis T0 + 24 h sur tous les fichiers ; (b) taille A+ et taille B sur les 7 Go, dont la vue sous-agent de 3.4 à part ; (c) part des enregistrements gardés sans uuid, par type ; (d) présence du rapport de sous-agent dans le `tool_result` parent, 20 sessions (révision 6 : informative, les sous-agents sont envoyés dans tous les cas, 3.4) ; (e) lignes partielles observées en fin de fichier ; (f) rappel de la rédaction : nombre de secrets connus de l'opérateur (inventaire `cred list`, noms seulement) retrouvés en clair après rédaction, sur 14 jours ; (g) les deux points non vérifiés par le consultant : `GET /api/ps` sur l'Ollama 192.168.10.50, et chiffrement de `kleos.db` en production ; (h) activation en production de l'auto-linker, de la dédup de fond et de la consolidation (`KLEOS_AUTO_LINK_ENABLED`, `consolidation_enabled`), et distribution des similarités des liens `similarity` par paires de sources ; **révision 6** : (i) distribution des préfixes de 40 caractères des blocs `text` user par nombre de sessions, pour calibrer le seuil de 5 (3.3) ; (j) forme exacte d'un `/rewind` dans le fichier (lignes abandonnées en place, `parentUuid` de reprise), 5 cas ; (k) volume et nombre des `<channel>` dont l'émetteur est `operator`, le Deck ou un pair hors parc (3.4) ; (l) part de texte user gardée par le filtre structurel de 3.3, par version de Claude Code présente dans le corpus, comme base de l'alerte de dérive | (a) 0 préfixe modifié hors `/compact` documenté, sinon la réécriture (2.5) devient le chemin nominal et passe en tête du lot 2 ; (b) A+ au plus 3 % du brut ; (c) chiffre consigné ; (d) chiffre consigné ; (e) chiffre consigné ; (f) 0 valeur du coffre retrouvée en clair ; (g) `/api/ps` rend la liste des modèles chargés, sinon la garde de 4.1 passe à un repli (fenêtre horaire fixe) ; état de chiffrement de `kleos.db` consigné, pour fixer E7 ; (h) le rapport du dreamer montre des ticks `auto_link` et `deduplicate` réussis sur 24 h, sinon le niveau déterministe de 4.8 manque et la mise en service attend ; distribution consignée pour borner la bande grise ; (i) au seuil retenu, 0 préfixe tapé par l'opérateur classé injection sur un échantillon de 50 préfixes classés, relu par lui ; (j) forme consignée, la règle de 3.3 ajustée si la chaîne des parents ne suffit pas ; (k) chiffre consigné ; (l) base consignée |
+| **1. Contrat de purge et rédaction** (révision 6 : contrat du fil A+, fixtures de secrets et d'injections) | Spécification de la vue A+ (3.3, 3.4), de la rédaction au jeton (1.4) et de `wire_purge_version` 1 côté démon ; crate de rédaction partagé (lot F (5)) ; détecteur de secrets du relais (4.4, couche 0) ; fixtures synthétiques : injections du harnais (`<system-reminder>`, `<channel>`, corps de skill « Base directory for this skill », `<task-notification>`, blocs `=== … ===`, refus de hook `PreToolUse:… hook error` dans un `tool_result`, préambule de compaction, bloc `isMeta`), `send_message` simple et identique à 3 pairs, stores Kleos avec et sans id lisible, compaction, `/rewind`, ligne JSON invalide, enregistrement de 300 Kio et de 5 Mio ; **fixtures de secrets** : sorties `env`, `Get-ChildItem Env:`, `docker inspect`, `cat .env`, `kleos.env`, `sqlite3` en colonnes `|`, URL `scheme://user:secret@host/path`, `PrivateKey =`, une valeur de chaque format de 1.4 (`kleos_<hex32>`, `kleos_<hex64>`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `ghp_`, `github_pat_`, `sk-`, `xox`, `AKIA`, JWT, PEM, `Bearer`), et un **jeu de 50 faits sans secret** contenant des nombres, `token`, `key`, `secret` en prose (« 9 084 tokens », « la clé `file_key` », « le secret de la vitesse ») ; la vue sous-agent de 3.4 | **Portes chiffrées :** (1) injections : 100 % des 8 familles de fixture retirées de la vue A+, 0 caractère de texte user tapé perdu sur les fixtures (égalité au fichier de référence) ; (2) rédaction : 100 % des valeurs de fixture masquées, **100 % des lignes porteuses conservées hors de la valeur** (la ligne « 9 084 tokens » est intacte), 0 des 50 faits sans secret modifié ; sur le corpus du poste (geste opérateur, F9), après rédaction : **0 des 3 clés `kleos_`, 0 des 4 valeurs `KLEOS_*_KEY`, 0 des 12 jetons `gh[ousr]_`, 0 des 51 secrets d'URL** de F17 retrouvés en clair, par les mêmes comptes que #32381 ; (3) détecteur du relais : 100 % des faits de fixture porteurs d'un secret bloqués, 0 des 50 faits sans secret bloqué ; (4) marqueurs : 100 % des stores de fixture avec id lisible rendus `{stored: id}`, le `send_message` triple rendu un original plus deux `{sent_to}` ; (5) `/rewind` de fixture : 0 fait de la branche abandonnée au statut valide ; (6) la ligne invalide produit un `{unparsable}` et le fichier continue ; l'enregistrement de 5 Mio est tronqué avec marqueur, celui de 300 Kio passe entier ; (7) sortie identique au fichier de référence pour `wire_purge_version` 1 |
+| **2. Réception seule** | Endpoints 2.4 (révision 6 : avec `same_view`, `stale`, `epoch_reason`), jeton par poste, base ouverte par `connect_encrypted` (feature `sqlcipher` de kleos-lib), `uuid_index` avec `purge_version`, `lineage`, `sent_index`, curseur ; aucun traitement | Banc : copie de 50 transcripts, démon tué 20 fois au hasard puis relancé, réception redémarrée 5 fois ; contenu identique octet pour octet à un passage unique ; 0 enregistrement dupliqué ; 1 réécriture et 1 fork injectés traités selon 2.5 et 2.6 ; **révision 6** : 1 montée de vue injectée (bump de `wire_purge_version` sur 10 fichiers) traitée selon 2.8 : les 10 époques précédentes `superseded_by_view`, 10 lignées `reopen_for_view`, 0 `copy_of` posé sur les uuid du même `file_key`, un renvoi à version égale reçoit `409 same_view` ; une requête sans jeton reçoit `401` ; la base est illisible sans la clé |
+| **3. Démon poste** | Scan par stat, `notify`, rédaction au jeton, calcul A+ (3.3), table `user_prefixes`, montée de vue au démarrage (2.8), tâche planifiée à l'ouverture de session, sans console, jeton par `cred exec` | Scan stat de 4 751 fichiers en moins de 2 s ; régime permanent sous 1 % CPU sur 1 h ; le banc du lot 2 passe avec le vrai démon ; **révision 6** : après un bump de `wire_purge_version`, seuls les fichiers listés par `stale` **et** présents sur le disque sont renvoyés, sous `epoch_reason = view_upgrade`, après les fichiers actifs, à 4 en parallèle au plus ; un fichier supprimé entre la liste et le renvoi est consigné, jamais bloquant ; le calcul A+ sur le fichier de 60 Mo (F1) tient en moins de 30 s (SUPPOSÉ atteignable) |
 | **4. Traitement en ombre** | Fenêtrage, map, état de lignée et instantanés, stabilisation, `think: false` vérifié ; écriture dans une table du relais seulement, aucune écriture Kleos | Sur le corpus de calibration (section 5), jugement aveugle d'un tirage de 40 faits publiables par un juge indépendant (autre modèle que le juge amont, sans voir son verdict ; un échantillon opérateur reste facultatif, 4.7) : au moins 60 % utiles (contre environ 10 % aujourd'hui, F7) ; JSON valide après relance au moins 99 % ; 0 réponse acceptée avec `done_reason = length` ; une journée de flux traitée en moins de 2 h d'Ollama, mesurée en conditions réelles de partage ; au moins 95 % des faits annulés ou révisés dans la lignée absents de l'état final ; sur les sessions du corpus reprises après plus de 45 min, au moins 95 % des révisions faites dans la reprise appliquées à l'état hérité |
-| **5. Juge amont, publication et juge nightly** | Juge amont (4.4, couche 1), `source=kleos-transcript`, importance au plus 5, révision par chaîne de versions (4.3), règle d'archivage 4.6. Aucune écriture en `pending`. Dépend de l'étape 2 de l'étude nightly 4.10 pour la couche 4 | Space : 100 % des sessions de fixture reçoivent le space de leur fichier `space_name`, ou celui de la règle 2 du hook en son absence, et 0 publication pour un `cwd` personnel ou racine (4.5) ; bande grise : bornes recalées sur la distribution du lot 0 (h), au moins 90 % des doublons de fixture entre 0,80 et 0,90 archivés côté transcript et 0 mémoire d'agent archivée ; fixtures du lot F : 100 % des faits inventés ou déformés non publiés, 100 % des faits fidèles et distincts publiés ; sur le corpus de calibration, au plus 5 % de faits publiés jugés faux par le juge indépendant aveugle sur un tirage de 40 ; second passage : 0 nouvelle mémoire ; 0 mémoire de transcript dans le tier important de `/recall` ni dans les statiques de `/context` ; sur une fixture où l'agent a stocké X et le transcript contient X, au moins 90 % des copies non publiées ou absorbées ; sur une fixture où un agent contredit après coup une mémoire de transcript, elle est archivée au passage nightly suivant et la mémoire d'agent est intacte ; une lignée rouverte produit une version 2 et aucune seconde tête ; une coupure simulée entre l'appel et l'inscription ne produit aucun doublon ; fréquence du sous-classement de 4.4 consignée |
-| **6. Rétention et rattrapage borné** | Purge à 14 jours, index et correspondance conservés, rattrapage de 14 jours | Après purge, `claude --resume` d'une session purgée : 0 réextraction ; volume disque du relais sous 1,5 Go |
+| **5. Juge amont, publication et juge nightly** | Détecteur de secrets (4.4, couche 0, révision 6), juge amont (4.4, couche 1), `source=kleos-transcript`, importance au plus 5, révision par chaîne de versions (4.3), règle d'archivage 4.6, règle de montée de vue (2.8), arbitrage des `<channel>` par `sent_index` (3.4). Aucune écriture en `pending`. Dépend de l'étape 2 de l'étude nightly 4.10 pour la couche 4 | Space : 100 % des sessions de fixture reçoivent le space de leur fichier `space_name`, ou celui de la règle 2 du hook en son absence, et 0 publication pour un `cwd` personnel ou racine (4.5) ; bande grise : bornes recalées sur la distribution du lot 0 (h), au moins 90 % des doublons de fixture entre 0,80 et 0,90 archivés côté transcript et 0 mémoire d'agent archivée ; fixtures du lot F : 100 % des faits inventés ou déformés non publiés, 100 % des faits fidèles et distincts publiés ; sur le corpus de calibration, au plus 5 % de faits publiés jugés faux par le juge indépendant aveugle sur un tirage de 40 ; second passage : 0 nouvelle mémoire ; 0 mémoire de transcript dans le tier important de `/recall` ni dans les statiques de `/context` ; sur une fixture où l'agent a stocké X et le transcript contient X, au moins 90 % des copies non publiées ou absorbées ; sur une fixture où un agent contredit après coup une mémoire de transcript, elle est archivée au passage nightly suivant et la mémoire d'agent est intacte ; une lignée rouverte produit une version 2 et aucune seconde tête ; une coupure simulée entre l'appel et l'inscription ne produit aucun doublon ; fréquence du sous-classement de 4.4 consignée ; **révision 6** : (1) **0 secret publié** : sur le corpus de calibration publié, les comptes de #32381 rejoués sur les mémoires `source=kleos-transcript` rendent 0 pour chacun des cinq formats, et 100 % des faits de fixture porteurs d'un secret sont retenus au relais ; (2) montée de vue sur une lignée de fixture avec 5 faits publiés, dont 1 révisé et 1 nouveau sous la vue large : 0 seconde publication d'un fait identique, 1 version 2, 1 publication neuve, 0 archivage par absence ; (3) `<channel>` : un message dont l'original est reçu par un autre démon de fixture n'est extrait que dans la session émettrice, un message d'émetteur `operator` est extrait dans la session réceptrice ; (4) `/rewind` : 0 fait d'une branche abandonnée publié valide, et un fait publié puis « rewindé » est archivé à la stabilisation suivante ; (5) liste négative : 100 % des faits de fixture recouvrant un `{stored: id}` rendus `doublon` sans publication |
+| **6. Rétention et rattrapage borné** | Purge à 14 jours, index et correspondance (avec contenu publié) conservés, rattrapage de 14 jours | Après purge, `claude --resume` d'une session purgée : 0 réextraction ; volume disque du relais sous 1,5 Go (révisions 2 à 5, B) ; **révision 6 : sous 300 Mo** (A+ environ 130 Mo sur 14 jours, E6, plus index, correspondance et corps de `<channel>`) ; une montée de vue sur une lignée dont le contenu A+ a expiré mais dont la correspondance subsiste suit la table de 2.8 sans erreur |
 
 ---
 
@@ -1045,6 +1383,44 @@ environ 620 Mo sur 14 jours, surface de secrets traitée en 1.4) ; (b) A+ seulem
 petit mais figé au démon. Vue du modèle : **A+, recommandé**, environ 1 à 2 h d'Ollama
 par jour ; B coûterait 4 à 8 h (3.2). Raison : le calcul serveur décide la vue, la
 réversibilité décide le stockage.
+**Tranchée par l'opérateur le 2026-10-22 : (b), A+ calculé au démon** (révision 6,
+3.2). La réversibilité que (a) apportait est reprise par la montée de vue depuis la
+source (2.8), bornée aux fichiers encore sur le poste, poste allumé. La vue du modèle
+reste A+.
+
+**Q6. Rétention de A+ au relais (révision 6).** (a) **14 jours, recommandé** : la borne
+vient de la surface de secrets résiduels, pas du volume (environ 130 Mo) ; au-delà, le
+retraitement passe par un renvoi depuis le poste, qui en garde 180 jours (F20). (b) 60
+à 180 jours : un changement de prompt ou de modèle se rejoue sans renvoi ni dépendance
+au poste, au prix d'une copie plus longue des secrets manqués par la rédaction. Question
+liée : faut-il, à l'ajout d'un format de secret, rebalayer une fois les mémoires
+`source=kleos-transcript` déjà publiées (lecture par `source_filter`, archivage
+réversible des porteuses) ? Recommandation : oui, comme geste d'exploitation déclenché
+par le bump de `secret_patterns_version`, pas comme passe nightly.
+
+**Q7. Arbitrage des `<channel>` au relais (révision 6, 3.4).** Décision prise dans
+cette révision sans mesure : le démon envoie le corps de tout `<channel>` dont
+l'émetteur n'est pas `operator`, et le relais le retire de la vue à la stabilisation si
+l'original est dans `sent_index`. (a) **Cette règle, recommandée** : aucun message sans
+original n'est perdu, au prix du stockage 14 jours des corps de `<channel>` (volume
+mesuré au lot 0 (k)). (b) Règle au démon seule, par liste d'émetteurs connus : plus
+simple, mais le démon ne connaît pas le parc et un pair sans démon serait perdu. (c)
+Marqueur seul pour tout émetteur sauf `operator` : perd les messages du Deck et des
+pairs hors parc.
+
+**Q8. Seuils du filtre structurel (révision 6, 3.3).** Préfixe de 40 caractères répété
+dans au moins 5 sessions classé injection ; alerte de dérive quand la part de texte
+user gardé double ou tombe à la moitié sur 100 sessions d'une nouvelle version de
+Claude Code. Les deux seuils sont SUPPOSÉS ; le lot 0 (i) et (l) les calibre. Question :
+la table des préfixes classés doit-elle être partagée entre postes par le relais (un
+hook identique sur deux postes est classé deux fois plus vite), ou rester locale (un
+préfixe propre à un poste n'en contamine pas un autre) ? Recommandation : locale en v1,
+liste remontée au rapport.
+
+**Q9. Vue des sous-agents (révision 6, 3.4).** Dernier message assistant et `tool_use`
+Bash réussis, au minimum. Faut-il y ajouter le texte user initial du sous-agent (le
+brief du parent, déjà présent dans le `tool_use` d'agent du parent, donc une copie) ?
+Recommandation : non, par la règle « extraire là où c'est écrit ».
 
 **Q2. Autorité d'archivage sur les mémoires de transcript (sans porte).**
 (a) **Recommandé** : le juge nightly archive une mémoire de transcript contredite ou
@@ -1089,7 +1465,10 @@ la réécriture sur place de kleos-ingest sont écartés.
 - Étude nightly : `docs/studies/2026-10-20-kleos-nightly-pipeline.md`, sections 3, 4.1 à
   4.10, 6, 8 et 10.
 - Kleos : #31653, #31639, #31658, #31675, #31676, #31682, #31699, #31706, #31707,
-  #31716, #31720, #31722, #31725, #31729, #31730, #30326, #18425, #30938.
+  #31716, #31720, #31722, #31725, #31729, #31730, #30326, #18425, #30938 ; révision 6 :
+  #32359 (lexique de `scrub_credentials` et remplacement de ligne), #32381 (comptes de
+  secrets et d'injections sur le corpus du poste), #32284 (gel upstream).
+- Poste : `~/.claude/settings.json:3` (`cleanupPeriodDays: 180`, F20).
 - Dédup de fond et space : `kleos-lib/src/intelligence/duplicates.rs` ;
   `kleos-lib/src/intelligence/scheduler.rs:1-60`, `:200-270`, `:330-370` ;
   `kleos-lib/src/intelligence/linker.rs:1-60` ; `kleos-server/src/dreamer.rs:170-230`,
