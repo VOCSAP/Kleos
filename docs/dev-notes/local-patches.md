@@ -7681,11 +7681,26 @@ les prédicats SQL du pré-filtre et le test `keeps` du `retain` aval.
 `filter_owned_visible` reçoit ce filtre sur les deux chemins, chunks
 (`chunk_vector_search`) et centroïde (`centroid_or_sqlite_vector`).
 
-**Hors périmètre :** le repli sqlite-vec `vector_search` garde son filtre. Il
-est aussi appelé par `intelligence/linker.rs::auto_link`, dont le filtre
-`filter_linkable_hits` garde les catégories `growth`/`activity` et les
-mémoires `is_superseded` : y ajouter les exclusions de recherche changerait
-les liens créés.
+**Hors périmètre :** le repli sqlite `vector_search` garde son filtre. Il
+interroge `vector_top_k('memories_vec_1024_idx', ...)`, fonction et index
+propres à libsql, que le schéma ne crée pas sous rusqlite/SQLCipher
+(`kleos-lib/src/db/schema.rs`, `LIBSQL_VECTOR_INDEX_STATEMENTS` ignorées).
+L'erreur SQL est avalée en `Ok(vec![])` : hors libsql ce repli rend toujours
+vide, quel que soit son filtre. Il est aussi appelé par
+`intelligence/linker.rs::auto_link`, dont le filtre `filter_linkable_hits`
+garde les catégories `growth`/`activity` et les mémoires `is_superseded` : y
+ajouter les exclusions de recherche changerait les liens créés le jour où ce
+repli rendrait des voisins.
+
+**Limites connues :** le pré-filtre ne regarde que la fenêtre collectée. Sur
+le chemin chunk, `collect_cap = limit + 128` (192 pour `candidate_target` 64) ;
+si tous les voisins de cette fenêtre sont non retournables, le chemin chunk
+rend vide et `hybrid_search` se replie sur le centroïde. La famine reste
+possible au-delà de cette borne. Par ailleurs `include_archived = true` est
+sans effet en bout de chaîne : `fetch_memories_batch` filtre
+`is_archived = 0` sans condition, donc une mémoire archivée admise par le
+pré-filtre est jetée à l'hydratation. Ce second point est suivi dans une
+carte séparée.
 
 **Fichiers :** `kleos-lib/src/memory/vector.rs`,
 `kleos-lib/src/memory/search.rs`, `docs/dev-notes/local-patches.md`.
