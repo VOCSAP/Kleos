@@ -690,8 +690,8 @@ gratuit.
   etiquetages operateur ; le veto n'a ete mesure que sur des retraits proposes par
   Sonnet ou Haiku, pas sur le consensus.
 - Envoyer le contenu des memoires a TypeSafe ajoute un tiers au traitement (voir la
-  section Confidentialite) ; accepte par l'operateur pour l'etude seulement, pas pour
-  l'exploitation.
+  section Confidentialite) ; accepte par l'operateur pour l'etude ; l'envoi en
+  exploitation reste une decision ouverte.
 - La porte de la phase 2 reste non passee tant que la cascade n'est ni choisie ni
   evaluee sur un echantillon operateur.
 
