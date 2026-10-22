@@ -20,7 +20,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 use std::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const DEFAULT_LIMIT: usize = DEFAULT_SEARCH_LIMIT;
 
@@ -890,7 +890,18 @@ pub async fn hybrid_search(
                 Ok(_) => {
                     // Empty chunk result. Fall back to centroid index so
                     // partially-backfilled deployments still surface hits.
-                    warn!("chunk vector search returned no hits, falling back to centroid");
+                    let chunk_count = match db.chunk_vector_index.as_ref() {
+                        Some(index) => index.count().await.ok(),
+                        None => None,
+                    };
+                    if chunk_count == Some(0) {
+                        warn!("chunk vector index is empty, falling back to centroid");
+                    } else {
+                        debug!(
+                            "no returnable neighbour in the collected chunk window, \
+                             falling back to centroid"
+                        );
+                    }
                     centroid_or_sqlite_vector(db, embedding, candidate_target, user_id, &returnable)
                         .await
                 }
@@ -2888,8 +2899,8 @@ mod tests {
     }
 
     /// Non-returnable neighbours (archived, noise categories, superseded, pending) must not
-    /// take the vector pre-filter's output slots: they are dropped downstream, which left a
-    /// vector-only search with zero results while a returnable memory sat just behind them.
+    /// take the vector pre-filter's output slots, so a vector-only search returns the
+    /// returnable memory ranked behind them.
     #[tokio::test]
     async fn vector_prefilter_skips_unreturnable_neighbours() {
         for path in [AnnPath::Chunk, AnnPath::Centroid] {

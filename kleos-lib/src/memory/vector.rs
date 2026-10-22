@@ -389,4 +389,61 @@ mod tests {
         assert!(!owned.contains(&ids[3]), "forgotten excluded");
         assert_eq!(owned.len(), 1);
     }
+
+    /// The pre-filter SQL keeps exactly the rows hybrid_search keeps downstream:
+    /// `keeps()` plus the reviewed-current predicates, for every flag combination.
+    #[tokio::test]
+    async fn filter_sql_matches_keeps_for_every_flag_combination() {
+        use super::ReturnableFilter;
+        use crate::db::Database;
+        // (label, category, is_archived, is_consolidated, is_superseded, pending)
+        let rows = [
+            ("archived", "general", true, false, false, false),
+            ("growth", "growth", false, false, false, false),
+            ("activity", "activity", false, false, false, false),
+            ("superseded", "general", false, false, true, false),
+            ("pending", "general", false, false, false, true),
+            ("consolidated", "general", false, true, false, false),
+            ("healthy", "general", false, false, false, false),
+        ];
+        let db = Database::connect_memory().await.expect("db");
+        let ids: Vec<i64> = db
+            .write(move |conn| {
+                let mut ids = Vec::new();
+                for (_, category, archived, consolidated, superseded, pending) in rows {
+                    let id: i64 = conn.query_row(
+                        "INSERT INTO memories (content, user_id, category, is_archived, \
+                         is_consolidated, is_superseded) VALUES ('x', 1, ?1, ?2, ?3, ?4) \
+                         RETURNING id",
+                        rusqlite::params![category, archived, consolidated, superseded],
+                        |r| r.get(0),
+                    )?;
+                    if pending {
+                        conn.execute("UPDATE memories SET status = 'pending' WHERE id = ?1", [id])?;
+                    }
+                    ids.push(id);
+                }
+                Ok(ids)
+            })
+            .await
+            .unwrap();
+
+        for bits in 0..8u8 {
+            let filter = ReturnableFilter {
+                include_noise: bits & 1 != 0,
+                include_archived: bits & 2 != 0,
+                exclude_consolidated: bits & 4 != 0,
+            };
+            let kept = super::filter_owned_visible(&db, &ids, 1, &filter)
+                .await
+                .unwrap();
+            for ((label, category, archived, consolidated, superseded, pending), id) in
+                rows.iter().zip(&ids)
+            {
+                let expected =
+                    filter.keeps(category, *archived, *consolidated) && !superseded && !pending;
+                assert_eq!(kept.contains(id), expected, "{label} row under {filter:?}");
+            }
+        }
+    }
 }
