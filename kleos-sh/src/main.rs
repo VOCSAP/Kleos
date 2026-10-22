@@ -15,7 +15,7 @@ struct Cli {
     #[arg(long, help = "Gate-only mode: check and exit, do not execute")]
     gate_only: bool,
 
-    #[arg(long, default_value = "claude-code", help = "Agent identity")]
+    #[arg(long, default_value = "kleos-sh", help = "Agent identity")]
     agent: String,
 
     #[arg(long, help = "Tool name for gate check (e.g. Bash, Write)")]
@@ -473,8 +473,7 @@ async fn main() {
             .or_else(|| Some("Bash".to_string())),
     };
 
-    // In hook mode: single 4s attempt, fail open on timeout (matching bash).
-    // Non-hook (exec) mode: 4 retries with exponential backoff, fail closed.
+    // Hook mode: a single attempt, so the harness timeout is not exceeded.
     let max_attempts: usize = if cli.claude_hook { 1 } else { 4 };
     let outcome = match &api_key {
         Some(key) => {
@@ -482,7 +481,7 @@ async fn main() {
             let mut delay_ms = 250u64;
             let mut got: Option<gate::GateOutcome> = None;
             for attempt in 0..max_attempts {
-                match gate::check_remote(&client, &server, key, &req).await {
+                match gate::check_remote(&client, &server, key, &req, cli.claude_hook).await {
                     Ok(outcome) => {
                         got = Some(outcome);
                         break;

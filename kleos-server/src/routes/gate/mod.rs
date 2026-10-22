@@ -494,8 +494,8 @@ async fn check_handler(
     // Note: `has_secret_placeholders` also sets `requires_approval=true` but
     // pairs it with `allowed=false`, so the outer `result.allowed` guard keeps
     // it on its own "client must resolve secrets and retry" path.
-    if result.allowed && no_wait::agent_skips_approval_wait(&body.agent) {
-        return Ok((StatusCode::CREATED, Json(json!(result))));
+    if let Some(early) = no_wait::early_response(&result, &body.agent) {
+        return Ok((StatusCode::CREATED, Json(early)));
     }
 
     let tool_name = body.tool_name.as_deref().unwrap_or("");

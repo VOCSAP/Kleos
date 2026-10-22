@@ -714,7 +714,10 @@ Failure policy:
 Important options:
 
 - `-c`: command string
-- `--agent`: agent identity label, default `claude-code`
+- `--agent`: agent identity label, default `kleos-sh`; the Claude hook passes
+  `--agent claude-code`. Outside `--claude-hook`, a command that requires
+  approval is denied when the server skipped the wait for the declared agent
+  (`KLEOS_GATE_NO_WAIT_AGENTS`).
 - `--tool-name`: reported tool name, default `Bash`
 - `--gate-only`
 - `--claude-hook`
