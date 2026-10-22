@@ -7512,3 +7512,33 @@ ce dépôt. `project_detection_parses_remote_names` est retiré avec
 **Conditions de retrait :** une migration normalise les `project` historiques
 (après vérification qu'aucun couple de projets ne diffère que par la casse), ce
 qui rend les comparaisons `lower()` superflues.
+
+---
+
+## Patch 74 -- `GET /stats` compte les mémoires dans la base tenant de l'appelant
+
+Carte roadmap 7bed6b55. Patch local VOCSAP.
+
+**Symptôme sous upstream pur :** avec le sharding tenant actif, `GET /stats`
+rend `"memories": 0` alors que l'utilisateur porte des milliers de mémoires
+(mesuré sur LXC 121 : 0 contre 5227 via `GET /list`). `get_stats` comptait
+`SELECT COUNT(*) FROM memories` sur `state.db`, la base monolithe, qui ne
+reçoit plus de mémoires ; la requête réussit et rend un zéro silencieux.
+
+**Approche :** côté serveur, pour couvrir tous les clients. `get_stats` prend
+l'extracteur `ResolvedDb`, comme les routes de lecture des mémoires, et compte
+`memories` dans la base qu'il résout : la base tenant de l'utilisateur
+effectif en mode shardé, la monolithe sinon (comportement inchangé dans ce
+mode). Le périmètre reste le compte brut de la table (archivées, oubliées et
+versions antérieures incluses). Les autres compteurs (`tasks`, `events`,
+`actions`, `agents`, `api_keys`) restent sur la monolithe.
+
+**Fichiers :** `kleos-server/src/routes/admin/mod.rs`,
+`kleos-server/tests/routes_admin_stats.rs`, `docs/dev-notes/local-patches.md`.
+
+**Tests :** `stats_counts_memories_of_the_caller_tenant_shard` insère 3
+mémoires dans le shard de l'admin et 5 dans la monolithe, puis vérifie que
+`/stats` rend 3 (rendait 5 avant le patch).
+
+**Conditions de retrait :** upstream route lui-même `/stats` vers la base
+tenant.
