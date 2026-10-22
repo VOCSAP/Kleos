@@ -516,7 +516,7 @@ impl HandoffsDb {
                                 snippet(handoffs_fts, 0, '>>>', '<<<', '...', 48)
                          FROM handoffs_fts fts
                          JOIN handoffs h ON h.id = fts.rowid
-                         WHERE handoffs_fts MATCH ?1 AND (h.project = ?2 OR lower(h.project) = ?4) AND h.user_id = ?3
+                         WHERE handoffs_fts MATCH ?1 AND (h.project = ?2 OR (h.scope <> 'standalone' AND lower(h.project) = ?4)) AND h.user_id = ?3
                          ORDER BY rank
                          LIMIT {}",
                             limit
@@ -525,7 +525,7 @@ impl HandoffsDb {
                             Box::new(query) as Box<dyn rusqlite::types::ToSql>,
                             Box::new(p.clone()),
                             Box::new(user_id),
-                            Box::new(crate::space::normalize_space_name(p)),
+                            Box::new(normalized_reader(p)),
                         ],
                     )
                 } else {
@@ -860,7 +860,7 @@ impl HandoffsDb {
                 "user_id = ?1".to_string(),
                 "(project = ?2 OR lower(project) = ?3)".to_string(),
             ];
-            let normalized = crate::space::normalize_space_name(&project);
+            let normalized = normalized_reader(&project);
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
                 Box::new(user_id) as Box<dyn rusqlite::types::ToSql>,
                 Box::new(project),
@@ -1009,7 +1009,7 @@ impl HandoffsDb {
             })?;
 
         let project = project.to_string();
-        let normalized = crate::space::normalize_space_name(&project);
+        let normalized = normalized_reader(&project);
 
         conn.interact(move |conn| {
             // Compute the decay factor once and pass it as a parameter so that
@@ -1056,12 +1056,12 @@ fn build_handoff_filter_clause(
 
     if let Some(ref project) = filters.project {
         conditions.push(format!(
-            "(project = ?{} OR lower(project) = ?{})",
+            "(project = ?{} OR (scope <> 'standalone' AND lower(project) = ?{}))",
             params.len() + 1,
             params.len() + 2
         ));
         params.push(Box::new(project.clone()));
-        params.push(Box::new(crate::space::normalize_space_name(project)));
+        params.push(Box::new(normalized_reader(project)));
     }
     if let Some(ref scope) = filters.scope {
         conditions.push(format!("scope = ?{}", params.len() + 1));
@@ -1070,12 +1070,13 @@ fn build_handoff_filter_clause(
     if let Some(ref workstream) = filters.workstream {
         conditions.push(format!(
             "(COALESCE(NULLIF(workstream, ''), project) = ?{0} \
-             OR lower(COALESCE(NULLIF(workstream, ''), project)) = ?{1})",
+             OR (scope <> 'standalone' \
+                 AND lower(COALESCE(NULLIF(workstream, ''), project)) = ?{1}))",
             params.len() + 1,
             params.len() + 2
         ));
         params.push(Box::new(workstream.clone()));
-        params.push(Box::new(crate::space::normalize_space_name(workstream)));
+        params.push(Box::new(normalized_reader(workstream)));
     }
     if let Some(ref agent) = filters.agent {
         conditions.push(format!("agent = ?{}", params.len() + 1));
@@ -1103,6 +1104,14 @@ fn build_handoff_filter_clause(
     }
 
     (format!("WHERE {}", conditions.join(" AND ")), params)
+}
+
+/// Space-normalized form of a reader's project, or `None` when nothing
+/// survives normalization: a NULL bind makes `lower(col) = ?` match no row,
+/// where an empty string would match every row with an empty project.
+fn normalized_reader(value: &str) -> Option<String> {
+    let normalized = crate::space::normalize_space_name(value);
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 /// Normalizes new handoff identity fields and rejects ambiguous standalone
@@ -1480,22 +1489,89 @@ mod tests {
         conn.interact(|conn| {
             conn.execute(
                 "INSERT INTO handoffs (user_id, project, scope, workstream, content)
-                 VALUES (7, 'Kleos', 'repository', 'Kleos', 'legacy state')",
+                 VALUES (7, 'Kleos', 'repository', 'Kleos', 'repository state'),
+                        (7, 'Kleos', 'legacy', '', 'legacy state')",
                 [],
             )
         })
         .await
         .expect("interact")
-        .expect("insert legacy row");
+        .expect("insert legacy rows");
 
         let rows = db.list(repository_filters("kleos"), 7).await.expect("list");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].project, "Kleos");
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.project == "Kleos"));
         let latest = db
             .get_latest(repository_filters("kleos"), 7)
             .await
             .expect("latest");
         assert!(latest.is_some());
+    }
+
+    #[tokio::test]
+    /// A standalone workstream is a free label, so only its exact value reads
+    /// it back.
+    async fn standalone_workstream_reads_stay_exact() {
+        let db = fresh_db().await;
+        let mut params = store_params("", "standalone state");
+        params.scope = Some("standalone".to_string());
+        params.workstream = Some("MyTopic".to_string());
+        db.store(params, 7).await.expect("store standalone");
+
+        let standalone = |value: &str| HandoffFilters {
+            scope: Some("standalone".to_string()),
+            workstream: Some(value.to_string()),
+            ..Default::default()
+        };
+        let exact = db.list(standalone("MyTopic"), 7).await.expect("list");
+        assert_eq!(exact.len(), 1);
+        let folded = db.list(standalone("mytopic"), 7).await.expect("list");
+        assert!(folded.is_empty());
+        let by_project = db
+            .list(repository_filters("mytopic"), 7)
+            .await
+            .expect("list");
+        assert!(by_project.is_empty());
+        let hits = db
+            .search("standalone", Some("mytopic"), 10, 7)
+            .await
+            .expect("search");
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    /// A reader project that normalizes to nothing never reaches rows whose
+    /// project is empty, neither in reads nor in the decay updates.
+    async fn empty_normalized_reader_matches_no_empty_project() {
+        let db = fresh_db().await;
+        let conn = db.writer().get().await.expect("writer");
+        conn.interact(|conn| {
+            conn.execute(
+                "INSERT INTO handoffs (id, user_id, project, scope, workstream, content)
+                 VALUES (1, 7, '', 'legacy', '', 'empty project state')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO handoff_atoms
+                     (atom_id, handoff_id, user_id, project, atom_type, content, canonical_form)
+                 VALUES ('atom-1', 1, 7, '', 'decision', 'use sqlite', 'use sqlite')",
+                [],
+            )
+        })
+        .await
+        .expect("interact")
+        .expect("insert empty-project rows");
+        drop(conn);
+
+        let rows = db.list(repository_filters("/"), 7).await.expect("list");
+        assert!(rows.is_empty());
+        let atoms = db
+            .list_atoms("/", None, None, 10, 7)
+            .await
+            .expect("list atoms");
+        assert!(atoms.is_empty());
+        let decayed = db.apply_session_decay("/", 3, 7).await.expect("decay");
+        assert_eq!(decayed, 0);
     }
 
     #[tokio::test]
