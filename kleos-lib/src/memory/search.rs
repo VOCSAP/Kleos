@@ -1,7 +1,7 @@
 //! Ranks memory searches and caches results by their effective search inputs.
 
 use super::fts::fts_search;
-use super::vector::{chunk_vector_search, vector_search};
+use super::vector::{chunk_vector_search, vector_search, ReturnableFilter, REVIEWED_CURRENT_SQL};
 use super::{row_to_memory, MEMORY_COLUMNS};
 use crate::db::Database;
 use crate::memory::scoring::{
@@ -483,8 +483,8 @@ async fn hydrate_candidates(
          version, is_latest, source, model, access_count, pagerank_score, \
          fsrs_stability, content, category, is_archived, is_consolidated, \
          fsrs_last_review_at \
-         FROM memories WHERE id IN ({}) AND user_id = ? AND status != 'pending' AND is_superseded = 0",
-        placeholders
+         FROM memories WHERE id IN ({}) AND user_id = ? AND {}",
+        placeholders, REVIEWED_CURRENT_SQL
     );
 
     db.read(move |conn| {
@@ -773,6 +773,7 @@ async fn centroid_or_sqlite_vector(
     embedding: &[f32],
     candidate_target: usize,
     user_id: i64,
+    filter: &ReturnableFilter,
 ) -> Result<Vec<super::types::VectorHit>> {
     if let Some(index) = db.vector_index.as_ref() {
         // Finding [87]: the centroid index carries no tenant identity, so in
@@ -786,7 +787,7 @@ async fn centroid_or_sqlite_vector(
         match index.search(embedding, collect_target).await {
             Ok(hits) => {
                 let ids: Vec<i64> = hits.iter().map(|h| h.memory_id).collect();
-                let owned = super::vector::filter_owned_visible(db, &ids, user_id).await?;
+                let owned = super::vector::filter_owned_visible(db, &ids, user_id, filter).await?;
                 let mut out: Vec<super::types::VectorHit> = Vec::with_capacity(candidate_target);
                 for hit in hits {
                     if !owned.contains(&hit.memory_id) {
@@ -872,6 +873,7 @@ pub async fn hybrid_search(
         .max((limit * strategy.fts_limit_multiplier).min(250))
         .max(MIN_FTS_POOL);
     let budget = req.budget.unwrap_or(SearchBudget::High);
+    let returnable = ReturnableFilter::from_request(&req);
 
     // Ranked lists for RRF fusion
     let mut vector_ranked: Vec<(i64, f64)> = Vec::new();
@@ -883,24 +885,26 @@ pub async fn hybrid_search(
     if let Some(ref embedding) = req.embedding {
         let prefer_chunks = db.use_chunk_vector_search && db.chunk_vector_index.is_some();
         let vector_hits = if prefer_chunks {
-            match chunk_vector_search(db, embedding, candidate_target, user_id).await {
+            match chunk_vector_search(db, embedding, candidate_target, user_id, &returnable).await {
                 Ok(hits) if !hits.is_empty() => Ok(hits),
                 Ok(_) => {
                     // Empty chunk result. Fall back to centroid index so
                     // partially-backfilled deployments still surface hits.
                     warn!("chunk vector search returned no hits, falling back to centroid");
-                    centroid_or_sqlite_vector(db, embedding, candidate_target, user_id).await
+                    centroid_or_sqlite_vector(db, embedding, candidate_target, user_id, &returnable)
+                        .await
                 }
                 Err(e) => {
                     warn!(
                         "LanceDB chunk vector search failed, falling back to centroid: {}",
                         e
                     );
-                    centroid_or_sqlite_vector(db, embedding, candidate_target, user_id).await
+                    centroid_or_sqlite_vector(db, embedding, candidate_target, user_id, &returnable)
+                        .await
                 }
             }
         } else {
-            centroid_or_sqlite_vector(db, embedding, candidate_target, user_id).await
+            centroid_or_sqlite_vector(db, embedding, candidate_target, user_id, &returnable).await
         };
 
         match vector_hits {
@@ -1109,21 +1113,7 @@ pub async fn hybrid_search(
     }
 
     // Exclude noise categories and archived rows unless explicitly requested
-    let include_noise = req.include_noise.unwrap_or(false);
-    let include_archived = req.include_archived.unwrap_or(false);
-    let exclude_consolidated = req.exclude_consolidated.unwrap_or(false);
-    results.retain(|_id, c| {
-        if !include_noise && (c.category == "activity" || c.category == "growth") {
-            return false;
-        }
-        if !include_archived && c.is_archived {
-            return false;
-        }
-        if exclude_consolidated && c.is_consolidated {
-            return false;
-        }
-        true
-    });
+    results.retain(|_id, c| returnable.keeps(&c.category, c.is_archived, c.is_consolidated));
     if results.is_empty() {
         return Ok(Arc::new(Vec::new()));
     }
@@ -2750,5 +2740,232 @@ mod tests {
             "inclusive search run <15s after a strict search on the same text must not read \
              back the strict cache entry (missing default-bucket row); got {inclusive_ids2:?}"
         );
+    }
+
+    /// ANN index with a fixed ranking: rows are returned in the given order.
+    struct FixedRankIndex {
+        rows: Vec<i64>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::vector::VectorIndex for FixedRankIndex {
+        async fn insert(&self, _: i64, _: &[f32]) -> crate::Result<()> {
+            Ok(())
+        }
+        async fn search(
+            &self,
+            _: &[f32],
+            limit: usize,
+        ) -> crate::Result<Vec<crate::vector::VectorHit>> {
+            Ok(self
+                .rows
+                .iter()
+                .take(limit)
+                .enumerate()
+                .map(|(rank, key)| crate::vector::VectorHit {
+                    memory_id: *key,
+                    distance: Some(0.05 + rank as f32 * 0.001),
+                    rank,
+                })
+                .collect())
+        }
+        async fn delete(&self, _: i64) -> crate::Result<()> {
+            Ok(())
+        }
+        async fn count(&self) -> crate::Result<usize> {
+            Ok(self.rows.len())
+        }
+        async fn rebuild_index(&self, _: bool) -> crate::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum AnnPath {
+        Chunk,
+        Centroid,
+    }
+
+    /// Seeds 100 decoys of `kind` ranked nearer than one healthy target, then runs a
+    /// vector-only (budget low, limit 12) hybrid_search. Returns (result count, target found).
+    async fn run_decoy_window(
+        kind: &str,
+        path: AnnPath,
+        tweak: impl FnOnce(&mut SearchRequest),
+    ) -> (usize, bool) {
+        let mut db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-mem db");
+        let mut ids = Vec::new();
+        for i in 0..100u64 {
+            // Distinct tokens per decoy so simhash dedup does not merge them.
+            let h = i.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let id = crate::memory::store(
+                &db,
+                crate::memory::types::StoreRequest {
+                    content: format!(
+                        "decoy {kind} {:x} {:x} {:x} {:x}",
+                        h,
+                        h.rotate_left(17),
+                        h.rotate_left(31),
+                        h.rotate_left(47)
+                    ),
+                    user_id: Some(1),
+                    ..Default::default()
+                },
+                None,
+                false,
+            )
+            .await
+            .expect("seed decoy")
+            .id;
+            ids.push(id);
+        }
+        let update = match kind {
+            "archived" => Some("UPDATE memories SET is_archived = 1 WHERE id = ?1"),
+            "growth" => Some("UPDATE memories SET category = 'growth' WHERE id = ?1"),
+            "activity" => Some("UPDATE memories SET category = 'activity' WHERE id = ?1"),
+            "superseded" => Some("UPDATE memories SET is_superseded = 1 WHERE id = ?1"),
+            "pending" => Some("UPDATE memories SET status = 'pending' WHERE id = ?1"),
+            "healthy" => None,
+            other => panic!("unknown decoy kind {other}"),
+        };
+        if let Some(sql) = update {
+            let decoys = ids.clone();
+            db.write(move |conn| {
+                for id in &decoys {
+                    conn.execute(sql, [id])?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("mark decoys");
+        }
+        let target = crate::memory::store(
+            &db,
+            crate::memory::types::StoreRequest {
+                content: "the target memory about lighthouses".into(),
+                user_id: Some(1),
+                ..Default::default()
+            },
+            None,
+            false,
+        )
+        .await
+        .expect("seed target")
+        .id;
+        ids.push(target);
+        let distinct: std::collections::HashSet<i64> = ids.iter().copied().collect();
+        assert_eq!(distinct.len(), 101, "every seeded memory must be distinct");
+
+        match path {
+            AnnPath::Chunk => {
+                let rows = ids.iter().map(|id| id * 1000).collect();
+                db.chunk_vector_index = Some(std::sync::Arc::new(FixedRankIndex { rows }));
+                db.use_chunk_vector_search = true;
+            }
+            AnnPath::Centroid => {
+                db.vector_index = Some(std::sync::Arc::new(FixedRankIndex { rows: ids }));
+            }
+        }
+
+        let path_name = if path == AnnPath::Chunk {
+            "chunk"
+        } else {
+            "centroid"
+        };
+        let mut req = SearchRequest {
+            query: format!("decoywindow {kind} {path_name}"),
+            embedding: Some(vec![1.0, 0.0, 0.0, 0.0]),
+            user_id: Some(1),
+            limit: Some(12),
+            budget: Some(SearchBudget::Low),
+            ..Default::default()
+        };
+        tweak(&mut req);
+        let results = super::hybrid_search(&db, req).await.expect("hybrid_search");
+        (results.len(), results.iter().any(|r| r.memory.id == target))
+    }
+
+    /// Non-returnable neighbours (archived, noise categories, superseded, pending) must not
+    /// take the vector pre-filter's output slots: they are dropped downstream, which left a
+    /// vector-only search with zero results while a returnable memory sat just behind them.
+    #[tokio::test]
+    async fn vector_prefilter_skips_unreturnable_neighbours() {
+        for path in [AnnPath::Chunk, AnnPath::Centroid] {
+            for kind in ["archived", "growth", "activity", "superseded", "pending"] {
+                let (n, found) = run_decoy_window(kind, path, |_| {}).await;
+                assert!(
+                    found && n == 1,
+                    "{kind} decoys on the {} path must not starve the target (n={n})",
+                    if path == AnnPath::Chunk {
+                        "chunk"
+                    } else {
+                        "centroid"
+                    }
+                );
+            }
+        }
+    }
+
+    /// Control: returnable neighbours still fill the window, so a target ranked past the
+    /// candidate pool stays out.
+    #[tokio::test]
+    async fn vector_prefilter_keeps_returnable_neighbours() {
+        for path in [AnnPath::Chunk, AnnPath::Centroid] {
+            let (n, found) = run_decoy_window("healthy", path, |_| {}).await;
+            assert!(!found && n == 12, "healthy decoys fill the window (n={n})");
+        }
+    }
+
+    /// The pre-filter honours the request's opt-ins instead of hard-coding the defaults.
+    #[tokio::test]
+    async fn vector_prefilter_honours_include_flags() {
+        let (n, found) = run_decoy_window("growth", AnnPath::Centroid, |r| {
+            r.include_noise = Some(true);
+            r.query.push_str(" incl");
+        })
+        .await;
+        assert!(!found && n == 12, "include_noise keeps growth (n={n})");
+
+        let db = crate::db::Database::connect_memory()
+            .await
+            .expect("in-mem db");
+        let ids: Vec<i64> = db
+            .write(|conn| {
+                let mut ids = Vec::new();
+                for (category, archived, consolidated) in
+                    [("general", 1i64, 0i64), ("growth", 0, 0), ("general", 0, 1)]
+                {
+                    ids.push(conn.query_row(
+                        "INSERT INTO memories (content, user_id, category, is_archived, \
+                         is_consolidated) VALUES ('x', 1, ?1, ?2, ?3) RETURNING id",
+                        rusqlite::params![category, archived, consolidated],
+                        |r| r.get(0),
+                    )?);
+                }
+                Ok(ids)
+            })
+            .await
+            .expect("seed rows");
+        let kept = |filter: super::ReturnableFilter| {
+            let (db, ids) = (&db, &ids);
+            async move {
+                super::super::vector::filter_owned_visible(db, ids, 1, &filter)
+                    .await
+                    .expect("filter")
+            }
+        };
+        let default = kept(super::ReturnableFilter::default()).await;
+        assert!(!default.contains(&ids[0]) && !default.contains(&ids[1]));
+        assert!(default.contains(&ids[2]), "consolidated kept by default");
+        let opted_in = kept(super::ReturnableFilter {
+            include_noise: true,
+            include_archived: true,
+            exclude_consolidated: true,
+        })
+        .await;
+        assert!(opted_in.contains(&ids[0]) && opted_in.contains(&ids[1]));
+        assert!(!opted_in.contains(&ids[2]), "exclude_consolidated drops it");
     }
 }
