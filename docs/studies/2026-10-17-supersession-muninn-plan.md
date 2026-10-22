@@ -573,6 +573,8 @@ juge par paire Sonnet disent `remplace` ; sinon le conflit reste ouvert ou annot
 `partiel`. Resultat, pour toutes les configurations : 0 faux `remplace` operateur,
 18 / 18 sur la fixture, 2 a 15 retraits reels (15 pour Sonnet `medium`).
 
+> Renvoi 2026-10-22 : "0 faux `remplace`" contredit sur le reel (8 faux retraits sur 25 paires etiquetees), voir 6.1 quater.
+
 **Correction du 2026-10-19 (challenger, reverifie par `phase2_consensus_focus.py`)** :
 le "0 faux `remplace` operateur" est **vide**. Ni le consensus ni le juge par chaine
 Sonnet `medium` seul ne retirent **aucune** des 10 paires etiquetees : le controle n'a
@@ -599,12 +601,99 @@ sur consensus avec le juge par paire Sonnet. Reserves : un run par configuration
 thinking n'est pas deterministe, un ecart de 1 n'est pas significatif) ; echantillons
 petits (10 paires operateur, 30 controles).
 
+> Renvoi 2026-10-22 : le choix Sonnet `medium` a depuis ete confronte a des etiquettes operateur sur des retraits proposes, voir 6.1 quater.
+
 **Etat de la porte (11)** : `false_retire` 0 / 30 sur la fixture, volume et cout de
 contexte mesures (M1, M3). **Non passee** : le critere "aucun `supersedes` faux sur
 l'echantillon reel etiquete" n'a ete teste sur aucun retrait (voir la correction
 ci-dessus). Il faut un echantillon etiquete **parmi les retraits proposes**, en
 commencant par les paires 6, 20 et 23 de la feuille operateur. L'idempotence se prouve
 sur le code.
+
+> Mise a jour 2026-10-22 : cet echantillon a ete etiquete, voir 6.1 quater.
+
+### 6.1 quater Juge Jev, etiquetage des retraits proposes et veto (mesures du 2026-10-22)
+
+Section ajoutee le 2026-10-22. Elle complete 6.1 ter sans en retirer aucune mesure ; ou
+une mesure nouvelle contredit une ancienne, c'est dit explicitement. Decision operateur :
+consigner ces resultats avant toute implementation. Aucun code n'est ecrit.
+
+**Contradiction avec 6.1 ter (MESURE).** 6.1 ter retient Sonnet `medium` avec "0 controle
+retire a tort" et "0 faux `remplace` operateur". La premiere mesure porte sur la fixture
+synthetique, la seconde est vide (voir la correction du 2026-10-19). Etiquetees par
+l'operateur, 25 paires reelles que Sonnet `medium` proposait en R alors que l'agent
+disait D donnent : operateur R 17, P 3, D 5. Accord avec Sonnet 17 / 25, avec l'agent
+5 / 25. Sur le reel, Sonnet `medium` retire donc a tort **8** de ces 25 memoires (P ou
+D). Les etiquettes de l'agent (`phase2-labels-agent.jsonl`) sont trop prudentes, ce qui
+confirme son biais vers `distinct` deja note en 6.1 ter. Feuille
+`~/.agent-forge/scratch/phase2-labels-operator-disagree25.md`, cle `.key.json` (Kleos
+#32311). Reserve : ces 25 paires sont un echantillon des seuls desaccords, pas un tirage
+de la population.
+
+**Juge Jev (MESURE, Kleos #32298, #32303).**
+
+- Service : TypeSafe System One, `jev-1.14.0`, via le pass-through LiteLLM d'ai-host
+  (`/typesafe/v1/systemone`). Scripts de conception dans
+  `~/.agent-forge/scratch/jev/` (spec_99598874), banc dans `jev/bench/` (spec_a449ef39).
+- Conception A2 : state JSON `{older_memory, newer_memory}` ; question a choix `relation`
+  (options dans l'ordre `different_subject`, `complements`, `partly_outdated`,
+  `replaces`) plus un noul `same_subject` dans la meme requete ; `p_R = p(replaces) x
+  p(same_subject)`.
+- Banc complet (192 composantes, 588 paires) : a t=0,8, 0 faux retrait sur 269 negatifs
+  etiquetes, mais **0 memoire reelle retiree sur 140 composantes reelles** (Sonnet
+  `medium` : 36). Le rappel au-dessus de 0,75 n'existe que sur la fixture synthetique.
+  Jev seul ne remplace pas Sonnet.
+- Non deterministe : a requete identique, ecart max de p_R 0,12. Sensible a l'ordre des
+  options : ecart max 0,17.
+- Cout 0,027 USD par passe de 588 paires, p50 0,25 s.
+
+**Veto Jev, validation pre-enregistree (MESURE, Kleos #32322).** Regle : un retrait
+propose par un juge LLM n'est applique que si `p_R >= 0,20`. Le seuil a ete ajuste sur
+l'echantillon des 25 paires (15 / 17 vrais retraits gardes, 6 / 8 faux bloques), puis
+fige avant un second etiquetage ; les predictions ont ete verrouillees par sha256. Le
+second echantillon est neuf : 30 paires proposees en R par au moins un juge Sonnet ou
+Haiku, stratifie 15 sous et 15 au-dessus de 0,20. Verdict operateur : R 16, P 8, D 6.
+
+| Seuil p_R | Vrais retraits gardes | Faux retraits bloques |
+|---|---|---|
+| 0,10 | 14 / 16 | 10 / 14 |
+| **0,20 (fige)** | **13 / 16** | **12 / 14** |
+| 0,30 | 10 / 16 | 13 / 14 |
+
+0 decision changee entre deux runs Jev identiques a 0,20. Feuille
+`phase2-labels-operator-veto.md`, cle `.key.json`, notation `phase2_veto_score.py`.
+Reserves : echantillon stratifie (les taux ne sont pas ponderes par la population) ;
+comptes par juge de 1 a 7 paires seulement.
+
+**Point de definition tranche (DEDUIT).** L'operateur a mis R sur 17 des 25 paires ou
+Sonnet retirait : une nouvelle version du meme dossier de travail (review round 2,
+correctif du meme commit, re-gate) est majoritairement jugee R. Rien de plus n'est
+affirme.
+
+**Projection de cout mensuel (DEDUIT, a partir des couts mesures).**
+
+| Poste | Supersession des decisions | Pipeline nocturne complet |
+|---|---|---|
+| Hypothese de volume | 1,3 conflit par jour (6.1 ter) | 110 memoires par jour ouvre, 22 jours (SUPPOSE), environ 1 500 paires par jour (M-N4) |
+| Sonnet | environ 0,20 USD | environ 37 USD (environ 19 en Batch API) |
+| Veto Jev | environ 0,0005 USD | environ 0,23 USD |
+| Jev sur toutes les paires | non chiffre | environ 1,50 USD |
+
+Jev est facture a part (compte TypeSafe). Aucune information confirmee sur un quota
+gratuit.
+
+**Questions ouvertes.**
+
+- Integrer une cascade "juge LLM puis veto Jev a 0,20" : **decision ouverte**, rien
+  n'est implemente.
+- La regle de consensus chaine + paire Sonnet de 6.1 ter n'a pas ete evaluee sur les
+  etiquetages operateur ; le veto n'a ete mesure que sur des retraits proposes par
+  Sonnet ou Haiku, pas sur le consensus.
+- Envoyer le contenu des memoires a TypeSafe ajoute un tiers au traitement (voir la
+  section Confidentialite) ; accepte par l'operateur pour l'etude seulement, pas pour
+  l'exploitation.
+- La porte de la phase 2 reste non passee tant que la cascade n'est ni choisie ni
+  evaluee sur un echantillon operateur.
 
 ### 6.2 Version initiale (abandonnee, voir 6.0)
 
@@ -897,6 +986,10 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
 | 2026-10-19 | 2 / 6.1 ter | balayage d'effort, consensus, M3 | Sonnet `medium` par chaine : 0 controle retire, 7 / 10 operateur, 0 faux, 0,94 USD le lot ; consensus chaine + paire Sonnet : 0 faux operateur pour toutes les configs ; M3 : 1 indicateur sur 792 memoires servies sans juge, 0 apres | phase2_sweep.py, phase2_sweep_score.py, phase2_m3.py, Kleos #30268 |
 | 2026-10-19 | 2 / 6.1 ter | decision operateur | juge par chaine Sonnet `medium`, retrait sur consensus avec le juge par paire Sonnet | cette session |
 | 2026-10-19 | 2 / 6.1 ter | challenge de la spec | le "0 faux operateur" est vide : aucun des 15 retraits du consensus ne tombe sur les 10 paires etiquetees, rappel 0 / 3 sur les R operateur ; porte non passee ; aussi : signature d'idempotence sur `updated_at` instable (reecrit a la lecture), kleos-cache ne resynchronise que sur `content_hash` | phase2_consensus_focus.py |
+| 2026-10-22 | 2 / 6.1 quater | juge Jev (TypeSafe System One), banc complet | 192 composantes, 588 paires : a t=0,8, 0 faux retrait sur 269 negatifs mais 0 memoire reelle retiree sur 140 (Sonnet `medium` : 36) ; non deterministe (ecart max de p_R 0,12), sensible a l'ordre des options (0,17) ; 0,027 USD la passe, p50 0,25 s | jev/bench/ (spec_a449ef39), Kleos #32298, #32303 |
+| 2026-10-22 | 2 / 6.1 quater | etiquetage operateur des 25 paires "Sonnet `medium` R / agent D" | operateur R 17, P 3, D 5 ; accord Sonnet 17 / 25, agent 5 / 25 ; Sonnet `medium` retire a tort 8 de ces 25 ; contredit le "0 faux retrait" de 6.1 ter | phase2-labels-operator-disagree25.md, Kleos #32311 |
+| 2026-10-22 | 2 / 6.1 quater | veto Jev a p_R >= 0,20, validation pre-enregistree | 30 paires neuves : operateur R 16, P 8, D 6 ; 13 / 16 vrais retraits gardes, 12 / 14 faux bloques ; 0 decision changee entre deux runs | phase2_veto_score.py, phase2-labels-operator-veto.md, Kleos #32322 |
+| 2026-10-22 | 2 / 6.1 quater | decision operateur | resultats consignes avant toute implementation ; cascade "juge LLM puis veto Jev" : decision ouverte | cette session |
 
 ---
 
