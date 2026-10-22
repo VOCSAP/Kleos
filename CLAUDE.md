@@ -1,9 +1,14 @@
 # CLAUDE.md -- conventions du fork VOCSAP
 
-Ce depot est un **fork actif de `Ghost-Frame/Kleos`**, avec des merges upstream
-reguliers. Tout ce qui suit existe pour une seule raison : garder le cout du
-prochain rebase le plus bas possible. Les conventions ci-dessous ne sont pas
-cosmetiques, ce sont les regles qui evitent de rouvrir des sites de conflit.
+Ce depot est un **fork de `Ghost-Frame/Kleos` gele a `8182e57f`** (depuis le
+2026-10-22). Upstream a change de licence (PolyForm Noncommercial 1.0.0, commit
+`f1db1cf7`), ce qui interdit l'usage professionnel interne : plus aucun merge
+upstream, et un correctif upstream posterieur se reecrit localement sans
+reprendre le code recu sous cette licence. Detail et condition de levee dans
+`docs/dev-notes/local-patches.md`, section "Gel upstream".
+
+Depuis le gel, les conventions ci-dessous servent l'exploitation (rechargement
+a chaud, tracabilite des patchs), plus le cout d'un rebase.
 
 Ce fichier est **tracke**. Ce qui est propre a un poste ou a l'infrastructure
 (hotes, IPs, procedure de deploiement, modele LLM cible) vit dans
@@ -17,9 +22,9 @@ autre fichier de ce dossier ne resout que sur un poste qui l'a produit.
 
 ## Principe general : canaux overlay plutot que patch source
 
-Avant d'editer un fichier suivi par upstream pour changer un comportement,
-verifier si un canal overlay porte deja le reglage. Un overlay cree **zero delta
-upstream**, un patch source en cree un pour toujours.
+Avant d'editer le code pour changer un reglage, verifier si un canal overlay le
+porte deja. Un overlay se recharge a chaud, sans rebuild ni redeploiement du
+binaire.
 
 | Canal | Porte par | Objet |
 |---|---|---|
@@ -37,17 +42,17 @@ Les trois premiers sont des submodules, resolus en cascade avec hot reload
 
 ### Regle d'or
 
-**NE JAMAIS modifier un prompt hardcode dans `kleos-lib/src/**/*.rs` ni les
-fichiers embedded sous `kleos-lib/prompts/**/*.txt`** pour ajuster le
-comportement local. Ces fichiers sont l'**alignement upstream** (zero delta
-cosmetique avec Ghost-Frame/Kleos pour minimiser les rebases futurs). Passer par
-le submodule `prompts-overrides`, qui couvre les quatre types de la table plus
-bas.
+**Preferer le submodule `prompts-overrides`** pour un reglage local ou
+experimental d'un prompt : il se recharge a chaud (cache TTL 5s), sans rebuild
+ni restart, et couvre les quatre types de la table plus bas.
 
-Meme principe pour le raisonnement cote LLM : tout ajustement qui change la
-maniere dont le modele *raisonne* sur une tache (formuler une question,
-contraindre un format JSON, durcir une regle anti-fabrication) se fait via
-overlay, pas via patch source.
+**Modifier le prompt embarque** (`kleos-lib/src/**/*.rs`, ou
+`kleos-lib/prompts/**/*.txt`) quand le changement doit devenir le defaut du
+binaire. Le consigner alors comme patch numerote (section "Patchs locaux").
+
+Cela vaut aussi pour le raisonnement cote LLM (formuler une question,
+contraindre un format JSON, durcir une regle anti-fabrication) : overlay pour
+iterer, prompt embarque une fois le reglage valide.
 
 ### Procedure d'edition d'un prompt
 
@@ -110,15 +115,9 @@ diagnostic confirme.
 
 **Regle d'or** : tout ajout ou modif de schema DB cote VOCSAP (nouvelle colonne,
 index, table) passe par le **canal overlay** `kleos-lib/src/db/vocsap/mod.rs`,
-**jamais** par une nouvelle entree dans `MIGRATIONS` / `TENANT_MIGRATIONS`. Ces
-arrays sont upstream pur et le restent.
-
-**Statut de la justification** : le canal protegeait a l'origine d'une collision
-de slot au merge (renumber -> skip silencieux d'un body upstream -> crash `no
-such column`). Cette classe de bug est **morte cote upstream** depuis que le
-dispatch des migrations est passe de `MAX(version)` a un applied-set (commit
-`79b4efe5`, PR #206, absorbe au merge `7ce95482`). Le canal reste, mais comme
-canal anti-conflit, plus comme protection anti-skip.
+**jamais** par une nouvelle entree dans `MIGRATIONS` / `TENANT_MIGRATIONS`.
+Convention en place, couverte par des tests ; elle n'a plus d'enjeu de merge
+depuis le gel.
 
 ### Procedure pour ajouter un changement de schema VOCSAP
 
@@ -161,41 +160,26 @@ montes **separement** cote serveur, pas via `git submodule update` (chemins dans
 
 ---
 
-## Politique d'ecart avec upstream
+## Patchs locaux
 
-Chaque ligne modifiee ou ajoutee dans un fichier suivi par upstream est un
-**conflit potentiel au prochain rebase**. Avant d'editer un tel fichier :
-`git log -p <fichier>` pour voir si la zone est upstream pure ou deja patchee
-(etendre un patch local coute moins cher qu'ouvrir un site neuf), puis verifier
-`docs/dev-notes/local-patches.md` pour s'inscrire dans un patch numerote
-existant. Eviter les **attributs cosmetiques** (`#[cfg(test)]`,
-`#[allow(dead_code)]`, suppression d'imports "inutiles") sur du code upstream :
-invisibles a la review locale, ils explosent au merge.
+Tout changement de comportement reste documente comme patch numerote dans
+`docs/dev-notes/local-patches.md`, pour la tracabilite : symptome, approche,
+fichiers touches, tests, conditions de retrait.
 
-**Choisir toujours le niveau le plus bas qui resout le probleme** :
-
-| Niveau | Exemple | Cout de rebase |
-|---|---|---|
-| Zero delta upstream | Canal overlay, env var, config externe | nul |
-| Additif pur | Nouveau module ou fonction publique, appele depuis un site upstream non touche | tres faible |
-| Patch chirurgical | 3 a 5 lignes dans une fonction upstream sans rien renommer | faible |
-| Refactor local | Renommer un symbole, deplacer une fonction, changer une signature | moyen, releve d'un patch numerote |
-| Reecriture | Substituer une implementation complete | lourd, a justifier dans local-patches.md |
-
-Tout patch numerote doit avoir une section dans
-`docs/dev-notes/local-patches.md` : symptome sous upstream pur, approche (dont
-**pourquoi pas le niveau d'en dessous**), fichiers touches, tests, conditions de
-retrait. Et le fait se stocke dans Kleos avec le tag `delta-upstream`, ce qui
-construit une carte des divergences interrogeable avant le prochain rebase.
+- Plus de contrainte de niveau minimal, ni d'interdiction des attributs
+  cosmetiques : le gel supprime le cout de rebase qui les justifiait.
+- Plus de PR upstream : le `CONTRIBUTING` post-relicence donne un droit de
+  relicence au proprietaire.
+- Le fait non evident se stocke dans Kleos ; le tag `delta-upstream` n'est plus
+  requis.
 
 Le complement pratique (grep cross-call-site avant patch, quand deleguer a un
-sous-agent pour un audit independant) vit dans
+sous-agent pour un audit independant) reste valable et vit dans
 `.claude/rules/kleos-patching-discipline.md`.
 
 ---
 
 ## Reference des patches locaux
 
-`docs/dev-notes/local-patches.md` est la source de verite : un patch numerote
-par section, plus les statuts de merge upstream (patches absorbes, re-accroches,
-abandonnes). A consulter **avant tout merge ou rebase depuis Ghost-Frame/Kleos**.
+`docs/dev-notes/local-patches.md` est le journal des patchs (un patch numerote
+par section) et du gel upstream, avec l'historique des merges passes.
