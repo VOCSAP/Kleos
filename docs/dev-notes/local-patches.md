@@ -33,7 +33,9 @@ re-appliquer si perdus.
 
 **Raison et regle :** l'usage professionnel interne est permis par ELv2 et interdit par PolyForm NC. Plus aucun merge ne doit prendre `f1db1cf7` ni un commit posterieur. Tout correctif upstream necessaire doit etre reecrit localement sans reprendre de code recu sous PolyForm NC. Ne plus ouvrir de PR upstream sans relire le `CONTRIBUTING` post-relicence.
 
-**Relais de transcripts :** le rev epingle de `kleos-lib` doit rester anterieur a `f1db1cf7` tant que ce gel tient. La condition de levee est une relicence upstream compatible ou une decision explicite de l'operateur. Cette lecture est celle du lead et ne constitue pas un avis juridique.
+**Relais de transcripts :** le rev epingle de `kleos-lib` doit suivre chaque merge du fork apres un build vert, donc `418cdd26` ou un commit posterieur des que le relais existe. Il reste anterieur a `f1db1cf7` tant que ce gel tient.
+
+**Condition de levee :** une relicence upstream compatible ou une decision explicite de l'operateur leve le gel entier. Cette lecture est celle du lead et ne constitue pas un avis juridique.
 
 ---
 

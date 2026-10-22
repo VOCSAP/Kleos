@@ -208,18 +208,14 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
   1. Le contrat HTTP démon vers relais (sections 2.3 et 2.4).
   2. Retiré en révision 4 : le correctif (a') de la dédup n'a plus d'objet sans porte
      (F13).
-  3. Le rev épinglé de kleos-lib et sa règle de bump : à chaque merge upstream du fork,
-     après un build vert du fork. **Condition de licence, non tranchée** : upstream est
-     passé à PolyForm Noncommercial à partir de `f1db1cf7` (Kleos #31725), et
-     l'opérateur envisage de geler le fork sur la dernière version ELv2. Dans ce cas, le
-     rev épinglé doit rester sur un commit du fork qui ne contient pas `f1db1cf7`, et la
-     règle de bump ne porte plus que sur les commits propres au fork. Aujourd'hui,
-     `f1db1cf7` est connu du dépôt local mais n'est pas un ancêtre de `HEAD` (MESURÉ :
-     `git merge-base --is-ancestor f1db1cf7 HEAD` rend faux, `git cat-file -t f1db1cf7`
-     rend `commit`). Si le gel est retenu, l'API de kleos-lib que le relais utilise
-     cesse aussi de bouger côté upstream, ce qui renforce le verdict R (condition 1 de
-     renversement levée) ; si le fork suit upstream au-delà, le relais hérite de la
-     licence non commerciale par sa dépendance.
+  3. Le rev épinglé de kleos-lib et sa règle de bump : il suit chaque merge du fork
+     après un build vert, donc `418cdd26` ou un commit postérieur dès que le relais
+     existe. Il reste simultanément antérieur à `f1db1cf7` tant que le gel ELv2 tient.
+     La décision opérateur du 2026-10-22 a mergé upstream jusqu'à `8182e57f` avec
+     `418cdd26`, puis a exclu `f1db1cf7` et tout commit ultérieur sous PolyForm
+     Noncommercial (Kleos #32284). Voir [Gel upstream](../dev-notes/local-patches.md#gel-upstream).
+     L'API de kleos-lib utilisée par le relais cesse donc de bouger côté upstream, ce
+     qui renforce le verdict R : la condition 1 de renversement est levée.
   4. La liste des champs de `StoreRequest` utilisés par le relais (`content`,
      `category`, `source`, `importance`, `tags`, `session_id`, `space`,
      `parent_memory_id`, `created_at`), avec un test d'intégration jetable rejoué à
@@ -1078,12 +1074,11 @@ un afflux d'anciens faits au juge, pour un gain non mesuré.
 **Q5. Emplacement du traitement serveur : tranché par le consultant (section 1.3).**
 R : relais séparé dans un dépôt séparé, dépendant de kleos-lib par un rev git épinglé
 sur le fork VOCSAP, hors des `members` du `Cargo.toml` racine. **Validé par l'opérateur
-le 2026-10-21**, ainsi que la règle de bump : à chaque merge upstream du fork, après un
-build vert, avec le test d'intégration jetable de 1.3. **Condition ouverte : licence.**
-Si l'opérateur gèle le fork sur la dernière version ELv2 (upstream passé à PolyForm
-Noncommercial à partir de `f1db1cf7`, Kleos #31725), le rev épinglé reste avant ce
-commit et la règle de bump ne suit plus upstream (1.3, point 3 du gel) ; non tranché
-ici. La variante (a') de la dédup,
+le 2026-10-21**, ainsi que la règle de bump : après chaque merge du fork et un build
+vert, le rev épinglé suit `418cdd26` ou un commit postérieur dès que le relais existe,
+avec le test d'intégration jetable de 1.3. Il reste antérieur à `f1db1cf7` tant que le
+gel ELv2 décidé le 2026-10-22 tient (Kleos #32284). Voir [Gel upstream](../dev-notes/local-patches.md#gel-upstream).
+La variante (a') de la dédup,
 validée un temps, est abandonnée avec la porte (F13, carte 6ee2297f en wontfix). S et
 la réécriture sur place de kleos-ingest sont écartés.
 
