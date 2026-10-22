@@ -7516,7 +7516,7 @@ qui rend les comparaisons `lower()` superflues.
 
 ---
 
-## Patch 74 -- `GET /stats` compte les mémoires dans la base tenant de l'appelant
+## Patch 74 -- `GET /stats` compte dans la base tenant de l'appelant
 
 Carte roadmap 7bed6b55. Patch local VOCSAP.
 
@@ -7524,22 +7524,43 @@ Carte roadmap 7bed6b55. Patch local VOCSAP.
 rend `"memories": 0` alors que l'utilisateur porte des milliers de mémoires
 (mesuré sur LXC 121 : 0 contre 5227 via `GET /list`). `get_stats` comptait
 `SELECT COUNT(*) FROM memories` sur `state.db`, la base monolithe, qui ne
-reçoit plus de mémoires ; la requête réussit et rend un zéro silencieux.
+reçoit plus de mémoires ; la requête réussit et rend un zéro silencieux. Même
+défaut pour `tasks` et `agents`, dont les écrivains passent par `ResolvedDb`.
 
-**Approche :** côté serveur, pour couvrir tous les clients. `get_stats` prend
-l'extracteur `ResolvedDb`, comme les routes de lecture des mémoires, et compte
-`memories` dans la base qu'il résout : la base tenant de l'utilisateur
-effectif en mode shardé, la monolithe sinon (comportement inchangé dans ce
-mode). Le périmètre reste le compte brut de la table (archivées, oubliées et
-versions antérieures incluses). Les autres compteurs (`tasks`, `events`,
-`actions`, `agents`, `api_keys`) restent sur la monolithe.
+**Périmètre décidé :** `/stats` rend les stats du tenant de l'utilisateur
+effectif : son shard en mode shardé, la monolithe sinon. Pas de somme sur tous
+les tenants. Seul `api_keys` reste global (table de la monolithe).
+
+**Approche :** côté serveur, pour couvrir tous les clients. Après
+`require_admin`, `get_stats` résout la base par
+`resolve_db_for_user(&state, auth.effective_user_id())` et y compte `memories`,
+`tasks`, `events` (table `events`), `actions` (table `action_log`) et `agents`.
+`events` et `action_log` n'ont aucun écrivain dans le code ; ils suivent le
+même périmètre par cohérence, les deux tables existent dans le schéma tenant
+(`schema_v44_parity.sql`). `api_keys` reste compté sur `state.db`. La
+résolution après le contrôle admin évite qu'un non-admin crée son shard et
+reçoive une 500 au lieu du refus d'autorisation. La description de la route
+dans `kleos-client` (reprise par `kleos-mcp` via `ROUTES`) suit ce périmètre.
+
+**Écart structurel avec `GET /list` :** `/stats` compte les lignes brutes de la
+table, `/list` filtre toujours `user_id` de l'appelant, `is_latest = 1`,
+`is_consolidated = 0` et `status != 'pending'`, plus les archivées et oubliées
+sauf `include_archived` / `include_forgotten`. Les deux totaux coïncident tant
+que la base ne contient ni version antérieure, ni source consolidée, ni mémoire
+en attente de revue ; en mode monolithe, `/stats` compte aussi les mémoires des
+autres utilisateurs.
 
 **Fichiers :** `kleos-server/src/routes/admin/mod.rs`,
-`kleos-server/tests/routes_admin_stats.rs`, `docs/dev-notes/local-patches.md`.
+`kleos-server/tests/routes_admin_stats.rs`, `kleos-client/src/routes.rs`,
+`docs/dev-notes/local-patches.md`.
 
-**Tests :** `stats_counts_memories_of_the_caller_tenant_shard` insère 3
-mémoires dans le shard de l'admin et 5 dans la monolithe, puis vérifie que
-`/stats` rend 3 (rendait 5 avant le patch).
+**Tests :** `stats_counts_rows_of_the_caller_tenant_shard` insère 3 lignes de
+`memories`, `tasks` et `agents` dans le shard de l'admin et 5 dans la
+monolithe, puis vérifie que `/stats` rend 3 pour chacune et `api_keys` = 1.
+`stats_memories_match_paginated_list_in_sharded_mode` et
+`..._in_monolith_mode` stockent 5 mémoires par `POST /store`, en archivent une
+et en oublient une, puis comparent `memories` au total de `GET /list` paginé
+par 2 avec `include_archived=true&include_forgotten=true`.
 
 **Conditions de retrait :** upstream route lui-même `/stats` vers la base
 tenant.
