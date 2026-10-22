@@ -1478,7 +1478,7 @@ pub static ROUTES: &[Route] = &[
         Admin,
         "admin.stats",
         "/stats",
-        "Server-wide stats.",
+        "Row counts for the caller's tenant (its shard when sharding is on, the shared database otherwise); api_keys counts active keys server-wide.",
         r#"{"type":"object"}"#
     ),
     route!(

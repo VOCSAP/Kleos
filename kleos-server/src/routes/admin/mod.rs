@@ -394,25 +394,30 @@ async fn bootstrap(
 async fn get_stats(
     State(state): State<AppState>,
     Auth(auth): Auth,
-    crate::extractors::ResolvedDb(db): crate::extractors::ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
     require_admin(&auth)?;
 
-    let memories = db
+    let db = crate::extractors::resolve_db_for_user(&state, auth.effective_user_id()).await?;
+    let (memories, tasks, events, actions, agents) = db
         .read(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM memories", [], |row| {
-                row.get::<_, i64>(0)
-            })?)
+            let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0));
+            Ok((
+                count("SELECT COUNT(*) FROM memories")?,
+                count("SELECT COUNT(*) FROM tasks")?,
+                count("SELECT COUNT(*) FROM events")?,
+                count("SELECT COUNT(*) FROM action_log")?,
+                count("SELECT COUNT(*) FROM agents")?,
+            ))
         })
         .await
         .map_err(AppError)?;
 
     Ok(Json(json!({
         "memories": memories,
-        "tasks": count_rows(&state, "SELECT COUNT(*) FROM tasks").await?,
-        "events": count_rows(&state, "SELECT COUNT(*) FROM events").await?,
-        "actions": count_rows(&state, "SELECT COUNT(*) FROM action_log").await?,
-        "agents": count_rows(&state, "SELECT COUNT(*) FROM agents").await?,
+        "tasks": tasks,
+        "events": events,
+        "actions": actions,
+        "agents": agents,
         "api_keys": count_rows(&state, "SELECT COUNT(*) FROM api_keys WHERE is_active = 1").await?,
     })))
 }
