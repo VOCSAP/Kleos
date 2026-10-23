@@ -1,5 +1,7 @@
+use brush_parser::{ast, word, Parser, ParserOptions};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
+use std::io::{BufReader, Cursor};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,8 +143,7 @@ impl FloorPolicy {
         if command.len() > 256 * 1024 {
             return FloorDecision::Deny("floor-input-too-large".to_string());
         }
-        scan_fragment(self, command, 0)
-            .unwrap_or_else(|| FloorDecision::Deny("floor-opaque-command".to_string()))
+        scan_ast(self, command)
     }
 
     fn rule_hit(&self, verb: &str, flags: &[&str]) -> Option<String> {
@@ -261,155 +262,390 @@ fn normalize_path(path: &str) -> String {
     parts.join("/").trim_end_matches('/').to_string()
 }
 
-fn process_heredocs(policy: &FloorPolicy, input: &str, depth: u8) -> Option<String> {
-    let mut output = Vec::new();
-    let lines: Vec<_> = input.lines().collect();
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index];
-        let Some((header, marker)) = line.split_once("<<") else {
-            output.push(line);
-            index += 1;
+fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
+    if input.match_indices("$(").take(257).count() > 256 {
+        return FloorDecision::Deny("floor-budget-exceeded".to_string());
+    }
+    let mut parser = Parser::new(
+        BufReader::new(Cursor::new(input.as_bytes())),
+        &ParserOptions::default(),
+    );
+    let Ok(program) = parser.parse_program() else {
+        return opaque_decision(input)
+            .unwrap_or_else(|| FloorDecision::Deny("floor-opaque-command".to_string()));
+    };
+
+    enum Task<'a> {
+        List(&'a ast::CompoundList),
+        AndOr(&'a ast::AndOrList),
+        Pipeline(&'a ast::Pipeline),
+        Command(&'a ast::Command),
+        Compound(&'a ast::CompoundCommand),
+    }
+
+    if program.complete_commands.len() > 256 {
+        return FloorDecision::Deny("floor-budget-exceeded".to_string());
+    }
+    let mut tasks = Vec::new();
+    for command in program.complete_commands.iter().rev() {
+        tasks.push(Task::List(command));
+    }
+    let mut nodes = 0usize;
+    while let Some(task) = tasks.pop() {
+        nodes += 1;
+        if nodes > 4096 {
+            return FloorDecision::Deny("floor-budget-exceeded".to_string());
+        }
+        match task {
+            Task::List(list) => {
+                if list.0.len() > 256 {
+                    return FloorDecision::Deny("floor-budget-exceeded".to_string());
+                }
+                for item in list.0.iter().rev() {
+                    tasks.push(Task::AndOr(&item.0));
+                }
+            }
+            Task::AndOr(list) => {
+                for (_, pipeline) in list.iter() {
+                    tasks.push(Task::Pipeline(pipeline));
+                }
+            }
+            Task::Pipeline(pipeline) => {
+                if pipeline_feeds_interpreter_with_targeted_content(pipeline) {
+                    return FloorDecision::Deny("floor-opaque-command".to_string());
+                }
+                for command in pipeline.seq.iter().rev() {
+                    tasks.push(Task::Command(command));
+                }
+            }
+            Task::Command(ast::Command::Simple(command)) => {
+                let mut args = Vec::new();
+                let mut input_sources: Vec<(&str, bool)> = Vec::new();
+                if let Some(prefix) = &command.prefix {
+                    for item in &prefix.0 {
+                        match item {
+                            ast::CommandPrefixOrSuffixItem::Word(word) => {
+                                if let Some(FloorDecision::Deny(reason)) =
+                                    scan_ast_word(policy, word)
+                                {
+                                    return FloorDecision::Deny(reason);
+                                }
+                                args.push(word.value.clone())
+                            }
+                            ast::CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
+                            ast::CommandPrefixOrSuffixItem::ProcessSubstitution(_, subshell) => {
+                                tasks.push(Task::List(&subshell.list));
+                            }
+                            ast::CommandPrefixOrSuffixItem::IoRedirect(
+                                ast::IoRedirect::HereDocument(_, here),
+                            ) => {
+                                input_sources.push((&here.doc.value, true));
+                            }
+                            ast::CommandPrefixOrSuffixItem::IoRedirect(
+                                ast::IoRedirect::HereString(_, word),
+                            ) => {
+                                input_sources.push((&word.value, false));
+                            }
+                            ast::CommandPrefixOrSuffixItem::IoRedirect(_) => {}
+                        }
+                    }
+                }
+                if let Some(word) = &command.word_or_name {
+                    if let Some(FloorDecision::Deny(reason)) = scan_ast_word(policy, word) {
+                        return FloorDecision::Deny(reason);
+                    }
+                    args.push(word.value.clone());
+                }
+                if let Some(suffix) = &command.suffix {
+                    for item in &suffix.0 {
+                        match item {
+                            ast::CommandPrefixOrSuffixItem::Word(word) => {
+                                if let Some(FloorDecision::Deny(reason)) =
+                                    scan_ast_word(policy, word)
+                                {
+                                    return FloorDecision::Deny(reason);
+                                }
+                                args.push(word.value.clone())
+                            }
+                            ast::CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
+                            ast::CommandPrefixOrSuffixItem::ProcessSubstitution(_, subshell) => {
+                                tasks.push(Task::List(&subshell.list));
+                            }
+                            ast::CommandPrefixOrSuffixItem::IoRedirect(
+                                ast::IoRedirect::HereDocument(_, here),
+                            ) => {
+                                input_sources.push((&here.doc.value, true));
+                            }
+                            ast::CommandPrefixOrSuffixItem::IoRedirect(
+                                ast::IoRedirect::HereString(_, word),
+                            ) => {
+                                input_sources.push((&word.value, false));
+                            }
+                            ast::CommandPrefixOrSuffixItem::IoRedirect(_) => {}
+                        }
+                    }
+                }
+                let interpreter = unwrap_wrappers(args.clone())
+                    .and_then(|args| args.first().and_then(|word| normalize_verb(word)))
+                    .is_some_and(|verb| {
+                        matches!(verb.as_str(), "bash" | "sh" | "zsh" | "eval" | "exec")
+                    });
+                for (source, heredoc) in input_sources {
+                    if interpreter && contains_targeted_verb(source) {
+                        return FloorDecision::Deny("floor-opaque-command".to_string());
+                    }
+                    if heredoc {
+                        let Ok(pieces) = word::parse_heredoc(source, &ParserOptions::default())
+                        else {
+                            return FloorDecision::Deny("floor-opaque-command".to_string());
+                        };
+                        if let Some(FloorDecision::Deny(reason)) = scan_word_pieces(policy, &pieces)
+                        {
+                            return FloorDecision::Deny(reason);
+                        }
+                    }
+                }
+                match scan_ast_args(policy, args) {
+                    Some(FloorDecision::Deny(reason)) => return FloorDecision::Deny(reason),
+                    Some(FloorDecision::Allow) => {}
+                    None => return FloorDecision::Deny("floor-opaque-command".to_string()),
+                }
+            }
+            Task::Command(ast::Command::Compound(command, _)) => {
+                tasks.push(Task::Compound(command))
+            }
+            Task::Command(ast::Command::Function(function)) => {
+                tasks.push(Task::Compound(&function.body.0))
+            }
+            Task::Command(ast::Command::ExtendedTest(_, _)) => {}
+            Task::Compound(ast::CompoundCommand::Arithmetic(_)) => {}
+            Task::Compound(ast::CompoundCommand::ArithmeticForClause(command)) => {
+                tasks.push(Task::List(&command.body.list));
+            }
+            Task::Compound(ast::CompoundCommand::BraceGroup(command)) => {
+                tasks.push(Task::List(&command.list))
+            }
+            Task::Compound(ast::CompoundCommand::Subshell(command)) => {
+                tasks.push(Task::List(&command.list))
+            }
+            Task::Compound(ast::CompoundCommand::ForClause(command)) => {
+                tasks.push(Task::List(&command.body.list))
+            }
+            Task::Compound(ast::CompoundCommand::CaseClause(command)) => {
+                for case in command.cases.iter().rev() {
+                    if let Some(list) = &case.cmd {
+                        tasks.push(Task::List(list));
+                    }
+                }
+            }
+            Task::Compound(ast::CompoundCommand::IfClause(command)) => {
+                if let Some(elses) = &command.elses {
+                    for clause in elses.iter().rev() {
+                        tasks.push(Task::List(&clause.body));
+                        if let Some(condition) = &clause.condition {
+                            tasks.push(Task::List(condition));
+                        }
+                    }
+                }
+                tasks.push(Task::List(&command.then));
+                tasks.push(Task::List(&command.condition));
+            }
+            Task::Compound(ast::CompoundCommand::WhileClause(command))
+            | Task::Compound(ast::CompoundCommand::UntilClause(command)) => {
+                tasks.push(Task::List(&command.1.list));
+                tasks.push(Task::List(&command.0));
+            }
+            Task::Compound(ast::CompoundCommand::Coprocess(command)) => {
+                tasks.push(Task::Command(&command.body))
+            }
+        }
+    }
+    FloorDecision::Allow
+}
+
+fn pipeline_feeds_interpreter_with_targeted_content(pipeline: &ast::Pipeline) -> bool {
+    pipeline
+        .seq
+        .windows(2)
+        .any(|pair| command_contains_targeted_content(&pair[0]) && command_is_interpreter(&pair[1]))
+}
+
+fn command_contains_targeted_content(command: &ast::Command) -> bool {
+    let ast::Command::Simple(command) = command else {
+        return false;
+    };
+    let items_contain_targeted_content = |items: &[ast::CommandPrefixOrSuffixItem]| {
+        items.iter().any(|item| match item {
+            ast::CommandPrefixOrSuffixItem::Word(word) => contains_targeted_verb(&word.value),
+            ast::CommandPrefixOrSuffixItem::IoRedirect(ast::IoRedirect::HereDocument(_, here)) => {
+                contains_targeted_verb(&here.doc.value)
+            }
+            _ => false,
+        })
+    };
+    command
+        .word_or_name
+        .as_ref()
+        .is_some_and(|word| contains_targeted_verb(&word.value))
+        || command
+            .prefix
+            .as_ref()
+            .is_some_and(|items| items_contain_targeted_content(&items.0))
+        || command
+            .suffix
+            .as_ref()
+            .is_some_and(|items| items_contain_targeted_content(&items.0))
+}
+
+fn command_is_interpreter(command: &ast::Command) -> bool {
+    let ast::Command::Simple(command) = command else {
+        return false;
+    };
+    command
+        .word_or_name
+        .as_ref()
+        .and_then(|word| word_text(&word.value))
+        .and_then(|word| normalize_verb(&word))
+        .is_some_and(|verb| matches!(verb.as_str(), "bash" | "sh" | "zsh"))
+}
+
+fn scan_ast_word(policy: &FloorPolicy, word: &ast::Word) -> Option<FloorDecision> {
+    let pieces = word::parse(&word.value, &ParserOptions::default()).ok()?;
+    scan_word_pieces(policy, &pieces)
+}
+
+fn scan_word_pieces(
+    policy: &FloorPolicy,
+    pieces: &[word::WordPieceWithSource],
+) -> Option<FloorDecision> {
+    for piece in pieces {
+        match &piece.piece {
+            word::WordPiece::CommandSubstitution(source)
+            | word::WordPiece::BackquotedCommandSubstitution(source) => {
+                let source = if source.ends_with('\n') {
+                    source.to_string()
+                } else {
+                    format!("{source}\n")
+                };
+                if let FloorDecision::Deny(reason) = scan_ast(policy, &source) {
+                    return Some(FloorDecision::Deny(reason));
+                }
+            }
+            word::WordPiece::DoubleQuotedSequence(children)
+            | word::WordPiece::GettextDoubleQuotedSequence(children) => {
+                if let Some(FloorDecision::Deny(reason)) = scan_word_pieces(policy, children) {
+                    return Some(FloorDecision::Deny(reason));
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(FloorDecision::Allow)
+}
+
+fn word_text(value: &str) -> Option<String> {
+    fn pieces_text(pieces: &[word::WordPieceWithSource]) -> Option<String> {
+        let mut output = String::new();
+        for piece in pieces {
+            match &piece.piece {
+                word::WordPiece::Text(value)
+                | word::WordPiece::SingleQuotedText(value)
+                | word::WordPiece::AnsiCQuotedText(value)
+                | word::WordPiece::EscapeSequence(value) => output.push_str(value),
+                word::WordPiece::DoubleQuotedSequence(children)
+                | word::WordPiece::GettextDoubleQuotedSequence(children) => {
+                    output.push_str(&pieces_text(children)?);
+                }
+                _ => return None,
+            }
+        }
+        Some(output)
+    }
+
+    pieces_text(&word::parse(value, &ParserOptions::default()).ok()?)
+}
+
+fn scan_rtk_program(policy: &FloorPolicy, args: &[String]) -> Option<FloorDecision> {
+    let args = args
+        .iter()
+        .map(|word| word_text(word))
+        .collect::<Option<Vec<_>>>()?;
+    let mut rest = args.get(1..)?;
+    while rest.first().is_some_and(|arg| {
+        arg.chars().all(|ch| ch == '-' || ch == 'v')
+            || matches!(arg.as_str(), "--ultra-compact" | "--skip-env")
+    }) {
+        rest = &rest[1..];
+    }
+    let dispatch = normalize_verb(rest.first()?)?;
+    let source = match dispatch.as_str() {
+        "git" => format!("git {}", rest[1..].join(" ")),
+        "run" if matches!(rest.get(1).map(String::as_str), Some("-c" | "--command")) => {
+            rest.get(2)?.to_string()
+        }
+        "run" => rest[1..].join(" "),
+        "proxy" | "err" | "test" | "summary" => {
+            let rest = &rest[1..];
+            if rest
+                .first()
+                .is_some_and(|arg| arg.starts_with('-') && arg != "--")
+            {
+                return opaque_decision(&rest.join(" "));
+            }
+            rest.strip_prefix(&["--".to_string()])
+                .unwrap_or(rest)
+                .join(" ")
+        }
+        _ => return opaque_decision(&rest.join(" ")),
+    };
+    Some(scan_ast(policy, &source))
+}
+
+fn scan_ast_args(policy: &FloorPolicy, mut args: Vec<String>) -> Option<FloorDecision> {
+    if args.len() > 4096 {
+        return Some(FloorDecision::Deny("floor-budget-exceeded".to_string()));
+    }
+    for _ in 0..4096 {
+        let Some(command_word) = args.first().and_then(|word| word_text(word)) else {
+            return Some(FloorDecision::Allow);
+        };
+        if command_word.contains(['*', '?', '[', ']']) {
+            return Some(FloorDecision::Deny("floor-opaque-command".to_string()));
+        }
+        let Some(verb) = normalize_verb(&command_word) else {
+            return Some(FloorDecision::Allow);
+        };
+        if matches!(
+            verb.as_str(),
+            "bash" | "sh" | "zsh" | "eval" | "exec" | "env" | "xargs" | "find"
+        ) {
+            return opaque_decision(&args.join(" "));
+        }
+        if verb == "rtk" {
+            return scan_rtk_program(policy, &args);
+        }
+        args = unwrap_wrappers(args)?;
+        let Some(command_word) = args.first().and_then(|word| word_text(word)) else {
+            return Some(FloorDecision::Allow);
+        };
+        if command_word.contains(['*', '?', '[', ']']) {
+            return Some(FloorDecision::Deny("floor-opaque-command".to_string()));
+        }
+        let Some(verb) = normalize_verb(&command_word) else {
+            return Some(FloorDecision::Allow);
+        };
+        if verb == "rtk" {
             continue;
+        }
+        let hit = match verb.as_str() {
+            "rm" => classify_rm(policy, &args[1..]),
+            "git" => classify_git(policy, &args[1..]),
+            value if value.starts_with('-') => return opaque_decision(&args.join(" ")),
+            _ => None,
         };
-        output.push(header);
-        let marker = marker.trim_start_matches('-').trim_start();
-        let token = marker.split_whitespace().next()?;
-        let quoted = token.len() >= 2
-            && matches!(token.as_bytes()[0], b'\'' | b'"')
-            && token.as_bytes().last() == Some(&token.as_bytes()[0]);
-        let delimiter = if quoted {
-            &token[1..token.len() - 1]
-        } else {
-            token
-        };
-        let mut body = Vec::new();
-        index += 1;
-        while index < lines.len() && lines[index].trim() != delimiter {
-            body.push(lines[index]);
-            index += 1;
-        }
-        if index == lines.len() {
-            return None;
-        }
-        let interpreter = header
-            .trim_start_matches(|ch: char| ch == '(' || ch == '{' || ch.is_whitespace())
-            .split_whitespace()
-            .next()
-            .is_some_and(|verb| {
-                matches!(
-                    normalize_verb(verb).as_deref(),
-                    Some("bash" | "sh" | "zsh" | "eval" | "exec")
-                )
-            });
-        let body = body.join("\n");
-        if interpreter {
-            if let FloorDecision::Deny(reason) = opaque_decision(&body)? {
-                return Some(format!("\0{reason}"));
-            }
-        } else if !quoted {
-            scan_expansions(policy, &body, depth + 1)?;
-        }
-        index += 1;
+        return Some(hit.map(FloorDecision::Deny).unwrap_or(FloorDecision::Allow));
     }
-    Some(output.join("\n"))
-}
-
-fn scan_expansions(policy: &FloorPolicy, input: &str, depth: u8) -> Option<()> {
-    let bytes = input.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'$' && bytes.get(index + 1) == Some(&b'(') {
-            let end = matching_paren(input, index + 2)?;
-            if matches!(
-                scan_fragment(policy, &input[index + 2..end], depth)?,
-                FloorDecision::Deny(_)
-            ) {
-                return None;
-            }
-            index = end;
-        } else if bytes[index] == b'`' {
-            let end = input[index + 1..]
-                .find('`')
-                .map(|offset| index + 1 + offset)?;
-            if matches!(
-                scan_fragment(policy, &input[index + 1..end], depth)?,
-                FloorDecision::Deny(_)
-            ) {
-                return None;
-            }
-            index = end;
-        }
-        index += 1;
-    }
-    Some(())
-}
-
-fn scan_fragment(policy: &FloorPolicy, input: &str, depth: u8) -> Option<FloorDecision> {
-    if depth > 4 {
-        return opaque_decision(input);
-    }
-    let input = process_heredocs(policy, input, depth)?;
-    if let Some(reason) = input.strip_prefix('\0') {
-        return Some(FloorDecision::Deny(reason.to_string()));
-    }
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    let mut quote = None;
-    while i < bytes.len() {
-        let byte = bytes[i];
-        match quote {
-            Some(b'\'') if byte == b'\'' => quote = None,
-            Some(b'\'') => {}
-            Some(b'"') if byte == b'"' => quote = None,
-            Some(b'"') | None if byte == b'$' && bytes.get(i + 1) == Some(&b'(') => {
-                let Some(end) = matching_paren(&input, i + 2) else {
-                    return opaque_decision(&input[i..]);
-                };
-                if let FloorDecision::Deny(reason) =
-                    scan_fragment(policy, &input[i + 2..end], depth + 1)?
-                {
-                    return Some(FloorDecision::Deny(reason));
-                }
-                i = end;
-            }
-            Some(b'"') | None if byte == b'`' => {
-                let Some(end) = input[i + 1..].find('`').map(|offset| i + 1 + offset) else {
-                    return opaque_decision(&input[i..]);
-                };
-                if let FloorDecision::Deny(reason) =
-                    scan_fragment(policy, &input[i + 1..end], depth + 1)?
-                {
-                    return Some(FloorDecision::Deny(reason));
-                }
-                i = end;
-            }
-            None if byte == b'\'' || byte == b'"' => quote = Some(byte),
-            _ => {}
-        }
-        i += 1;
-    }
-    if quote.is_some() {
-        return opaque_decision(&input);
-    }
-    scan_simple(policy, &input)
-}
-
-fn matching_paren(input: &str, start: usize) -> Option<usize> {
-    let mut nesting = 1usize;
-    for (offset, byte) in input.as_bytes()[start..].iter().enumerate() {
-        match byte {
-            b'(' => nesting += 1,
-            b')' => {
-                nesting -= 1;
-                if nesting == 0 {
-                    return Some(start + offset);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    Some(FloorDecision::Deny("floor-budget-exceeded".to_string()))
 }
 
 fn opaque_decision(input: &str) -> Option<FloorDecision> {
@@ -424,127 +660,6 @@ fn contains_targeted_verb(input: &str) -> bool {
             !c.is_ascii_alphanumeric() && c != '\\' && c != '.' && c != '/' && c != '_'
         })
         .any(|token| matches!(normalize_verb(token).as_deref(), Some("rm") | Some("git")))
-}
-
-fn scan_simple(policy: &FloorPolicy, input: &str) -> Option<FloorDecision> {
-    let segments = split_commands(input);
-    if segments.len() > 256 {
-        return Some(FloorDecision::Deny("floor-budget-exceeded".to_string()));
-    }
-    let mut token_count = 0usize;
-    for segment in segments {
-        let Some(mut args) = tokenize(segment) else {
-            return opaque_decision(segment);
-        };
-        token_count += args.len();
-        if token_count > 4096 {
-            return Some(FloorDecision::Deny("floor-budget-exceeded".to_string()));
-        }
-        if args.is_empty() {
-            continue;
-        }
-        if let Some(first) = args.first_mut() {
-            let trimmed = first.trim_start_matches(['(', '{']);
-            if !trimmed.is_empty() {
-                *first = trimmed.to_string();
-            }
-        }
-        while args
-            .first()
-            .is_some_and(|arg| is_assignment(arg) || arg == "!" || arg == "(" || arg == "{")
-        {
-            args.remove(0);
-        }
-        if let Some(index) = args
-            .iter()
-            .rposition(|arg| matches!(arg.as_str(), "then" | "do"))
-        {
-            args.drain(0..=index);
-        }
-        if args.is_empty()
-            || matches!(
-                args[0].as_str(),
-                "fi" | "done" | "else" | "elif" | "if" | "while" | "until" | "for"
-            )
-        {
-            continue;
-        }
-        if matches!(
-            normalize_verb(&args[0]).as_deref(),
-            Some("bash" | "sh" | "zsh" | "eval" | "exec" | "env" | "xargs" | "find")
-        ) {
-            if let FloorDecision::Deny(reason) = opaque_decision(segment)? {
-                return Some(FloorDecision::Deny(reason));
-            }
-            continue;
-        }
-        if normalize_verb(&args[0]).as_deref() == Some("rtk") {
-            if let FloorDecision::Deny(reason) = scan_rtk(policy, &args, 1)? {
-                return Some(FloorDecision::Deny(reason));
-            }
-            continue;
-        }
-        let Some(args) = unwrap_wrappers(args) else {
-            return opaque_decision(segment);
-        };
-        if args.is_empty() {
-            continue;
-        }
-        let Some(verb) = normalize_verb(&args[0]) else {
-            return opaque_decision(segment);
-        };
-        let hit = match verb.as_str() {
-            "rm" => classify_rm(policy, &args[1..]),
-            "git" => classify_git(policy, &args[1..]),
-            value if value.starts_with('-') => return opaque_decision(segment),
-            _ => None,
-        };
-        if let Some(id) = hit {
-            return Some(FloorDecision::Deny(id));
-        }
-    }
-    Some(FloorDecision::Allow)
-}
-
-fn is_assignment(token: &str) -> bool {
-    token.split_once('=').is_some_and(|(name, _)| {
-        !name.is_empty()
-            && name
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    })
-}
-
-fn scan_rtk(policy: &FloorPolicy, args: &[String], depth: u8) -> Option<FloorDecision> {
-    let mut args = args.get(1..)?;
-    while args.first().is_some_and(|arg| {
-        arg.chars().all(|ch| ch == '-' || ch == 'v')
-            || matches!(arg.as_str(), "--ultra-compact" | "--skip-env")
-    }) {
-        args = &args[1..];
-    }
-    let dispatch = normalize_verb(args.first()?)?;
-    let carried = match dispatch.as_str() {
-        "git" => format!("git {}", args[1..].join(" ")),
-        "run" if matches!(args.get(1).map(String::as_str), Some("-c" | "--command")) => {
-            args.get(2)?.to_string()
-        }
-        "run" => args[1..].join(" "),
-        "proxy" | "err" | "test" | "summary" => {
-            let args = &args[1..];
-            if args
-                .first()
-                .is_some_and(|arg| arg.starts_with('-') && arg != "--")
-            {
-                return opaque_decision(&args.join(" "));
-            }
-            args.strip_prefix(&["--".to_string()])
-                .unwrap_or(args)
-                .join(" ")
-        }
-        _ => return opaque_decision(&args.join(" ")),
-    };
-    scan_fragment(policy, &carried, depth)
 }
 
 fn split_commands(input: &str) -> Vec<&str> {
@@ -625,11 +740,12 @@ fn tokenize(input: &str) -> Option<Vec<String>> {
 }
 
 fn normalize_verb(token: &str) -> Option<String> {
-    let name = token
-        .rsplit(['/', '\\'])
-        .next()?
-        .replace('\\', "")
-        .to_ascii_lowercase();
+    let name = if token.contains(":\\") || token.starts_with("\\\\") {
+        token.rsplit(['/', '\\']).next()?
+    } else {
+        token.rsplit('/').next()?.trim_matches('\\')
+    };
+    let name = name.replace('\\', "").to_ascii_lowercase();
     Some(name.strip_suffix(".exe").unwrap_or(&name).to_string())
 }
 
@@ -741,53 +857,11 @@ fn unwrap_wrappers(mut args: Vec<String>) -> Option<Vec<String>> {
                     return None;
                 }
             }
-            "rtk" => return unwrap_rtk(args),
+            "rtk" => return Some(args),
             _ => return Some(args),
         }
     }
     None
-}
-
-fn unwrap_rtk(mut args: Vec<String>) -> Option<Vec<String>> {
-    args.remove(0);
-    while args
-        .first()
-        .is_some_and(|arg| arg == "-v" || arg == "--ultra-compact" || arg == "--skip-env")
-    {
-        args.remove(0);
-    }
-    let dispatch = normalize_verb(args.first()?)?;
-    match dispatch.as_str() {
-        "git" => {
-            args.remove(0);
-            args.insert(0, "git".to_string());
-            Some(args)
-        }
-        "run" => {
-            args.remove(0);
-            if args
-                .first()
-                .is_some_and(|arg| arg == "-c" || arg == "--command")
-            {
-                if args.len() < 2 {
-                    return None;
-                }
-                tokenize(&args[1])
-            } else {
-                Some(args)
-            }
-        }
-        "proxy" | "err" | "test" | "summary" => {
-            args.remove(0);
-            if args.first().is_some_and(|arg| arg == "--") {
-                args.remove(0);
-            } else if args.first().is_some_and(|arg| arg.starts_with('-')) {
-                return None;
-            }
-            Some(args)
-        }
-        _ => Some(Vec::new()),
-    }
 }
 
 fn classify_rm(policy: &FloorPolicy, args: &[String]) -> Option<String> {
@@ -804,6 +878,7 @@ fn classify_rm(policy: &FloorPolicy, args: &[String]) -> Option<String> {
                     match flag {
                         'r' | 'R' => flags.push("recursive"),
                         'f' => flags.push("force"),
+                        'i' | 'v' => {}
                         _ => return Some("floor-opaque-command".to_string()),
                     }
                 }
@@ -819,8 +894,17 @@ fn classify_git(policy: &FloorPolicy, args: &[String]) -> Option<String> {
     let mut args = args;
     while let Some(arg) = args.first() {
         match arg.as_str() {
-            "-C" | "-c" | "--git-dir" | "--work-tree" => {
+            "-C" | "--git-dir" | "--work-tree" => {
                 if args.len() < 2 {
+                    return Some("floor-opaque-command".to_string());
+                }
+                args = &args[2..];
+            }
+            "-c" => {
+                let Some(value) = args.get(1) else {
+                    return Some("floor-opaque-command".to_string());
+                };
+                if value.starts_with("alias.") {
                     return Some("floor-opaque-command".to_string());
                 }
                 args = &args[2..];
@@ -1295,7 +1379,7 @@ flags_any = ["force"]
         }
         assert_eq!(
             policy().evaluate("time -p -- rm -rf /etc"),
-            FloorDecision::Deny("rm-recursive".into())
+            FloorDecision::Deny("floor-opaque-command".into())
         );
         for command in ["git clean -n --exclude=*.pdf", "rm --force fichier.txt"] {
             assert_eq!(
@@ -1367,5 +1451,305 @@ flags_any = ["force"]
                 FloorDecision::Deny("floor-invalid-payload".into())
             );
         }
+    }
+
+    #[test]
+    fn denies_deep_rtk_wrapping_without_recursing() {
+        let command = "rtk run ".repeat(300) + "rm -rf x";
+        assert_eq!(
+            policy().evaluate(&command),
+            FloorDecision::Deny("rm-recursive".to_string())
+        );
+    }
+
+    #[test]
+    fn denies_deep_command_substitution_without_recursing() {
+        let command = "$(".repeat(40_000) + "rm -rf x" + &")".repeat(40_000);
+        assert_eq!(
+            policy().evaluate(&command),
+            FloorDecision::Deny("floor-budget-exceeded".to_string())
+        );
+    }
+
+    #[test]
+    fn reviewed_probe_cases_keep_their_exact_decisions() {
+        let cases: &[(&str, Option<&str>)] = &[
+            (
+                r#"git commit -m "$(cat <<'EOF'
+feat: x
+
+Body.
+EOF
+)""#,
+                None,
+            ),
+            (r#"git commit -m "feat: a; b""#, None),
+            (r#"git log --format="%h|%s""#, None),
+            ("echo \"a;b\" ; rm -rf /etc", Some("rm-recursive")),
+            ("FOO=1 rm -rf x", Some("rm-recursive")),
+            ("env rm -rf x", Some("floor-opaque-command")),
+            ("exec rm -rf x", Some("floor-opaque-command")),
+            ("! rm -rf x", Some("rm-recursive")),
+            ("(rm -rf x)", Some("rm-recursive")),
+            ("{ rm -rf x; }", Some("rm-recursive")),
+            ("if true; then rm -rf x; fi", Some("rm-recursive")),
+            ("for d in a b; do rm -rf \"$d\"; done", Some("rm-recursive")),
+            ("while false; do git push -f; done", Some("git-rewrite")),
+            ("bash -c 'rm -rf x'", Some("floor-opaque-command")),
+            ("sh -c \"git push -f\"", Some("floor-opaque-command")),
+            ("eval \"rm -rf x\"", Some("floor-opaque-command")),
+            ("xargs rm -rf", Some("floor-opaque-command")),
+            (
+                "find . -name t -exec rm -rf {} +",
+                Some("floor-opaque-command"),
+            ),
+            ("for f in *.rs; do echo $f; done", None),
+            ("bash -c 'echo hi'", None),
+            ("find . -name '*.rs'", None),
+            ("rtk run 'rm -rf x'", Some("rm-recursive")),
+            ("rtk run -c 'echo a; rm -rf x'", Some("rm-recursive")),
+            ("rtk run -c 'nohup rm -rf x'", Some("rm-recursive")),
+            ("rtk proxy nohup rm -rf x", Some("rm-recursive")),
+            ("rtk -vv git push -f origin main", Some("git-rewrite")),
+            ("bash <<'EOF'\nrm -rf x\nEOF", Some("floor-opaque-command")),
+            (
+                "cat <<EOF > notes.md\ngit push --force was refused\nEOF",
+                None,
+            ),
+            ("git clean -n --exclude=*.pdf", None),
+            ("git -P push -f", Some("floor-opaque-command")),
+            ("git --bare push --force", Some("floor-opaque-command")),
+            ("git push --bogus origin main", Some("floor-opaque-command")),
+            ("time -p -- rm -rf /etc", Some("floor-opaque-command")),
+            ("nice -5 rm -rf /etc", Some("floor-opaque-command")),
+            (
+                "timeout --bogus 5 rm -rf /etc",
+                Some("floor-opaque-command"),
+            ),
+            ("timeout -k5 10 rm -rf x", Some("floor-opaque-command")),
+            ("rm --force fichier.txt", None),
+            ("cargo build 2>&1 | tail", None),
+            ("FOO=1 cargo test", None),
+            ("python x.py", None),
+            ("rm fichier.txt", None),
+            ("git push", None),
+            ("git push -u origin branche", None),
+            (
+                "gh pr create --body \"$(cat <<'EOF'\nSummary\n\n- item\nEOF\n)\"",
+                None,
+            ),
+            ("cd /tmp && ls", None),
+            ("echo \\\" ; rm -rf /etc ; echo \\\"", Some("rm-recursive")),
+            ("echo \\\' ; rm -rf /etc ; echo \\\'", Some("rm-recursive")),
+            ("cat <<EOF; rm -rf /etc\nbody\nEOF", Some("rm-recursive")),
+            (
+                "cat <<'EOF' | sh\nrm -rf /etc\nEOF",
+                Some("floor-opaque-command"),
+            ),
+            (
+                "cat <<'EOF' | bash\nrm -rf /etc\nEOF",
+                Some("floor-opaque-command"),
+            ),
+            ("# <<'EOF'\nrm -rf /etc\nEOF", Some("rm-recursive")),
+            (
+                "sudo -- bash <<'EOF'\nrm -rf /etc\nEOF",
+                Some("floor-opaque-command"),
+            ),
+            (
+                "FOO=1 bash <<'EOF'\nrm -rf /etc\nEOF",
+                Some("floor-opaque-command"),
+            ),
+            ("echo 'rm -rf /etc' | sh", Some("floor-opaque-command")),
+            ("cat <(rm -rf /etc)", Some("rm-recursive")),
+            ("diff <(git push -f origin main) x", Some("git-rewrite")),
+            ("if rm -rf /etc; then :; fi", Some("rm-recursive")),
+            ("while git push -f; do :; done", Some("git-rewrite")),
+            (
+                "if false; then :; else rm -rf /etc; fi",
+                Some("rm-recursive"),
+            ),
+            ("case x in x) rm -rf /etc;; esac", Some("rm-recursive")),
+            ("f() { rm -rf /etc; }; f", Some("rm-recursive")),
+            ("function f { rm -rf /etc; }; f", Some("rm-recursive")),
+            ("coproc rm -rf /etc", Some("rm-recursive")),
+            ("/usr/bin/r? -rf /etc", Some("floor-opaque-command")),
+            ("/usr/bin/r[m] -rf /etc", Some("floor-opaque-command")),
+            (
+                "git -c alias.p='push --force' p origin main",
+                Some("floor-opaque-command"),
+            ),
+            ("grep foo <<< \"$x\"", None),
+            ("cat <<< hello", None),
+            ("rm -v a.txt", None),
+            ("rm -i a.txt", None),
+            ("git commit -m \"msg\" && git push", None),
+            ("echo \"$((1+2))\"", None),
+            ("ls # a comment; rm -rf x", None),
+            ("git status; echo done", None),
+            (
+                "cat <<EOF && git push -f origin main\nbody\nEOF",
+                Some("git-rewrite"),
+            ),
+            ("git commit -F - <<EOF\nsubject\nEOF", None),
+            ("nohup rtk run 'rm -rf /etc'", Some("rm-recursive")),
+            ("time rtk run 'rm -rf /etc'", Some("rm-recursive")),
+            (
+                "timeout 5 rtk run -c 'echo a; rm -rf /etc'",
+                Some("rm-recursive"),
+            ),
+            ("rtk -v run 'rm -rf /etc'", Some("rm-recursive")),
+            ("RM -rf /x", Some("rm-recursive")),
+            ("r\\m -rf /x", Some("rm-recursive")),
+            ("\"rm\" -rf /x", Some("rm-recursive")),
+            ("rm -r -f /x", Some("rm-recursive")),
+            ("rm --recursive --force /x", Some("rm-recursive")),
+            ("rm -rf \"/etc\"", Some("rm-recursive")),
+            ("rm -rf /tmp /etc", Some("rm-recursive")),
+            ("git push origin +main", Some("git-rewrite")),
+            ("git push -qf", Some("git-rewrite")),
+            ("git push origin :main", Some("git-rewrite")),
+            ("git push --delete origin x", Some("git-rewrite")),
+            ("git -C x push -f", Some("git-rewrite")),
+            ("nohup rm -rf x", Some("rm-recursive")),
+            ("timeout 5 rm -rf x", Some("rm-recursive")),
+            ("rtk proxy rm -rf x", Some("rm-recursive")),
+            ("echo \"$(rm -rf ~)\"", Some("rm-recursive")),
+            ("`rm -rf x`", Some("rm-recursive")),
+            ("echo \"<<'X'\"\nrm -rf x", Some("rm-recursive")),
+            (
+                "\"C:\\Program Files\\Git\\usr\\bin\\rm.exe\" -rf x",
+                Some("rm-recursive"),
+            ),
+            (
+                r##"echo don\'t $(rm -rf x) \"##,
+                Some("floor-opaque-command"),
+            ),
+            ("rm -rf x 2>/dev/null", Some("rm-recursive")),
+            ("cd /tmp && rm -rf build", Some("rm-recursive")),
+            ("rm -r inexistant", Some("rm-recursive")),
+            ("git commit -m \"fix a & b\"", None),
+            ("git log --format=\"%h|%s\" -5", None),
+            ("git commit -m \"title\n\nbody line\"", None),
+            ("grep -E \"foo|bar\" src/git", None),
+            ("rg \"a|b\" kleos-sh/src", None),
+            ("git clean -n --exclude=*.conf", None),
+            ("rm -f a.txt", None),
+            ("git status && git diff | head", None),
+            ("echo $(unterminated", None),
+            (
+                "git commit -F - <<EOF\nsubject\n\ngit push --force note\nEOF",
+                None,
+            ),
+            ("ls ~/.kleos", None),
+            (
+                "git commit -m \"$(cat <<'EOF'\nfeat: add thing\nEOF\n)\" && git push",
+                None,
+            ),
+            ("python - <<'EOF'\nprint(1)\nEOF", None),
+            (
+                "gh pr create --title t --body \"$(cat <<'EOF'\nSummary\nEOF\n)\"",
+                None,
+            ),
+            ("git tag -a v1 -m \"release\nnotes\"", None),
+            ("rm -rf", Some("rm-recursive")),
+            ("rm -R x", Some("rm-recursive")),
+            ("git push --force-with-lease", Some("git-rewrite")),
+            ("git push origin main --no-verify", None),
+            ("git reset --hard", Some("git-reset-hard")),
+            ("git reset HEAD --hard", Some("git-reset-hard")),
+            ("git clean -fd", Some("git-clean-force")),
+            ("git clean -xn", None),
+            (
+                "sudo -u root ls ; rm -rf /etc",
+                Some("floor-opaque-command"),
+            ),
+            ("FOO=bar rm -rf /etc", Some("rm-recursive")),
+            ("git push origin main --mirror", Some("git-rewrite")),
+            ("python -c \"print(1)\"", None),
+            ("echo 'x;y' && git push -f origin main", Some("git-rewrite")),
+            ("git reset --bogus --hard", Some("floor-opaque-command")),
+        ];
+        for (command, expected_reason) in cases {
+            let expected = expected_reason.map_or(FloorDecision::Allow, |reason| {
+                FloorDecision::Deny(reason.to_string())
+            });
+            assert_eq!(policy().evaluate(command), expected, "{command}");
+        }
+
+        let floor = Path::new("C:/gate/floor.toml");
+        let binary = Path::new("C:/bin/kleos-sh.exe");
+        let payload_cases: &[(&str, Option<&str>)] = &[
+            (
+                r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf x"}}"#,
+                Some("floor-invalid-payload"),
+            ),
+            (
+                r#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+                Some("floor-invalid-payload"),
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"command":"ls"}}"#,
+                Some("floor-invalid-payload"),
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+                None,
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cat C:/gate/floor.toml"}}"#,
+                Some("floor-self-protection"),
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo x 2>C:/gate/floor.toml"}}"#,
+                Some("floor-self-protection"),
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo $(cat C:/gate/floor.toml)"}}"#,
+                Some("floor-self-protection"),
+            ),
+            (
+                r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"cp x C:/bin/kleos-sh.exe"}}"#,
+                Some("floor-self-protection"),
+            ),
+        ];
+        for (payload, expected_reason) in payload_cases {
+            let expected = expected_reason.map_or(FloorDecision::Allow, |reason| {
+                FloorDecision::Deny(reason.to_string())
+            });
+            assert_eq!(
+                evaluate_payload(&policy(), payload, floor, binary),
+                expected,
+                "{payload}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires FLOOR_CORPUS_JSONL"]
+    fn corpus_refusal_rate_without_targeted_verbs_is_bounded() {
+        let corpus = std::env::var("FLOOR_CORPUS_JSONL").expect("FLOOR_CORPUS_JSONL");
+        let input = std::fs::read_to_string(corpus).expect("read corpus");
+        let mut eligible = 0usize;
+        let mut denial_count = 0usize;
+        let mut denied = Vec::new();
+        for line in input.lines() {
+            let command: String = serde_json::from_str(line).expect("JSON string");
+            let lowercase = command.to_ascii_lowercase();
+            if lowercase.contains("rm") || lowercase.contains("git") {
+                continue;
+            }
+            eligible += 1;
+            if let FloorDecision::Deny(reason) = policy().evaluate(&command) {
+                denial_count += 1;
+                if denied.len() < 20 {
+                    denied.push(format!("{reason}: {command}"));
+                }
+            }
+        }
+        println!("eligible={eligible} denied={denial_count} samples={denied:?}");
+        assert!(
+            denial_count * 100 <= eligible,
+            "{denial_count} refus sur {eligible}; exemples: {denied:?}"
+        );
     }
 }
