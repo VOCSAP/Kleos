@@ -7735,13 +7735,14 @@ quatre règles minimales est invalide. Le scanner POSIX borné reconnaît `rm` e
 les sous-commandes `git` ciblées, les groupes d'options, `--prune`, les
 wrappers transparents documentés et le répartiteur `rtk`; une zone opaque
 n'est refusée que si elle contient `rm` ou `git`. Le payload Claude Code exige
-`tool_name = "Bash"` et `tool_input.command` chaîne; `cwd` n'est pas requis
-pour un deny. Les commandes désignant le fichier de politique, son dossier ou
-le binaire sont refusées. L1 ne contient aucune exception de suppression ni
-registre de grants.
+`hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
+`tool_input.command` chaîne; `cwd` n'est pas requis pour un deny. Les commandes
+désignant le fichier de politique, son dossier ou le binaire sont refusées. L1
+ne contient aucune exception de suppression ni registre de grants.
 
 **Fichiers :** `kleos-sh/Cargo.toml`, `kleos-sh/src/floor.rs`,
-`kleos-sh/src/main.rs`, `docs/dev-notes/local-patches.md`.
+`kleos-sh/src/main.rs`, `kleos-sh/tests/floor_only.rs`,
+`docs/dev-notes/local-patches.md`.
 
 **Tests :** `cargo test -p kleos-sh` couvre le chargement fail-closed, les
 formes rm/git du contrat, substitutions, opacité ciblée, wrappers, payload

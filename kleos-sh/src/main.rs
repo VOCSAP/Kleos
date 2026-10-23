@@ -412,27 +412,57 @@ fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor
     }
 }
 
+fn floor_deny_json(reason: &str) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
+}
+
+fn write_floor_deny(writer: &mut impl std::io::Write, reason: &str) -> std::io::Result<()> {
+    let json = floor_deny_json(reason).map_err(std::io::Error::other)?;
+    writer.write_all(json.as_bytes())?;
+    writer.write_all(b"\n")
+}
+
+fn exit_floor_deny(reason: &str) -> ! {
+    let mut stdout = std::io::stdout().lock();
+    match write_floor_deny(&mut stdout, reason) {
+        Ok(()) => process::exit(0),
+        Err(err) => {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr().lock(),
+                format!("floor deny emission failed: {err}\n").as_bytes(),
+            );
+            process::exit(2);
+        }
+    }
+}
+
+fn install_floor_panic_hook() {
+    std::panic::set_hook(Box::new(|_| exit_floor_deny("floor-internal-error")));
+}
+
 fn run_floor_only(floor_file: Option<&PathBuf>) -> ! {
+    install_floor_panic_hook();
     let Some(floor_file) = floor_file.filter(|path| path.is_absolute()) else {
-        emit_claude_decision("deny", Some("floor-policy-invalid"), None);
-        process::exit(0);
+        exit_floor_deny("floor-policy-invalid");
     };
     let mut payload = String::new();
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err()
         || payload.len() > 256 * 1024
     {
-        emit_claude_decision("deny", Some("floor-invalid-payload"), None);
-        process::exit(0);
+        exit_floor_deny("floor-invalid-payload");
     }
     let binary = match std::env::current_exe() {
         Ok(binary) => binary,
-        Err(_) => {
-            emit_claude_decision("deny", Some("floor-self-protection"), None);
-            process::exit(0);
-        }
+        Err(_) => exit_floor_deny("floor-self-protection"),
     };
     if let floor::FloorDecision::Deny(reason) = floor_only_decision(&payload, floor_file, &binary) {
-        emit_claude_decision("deny", Some(&format!("floor: {reason}")), None);
+        exit_floor_deny(&format!("floor: {reason}"));
     }
     process::exit(0);
 }
@@ -764,5 +794,33 @@ mod tests {
         let v = build_claude_decision("allow", None, None).expect("non-empty body");
         let h = &v["hookSpecificOutput"];
         assert_eq!(h["permissionDecision"], "allow");
+    }
+
+    #[test]
+    fn floor_deny_json_is_encoded_before_stdout_emission() {
+        let json = floor_deny_json("floor: rm-recursive").expect("deny JSON");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            value["hookSpecificOutput"]["permissionDecisionReason"],
+            "floor: rm-recursive"
+        );
+    }
+
+    #[test]
+    fn floor_deny_writer_returns_an_error_instead_of_panicking() {
+        struct FailingWriter;
+
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("stdout unavailable"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        assert!(write_floor_deny(&mut FailingWriter, "floor: rm-recursive").is_err());
     }
 }
