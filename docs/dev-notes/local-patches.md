@@ -7733,9 +7733,12 @@ reconnaissance : il refuse seulement un danger statiquement reconnu. Les refus
 sont `rm-recursive`, les variantes destructrices de `git push`, `git reset
 --hard` et `git clean` forcé. Les arguments sont déquotés avant cette
 classification. Le parcours d'un AST exploitable agrège les décisions visitées
-dans l'ordre `Deny > Warn > Allow`; un `Deny` l'arrête, tandis qu'un budget,
-un timeout ou un échec de parsing termine globalement l'analyse par un
-avertissement. Les flags statiques sont classés avant les opérandes dynamiques :
+dans l'ordre `Deny > Warn > Allow`; un `Deny` l'arrête. En échec de parsing,
+un repli lexical parcourt les segments hors corps de heredoc et ignore les
+segments contenant une substitution incomplète. Un heredoc tronqué n'expose pas
+son corps au repli, qui émet un avertissement s'il ne reconnaît aucun refus. Les
+pipelines vers `xargs` inspectent la source quand la commande appelée est un
+interpréteur. Les flags statiques sont classés avant les opérandes dynamiques :
 `rm -rf $M` et `git push -f origin "$B"` restent donc des refus.
 
 Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
@@ -7762,9 +7765,9 @@ sh`, un heredoc vers `dash`, les here-strings vers un interpréteur, les
 substitutions dans `[[ ]]`, `(( ))`, les valeurs de `for` et de `case`,
 l'expansion `${x:-$(...)}`, les substitutions de processus et dans une cible de
 redirection, un programme RTK imbriqué, `cat script | bash`, une entrée encodée
-vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`, et
-un refspec Git dynamique quoté. Un refspec Git ordinaire, par exemple
-`git push origin main`, reste silencieux. Les évaluations dynamiques `eval
+vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`,
+un `git rebase` sans `--exec`, et un refspec Git dynamique quoté. Un refspec
+Git ordinaire, par exemple `git push origin main`, reste silencieux. Les évaluations dynamiques `eval
 "$cmd"`, `eval "rm -rf $x"` et `bash -c "$(...)"` ne sont pas résolues
 statiquement. Les programmes passés à `docker run … sh -c`, les scripts
 distants de `ssh`, les commandes transmises à `wsl` et le wrapper `winpty` ne
