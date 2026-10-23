@@ -6,6 +6,8 @@ mod observe;
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -406,10 +408,29 @@ fn deny_and_exit(claude_hook: bool, reason: &str) -> ! {
 }
 
 fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor::FloorDecision {
-    match floor::FloorPolicy::load(floor_file) {
-        Ok(policy) => floor::evaluate_payload(&policy, payload, floor_file, binary),
-        Err(_) => floor::FloorDecision::Deny("floor-policy-invalid".to_string()),
+    let payload = payload.to_string();
+    let floor_file = floor_file.to_path_buf();
+    let binary = binary.to_path_buf();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("floor-analysis".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let decision = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match floor::FloorPolicy::load(&floor_file) {
+                    Ok(policy) => floor::evaluate_payload(&policy, &payload, &floor_file, &binary),
+                    Err(_) => floor::FloorDecision::Deny("floor-policy-invalid".to_string()),
+                }
+            }))
+            .unwrap_or_else(|_| floor::FloorDecision::Deny("floor-internal-error".to_string()));
+            let _ = sender.send(decision);
+        });
+    if worker.is_err() {
+        return floor::FloorDecision::Deny("floor-internal-error".to_string());
     }
+    receiver
+        .recv_timeout(Duration::from_millis(4_500))
+        .unwrap_or_else(|_| floor::FloorDecision::Deny("floor-analysis-timeout".to_string()))
 }
 
 fn floor_deny_json(reason: &str) -> Result<String, serde_json::Error> {
@@ -442,18 +463,13 @@ fn exit_floor_deny(reason: &str) -> ! {
     }
 }
 
-fn install_floor_panic_hook() {
-    std::panic::set_hook(Box::new(|_| exit_floor_deny("floor-internal-error")));
-}
-
 fn run_floor_only(floor_file: Option<&PathBuf>) -> ! {
-    install_floor_panic_hook();
     let Some(floor_file) = floor_file.filter(|path| path.is_absolute()) else {
         exit_floor_deny("floor-policy-invalid");
     };
     let mut payload = String::new();
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err()
-        || payload.len() > 256 * 1024
+        || payload.len() > 192 * 1024
     {
         exit_floor_deny("floor-invalid-payload");
     }

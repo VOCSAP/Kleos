@@ -2,6 +2,7 @@ use brush_parser::{ast, word, Parser, ParserOptions};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Cursor};
+use std::ops::Range;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,8 +141,11 @@ impl FloorPolicy {
     }
 
     pub fn evaluate(&self, command: &str) -> FloorDecision {
-        if command.len() > 256 * 1024 {
+        if command.len() > 192 * 1024 {
             return FloorDecision::Deny("floor-input-too-large".to_string());
+        }
+        if raw_syntax_complexity(command) > 256 {
+            return FloorDecision::Deny("floor-budget-exceeded".to_string());
         }
         scan_ast(self, command)
     }
@@ -211,16 +215,18 @@ fn targets_protected_path(command: &str, floor_file: &Path, binary: &Path) -> bo
             return candidate.contains(&floor) || candidate.contains(&binary);
         };
         tokens.into_iter().any(|token| {
-            let token = strip_redirection_prefix(&token);
-            let token = token
-                .split_once('=')
-                .map(|(_, value)| value)
-                .unwrap_or(token);
-            let candidate = normalize_path(token);
-            candidate == floor
-                || candidate == binary
-                || candidate == floor_dir
-                || candidate.starts_with(&format!("{floor_dir}/"))
+            token.split(['>', '<']).any(|token| {
+                let token = strip_redirection_prefix(token);
+                let token = token
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or(token);
+                let candidate = normalize_path(token);
+                candidate == floor
+                    || candidate == binary
+                    || candidate == floor_dir
+                    || candidate.starts_with(&format!("{floor_dir}/"))
+            })
         })
     })
 }
@@ -263,16 +269,15 @@ fn normalize_path(path: &str) -> String {
 }
 
 fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
-    if input.match_indices("$(").take(257).count() > 256 {
-        return FloorDecision::Deny("floor-budget-exceeded".to_string());
+    if !targeted_occurrences(input).is_empty() && begins_disallowed_wrapper(input) {
+        return FloorDecision::Deny("floor-opaque-command".to_string());
     }
     let mut parser = Parser::new(
         BufReader::new(Cursor::new(input.as_bytes())),
         &ParserOptions::default(),
     );
     let Ok(program) = parser.parse_program() else {
-        return opaque_decision(input)
-            .unwrap_or_else(|| FloorDecision::Deny("floor-opaque-command".to_string()));
+        return FloorDecision::Deny("floor-opaque-command".to_string());
     };
 
     enum Task<'a> {
@@ -291,6 +296,7 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
         tasks.push(Task::List(command));
     }
     let mut nodes = 0usize;
+    let mut justified_words: Vec<Range<usize>> = Vec::new();
     while let Some(task) = tasks.pop() {
         nodes += 1;
         if nodes > 4096 {
@@ -320,6 +326,7 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
             }
             Task::Command(ast::Command::Simple(command)) => {
                 let mut args = Vec::new();
+                let mut words: Vec<&ast::Word> = Vec::new();
                 let mut input_sources: Vec<(&str, bool)> = Vec::new();
                 if let Some(prefix) = &command.prefix {
                     for item in &prefix.0 {
@@ -330,7 +337,8 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                                 {
                                     return FloorDecision::Deny(reason);
                                 }
-                                args.push(word.value.clone())
+                                args.push(word.value.clone());
+                                words.push(word)
                             }
                             ast::CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
                             ast::CommandPrefixOrSuffixItem::ProcessSubstitution(_, subshell) => {
@@ -355,6 +363,7 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                         return FloorDecision::Deny(reason);
                     }
                     args.push(word.value.clone());
+                    words.push(word);
                 }
                 if let Some(suffix) = &command.suffix {
                     for item in &suffix.0 {
@@ -365,7 +374,8 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                                 {
                                     return FloorDecision::Deny(reason);
                                 }
-                                args.push(word.value.clone())
+                                args.push(word.value.clone());
+                                words.push(word)
                             }
                             ast::CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
                             ast::CommandPrefixOrSuffixItem::ProcessSubstitution(_, subshell) => {
@@ -405,9 +415,11 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                         }
                     }
                 }
-                match scan_ast_args(policy, args) {
+                match scan_ast_args(policy, args.clone()) {
                     Some(FloorDecision::Deny(reason)) => return FloorDecision::Deny(reason),
-                    Some(FloorDecision::Allow) => {}
+                    Some(FloorDecision::Allow) => {
+                        justified_words.extend(justified_word_spans(&args, &words));
+                    }
                     None => return FloorDecision::Deny("floor-opaque-command".to_string()),
                 }
             }
@@ -460,7 +472,157 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
             }
         }
     }
-    FloorDecision::Allow
+    if targeted_occurrences(input).iter().all(|occurrence| {
+        justified_words
+            .iter()
+            .any(|span| span_contains(span, occurrence))
+    }) {
+        FloorDecision::Allow
+    } else {
+        FloorDecision::Deny("floor-opaque-command".to_string())
+    }
+}
+
+fn begins_disallowed_wrapper(input: &str) -> bool {
+    split_commands(input).into_iter().any(|segment| {
+        let Some(first) = segment.split_ascii_whitespace().next() else {
+            return false;
+        };
+        normalize_verb(first).is_some_and(|verb| {
+            matches!(
+                verb.as_str(),
+                "time"
+                    | "timeout"
+                    | "nice"
+                    | "nohup"
+                    | "stdbuf"
+                    | "command"
+                    | "builtin"
+                    | "sudo"
+                    | "doas"
+                    | "winpty"
+                    | "ssh"
+            )
+        })
+    })
+}
+
+fn raw_syntax_complexity(input: &str) -> usize {
+    let punctuation = ['{', '(', '`']
+        .into_iter()
+        .map(|needle| input.matches(needle).count())
+        .sum::<usize>();
+    let compound = ["$(", "${", "[["]
+        .into_iter()
+        .map(|needle| input.match_indices(needle).count())
+        .sum::<usize>();
+    let keywords = input
+        .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .filter(|word| {
+            matches!(
+                *word,
+                "if" | "while" | "until" | "for" | "case" | "select" | "function"
+            )
+        })
+        .count();
+    punctuation + compound + keywords
+}
+
+fn targeted_occurrences(input: &str) -> Vec<Range<usize>> {
+    let chars: Vec<_> = input.chars().collect();
+    let mut occurrences = Vec::new();
+    let is_word = |ch: char| ch.is_ascii_alphanumeric() || ch == '_';
+    let bounded = |start: usize, end: usize| {
+        !chars
+            .get(start.wrapping_sub(1))
+            .is_some_and(|ch| is_word(*ch))
+            && !chars.get(end).is_some_and(|ch| is_word(*ch))
+    };
+    let mut index = 0;
+    while index < chars.len() {
+        let lower = chars[index].to_ascii_lowercase();
+        let end = if lower == 'r'
+            && chars
+                .get(index + 1)
+                .is_some_and(|ch| ch.eq_ignore_ascii_case(&'m'))
+        {
+            Some(index + 2)
+        } else if lower == 'g'
+            && chars
+                .get(index + 1)
+                .is_some_and(|ch| ch.eq_ignore_ascii_case(&'i'))
+            && chars
+                .get(index + 2)
+                .is_some_and(|ch| ch.eq_ignore_ascii_case(&'t'))
+        {
+            Some(index + 3)
+        } else if lower == 'r' && chars.get(index + 1) == Some(&'?') {
+            Some(index + 2)
+        } else if lower == 'r'
+            && chars.get(index + 1) == Some(&'[')
+            && chars
+                .get(index + 2)
+                .is_some_and(|ch| ch.eq_ignore_ascii_case(&'m'))
+            && chars.get(index + 3) == Some(&']')
+        {
+            Some(index + 4)
+        } else if lower == 'r'
+            && chars.get(index + 1) == Some(&'\\')
+            && chars
+                .get(index + 2)
+                .is_some_and(|ch| ch.eq_ignore_ascii_case(&'m'))
+        {
+            Some(index + 3)
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            if bounded(index, end) {
+                occurrences.push(index..end);
+            }
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+    occurrences
+}
+
+fn span_contains(span: &Range<usize>, occurrence: &Range<usize>) -> bool {
+    span.start <= occurrence.start && occurrence.end <= span.end
+}
+
+fn justified_word_spans(args: &[String], words: &[&ast::Word]) -> Vec<Range<usize>> {
+    let Some(verb) = args
+        .first()
+        .and_then(|word| word_text(word))
+        .and_then(|word| normalize_verb(&word))
+    else {
+        return Vec::new();
+    };
+    if !matches!(
+        verb.as_str(),
+        "rm" | "git" | "echo" | "printf" | "grep" | "rg" | "ls" | "cat" | "cargo" | "docker" | "gh"
+    ) {
+        return Vec::new();
+    }
+    words
+        .iter()
+        .enumerate()
+        .filter_map(|(index, word)| {
+            let static_word = word_text(&word.value).is_some();
+            let quoted_message_heredoc = matches!(verb.as_str(), "git" | "gh")
+                && args.get(..index).is_some_and(|prior| {
+                    prior
+                        .iter()
+                        .any(|arg| matches!(arg.as_str(), "-m" | "-F" | "--message" | "--body"))
+                })
+                && word.value.contains("$(cat <<'");
+            (static_word || quoted_message_heredoc)
+                .then(|| word.loc.as_ref().map(|loc| loc.start.index..loc.end.index))
+                .flatten()
+        })
+        .collect()
 }
 
 fn pipeline_feeds_interpreter_with_targeted_content(pipeline: &ast::Pipeline) -> bool {
@@ -506,7 +668,12 @@ fn command_is_interpreter(command: &ast::Command) -> bool {
         .as_ref()
         .and_then(|word| word_text(&word.value))
         .and_then(|word| normalize_verb(&word))
-        .is_some_and(|verb| matches!(verb.as_str(), "bash" | "sh" | "zsh"))
+        .is_some_and(|verb| {
+            matches!(
+                verb.as_str(),
+                "bash" | "sh" | "zsh" | "cmd" | "powershell" | "pwsh" | "xargs"
+            )
+        })
 }
 
 fn scan_ast_word(policy: &FloorPolicy, word: &ast::Word) -> Option<FloorDecision> {
@@ -522,6 +689,9 @@ fn scan_word_pieces(
         match &piece.piece {
             word::WordPiece::CommandSubstitution(source)
             | word::WordPiece::BackquotedCommandSubstitution(source) => {
+                if !targeted_occurrences(source).is_empty() {
+                    return Some(FloorDecision::Deny("floor-opaque-command".to_string()));
+                }
                 let source = if source.ends_with('\n') {
                     source.to_string()
                 } else {
@@ -617,7 +787,25 @@ fn scan_ast_args(policy: &FloorPolicy, mut args: Vec<String>) -> Option<FloorDec
         };
         if matches!(
             verb.as_str(),
-            "bash" | "sh" | "zsh" | "eval" | "exec" | "env" | "xargs" | "find"
+            "bash"
+                | "sh"
+                | "zsh"
+                | "eval"
+                | "exec"
+                | "env"
+                | "timeout"
+                | "nice"
+                | "nohup"
+                | "time"
+                | "stdbuf"
+                | "command"
+                | "builtin"
+                | "sudo"
+                | "doas"
+                | "winpty"
+                | "xargs"
+                | "find"
+                | "ssh"
         ) {
             return opaque_decision(&args.join(" "));
         }
@@ -649,17 +837,13 @@ fn scan_ast_args(policy: &FloorPolicy, mut args: Vec<String>) -> Option<FloorDec
 }
 
 fn opaque_decision(input: &str) -> Option<FloorDecision> {
-    contains_targeted_verb(input)
+    (!targeted_occurrences(input).is_empty())
         .then(|| FloorDecision::Deny("floor-opaque-command".to_string()))
         .or(Some(FloorDecision::Allow))
 }
 
 fn contains_targeted_verb(input: &str) -> bool {
-    input
-        .split(|c: char| {
-            !c.is_ascii_alphanumeric() && c != '\\' && c != '.' && c != '/' && c != '_'
-        })
-        .any(|token| matches!(normalize_verb(token).as_deref(), Some("rm") | Some("git")))
+    !targeted_occurrences(input).is_empty()
 }
 
 fn split_commands(input: &str) -> Vec<&str> {
@@ -900,15 +1084,7 @@ fn classify_git(policy: &FloorPolicy, args: &[String]) -> Option<String> {
                 }
                 args = &args[2..];
             }
-            "-c" => {
-                let Some(value) = args.get(1) else {
-                    return Some("floor-opaque-command".to_string());
-                };
-                if value.starts_with("alias.") {
-                    return Some("floor-opaque-command".to_string());
-                }
-                args = &args[2..];
-            }
+            "-c" => return Some("floor-opaque-command".to_string()),
             value
                 if value.starts_with("--git-dir=")
                     || value.starts_with("--work-tree=")
@@ -925,6 +1101,20 @@ fn classify_git(policy: &FloorPolicy, args: &[String]) -> Option<String> {
         "push" => classify_push(policy, rest),
         "reset" => classify_reset(policy, rest),
         "clean" => classify_clean(policy, rest),
+        "submodule" | "filter-branch" => Some("floor-opaque-command".to_string()),
+        "rebase"
+            if rest
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-x" | "--exec")) =>
+        {
+            Some("floor-opaque-command".to_string())
+        }
+        "bisect" if matches!(rest.first().map(String::as_str), Some("run")) => {
+            Some("floor-opaque-command".to_string())
+        }
+        "config" if rest.iter().any(|arg| arg.starts_with("alias.")) => {
+            Some("floor-opaque-command".to_string())
+        }
         _ => None,
     }
 }
@@ -1136,14 +1326,14 @@ flags_any = ["force"]
     }
 
     #[test]
-    fn scans_substitutions_but_not_single_quoted_data() {
+    fn rejects_substitutions_but_allows_single_quoted_data() {
         assert_eq!(
             policy().evaluate("echo \"$(rm -rf /etc)\""),
-            FloorDecision::Deny("rm-recursive".into())
+            FloorDecision::Deny("floor-opaque-command".into())
         );
         assert_eq!(
             policy().evaluate("echo `git push -f origin main`"),
-            FloorDecision::Deny("git-rewrite".into())
+            FloorDecision::Deny("floor-opaque-command".into())
         );
         assert_eq!(
             policy().evaluate("echo 'rm -rf /etc'"),
@@ -1151,12 +1341,12 @@ flags_any = ["force"]
         );
         assert_eq!(
             policy().evaluate("cat <<'EOF'\nrm -rf /etc\nEOF"),
-            FloorDecision::Allow
+            FloorDecision::Deny("floor-opaque-command".into())
         );
     }
 
     #[test]
-    fn unwraps_supported_wrappers_and_rtk_dispatch_with_exact_rule_ids() {
+    fn rejects_wrappers_and_scans_rtk_dispatch_with_exact_rule_ids() {
         for command in [
             "nohup rm -rf /etc",
             "time -p rm -rf /etc",
@@ -1166,6 +1356,14 @@ flags_any = ["force"]
             "stdbuf -oL rm -rf /etc",
             "sudo -- rm -rf /etc",
             "doas -- rm -rf /etc",
+        ] {
+            assert_eq!(
+                policy().evaluate(command),
+                FloorDecision::Deny("floor-opaque-command".into()),
+                "{command}"
+            );
+        }
+        for command in [
             "rtk run -c 'rm -rf /etc'",
             "rtk run rm -rf /etc",
             "rtk proxy rm -rf /etc",
@@ -1186,10 +1384,10 @@ flags_any = ["force"]
     }
 
     #[test]
-    fn denies_opaque_regions_only_when_they_contain_targeted_verbs() {
+    fn denies_opaque_regions_and_parse_failures() {
         assert_eq!(
             policy().evaluate("echo $(unterminated"),
-            FloorDecision::Allow
+            FloorDecision::Deny("floor-opaque-command".into())
         );
         assert_eq!(
             policy().evaluate("echo $(rm -rf /etc"),
@@ -1305,15 +1503,17 @@ flags_any = ["force"]
 
     #[test]
     fn recursively_scans_rtk_carried_commands() {
-        for command in [
-            "rtk run 'rm -rf x'",
-            "rtk run -c 'echo a; rm -rf x'",
-            "rtk run -c 'nohup rm -rf x'",
-            "rtk proxy nohup rm -rf x",
-        ] {
+        for command in ["rtk run 'rm -rf x'", "rtk run -c 'echo a; rm -rf x'"] {
             assert_eq!(
                 policy().evaluate(command),
                 FloorDecision::Deny("rm-recursive".into()),
+                "{command}"
+            );
+        }
+        for command in ["rtk run -c 'nohup rm -rf x'", "rtk proxy nohup rm -rf x"] {
+            assert_eq!(
+                policy().evaluate(command),
+                FloorDecision::Deny("floor-opaque-command".into()),
                 "{command}"
             );
         }
@@ -1331,7 +1531,7 @@ flags_any = ["force"]
         );
         assert_eq!(
             policy().evaluate("cat <<EOF > notes.md\ngit push --force was refused\nEOF"),
-            FloorDecision::Allow
+            FloorDecision::Deny("floor-opaque-command".into())
         );
     }
 
@@ -1508,13 +1708,13 @@ EOF
             ("find . -name '*.rs'", None),
             ("rtk run 'rm -rf x'", Some("rm-recursive")),
             ("rtk run -c 'echo a; rm -rf x'", Some("rm-recursive")),
-            ("rtk run -c 'nohup rm -rf x'", Some("rm-recursive")),
-            ("rtk proxy nohup rm -rf x", Some("rm-recursive")),
+            ("rtk run -c 'nohup rm -rf x'", Some("floor-opaque-command")),
+            ("rtk proxy nohup rm -rf x", Some("floor-opaque-command")),
             ("rtk -vv git push -f origin main", Some("git-rewrite")),
             ("bash <<'EOF'\nrm -rf x\nEOF", Some("floor-opaque-command")),
             (
                 "cat <<EOF > notes.md\ngit push --force was refused\nEOF",
-                None,
+                Some("floor-opaque-command"),
             ),
             ("git clean -n --exclude=*.pdf", None),
             ("git -P push -f", Some("floor-opaque-command")),
@@ -1584,18 +1784,18 @@ EOF
             ("rm -i a.txt", None),
             ("git commit -m \"msg\" && git push", None),
             ("echo \"$((1+2))\"", None),
-            ("ls # a comment; rm -rf x", None),
+            ("ls # a comment; rm -rf x", Some("floor-opaque-command")),
             ("git status; echo done", None),
             (
                 "cat <<EOF && git push -f origin main\nbody\nEOF",
                 Some("git-rewrite"),
             ),
             ("git commit -F - <<EOF\nsubject\nEOF", None),
-            ("nohup rtk run 'rm -rf /etc'", Some("rm-recursive")),
-            ("time rtk run 'rm -rf /etc'", Some("rm-recursive")),
+            ("nohup rtk run 'rm -rf /etc'", Some("floor-opaque-command")),
+            ("time rtk run 'rm -rf /etc'", Some("floor-opaque-command")),
             (
                 "timeout 5 rtk run -c 'echo a; rm -rf /etc'",
-                Some("rm-recursive"),
+                Some("floor-opaque-command"),
             ),
             ("rtk -v run 'rm -rf /etc'", Some("rm-recursive")),
             ("RM -rf /x", Some("rm-recursive")),
@@ -1610,11 +1810,11 @@ EOF
             ("git push origin :main", Some("git-rewrite")),
             ("git push --delete origin x", Some("git-rewrite")),
             ("git -C x push -f", Some("git-rewrite")),
-            ("nohup rm -rf x", Some("rm-recursive")),
-            ("timeout 5 rm -rf x", Some("rm-recursive")),
+            ("nohup rm -rf x", Some("floor-opaque-command")),
+            ("timeout 5 rm -rf x", Some("floor-opaque-command")),
             ("rtk proxy rm -rf x", Some("rm-recursive")),
-            ("echo \"$(rm -rf ~)\"", Some("rm-recursive")),
-            ("`rm -rf x`", Some("rm-recursive")),
+            ("echo \"$(rm -rf ~)\"", Some("floor-opaque-command")),
+            ("`rm -rf x`", Some("floor-opaque-command")),
             ("echo \"<<'X'\"\nrm -rf x", Some("rm-recursive")),
             (
                 "\"C:\\Program Files\\Git\\usr\\bin\\rm.exe\" -rf x",
@@ -1635,10 +1835,10 @@ EOF
             ("git clean -n --exclude=*.conf", None),
             ("rm -f a.txt", None),
             ("git status && git diff | head", None),
-            ("echo $(unterminated", None),
+            ("echo $(unterminated", Some("floor-opaque-command")),
             (
                 "git commit -F - <<EOF\nsubject\n\ngit push --force note\nEOF",
-                None,
+                Some("floor-opaque-command"),
             ),
             ("ls ~/.kleos", None),
             (
@@ -1722,6 +1922,44 @@ EOF
                 "{payload}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_targeted_tokens_outside_justified_words() {
+        for command in [
+            "out=$(git push -f origin main)",
+            "[[ -n $(rm -rf x) ]]",
+            "(( $(rm -rf x) ))",
+            "for f in $(rm -rf x); do :; done",
+            "case $(rm -rf x) in *) :;; esac",
+            "echo ${x:-$(rm -rf x)}",
+            "( ( rm -rf x ) )",
+            "git submodule foreach 'rm -rf x'",
+            "git rebase -x 'rm -rf x'",
+        ] {
+            assert!(
+                matches!(policy().evaluate(command), FloorDecision::Deny(_)),
+                "{command}"
+            );
+        }
+
+        let decision = evaluate_payload(
+            &policy(),
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo x>C:/gate/floor.toml"}}"#,
+            Path::new("C:/gate/floor.toml"),
+            Path::new("C:/bin/kleos-sh.exe"),
+        );
+        assert!(matches!(decision, FloorDecision::Deny(_)));
+
+        let unicode_prefix = "é".repeat(30);
+        assert_eq!(
+            policy().evaluate(&format!("echo '{unicode_prefix} rm'")),
+            FloorDecision::Allow
+        );
+        assert!(matches!(
+            policy().evaluate(&format!("echo {unicode_prefix}; out=$(rm -rf build)")),
+            FloorDecision::Deny(_)
+        ));
     }
 
     #[test]
