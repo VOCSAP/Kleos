@@ -6,7 +6,8 @@ use std::{
 
 #[test]
 fn floor_only_emits_a_deny_envelope_for_a_denied_command() {
-    let fixture_dir = std::env::temp_dir().join(format!("kleos-sh-floor-{}", std::process::id()));
+    let fixture_dir =
+        std::env::temp_dir().join(format!("kleos-sh-floor-deny-{}", std::process::id()));
     fs::create_dir_all(&fixture_dir).expect("fixture directory");
     let policy_path = fixture_dir.join("floor.toml");
     fs::write(
@@ -61,7 +62,8 @@ fn floor_only_emits_a_deny_envelope_for_a_denied_command() {
 
 #[test]
 fn floor_only_rejects_excessive_raw_structure() {
-    let fixture_dir = std::env::temp_dir().join(format!("kleos-sh-floor-{}", std::process::id()));
+    let fixture_dir =
+        std::env::temp_dir().join(format!("kleos-sh-floor-structure-{}", std::process::id()));
     fs::create_dir_all(&fixture_dir).expect("fixture directory");
     let policy_path = fixture_dir.join("floor.toml");
     fs::write(
@@ -70,14 +72,12 @@ fn floor_only_rejects_excessive_raw_structure() {
     )
     .expect("policy");
     let commands = [
-        "{".repeat(300),
-        "if ".repeat(200),
-        "$(".repeat(40_000),
-        "(".repeat(20_000),
-        "x".repeat(200 * 1024),
-        format!("cat <<'EOF'\n{}\nEOF", "$(".repeat(22)),
+        ("{".repeat(300), "floor: floor-budget-exceeded"),
+        ("$(".repeat(40_000), "floor: floor-budget-exceeded"),
+        ("(".repeat(20_000), "floor: floor-budget-exceeded"),
+        ("x".repeat(200 * 1024), "floor-input-too-large"),
     ];
-    for command in commands {
+    for (command, reason) in commands {
         let payload = serde_json::json!({
             "hook_event_name": "PreToolUse",
             "tool_name": "Bash",
@@ -102,8 +102,12 @@ fn floor_only_rejects_excessive_raw_structure() {
         let output = child.wait_with_output().expect("floor-only output");
         assert!(output.status.success());
         let decision: serde_json::Value =
-            serde_json::from_slice(&output.stdout).expect("deny JSON");
-        assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+            serde_json::from_slice(&output.stdout).expect("warning JSON");
+        assert_eq!(
+            decision["hookSpecificOutput"]["additionalContext"],
+            format!("kleos floor: command not analyzed ({reason})"),
+            "{reason}: {decision}"
+        );
     }
     let _ = fs::remove_dir_all(&fixture_dir);
 }

@@ -422,7 +422,7 @@ fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor
                     Err(_) => floor::FloorDecision::Deny("floor-policy-invalid".to_string()),
                 }
             }))
-            .unwrap_or_else(|_| floor::FloorDecision::Deny("floor-internal-error".to_string()));
+            .unwrap_or_else(|_| floor::FloorDecision::Warn("floor-internal-error".to_string()));
             let _ = sender.send(decision);
         });
     if worker.is_err() {
@@ -430,7 +430,7 @@ fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor
     }
     receiver
         .recv_timeout(Duration::from_millis(4_500))
-        .unwrap_or_else(|_| floor::FloorDecision::Deny("floor-analysis-timeout".to_string()))
+        .unwrap_or_else(|_| floor::FloorDecision::Warn("floor-analysis-timeout".to_string()))
 }
 
 fn floor_deny_json(reason: &str) -> Result<String, serde_json::Error> {
@@ -463,24 +463,35 @@ fn exit_floor_deny(reason: &str) -> ! {
     }
 }
 
+fn exit_floor_warning(reason: &str) -> ! {
+    emit_claude_decision(
+        "",
+        None,
+        Some(&format!("kleos floor: command not analyzed ({reason})")),
+    );
+    process::exit(0);
+}
+
 fn run_floor_only(floor_file: Option<&PathBuf>) -> ! {
     let Some(floor_file) = floor_file.filter(|path| path.is_absolute()) else {
         exit_floor_deny("floor-policy-invalid");
     };
     let mut payload = String::new();
-    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err()
-        || payload.len() > 192 * 1024
-    {
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err() {
         exit_floor_deny("floor-invalid-payload");
+    }
+    if payload.len() > 192 * 1024 {
+        exit_floor_warning("floor-input-too-large");
     }
     let binary = match std::env::current_exe() {
         Ok(binary) => binary,
         Err(_) => exit_floor_deny("floor-self-protection"),
     };
-    if let floor::FloorDecision::Deny(reason) = floor_only_decision(&payload, floor_file, &binary) {
-        exit_floor_deny(&format!("floor: {reason}"));
+    match floor_only_decision(&payload, floor_file, &binary) {
+        floor::FloorDecision::Deny(reason) => exit_floor_deny(&format!("floor: {reason}")),
+        floor::FloorDecision::Warn(reason) => exit_floor_warning(&format!("floor: {reason}")),
+        floor::FloorDecision::Allow => process::exit(0),
     }
-    process::exit(0);
 }
 
 #[tokio::main]

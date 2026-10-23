@@ -7720,7 +7720,7 @@ filtres de résultat de `hybrid_search`.
 
 ## Patch 77 -- plancher local autonome de `kleos-sh`
 
-Carte roadmap `c6a836e6`, spec Agent-Forge `spec_b1625fb4`. Sous-lot L1 du
+Carte roadmap `c6a836e6`, spec Agent-Forge `spec_e4da786b`. Sous-lot L1 du
 plancher décrit dans `2026-10-23-kleos-sh-floor.md`.
 
 **Symptôme :** le hook existant de `kleos-sh` demande une clé, construit un
@@ -7728,38 +7728,41 @@ client HTTP puis appelle `/gate/check`. Il ne peut pas appliquer la politique
 minimale du poste lorsque le serveur, le réseau ou le mécanisme de clés est
 indisponible.
 
-**Approche :** `kleos-sh --floor-only --floor-file <absolu>` relit un
-`floor.toml` à chaque invocation et ne crée ni client HTTP ni processus fils.
-Le chargeur TOML refuse le fichier entier si son schéma, ses champs ou une des
-quatre règles minimales est invalide. Le payload est plafonné à 192 Kio, puis
-l'analyse AST et la destruction de l'AST s'exécutent dans un worker à pile de
-64 Mio avec une attente bornée à 4,5 s. Toute erreur, timeout ou panic donne un
-deny. Avant le parsing, le plancher refuse plus de 256 marqueurs structurels
-(`{`, `(`, `$(`, `${`, backquote, `[[` et mots-clés de contrôle).
+**Approche :** `kleos-sh --floor-only --floor-file <absolu>` est un plancher de
+reconnaissance : il refuse seulement un danger statiquement reconnu. Les refus
+sont `rm-recursive`, les variantes destructrices de `git push`, `git reset
+--hard` et `git clean` forcé. Les arguments sont déquotés avant cette
+classification. Les chaînes effectivement exécutées par les shells, `eval`,
+wrappers, `rtk`, `xargs`, `find -exec`, substitutions, pipelines vers un
+interpréteur et options Git exécutables sont réanalysées.
 
-Chaque occurrence textuelle de `rm` ou `git`, y compris les chemins, `.exe`,
-quotes, échappements, globs et `git-<sous-commande>`, est comparée aux étendues
-`Word.loc` de niveau supérieur, exprimées en indices de caractères. Une
-occurrence non justifiée est opaque. Les données statiques admises sont limitées
-aux commandes `rm`, `git`, `echo`, `printf`, `grep`, `rg`, `ls`, `cat`, `cargo`,
-`docker` et `gh`; une expansion n'est jamais une donnée, sauf un heredoc quoté
-passé à un message `git` ou `gh`. Les wrappers, interpréteurs, SSH, `xargs` et
-pipelines vers un interpréteur restent opaques. Les sous-commandes Git qui
-exécutent du code sont également opaques. Le payload Claude Code exige
+Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
+le hook émet seulement `additionalContext` avec `kleos floor: command not
+analyzed (...)`. Il n'émet pas `permissionDecision`. Les mentions dans des
+données, messages Git et heredocs non exécutés restent silencieuses. Le
+chargeur TOML, le payload invalide et l'auto-protection restent fail-closed.
+
+Le payload est plafonné à 192 Kio. Le parsing et la destruction de l'AST restent
+dans un worker à pile de 64 Mio, avec une attente de 4,5 s. Le préfiltre limite
+à 256 marqueurs structurels et le budget lexical à 4096 tokens hors blanc. Les
+dépassements, panic et timeout produisent un avertissement, sans crash.
+
+Les limites assumées sont les verbes et options dynamiques, les scripts lancés
+indirectement, `make`, `npm run`, les aliases définis ailleurs, `Remove-Item`,
+`rd /s`, `find -delete` et `rsync --delete`. Le payload Claude Code exige
 `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
-`tool_input.command` chaîne; `cwd` n'est pas requis pour un deny. Les commandes
-désignant le fichier de politique, son dossier ou le binaire sont refusées. L1
-ne contient aucune exception de suppression ni registre de grants.
+`tool_input.command` chaîne. Les commandes désignant le fichier de politique,
+son dossier ou le binaire restent refusées.
 
 **Fichiers :** `kleos-sh/Cargo.toml`, `kleos-sh/src/floor.rs`,
 `kleos-sh/src/main.rs`, `kleos-sh/tests/floor_only.rs`,
 `docs/dev-notes/local-patches.md`.
 
-**Tests :** `cargo test -p kleos-sh` couvre le chargement fail-closed, les
-formes rm/git du contrat, les substitutions opaques, les wrappers, les offsets
-Unicode, le payload sans cwd, l'auto-protection et le binaire réel face aux
-volumes structurels, à une ligne de 200 Kio et à un heredoc malformé; les
-commandes dangereuses sont uniquement des données de test.
+**Tests :** `cargo test -p kleos-sh` couvre les refus reconnus après déquotage,
+les chaînes effectivement exécutées, les données inertes, les avertissements
+sans `permissionDecision`, le payload sans cwd, l'auto-protection et le binaire
+réel face aux volumes structurels, à 4096 tokens hors blanc et à une ligne de
+200 Kio. Les commandes dangereuses sont uniquement des données de test.
 
 **Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
 registre local et les exceptions de suppression observées sont validés; ne pas
