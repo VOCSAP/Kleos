@@ -7732,17 +7732,19 @@ indisponible.
 reconnaissance : il refuse seulement un danger statiquement reconnu. Les refus
 sont `rm-recursive`, les variantes destructrices de `git push`, `git reset
 --hard` et `git clean` forcé. Les arguments sont déquotés avant cette
-classification. Le parcours borné de l'AST agrège les décisions visitées dans
-l'ordre `Deny > Warn > Allow`; seul un `Deny` termine le parcours. Les flags
-statiques sont classés avant les opérandes dynamiques : `rm -rf $M` et
-`git push -f origin "$B"` restent donc des refus.
+classification. Le parcours d'un AST exploitable agrège les décisions visitées
+dans l'ordre `Deny > Warn > Allow`; un `Deny` l'arrête, tandis qu'un budget,
+un timeout ou un échec de parsing termine globalement l'analyse par un
+avertissement. Les flags statiques sont classés avant les opérandes dynamiques :
+`rm -rf $M` et `git push -f origin "$B"` restent donc des refus.
 
 Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
 le hook émet seulement `additionalContext` avec `kleos floor: command not
 analyzed (...)`. Il n'émet pas `permissionDecision`. L'avertissement dépend du
 chemin AST réellement rencontré par le scanner; les arguments déjà classés
-comme données, messages Git et heredocs non exécutés restent silencieux. Le
-chargeur TOML, le payload invalide et l'auto-protection restent fail-closed.
+comme données, messages Git et heredocs non expansifs non destinés à un
+interpréteur restent silencieux. Le chargeur TOML, le payload invalide et
+l'auto-protection restent fail-closed.
 
 Le payload est plafonné à 192 Kio. Le parsing et la destruction de l'AST restent
 dans un worker à pile de 64 Mio, avec une attente de 3 s. Le préfiltre limite
@@ -7751,24 +7753,28 @@ dépassements, panic et timeout produisent un avertissement, sans crash.
 
 Les limites assumées sont les verbes et options dynamiques, les scripts lancés
 indirectement, `make`, `npm run`, les aliases définis ailleurs, `Remove-Item`,
-`rd /s`, `find -delete`, `rsync --delete`. La sonde release rev8 a aussi mesuré
-comme `SILENT` ou `WARN` les formes suivantes alors qu'un refus serait attendu :
-le nom `rm` écrit avec une quote ANSI-C, `source <(...)` et `. <(...)`, les
-pipelines vers `tee >(sh)`, `cat | sh`, `dash` ou `busybox sh`, un heredoc vers
-`dash`, les substitutions dans `[[ ]]`, `(( ))`, les valeurs de `for` et de
-`case`, l'expansion `${x:-$(...)}`, les substitutions de processus de
+`rd /s`, `find -delete`, `rsync --delete`. Les flags statiques encore opaques
+sont `git reset --hard=HEAD` et `git -c clé=valeur push -f`. La sonde release
+rev8 a aussi mesuré comme `SILENT` ou `WARN` les formes suivantes alors qu'un
+refus serait attendu : le nom `rm` écrit avec une quote ANSI-C, `source <(...)`
+et `. <(...)`, les pipelines vers `tee >(sh)`, `cat | sh`, `dash` ou `busybox
+sh`, un heredoc vers `dash`, les here-strings vers un interpréteur, les
+substitutions dans `[[ ]]`, `(( ))`, les valeurs de `for` et de `case`,
+l'expansion `${x:-$(...)}`, les substitutions de processus et dans une cible de
 redirection, un programme RTK imbriqué, `cat script | bash`, une entrée encodée
-vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`,
-`git reset --hard=HEAD`, un refspec Git ordinaire, et `git -c ... push -f`.
-Les évaluations dynamiques `eval "$cmd"`, `eval "rm -rf $x"` et `bash -c
-"$(...)"` ne sont pas résolues statiquement. Les programmes passés à `docker
-run … sh -c`, les scripts distants de `ssh`, les commandes transmises à `wsl`
-et le wrapper `winpty` ne sont pas inspectés. L'auto-protection refuse les
-chemins littéraux, MSYS et `~` du fichier de politique, de son dossier ou du
-binaire, mais ne résout pas son chemin via `$HOME`; un payload supérieur à 192
-Kio produit un avertissement avant cette vérification. Le payload Claude Code
-exige `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
-`tool_input.command` chaîne.
+vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`, et
+un refspec Git dynamique quoté. Un refspec Git ordinaire, par exemple
+`git push origin main`, reste silencieux. Les évaluations dynamiques `eval
+"$cmd"`, `eval "rm -rf $x"` et `bash -c "$(...)"` ne sont pas résolues
+statiquement. Les programmes passés à `docker run … sh -c`, les scripts
+distants de `ssh`, les commandes transmises à `wsl` et le wrapper `winpty` ne
+sont pas inspectés. Des heredocs contenant des substitutions `$(` non fermées
+peuvent coûter exponentiellement et atteindre le timeout avant le refus d'une
+commande ultérieure. L'auto-protection refuse les chemins littéraux, MSYS et
+`~` du fichier de politique, de son dossier ou du binaire, mais ne résout pas
+son chemin via `$HOME`; un payload supérieur à 192 Kio produit un avertissement
+avant cette vérification. Le payload Claude Code exige `hook_event_name =
+"PreToolUse"`, `tool_name = "Bash"` et `tool_input.command` chaîne.
 
 **Fichiers :** `kleos-sh/Cargo.toml`, `kleos-sh/src/floor.rs`,
 `kleos-sh/src/main.rs`, `kleos-sh/tests/floor_only.rs`,
@@ -7779,8 +7785,9 @@ les données inertes, les avertissements sans `permissionDecision`, le payload
 sans cwd, l'auto-protection et le binaire réel face aux volumes structurels, à
 4096 tokens hors blanc et à une ligne de 200 Kio. Les commandes dangereuses
 sont uniquement des données de test. Le rejeu release de 678 commandes a
-produit 493 refus, 31 avertissements et 154 sorties silencieuses; aucun refus
-de la baseline n'est devenu avertissement ou sortie silencieuse.
+produit 493 refus, 11 avertissements et 174 sorties silencieuses; aucun refus
+de la baseline n'est devenu avertissement ou sortie silencieuse, et aucune sortie
+silencieuse de la baseline n'est devenue avertissement.
 
 **Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
 registre local et les exceptions de suppression observées sont validés; ne pas
