@@ -295,6 +295,7 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
     }
     let mut nodes = 0usize;
     let mut justified_words: Vec<Range<usize>> = Vec::new();
+    let mut best = FloorDecision::Allow;
     while let Some(task) = tasks.pop() {
         nodes += 1;
         if nodes > 4096 {
@@ -316,7 +317,9 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
             }
             Task::Pipeline(pipeline) => {
                 if let Some(decision) = pipeline_executed_decision(policy, pipeline) {
-                    return decision;
+                    if let Some(reason) = merge_decision(&mut best, decision) {
+                        return FloorDecision::Deny(reason);
+                    }
                 }
                 for command in pipeline.seq.iter().rev() {
                     tasks.push(Task::Command(command));
@@ -330,15 +333,21 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                     for item in &prefix.0 {
                         match item {
                             ast::CommandPrefixOrSuffixItem::Word(word) => {
-                                if let Some(FloorDecision::Deny(reason)) =
-                                    scan_ast_word(policy, word)
-                                {
-                                    return FloorDecision::Deny(reason);
+                                if let Some(decision) = scan_ast_word(policy, word) {
+                                    if let Some(reason) = merge_decision(&mut best, decision) {
+                                        return FloorDecision::Deny(reason);
+                                    }
                                 }
                                 args.push(word.value.clone());
                                 words.push(word)
                             }
-                            ast::CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
+                            ast::CommandPrefixOrSuffixItem::AssignmentWord(_, word) => {
+                                if let Some(decision) = scan_ast_word(policy, word) {
+                                    if let Some(reason) = merge_decision(&mut best, decision) {
+                                        return FloorDecision::Deny(reason);
+                                    }
+                                }
+                            }
                             ast::CommandPrefixOrSuffixItem::ProcessSubstitution(_, subshell) => {
                                 tasks.push(Task::List(&subshell.list));
                             }
@@ -357,8 +366,10 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                     }
                 }
                 if let Some(word) = &command.word_or_name {
-                    if let Some(FloorDecision::Deny(reason)) = scan_ast_word(policy, word) {
-                        return FloorDecision::Deny(reason);
+                    if let Some(decision) = scan_ast_word(policy, word) {
+                        if let Some(reason) = merge_decision(&mut best, decision) {
+                            return FloorDecision::Deny(reason);
+                        }
                     }
                     args.push(word.value.clone());
                     words.push(word);
@@ -367,15 +378,21 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                     for item in &suffix.0 {
                         match item {
                             ast::CommandPrefixOrSuffixItem::Word(word) => {
-                                if let Some(FloorDecision::Deny(reason)) =
-                                    scan_ast_word(policy, word)
-                                {
-                                    return FloorDecision::Deny(reason);
+                                if let Some(decision) = scan_ast_word(policy, word) {
+                                    if let Some(reason) = merge_decision(&mut best, decision) {
+                                        return FloorDecision::Deny(reason);
+                                    }
                                 }
                                 args.push(word.value.clone());
                                 words.push(word)
                             }
-                            ast::CommandPrefixOrSuffixItem::AssignmentWord(_, _) => {}
+                            ast::CommandPrefixOrSuffixItem::AssignmentWord(_, word) => {
+                                if let Some(decision) = scan_ast_word(policy, word) {
+                                    if let Some(reason) = merge_decision(&mut best, decision) {
+                                        return FloorDecision::Deny(reason);
+                                    }
+                                }
+                            }
                             ast::CommandPrefixOrSuffixItem::ProcessSubstitution(_, subshell) => {
                                 tasks.push(Task::List(&subshell.list));
                             }
@@ -400,30 +417,29 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
                     });
                 for (source, heredoc) in input_sources {
                     if interpreter {
-                        if let decision @ (FloorDecision::Deny(_) | FloorDecision::Warn(_)) =
-                            scan_ast(policy, source)
-                        {
-                            return decision;
+                        if let Some(reason) = merge_decision(&mut best, scan_ast(policy, source)) {
+                            return FloorDecision::Deny(reason);
                         }
                     }
                     if heredoc {
                         let Ok(pieces) = word::parse_heredoc(source, &ParserOptions::default())
                         else {
-                            return FloorDecision::Warn("floor-opaque-command".to_string());
+                            best = FloorDecision::Warn("floor-opaque-command".to_string());
+                            continue;
                         };
-                        if let Some(FloorDecision::Deny(reason)) = scan_word_pieces(policy, &pieces)
-                        {
-                            return FloorDecision::Deny(reason);
+                        if let Some(decision) = scan_word_pieces(policy, &pieces) {
+                            if let Some(reason) = merge_decision(&mut best, decision) {
+                                return FloorDecision::Deny(reason);
+                            }
                         }
                     }
                 }
-                match scan_ast_args(policy, args.clone()) {
-                    Some(FloorDecision::Deny(reason)) => return FloorDecision::Deny(reason),
-                    Some(FloorDecision::Warn(reason)) => return FloorDecision::Warn(reason),
-                    Some(FloorDecision::Allow) | None => {
-                        justified_words.extend(justified_word_spans(&args, &words));
+                if let Some(decision) = scan_ast_args(policy, args.clone()) {
+                    if let Some(reason) = merge_decision(&mut best, decision) {
+                        return FloorDecision::Deny(reason);
                     }
                 }
+                justified_words.extend(justified_word_spans(&args, &words));
             }
             Task::Command(ast::Command::Compound(command, _)) => {
                 tasks.push(Task::Compound(command))
@@ -475,7 +491,18 @@ fn scan_ast(policy: &FloorPolicy, input: &str) -> FloorDecision {
         }
     }
     let _ = justified_words;
-    FloorDecision::Allow
+    best
+}
+
+fn merge_decision(best: &mut FloorDecision, decision: FloorDecision) -> Option<String> {
+    match decision {
+        FloorDecision::Deny(reason) => Some(reason),
+        FloorDecision::Warn(reason) if matches!(best, FloorDecision::Allow) => {
+            *best = FloorDecision::Warn(reason);
+            None
+        }
+        _ => None,
+    }
 }
 
 fn raw_syntax_complexity(input: &str) -> usize {
@@ -745,39 +772,65 @@ fn word_text(value: &str) -> Option<String> {
 }
 
 fn scan_rtk_program(policy: &FloorPolicy, args: &[String]) -> Option<FloorDecision> {
+    let mut source = match rtk_program_source(args) {
+        Ok(source) => source,
+        Err(decision) => return Some(decision),
+    };
+    for _ in 0..4096 {
+        let Some(next) = tokenize(&source) else {
+            return opaque_decision(&source);
+        };
+        if next
+            .first()
+            .and_then(|word| normalize_verb(word))
+            .is_none_or(|verb| verb != "rtk")
+        {
+            return Some(scan_ast(policy, &source));
+        }
+        source = match rtk_program_source(&next) {
+            Ok(source) => source,
+            Err(decision) => return Some(decision),
+        };
+    }
+    Some(FloorDecision::Warn("floor-budget-exceeded".to_string()))
+}
+
+fn rtk_program_source(args: &[String]) -> Result<String, FloorDecision> {
     let args = args
         .iter()
         .map(|word| word_text(word))
-        .collect::<Option<Vec<_>>>()?;
-    let mut rest = args.get(1..)?;
+        .collect::<Option<Vec<_>>>()
+        .ok_or(FloorDecision::Allow)?;
+    let mut rest = args.get(1..).ok_or(FloorDecision::Allow)?;
     while rest.first().is_some_and(|arg| {
         arg.chars().all(|ch| ch == '-' || ch == 'v')
             || matches!(arg.as_str(), "--ultra-compact" | "--skip-env")
     }) {
         rest = &rest[1..];
     }
-    let dispatch = normalize_verb(rest.first()?)?;
-    let source = match dispatch.as_str() {
-        "git" => format!("git {}", rest[1..].join(" ")),
+    let dispatch = normalize_verb(rest.first().ok_or(FloorDecision::Allow)?)
+        .ok_or(FloorDecision::Allow)?;
+    match dispatch.as_str() {
+        "git" => Ok(format!("git {}", rest[1..].join(" "))),
         "run" if matches!(rest.get(1).map(String::as_str), Some("-c" | "--command")) => {
-            rest.get(2)?.to_string()
+            Ok(rest.get(2).ok_or(FloorDecision::Allow)?.to_string())
         }
-        "run" => rest[1..].join(" "),
+        "run" => Ok(rest[1..].join(" ")),
         "proxy" | "err" | "test" | "summary" => {
             let rest = &rest[1..];
             if rest
                 .first()
                 .is_some_and(|arg| arg.starts_with('-') && arg != "--")
             {
-                return opaque_decision(&rest.join(" "));
+                return Err(opaque_decision(&rest.join(" ")).unwrap_or(FloorDecision::Allow));
             }
-            rest.strip_prefix(&["--".to_string()])
+            Ok(rest
+                .strip_prefix(&["--".to_string()])
                 .unwrap_or(rest)
-                .join(" ")
+                .join(" "))
         }
-        _ => return opaque_decision(&rest.join(" ")),
-    };
-    Some(scan_ast(policy, &source))
+        _ => Err(opaque_decision(&rest.join(" ")).unwrap_or(FloorDecision::Allow)),
+    }
 }
 
 fn scan_executed_args(policy: &FloorPolicy, verb: &str, args: &[String]) -> FloorDecision {
@@ -872,20 +925,6 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
     if args.len() > 4096 {
         return Some(FloorDecision::Warn("floor-budget-exceeded".to_string()));
     }
-    let command = args.first().and_then(|word| word_text(word));
-    let verb = command.as_deref().and_then(normalize_verb);
-    if matches!(verb.as_deref(), Some("rm" | "git"))
-        && args[1..].iter().enumerate().any(|(index, arg)| {
-            let message_data = verb.as_deref() == Some("git")
-                && index > 0
-                && matches!(args[index].as_str(), "-m" | "-F" | "--message" | "--body");
-            !message_data
-                && (arg.starts_with('-') || arg.starts_with('$'))
-                && (word_text(arg).is_none() || arg.contains(['{', '}']))
-        })
-    {
-        return Some(FloorDecision::Warn("floor-dynamic-argument".to_string()));
-    }
     let mut args = args
         .iter()
         .enumerate()
@@ -906,6 +945,9 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
         let Some(command_word) = args.first().and_then(|word| word_text(word)) else {
             return Some(FloorDecision::Allow);
         };
+        if matches!(command_word.as_str(), "[" | "test") {
+            return Some(FloorDecision::Allow);
+        }
         if command_word.contains(['*', '?', '[', ']']) {
             return Some(FloorDecision::Warn("floor-opaque-command".to_string()));
         }
@@ -935,6 +977,9 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
         let Some(command_word) = args.first().and_then(|word| word_text(word)) else {
             return Some(FloorDecision::Allow);
         };
+        if matches!(command_word.as_str(), "[" | "test") {
+            return Some(FloorDecision::Allow);
+        }
         if command_word.contains(['*', '?', '[', ']']) {
             return Some(FloorDecision::Warn("floor-opaque-command".to_string()));
         }
@@ -961,13 +1006,34 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
             value if value.starts_with('-') => return opaque_decision(&args.join(" ")),
             _ => None,
         };
-        return Some(match hit.as_deref() {
-            Some("floor-opaque-command") => FloorDecision::Warn("floor-opaque-command".to_string()),
-            Some(reason) => FloorDecision::Deny(reason.to_string()),
-            None => FloorDecision::Allow,
-        });
+        if let Some(reason) = hit.as_deref() {
+            return Some(match reason {
+                "floor-opaque-command" => FloorDecision::Warn("floor-opaque-command".to_string()),
+                reason => FloorDecision::Deny(reason.to_string()),
+            });
+        }
+        if dynamic_argument_controls_danger(&verb, &args) {
+            return Some(FloorDecision::Warn("floor-dynamic-argument".to_string()));
+        }
+        return Some(FloorDecision::Allow);
     }
     Some(FloorDecision::Warn("floor-budget-exceeded".to_string()))
+}
+
+fn dynamic_argument_controls_danger(verb: &str, args: &[String]) -> bool {
+    let dynamic = |arg: &str| {
+        (arg.starts_with('-') || arg.starts_with('$'))
+            && (word_text(arg).is_none() || arg.contains(['{', '}']))
+    };
+    match verb {
+        "rm" => args[1..].iter().any(|arg| dynamic(arg)),
+        "git" => {
+            args.get(1).is_some_and(|arg| dynamic(arg))
+                || matches!(args.get(1).map(String::as_str), Some("push"))
+                    && args[2..].iter().any(|arg| dynamic(arg))
+        }
+        _ => false,
+    }
 }
 
 fn opaque_decision(input: &str) -> Option<FloorDecision> {
@@ -1460,6 +1526,29 @@ flags_any = ["force"]
                 "{command}"
             );
         }
+    }
+
+    #[test]
+    fn denies_dangers_after_safe_or_opaque_ast_nodes() {
+        for command in [
+            "[ -d b ]; rm -rf b",
+            "echo y | bash s.sh; rm -rf b",
+            "true; git push -f origin \"$B\"",
+            "out=$(git push -f origin main)",
+        ] {
+            assert!(
+                matches!(policy().evaluate(command), FloorDecision::Deny(_)),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn denies_static_dangerous_flags_with_dynamic_operands() {
+        assert_eq!(
+            policy().evaluate("M=/x; rm -rf $M"),
+            FloorDecision::Deny("rm-recursive".into())
+        );
     }
 
     #[test]

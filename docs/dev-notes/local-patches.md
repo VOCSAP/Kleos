@@ -7732,17 +7732,17 @@ indisponible.
 reconnaissance : il refuse seulement un danger statiquement reconnu. Les refus
 sont `rm-recursive`, les variantes destructrices de `git push`, `git reset
 --hard` et `git clean` forcé. Les arguments sont déquotés avant cette
-classification. Les chaînes effectivement exécutées par les shells, `eval`,
-wrappers, `rtk`, `xargs`, `find -exec`, substitutions, pipelines vers un
-interpréteur et options Git exécutables sont réanalysées.
+classification. Le parcours borné de l'AST agrège les décisions visitées dans
+l'ordre `Deny > Warn > Allow`; seul un `Deny` termine le parcours. Les flags
+statiques sont classés avant les opérandes dynamiques : `rm -rf $M` et
+`git push -f origin "$B"` restent donc des refus.
 
 Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
 le hook émet seulement `additionalContext` avec `kleos floor: command not
-analyzed (...)`. Il n'émet pas `permissionDecision`. Chaque mot ou branche AST
-non analysé qui contient `rm` ou `git` produit cet avertissement, alors que les
-arguments déjà classés comme données, messages Git et heredocs non exécutés
-restent silencieux. Le chargeur TOML, le payload invalide et l'auto-protection
-restent fail-closed.
+analyzed (...)`. Il n'émet pas `permissionDecision`. L'avertissement dépend du
+chemin AST réellement rencontré par le scanner; les arguments déjà classés
+comme données, messages Git et heredocs non exécutés restent silencieux. Le
+chargeur TOML, le payload invalide et l'auto-protection restent fail-closed.
 
 Le payload est plafonné à 192 Kio. Le parsing et la destruction de l'AST restent
 dans un worker à pile de 64 Mio, avec une attente de 3 s. Le préfiltre limite
@@ -7751,8 +7751,10 @@ dépassements, panic et timeout produisent un avertissement, sans crash.
 
 Les limites assumées sont les verbes et options dynamiques, les scripts lancés
 indirectement, `make`, `npm run`, les aliases définis ailleurs, `Remove-Item`,
-`rd /s`, `find -delete`, `rsync --delete`, `docker run … sh -c` (système de
-fichiers du conteneur), `ssh` et `wsl`. Le payload Claude Code exige
+`rd /s`, `find -delete`, `rsync --delete`. Les programmes passés à `docker run
+… sh -c` ne sont pas inspectés, car ils agissent dans le système de fichiers du
+conteneur; les scripts distants de `ssh` et les commandes transmises à `wsl` ne
+sont pas inspectés non plus. Le payload Claude Code exige
 `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
 `tool_input.command` chaîne. Les commandes désignant le fichier de politique,
 son dossier ou le binaire restent refusées.
@@ -7762,10 +7764,12 @@ son dossier ou le binaire restent refusées.
 `docs/dev-notes/local-patches.md`.
 
 **Tests :** `cargo test -p kleos-sh` couvre les refus reconnus après déquotage,
-les chaînes effectivement exécutées, les données inertes, les avertissements
-sans `permissionDecision`, le payload sans cwd, l'auto-protection et le binaire
-réel face aux volumes structurels, à 4096 tokens hors blanc et à une ligne de
-200 Kio. Les commandes dangereuses sont uniquement des données de test.
+les données inertes, les avertissements sans `permissionDecision`, le payload
+sans cwd, l'auto-protection et le binaire réel face aux volumes structurels, à
+4096 tokens hors blanc et à une ligne de 200 Kio. Les commandes dangereuses
+sont uniquement des données de test. Le rejeu release de 678 commandes a
+produit 493 refus, 31 avertissements et 154 sorties silencieuses; aucun refus
+de la baseline n'est devenu avertissement ou sortie silencieuse.
 
 **Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
 registre local et les exceptions de suppression observées sont validés; ne pas
