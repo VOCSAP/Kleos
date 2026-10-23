@@ -1,8 +1,10 @@
 mod exec;
+mod floor;
 mod gate;
 mod observe;
 
 use clap::Parser;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Duration;
 
@@ -26,6 +28,12 @@ struct Cli {
     /// exits 0 (the JSON carries deny/allow). Implies --gate-only.
     #[arg(long)]
     claude_hook: bool,
+
+    #[arg(long, conflicts_with_all = ["command", "gate_only", "claude_hook"])]
+    floor_only: bool,
+
+    #[arg(long, requires = "floor_only")]
+    floor_file: Option<PathBuf>,
 }
 
 /// Build the Claude Code PreToolUse hookSpecificOutput envelope. Returns
@@ -397,9 +405,44 @@ fn deny_and_exit(claude_hook: bool, reason: &str) -> ! {
     process::exit(2);
 }
 
+fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor::FloorDecision {
+    match floor::FloorPolicy::load(floor_file) {
+        Ok(policy) => floor::evaluate_payload(&policy, payload, floor_file, binary),
+        Err(_) => floor::FloorDecision::Deny("floor-policy-invalid".to_string()),
+    }
+}
+
+fn run_floor_only(floor_file: Option<&PathBuf>) -> ! {
+    let Some(floor_file) = floor_file.filter(|path| path.is_absolute()) else {
+        emit_claude_decision("deny", Some("floor-policy-invalid"), None);
+        process::exit(0);
+    };
+    let mut payload = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err()
+        || payload.len() > 256 * 1024
+    {
+        emit_claude_decision("deny", Some("floor-invalid-payload"), None);
+        process::exit(0);
+    }
+    let binary = match std::env::current_exe() {
+        Ok(binary) => binary,
+        Err(_) => {
+            emit_claude_decision("deny", Some("floor-self-protection"), None);
+            process::exit(0);
+        }
+    };
+    if let floor::FloorDecision::Deny(reason) = floor_only_decision(&payload, floor_file, &binary) {
+        emit_claude_decision("deny", Some(&format!("floor: {reason}")), None);
+    }
+    process::exit(0);
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    if cli.floor_only {
+        run_floor_only(cli.floor_file.as_ref());
+    }
 
     // claude_hook implies gate_only: a hook decides, it does not execute.
     let gate_only = cli.gate_only || cli.claude_hook;
@@ -722,5 +765,4 @@ mod tests {
         let h = &v["hookSpecificOutput"];
         assert_eq!(h["permissionDecision"], "allow");
     }
-
 }

@@ -7715,3 +7715,40 @@ sains, la cible hors fenêtre reste exclue, n=12),
 
 **Conditions de retrait :** upstream aligne lui-même le pré-filtre ANN sur les
 filtres de résultat de `hybrid_search`.
+
+---
+
+## Patch 77 -- plancher local autonome de `kleos-sh`
+
+Carte roadmap `c6a836e6`, spec Agent-Forge `spec_1ccf7eb3`. Sous-lot L1 du
+plancher décrit dans `2026-10-23-kleos-sh-floor.md`.
+
+**Symptôme :** le hook existant de `kleos-sh` demande une clé, construit un
+client HTTP puis appelle `/gate/check`. Il ne peut pas appliquer la politique
+minimale du poste lorsque le serveur, le réseau ou le mécanisme de clés est
+indisponible.
+
+**Approche :** `kleos-sh --floor-only --floor-file <absolu>` relit un
+`floor.toml` à chaque invocation et ne crée ni client HTTP ni processus fils.
+Le chargeur TOML refuse le fichier entier si son schéma, ses champs ou une des
+quatre règles minimales est invalide. Le scanner POSIX borné reconnaît `rm` et
+les sous-commandes `git` ciblées, les groupes d'options, `--prune`, les
+wrappers transparents documentés et le répartiteur `rtk`; une zone opaque
+n'est refusée que si elle contient `rm` ou `git`. Le payload Claude Code exige
+`tool_name = "Bash"` et `tool_input.command` chaîne; `cwd` n'est pas requis
+pour un deny. Les commandes désignant le fichier de politique, son dossier ou
+le binaire sont refusées. L1 ne contient aucune exception de suppression ni
+registre de grants.
+
+**Fichiers :** `kleos-sh/Cargo.toml`, `kleos-sh/src/floor.rs`,
+`kleos-sh/src/main.rs`, `docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-sh` couvre le chargement fail-closed, les
+formes rm/git du contrat, substitutions, opacité ciblée, wrappers, payload
+sans cwd et auto-protection; les commandes dangereuses sont uniquement des
+données de test.
+
+**Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
+registre local et les exceptions de suppression observées sont validés; ne pas
+le raccorder aux hooks ou retirer les protections existantes avant le lot
+d'activation séparé.
