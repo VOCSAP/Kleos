@@ -429,7 +429,7 @@ fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor
         return floor::FloorDecision::Deny("floor-internal-error".to_string());
     }
     receiver
-        .recv_timeout(Duration::from_millis(4_500))
+        .recv_timeout(Duration::from_secs(3))
         .unwrap_or_else(|_| floor::FloorDecision::Warn("floor-analysis-timeout".to_string()))
 }
 
@@ -480,13 +480,18 @@ fn run_floor_only(floor_file: Option<&PathBuf>) -> ! {
     if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err() {
         exit_floor_deny("floor-invalid-payload");
     }
-    if payload.len() > 192 * 1024 {
-        exit_floor_warning("floor-input-too-large");
-    }
     let binary = match std::env::current_exe() {
         Ok(binary) => binary,
         Err(_) => exit_floor_deny("floor-self-protection"),
     };
+    if payload.contains(floor_file.to_string_lossy().as_ref())
+        || payload.contains(binary.to_string_lossy().as_ref())
+    {
+        exit_floor_deny("floor: floor-self-protection");
+    }
+    if payload.len() > 192 * 1024 {
+        exit_floor_warning("floor: floor-input-too-large");
+    }
     match floor_only_decision(&payload, floor_file, &binary) {
         floor::FloorDecision::Deny(reason) => exit_floor_deny(&format!("floor: {reason}")),
         floor::FloorDecision::Warn(reason) => exit_floor_warning(&format!("floor: {reason}")),

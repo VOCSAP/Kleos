@@ -7738,18 +7738,21 @@ interpréteur et options Git exécutables sont réanalysées.
 
 Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
 le hook émet seulement `additionalContext` avec `kleos floor: command not
-analyzed (...)`. Il n'émet pas `permissionDecision`. Les mentions dans des
-données, messages Git et heredocs non exécutés restent silencieuses. Le
-chargeur TOML, le payload invalide et l'auto-protection restent fail-closed.
+analyzed (...)`. Il n'émet pas `permissionDecision`. Chaque mot ou branche AST
+non analysé qui contient `rm` ou `git` produit cet avertissement, alors que les
+arguments déjà classés comme données, messages Git et heredocs non exécutés
+restent silencieux. Le chargeur TOML, le payload invalide et l'auto-protection
+restent fail-closed.
 
 Le payload est plafonné à 192 Kio. Le parsing et la destruction de l'AST restent
-dans un worker à pile de 64 Mio, avec une attente de 4,5 s. Le préfiltre limite
+dans un worker à pile de 64 Mio, avec une attente de 3 s. Le préfiltre limite
 à 256 marqueurs structurels et le budget lexical à 4096 tokens hors blanc. Les
 dépassements, panic et timeout produisent un avertissement, sans crash.
 
 Les limites assumées sont les verbes et options dynamiques, les scripts lancés
 indirectement, `make`, `npm run`, les aliases définis ailleurs, `Remove-Item`,
-`rd /s`, `find -delete` et `rsync --delete`. Le payload Claude Code exige
+`rd /s`, `find -delete`, `rsync --delete`, `docker run … sh -c` (système de
+fichiers du conteneur), `ssh` et `wsl`. Le payload Claude Code exige
 `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
 `tool_input.command` chaîne. Les commandes désignant le fichier de politique,
 son dossier ou le binaire restent refusées.
