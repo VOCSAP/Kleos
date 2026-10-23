@@ -674,9 +674,19 @@ fn command_is_interpreter(command: &ast::Command) -> bool {
 }
 
 fn scan_ast_word(policy: &FloorPolicy, word: &ast::Word) -> Option<FloorDecision> {
-    word::parse(&word.value, &ParserOptions::default())
-        .ok()
-        .and_then(|pieces| scan_word_pieces(policy, &pieces))
+    let Ok(pieces) = word::parse(&word.value, &ParserOptions::default()) else {
+        return net_unanalyzed_target(&word.value);
+    };
+    let decision = scan_word_pieces(policy, &pieces)?;
+    if decision != FloorDecision::Allow || word_text(&word.value).is_some() {
+        return Some(decision);
+    }
+    net_unanalyzed_target(&word.value)
+}
+
+fn net_unanalyzed_target(value: &str) -> Option<FloorDecision> {
+    (!targeted_occurrences(value).is_empty())
+        .then(|| FloorDecision::Warn("floor-unanalyzed-target".to_string()))
 }
 
 fn scan_word_pieces(
@@ -774,8 +784,16 @@ fn scan_executed_args(policy: &FloorPolicy, verb: &str, args: &[String]) -> Floo
     let source = match verb {
         "bash" | "sh" | "zsh" | "dash" | "ksh" => args
             .iter()
-            .position(|arg| arg == "-c" || arg == "--command")
-            .and_then(|index| args.get(index + 1))
+            .position(|arg| {
+                arg == "--command"
+                    || (arg.starts_with('-')
+                        && arg[1..].chars().all(|ch| ch.is_ascii_lowercase())
+                        && arg.contains('c'))
+            })
+            .and_then(|index| match args.get(index + 1).map(String::as_str) {
+                Some("--") => args.get(index + 2),
+                _ => args.get(index + 1),
+            })
             .cloned(),
         "eval" => Some(args[1..].join(" ")),
         "xargs" => args
@@ -785,13 +803,26 @@ fn scan_executed_args(policy: &FloorPolicy, verb: &str, args: &[String]) -> Floo
             .map(|_| args[1..].join(" ")),
         "find" => args
             .iter()
-            .position(|arg| arg == "-exec")
-            .map(|index| args[index + 1..].join(" ")),
+            .position(|arg| matches!(arg.as_str(), "-exec" | "-execdir" | "-ok"))
+            .map(|index| {
+                args[index + 1..]
+                    .iter()
+                    .take_while(|arg| arg.as_str() != ";" && arg.as_str() != "+")
+                    .map(|arg| arg.replace("{}", "floor-path"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }),
         _ => None,
     };
     source
         .map(|source| scan_ast(policy, &source))
-        .unwrap_or_else(|| FloorDecision::Warn("floor-opaque-command".to_string()))
+        .unwrap_or_else(|| {
+            if matches!(verb, "bash" | "sh" | "zsh" | "dash" | "ksh") {
+                FloorDecision::Allow
+            } else {
+                FloorDecision::Warn("floor-opaque-command".to_string())
+            }
+        })
 }
 
 fn scan_git_executed_args(policy: &FloorPolicy, args: &[String]) -> Option<FloorDecision> {
@@ -799,6 +830,11 @@ fn scan_git_executed_args(policy: &FloorPolicy, args: &[String]) -> Option<Floor
         Some("rebase") => args
             .iter()
             .find_map(|arg| arg.strip_prefix("--exec=").map(str::to_owned))
+            .or_else(|| {
+                args.iter()
+                    .find_map(|arg| arg.strip_prefix("-x").filter(|value| !value.is_empty()))
+                    .map(str::to_owned)
+            })
             .or_else(|| {
                 args.iter()
                     .position(|arg| arg == "-x" || arg == "--exec")
@@ -843,7 +879,9 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
             let message_data = verb.as_deref() == Some("git")
                 && index > 0
                 && matches!(args[index].as_str(), "-m" | "-F" | "--message" | "--body");
-            !message_data && (word_text(arg).is_none() || arg.contains(['{', '}']))
+            !message_data
+                && (arg.starts_with('-') || arg.starts_with('$'))
+                && (word_text(arg).is_none() || arg.contains(['{', '}']))
         })
     {
         return Some(FloorDecision::Warn("floor-dynamic-argument".to_string()));
@@ -852,15 +890,18 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
         .iter()
         .enumerate()
         .map(|(index, word)| {
-            word_text(word).map(|word| {
-                if index == 0 {
-                    word
-                } else {
-                    word.replace('\\', "")
-                }
-            })
+            word_text(word).map_or_else(
+                || word.clone(),
+                |word| {
+                    if index == 0 {
+                        word
+                    } else {
+                        word.replace('\\', "")
+                    }
+                },
+            )
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     for _ in 0..4096 {
         let Some(command_word) = args.first().and_then(|word| word_text(word)) else {
             return Some(FloorDecision::Allow);
@@ -871,7 +912,11 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
         let Some(verb) = normalize_verb(&command_word) else {
             return Some(FloorDecision::Allow);
         };
-        if verb == "find" && !args.iter().any(|arg| arg == "-exec") {
+        if verb == "find"
+            && !args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "-exec" | "-execdir" | "-ok"))
+        {
             return Some(FloorDecision::Allow);
         }
         if matches!(
@@ -896,6 +941,12 @@ fn scan_ast_args(policy: &FloorPolicy, args: Vec<String>) -> Option<FloorDecisio
         let Some(verb) = normalize_verb(&command_word) else {
             return Some(FloorDecision::Allow);
         };
+        if matches!(
+            verb.as_str(),
+            "bash" | "sh" | "zsh" | "dash" | "ksh" | "eval" | "xargs" | "find"
+        ) {
+            return Some(scan_executed_args(policy, &verb, &args));
+        }
         if verb == "rtk" {
             continue;
         }
@@ -1563,7 +1614,7 @@ flags_any = ["force"]
         }
         assert_eq!(
             policy().evaluate("for d in a b; do rm -rf \"$d\"; done"),
-            FloorDecision::Warn("floor-dynamic-argument".into())
+            FloorDecision::Deny("rm-recursive".into())
         );
         assert_eq!(
             policy().evaluate("while false; do git push -f; done"),
@@ -1584,7 +1635,7 @@ flags_any = ["force"]
         }
         assert_eq!(
             policy().evaluate("find . -name t -exec rm -rf {} +"),
-            FloorDecision::Warn("floor-dynamic-argument".into())
+            FloorDecision::Deny("rm-recursive".into())
         );
         assert_eq!(
             policy().evaluate("sh -c \"git push -f\""),
@@ -1794,17 +1845,18 @@ EOF
             ("if true; then rm -rf x; fi", Some("rm-recursive")),
             (
                 "for d in a b; do rm -rf \"$d\"; done",
-                Some("floor-dynamic-argument"),
+                Some("rm-recursive"),
             ),
             ("while false; do git push -f; done", Some("git-rewrite")),
             ("bash -c 'rm -rf x'", Some("rm-recursive")),
-            ("sh -c \"git push -f\"", Some("git-rewrite")),
+            ("bash -c -- 'rm -rf x'", Some("rm-recursive")),
+            ("bash -lc 'rm -rf x'", Some("rm-recursive")),
+            ("sh -ec \"git push -f\"", Some("git-rewrite")),
             ("eval \"rm -rf x\"", Some("rm-recursive")),
             ("xargs rm -rf", Some("rm-recursive")),
-            (
-                "find . -name t -exec rm -rf {} +",
-                Some("floor-dynamic-argument"),
-            ),
+            ("find . -name t -exec rm -rf {} +", Some("rm-recursive")),
+            ("find . -execdir rm -rf {} +", Some("rm-recursive")),
+            ("find . -ok rm -rf {} ;", Some("rm-recursive")),
             ("for f in *.rs; do echo $f; done", None),
             ("bash -c 'echo hi'", None),
             ("find . -name '*.rs'", None),
@@ -1898,6 +1950,7 @@ EOF
             ("rm --recursive --force /x", Some("rm-recursive")),
             ("rm -rf \"/etc\"", Some("rm-recursive")),
             ("rm -rf /tmp /etc", Some("rm-recursive")),
+            ("git rebase -x'rm -rf x' main", Some("rm-recursive")),
             ("git push origin +main", Some("git-rewrite")),
             ("git push -qf", Some("git-rewrite")),
             ("git push origin :main", Some("git-rewrite")),
@@ -2095,6 +2148,18 @@ EOF
             policy().evaluate("F=-rf; rm $F x"),
             FloorDecision::Warn("floor-dynamic-argument".into())
         );
+        for command in [
+            "rm \"$tmpfile\"",
+            "git push origin \"$branch\"",
+            "bash scripts/test.sh",
+            "sh ./configure",
+        ] {
+            assert_eq!(
+                policy().evaluate(command),
+                FloorDecision::Allow,
+                "{command}"
+            );
+        }
     }
 
     #[test]

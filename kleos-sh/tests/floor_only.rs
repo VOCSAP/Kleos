@@ -75,7 +75,7 @@ fn floor_only_rejects_excessive_raw_structure() {
         ("{".repeat(300), "floor: floor-budget-exceeded"),
         ("$(".repeat(40_000), "floor: floor-budget-exceeded"),
         ("(".repeat(20_000), "floor: floor-budget-exceeded"),
-        ("x".repeat(200 * 1024), "floor-input-too-large"),
+        ("x".repeat(200 * 1024), "floor: floor-input-too-large"),
     ];
     for (command, reason) in commands {
         let payload = serde_json::json!({
