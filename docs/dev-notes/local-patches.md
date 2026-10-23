@@ -7731,10 +7731,14 @@ indisponible.
 **Approche :** `kleos-sh --floor-only --floor-file <absolu>` relit un
 `floor.toml` à chaque invocation et ne crée ni client HTTP ni processus fils.
 Le chargeur TOML refuse le fichier entier si son schéma, ses champs ou une des
-quatre règles minimales est invalide. Le scanner POSIX borné reconnaît `rm` et
-les sous-commandes `git` ciblées, les groupes d'options, `--prune`, les
+quatre règles minimales est invalide. L'analyse repose sur l'AST de
+`brush-parser` 0.4.0 (licence MIT), parcouru avec une pile explicite et des
+budgets de nœuds, de listes et de substitutions avant parsing. Elle reconnaît
+`rm` et les sous-commandes `git` ciblées, les groupes d'options, `--prune`, les
 wrappers transparents documentés et le répartiteur `rtk`; une zone opaque
-n'est refusée que si elle contient `rm` ou `git`. Le payload Claude Code exige
+n'est refusée que si elle contient `rm` ou `git`. Les substitutions, doubles
+quotes et heredocs sont analysés via les parseurs de mots du crate; une quote
+simple reste une donnée. Le payload Claude Code exige
 `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
 `tool_input.command` chaîne; `cwd` n'est pas requis pour un deny. Les commandes
 désignant le fichier de politique, son dossier ou le binaire sont refusées. L1
