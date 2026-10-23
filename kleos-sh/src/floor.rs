@@ -654,6 +654,7 @@ fn pipeline_executed_decision(
     let suffix = &source.suffix.as_ref()?.0;
     if verb == "cat" {
         let mut found_heredoc = false;
+        let mut best = FloorDecision::Allow;
         for item in suffix {
             let ast::CommandPrefixOrSuffixItem::IoRedirect(ast::IoRedirect::HereDocument(_, here)) =
                 item
@@ -661,14 +662,12 @@ fn pipeline_executed_decision(
                 continue;
             };
             found_heredoc = true;
-            if let decision @ (FloorDecision::Deny(_) | FloorDecision::Warn(_)) =
-                scan_ast(policy, &here.doc.value)
-            {
-                return Some(decision);
+            if let Some(reason) = merge_decision(&mut best, scan_ast(policy, &here.doc.value)) {
+                return Some(FloorDecision::Deny(reason));
             }
         }
         return Some(if found_heredoc {
-            FloorDecision::Allow
+            best
         } else {
             FloorDecision::Warn("floor-opaque-command".to_string())
         });
@@ -720,8 +719,9 @@ fn scan_word_pieces(
     policy: &FloorPolicy,
     pieces: &[word::WordPieceWithSource],
 ) -> Option<FloorDecision> {
+    let mut best = FloorDecision::Allow;
     for piece in pieces {
-        match &piece.piece {
+        let decision = match &piece.piece {
             word::WordPiece::CommandSubstitution(source)
             | word::WordPiece::BackquotedCommandSubstitution(source) => {
                 let source = if source.ends_with('\n') {
@@ -729,24 +729,21 @@ fn scan_word_pieces(
                 } else {
                     format!("{source}\n")
                 };
-                if let decision @ (FloorDecision::Deny(_) | FloorDecision::Warn(_)) =
-                    scan_ast(policy, &source)
-                {
-                    return Some(decision);
-                }
+                Some(scan_ast(policy, &source))
             }
             word::WordPiece::DoubleQuotedSequence(children)
             | word::WordPiece::GettextDoubleQuotedSequence(children) => {
-                if let Some(decision @ (FloorDecision::Deny(_) | FloorDecision::Warn(_))) =
-                    scan_word_pieces(policy, children)
-                {
-                    return Some(decision);
-                }
+                scan_word_pieces(policy, children)
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(decision) = decision {
+            if let Some(reason) = merge_decision(&mut best, decision) {
+                return Some(FloorDecision::Deny(reason));
+            }
         }
     }
-    Some(FloorDecision::Allow)
+    Some(best)
 }
 
 fn word_text(value: &str) -> Option<String> {
@@ -1535,6 +1532,7 @@ flags_any = ["force"]
             "echo y | bash s.sh; rm -rf b",
             "true; git push -f origin \"$B\"",
             "out=$(git push -f origin main)",
+            r#"echo "$(git $SUB)$(rm -rf b)""#,
         ] {
             assert!(
                 matches!(policy().evaluate(command), FloorDecision::Deny(_)),
@@ -1544,11 +1542,35 @@ flags_any = ["force"]
     }
 
     #[test]
-    fn denies_static_dangerous_flags_with_dynamic_operands() {
+    fn denies_later_interpreter_heredoc_after_an_earlier_warning() {
         assert_eq!(
-            policy().evaluate("M=/x; rm -rf $M"),
+            policy().evaluate("cat <<'FIRST' <<'SECOND' | sh\n$(git $SUB)\nFIRST\nrm -rf b\nSECOND"),
             FloorDecision::Deny("rm-recursive".into())
         );
+    }
+
+    #[test]
+    fn denies_static_dangerous_flags_with_dynamic_operands() {
+        for (command, reason) in [
+            ("rm -rf $TARGET", "rm-recursive"),
+            (r#"rm -rf "$(printf x)""#, "rm-recursive"),
+            ("rm -rf *", "rm-recursive"),
+            ("git push -f origin $TARGET", "git-rewrite"),
+            (r#"git push -f origin "$(printf main)""#, "git-rewrite"),
+            ("git push -f origin *", "git-rewrite"),
+            ("git reset --hard $TARGET", "git-reset-hard"),
+            (r#"git reset --hard "$(printf HEAD)""#, "git-reset-hard"),
+            ("git reset --hard *", "git-reset-hard"),
+            ("git clean -f $TARGET", "git-clean-force"),
+            (r#"git clean -f "$(printf x)""#, "git-clean-force"),
+            ("git clean -f *", "git-clean-force"),
+        ] {
+            assert_eq!(
+                policy().evaluate(command),
+                FloorDecision::Deny(reason.into()),
+                "{command}"
+            );
+        }
     }
 
     #[test]

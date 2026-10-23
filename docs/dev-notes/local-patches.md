@@ -7751,13 +7751,24 @@ dépassements, panic et timeout produisent un avertissement, sans crash.
 
 Les limites assumées sont les verbes et options dynamiques, les scripts lancés
 indirectement, `make`, `npm run`, les aliases définis ailleurs, `Remove-Item`,
-`rd /s`, `find -delete`, `rsync --delete`. Les programmes passés à `docker run
-… sh -c` ne sont pas inspectés, car ils agissent dans le système de fichiers du
-conteneur; les scripts distants de `ssh` et les commandes transmises à `wsl` ne
-sont pas inspectés non plus. Le payload Claude Code exige
-`hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
-`tool_input.command` chaîne. Les commandes désignant le fichier de politique,
-son dossier ou le binaire restent refusées.
+`rd /s`, `find -delete`, `rsync --delete`. La sonde release rev8 a aussi mesuré
+comme `SILENT` ou `WARN` les formes suivantes alors qu'un refus serait attendu :
+le nom `rm` écrit avec une quote ANSI-C, `source <(...)` et `. <(...)`, les
+pipelines vers `tee >(sh)`, `cat | sh`, `dash` ou `busybox sh`, un heredoc vers
+`dash`, les substitutions dans `[[ ]]`, `(( ))`, les valeurs de `for` et de
+`case`, l'expansion `${x:-$(...)}`, les substitutions de processus de
+redirection, un programme RTK imbriqué, `cat script | bash`, une entrée encodée
+vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`,
+`git reset --hard=HEAD`, un refspec Git ordinaire, et `git -c ... push -f`.
+Les évaluations dynamiques `eval "$cmd"`, `eval "rm -rf $x"` et `bash -c
+"$(...)"` ne sont pas résolues statiquement. Les programmes passés à `docker
+run … sh -c`, les scripts distants de `ssh`, les commandes transmises à `wsl`
+et le wrapper `winpty` ne sont pas inspectés. L'auto-protection refuse les
+chemins littéraux, MSYS et `~` du fichier de politique, de son dossier ou du
+binaire, mais ne résout pas son chemin via `$HOME`; un payload supérieur à 192
+Kio produit un avertissement avant cette vérification. Le payload Claude Code
+exige `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
+`tool_input.command` chaîne.
 
 **Fichiers :** `kleos-sh/Cargo.toml`, `kleos-sh/src/floor.rs`,
 `kleos-sh/src/main.rs`, `kleos-sh/tests/floor_only.rs`,
