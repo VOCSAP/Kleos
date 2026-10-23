@@ -7720,7 +7720,7 @@ filtres de résultat de `hybrid_search`.
 
 ## Patch 77 -- plancher local autonome de `kleos-sh`
 
-Carte roadmap `c6a836e6`, spec Agent-Forge `spec_1ccf7eb3`. Sous-lot L1 du
+Carte roadmap `c6a836e6`, spec Agent-Forge `spec_b1625fb4`. Sous-lot L1 du
 plancher décrit dans `2026-10-23-kleos-sh-floor.md`.
 
 **Symptôme :** le hook existant de `kleos-sh` demande une clé, construit un
@@ -7731,14 +7731,21 @@ indisponible.
 **Approche :** `kleos-sh --floor-only --floor-file <absolu>` relit un
 `floor.toml` à chaque invocation et ne crée ni client HTTP ni processus fils.
 Le chargeur TOML refuse le fichier entier si son schéma, ses champs ou une des
-quatre règles minimales est invalide. L'analyse repose sur l'AST de
-`brush-parser` 0.4.0 (licence MIT), parcouru avec une pile explicite et des
-budgets de nœuds, de listes et de substitutions avant parsing. Elle reconnaît
-`rm` et les sous-commandes `git` ciblées, les groupes d'options, `--prune`, les
-wrappers transparents documentés et le répartiteur `rtk`; une zone opaque
-n'est refusée que si elle contient `rm` ou `git`. Les substitutions, doubles
-quotes et heredocs sont analysés via les parseurs de mots du crate; une quote
-simple reste une donnée. Le payload Claude Code exige
+quatre règles minimales est invalide. Le payload est plafonné à 192 Kio, puis
+l'analyse AST et la destruction de l'AST s'exécutent dans un worker à pile de
+64 Mio avec une attente bornée à 4,5 s. Toute erreur, timeout ou panic donne un
+deny. Avant le parsing, le plancher refuse plus de 256 marqueurs structurels
+(`{`, `(`, `$(`, `${`, backquote, `[[` et mots-clés de contrôle).
+
+Chaque occurrence textuelle de `rm` ou `git`, y compris les chemins, `.exe`,
+quotes, échappements, globs et `git-<sous-commande>`, est comparée aux étendues
+`Word.loc` de niveau supérieur, exprimées en indices de caractères. Une
+occurrence non justifiée est opaque. Les données statiques admises sont limitées
+aux commandes `rm`, `git`, `echo`, `printf`, `grep`, `rg`, `ls`, `cat`, `cargo`,
+`docker` et `gh`; une expansion n'est jamais une donnée, sauf un heredoc quoté
+passé à un message `git` ou `gh`. Les wrappers, interpréteurs, SSH, `xargs` et
+pipelines vers un interpréteur restent opaques. Les sous-commandes Git qui
+exécutent du code sont également opaques. Le payload Claude Code exige
 `hook_event_name = "PreToolUse"`, `tool_name = "Bash"` et
 `tool_input.command` chaîne; `cwd` n'est pas requis pour un deny. Les commandes
 désignant le fichier de politique, son dossier ou le binaire sont refusées. L1
@@ -7749,9 +7756,10 @@ ne contient aucune exception de suppression ni registre de grants.
 `docs/dev-notes/local-patches.md`.
 
 **Tests :** `cargo test -p kleos-sh` couvre le chargement fail-closed, les
-formes rm/git du contrat, substitutions, opacité ciblée, wrappers, payload
-sans cwd et auto-protection; les commandes dangereuses sont uniquement des
-données de test.
+formes rm/git du contrat, les substitutions opaques, les wrappers, les offsets
+Unicode, le payload sans cwd, l'auto-protection et le binaire réel face aux
+volumes structurels, à une ligne de 200 Kio et à un heredoc malformé; les
+commandes dangereuses sont uniquement des données de test.
 
 **Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
 registre local et les exceptions de suppression observées sont validés; ne pas
