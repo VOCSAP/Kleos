@@ -1,10 +1,15 @@
 # Étude d'architecture : cible de l'ingestion des transcripts Claude Code
 
-Statut : **conception seulement, aucun code livré**. Révision 6 du 2026-10-22 (vue A+
-calculée au démon, le relais ne stocke plus B ; détecteur de secrets avant toute
-publication ; injections du harnais repérées par la structure ; « extraire là où c'est
-écrit » généralisé ; renvoi motivé par époque pour une montée de vue ; voir la table
-ci-dessous).
+Statut : **conception seulement, aucun code livré**. **Révision 7 du 2026-10-24 :
+Kleos devient consommateur d'hypomnema.** Décision opérateur (Kleos #33942, #33968,
+#33978) : un outil autonome, **hypomnema** (dépôt `VOCSAP/hypomnema`, Rust, conception
+`docs/superpowers/specs/2026-10-24-hypomnema-design.md`, commit `009d6b6`), devient la
+seule source d'extraction, de rédaction, de stockage et de map des transcripts. Le démon
+poste et le relais de la révision 6 ne seront pas construits dans ce dépôt : leur
+contenu est repris, amendé, par la conception hypomnema. **Ce qui reste à Kleos est
+décrit en section 11** (consommateur), qui fait foi ; les sections 1 à 6 et 8 portent
+chacune en tête la mention de ce qui est remplacé et de ce qui reste valide. Rien n'est
+effacé : l'historique des révisions 1 à 6 reste lisible tel quel.
 Historique : la
 révision 2 répondait à un challenge au verdict « tombe » et à trois mesures (T1 à T3,
 section 0) ; la révision 3 intègre le verdict du consultant sur l'embranchement de la
@@ -39,11 +44,17 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | 4 | 2026-10-21 | Porte de revue jamais activée ; protection par le juge amont |
 | 5 | 2026-10-21 | Dédup de fond, space par session, juge amont Haiku, bande grise Sonnet, gel ELv2 |
 | 6 | 2026-10-22 | A+ calculé au démon, plus de B au relais ; détecteur de secrets avant publication ; injections repérées par la structure ; « extraire là où c'est écrit » généralisé ; renvoi motivé (`rewrite`, `view_upgrade`) ; points secondaires du challenger (erreurs Windows en français, ligne illisible, `/rewind`, enregistrement énorme) |
+| 7 | 2026-10-24 | Décisions #33942, #33968, #33978 ; conception hypomnema (commit `009d6b6`). Topologie client poste → serveur hypomnema → consommateur Kleos séparé ; démon, protocole, vue A+, rédaction, stockage et map transférés à hypomnema ; space transmis par une étiquette de hook ; map de toutes les sessions dès la mise en service ; rétention sans limite côté hypomnema ; mesures du lot 0 d'hypomnema intégrées (F21 à F26) ; section 11 « Consommateur Kleos » |
 
-### Ce que les révisions 2 à 6 changent
+### Ce que les révisions 2 à 7 changent
 
 | Point du challenge, du consultant ou de l'opérateur | Réponse | Section |
 |---|---|---|
+| Opérateur (révision 7, 2026-10-24) : un outil autonome de transcripts, hypomnema, sert l'humain (UI), les agents (CLI, MCP) et Kleos ; le résumé se fait sur un serveur distant, PC source éteint ; la rédaction se fait sur le PC source ; seul le delta est envoyé (Kleos #33942) | Le démon poste devient `hypomnema-agent`, le relais devient `hypomnema-server`, propriétaire unique du stockage et du map (un seul passage produit le résumé et les faits candidats). Kleos garde un **consommateur séparé** qui lit le flux d'événements d'hypomnema et ne partage pas sa base | 1.1, 11 |
+| Opérateur (révision 7) : portée du map (Kleos #33968) | Toutes les sessions dès la mise en service, sous-agents compris ; historique limité aux sessions team-lead et sans agent, du plus récent au plus ancien, profondeur `backfill_days` | 11.2, Q4 |
+| Opérateur (révision 7) : rétention et secrets (#33942, #33978) | Rétention sans limite de tout l'extrait côté hypomnema, sans niveaux ; pas de rotation des secrets de F17 ; le fichier de motifs vit dans le dépôt hypomnema, le consommateur en épingle une copie | 1.4, 11.4, Q6 |
+| Revue Kleos de la conception hypomnema (14 points, intégrés au commit `009d6b6`) | Space et racine git résolus sur le poste, étiquettes de session lues par égalité stricte d'un `additionalContext` entier, préfixe forké jamais remappé, schéma de fait avec `fact_id` stable, flux typé avec acquittement, `same_view` sur la paire de versions | 11 |
+| Lot 0 d'hypomnema (Kleos #33981) : T3-a contredit, rapport des sous-agents non confirmé, seuil des préfixes recalibré | F21 à F26 ; lignées à branches sœurs gérées par hypomnema ; `tool_result` d'agent du parent gardé entier | 0, 3.4, 4.3 |
 | Opérateur (révision 6) : A+ au démon, le relais ne stocke plus B. Motif mesuré : des secrets réels sont dans les sorties d'outils (Kleos #32381, F17) et le poste garde les transcripts 180 jours (F20) | La décision « B stocké, A+ présenté » de la révision 2 est **remplacée** : le démon calcule la vue A+ et n'envoie qu'elle ; la seconde copie en B disparaît ; un retraitement avec une vue plus large passe par un renvoi depuis la source sous une nouvelle époque motivée (`view_upgrade`), borné aux fichiers encore sur le poste, poste allumé | 1.2, 1.4, 2.8, 3.2, 5, 6, Q1 |
 | Challenger (révision 6, a) : la rédaction prévue laisse passer les secrets propres à Kleos et efface des faits (Kleos #32359, F19) | Rédaction **au niveau du jeton** (jamais la ligne), formats ajoutés (`kleos_`, `gh[opsur]_`, valeurs après `*_KEY`, `*_SECRET`, `*_PEPPER`, `*_TOKEN`, URL à identifiants, `PrivateKey =`), fixtures `env`, `Get-ChildItem Env:`, `docker inspect`, `.env`, `kleos.env`, `sqlite3` en `|` ; **détecteur de secrets côté relais avant toute publication Kleos**, en échec fermé, parce qu'une mémoire n'expire pas | 1.4, 4.4 (couche 0), 8 |
 | Challenger (révision 6, b) : les injections du harnais passent pour du texte user (F18) | Texte user défini **par la structure** et en échec fermé ; corps de skill, `<task-notification>`, blocs `=== … ===`, refus de hook dans les `tool_result` classés harnais ; tout préfixe de 40 caractères répété dans au moins 5 sessions classé injection ; alerte si la part de texte user gardé double après une mise à jour de Claude Code | 3.3, 6, 8 |
@@ -89,7 +100,7 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | **T2** | `qwen3:8b-ctx16k` par `/api/chat`, fenêtre de 36 000 caractères = 9 084 tokens, raisonnement coupé : ingestion du prompt à froid 6,2 s (environ 1 470 tokens/s), génération environ 49 tokens/s ; environ 12 s pour 300 tokens de sortie, 22 s pour 800. Un préfixe identique est servi par le cache KV (18 à 46 ms), donc un appel répété sous-estime le coût réel. Avec `think: true` et `num_predict` 800, le budget part dans le raisonnement et l'appel s'arrête en `length` | MESURÉ (rapporté, #31706) |
 | T2-a | La production pose `KLEOS_LLM_THINK=0`, mais cette variable est lue par kleos-server (Patch 14) ; un processus séparé n'en hérite pas | MESURÉ (rapporté, brief du lead) ; héritage DÉDUIT (`CLAUDE.local.md`, section Cible LLM) |
 | **T3** | 687 sessions actives sur 14 jours : 28,97 % ont au moins un écart de plus de 45 min suivi d'autres tours ; 18,05 % à 60 min, 7,71 % à 2 h, 0,73 % à 8 h. En ne comptant que les prompts tapés par un humain : 14,41 % à 45 min, 0,58 % à 2 h. La moitié des reprises sont déclenchées par un message injecté (canal peer, notifications). Les 355 écarts de plus de 45 min : médiane 55 min, p90 170 min | MESURÉ (rapporté, #31716) |
-| T3-a | Lignée resume/fork : 6 copies sur 687 sessions ; la copie démarre p50 16 min après la source ; 2 cas sur 7 au-delà de 45 min ; aucune source n'a continué après le fork | MESURÉ (rapporté, brief du lead ; le brief donne 6 copies et 7 cas, écart non résolu ici) |
+| T3-a | Lignée resume/fork : 6 copies sur 687 sessions ; la copie démarre p50 16 min après la source ; 2 cas sur 7 au-delà de 45 min ; aucune source n'a continué après le fork. **Contredit en révision 7 par F21** sur un corpus plus large | MESURÉ (rapporté, brief du lead ; le brief donne 6 copies et 7 cas, écart non résolu ici) |
 | F11 | `POST /memory` désérialise `StoreRequest` tel quel : `parent_memory_id`, `created_at`, `space`, `session_id`, `tags` et `sync_id` passent par l'API publique ; corps limité à 256 Kio | DÉDUIT (`kleos-server/src/routes/memory/mod.rs:74`, `:110-136` ; `kleos-lib/src/memory/types.rs:306-342`) |
 | F12 | Un store avec `parent_memory_id` crée la version suivante, passe l'ancienne à `is_latest = 0`, saute la dédup, et **refuse** (`Conflict`) si le parent n'est plus la tête de chaîne | DÉDUIT (`mod.rs:578`, `:855-890`) |
 | F13 | La porte de revue ne sera jamais activée ; l'inbox d'approbation existe et se consulte depuis l'interface web GUI de Kleos, pas depuis kleos-cli ni le serveur MCP | Décision opérateur du 2026-10-21 (Kleos #31722) |
@@ -100,10 +111,26 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | **F18** | Injections du harnais dans le corpus : `=== RECENT MEMORIES ===` 7 948 fois en lignes `attachment` et 37 fois en lignes `user` ; corps de skill « Base directory for this skill » 2 673 fois en lignes `user` ; `<task-notification>` 1 037 fois en lignes `user` ; refus de hook `PreToolUse:… hook error` 6 285 fois dans des `tool_result` de lignes `user` | MESURÉ (rapporté, #32381) |
 | **F19** | `scrub_credentials` : le lexique `credential_keywords` (`en.toml`) contient `password`, `passwd`, `passphrase`, `secret`, `api_key`, `apikey`, `token`, `bearer`, `authorization`, `credential`, `private_key`, `ssh_key`, `client_secret`, mais **ni `key` seul, ni `privatekey`, ni `api-key`** ; la passe exige `=` ou `:` sans `://` sur la ligne et **remplace la ligne entière**. Donc `KLEOS_DB_KEY`, `KLEOS_IDENTITY_KEY`, `KLEOS_SESSION_KEY` et les clés `kleos_<hex>` passent, et une ligne de fait contenant `token` (« 9 084 tokens ») est effacée | DÉDUIT (rapporté, #32359, `kleos-lib/src/prompts.rs:262-289` et lexique `en.toml`) |
 | **F20** | Le poste garde les transcripts Claude Code 180 jours : `"cleanupPeriodDays": 180,` dans `~/.claude/settings.json` | MESURÉ (`grep cleanupPeriodDays ~/.claude/settings.json`, ligne 3) |
+| **F21** (révision 7) | **T3-a est contredit.** 65 familles de fichiers partagent leur premier uuid (148 fichiers) ; dans 50 d'entre elles, les deux fichiers ont continué (87 couples divergents contre 17 inclusions strictes). Les lignées ont des branches sœurs, pas seulement des suites linéaires | MESURÉ (rapporté, lot 0 hypomnema, 3 790 sessions, #33981) |
+| **F22** (révision 7) | Sur un fork, l'historique recopié forme un préfixe contigu, et les lignes recopiées portent le `sessionId` de la nouvelle session, sans champ qui nomme la source ; 4 lignes `continued-in` concordent avec la règle d'inclusion | MESURÉ (rapporté, #33908, #33981) |
+| **F23** (révision 7) | Le dernier texte assistant d'un sous-agent n'est retrouvé dans le `tool_result` du parent que 67 fois sur 1 335 (comparateur de 80 caractères, faux négatifs possibles) ; 329 sous-agents n'ont aucun texte final. L'hypothèse « le rapport est le dernier message » n'est pas confirmée | MESURÉ (rapporté, #33981) |
+| **F24** (révision 7) | Préfixes de 40 caractères vus dans au moins 5 sessions : 76. Le seuil seul retirerait 30,4 M caractères (dont 1 152 `isCompactSummary` et des missions de pairs) ; le seuil combiné à un ratio textes distincts sur blocs au plus 0,2 retient 1 092 blocs pour 47 k caractères, de vraies injections | MESURÉ (rapporté, #33981) |
+| **F25** (révision 7) | `/rewind` ou réédition : 166 sessions (4,4 %), 285 points. `entrypoint` : `cli` 3 434, `sdk-cli` 351, `claude-desktop` 1 | MESURÉ (rapporté, #33981) |
+| **F26** (révision 7) | La sortie d'un hook SessionStart est écrite deux fois dans le transcript : dans `hook_success.stdout` et comme élément de `hook_additional_context` ; 9 272 éléments sur 9 348 égalent l'`additionalContext` entier d'un hook du même fichier | MESURÉ (rapporté, #33981) |
 
 ---
 
 ## 1. Composants et frontières
+
+> **Révision 7.** Topologie remplacée : client `hypomnema-agent` sur le poste, serveur
+> `hypomnema-server` (propriétaire unique du stockage et du map), consommateur Kleos
+> séparé qui lit l'API du serveur (conception hypomnema §3, §7.1, §10 ; ici section 11).
+> Restent valides pour Kleos : le verdict R en 1.3, relu en 11.1 (le consommateur reste
+> un processus séparé de kleos-server, pour l'isolement des pannes, puisque le gel
+> upstream annule E9), et la couche 0 de 1.4, désormais appliquée par le consommateur.
+> La rédaction au démon de 1.4 est remplacée par la conception hypomnema §6 (fichier de
+> motifs versionné dans le dépôt hypomnema, mêmes trois passes au jeton). Le schéma 1.1
+> et les tables 1.2 et 1.4 décrivent la révision 6.
 
 ### 1.1 Vue d'ensemble
 
@@ -307,6 +334,14 @@ résolution des prompts restent réutilisés. En contrepartie, la vue A+ côté 
 ---
 
 ## 2. Protocole démon vers relais
+
+> **Révision 7.** Repris par hypomnema entre son client et son serveur (conception §5),
+> avec deux écarts : `wire_purge_version` est remplacé par la paire `view_version`,
+> `secret_patterns_version`, et `same_view` se juge sur la paire (accepté si une version
+> monte et qu'aucune ne baisse). L'époque appartient au client, qui lit la source. La
+> lignée (2.6) est calculée par le serveur hypomnema avec une règle élargie par F21 :
+> ligne `continued-in`, sinon étiquette `forked_from` de Kory, sinon inclusion, sinon
+> branches sœurs. Kleos ne parle plus ce protocole : il lit le flux de 11.2.
 
 ### 2.1 Principe
 
@@ -582,6 +617,16 @@ parce que rien ne la justifie et qu'elle ferait disparaître des faits sans les 
 
 ## 3. Règle de purge
 
+> **Révision 7.** La vue A+, la rédaction et le squelette sont calculés par
+> `hypomnema-core` sur le poste (conception §4.3 à §4.6, §6), avec ces écarts : corps des
+> `<channel>` toujours gardés à l'affichage mais retirés de la vue présentée au modèle
+> quand l'original est connu (3.4 reste la règle d'extraction) ; `tool_result` de l'outil
+> d'agent du parent gardé entier (F23) ; préfixes classés injection au seuil de 5
+> sessions **et** à un ratio au plus 0,2 (F24) ; squelette `{uuid, parent_uuid,
+> src_offset, type}` pour chaque ligne source. Les marqueurs `{stored: id}` restent dans
+> la vue ; leur résolution par `GET /memory/{id}` passe au juge du consommateur (11.3),
+> hypomnema ne lit jamais Kleos.
+
 ### 3.1 Ce que le serveur doit extraire
 
 Décisions et leur raison, faits d'infrastructure (hôte, chemin, commande qui marche),
@@ -811,6 +856,21 @@ s'il l'était déjà (rewind après stabilisation, cas d'une reprise), il suit l
 ---
 
 ## 4. Traitement côté serveur
+
+> **Révision 7.** Partage des sous-sections :
+> - **passent à hypomnema** (conception §7.4) : 4.1 (déclencheurs du map, stabilisation à
+>   8 h), 4.2 (fenêtres, état de lignée, sortie JSON ; taille de fenêtre calculée par le
+>   tokenizer du modèle branché, LiteLLM ou Ollama), et les points 1 et 2 de 4.3 (état de
+>   lignée hérité, publication à la stabilisation). Le préfixe forké n'est jamais remappé :
+>   le map d'une copie part de l'instantané de la lignée parente ;
+> - **restent à Kleos** (consommateur, section 11) : le point 3 de 4.3 (révision des faits
+>   publiés par la chaîne de versions, correspondance, idempotence), 4.4 (couches 0 à 5),
+>   4.5 (typage ; le space vient désormais d'une étiquette, 11.3), 4.6 (juge nightly), 4.7
+>   et 4.8 (dédup de fond).
+> Les « tours sources » que le juge amont joint à un fait (4.4, couche 1) se lisent par
+> `GET /v1/sessions/{id}/read?around=<uuid>` sur hypomnema, et non plus dans la base du
+> relais. La limite nommée au point 1 de 4.3 (vraie branche jamais observée) est levée
+> par F21 : les branches sœurs sont fréquentes, voir 11.4.
 
 ### 4.1 Quand
 
@@ -1260,6 +1320,14 @@ reste servie en double, au plafond de 5 pour la copie de transcript.
 
 ## 5. Rétention, rattrapage, purge des copies
 
+> **Révision 7.** Remplacée par la conception hypomnema §7.1 (stockage et rétention) et
+> §7.4 (portée du map et rattrapage) : hypomnema garde tout l'extrait sans limite de
+> durée, sans niveaux (décision opérateur, #33942) ; une époque remplacée n'est supprimée
+> qu'après l'acquittement du flux par chaque consommateur (§10). Le rattrapage suit la décision #33968 :
+> sessions team-lead et sans agent seulement, de la plus récente à la plus ancienne,
+> profondeur `backfill_days` réglable sans retraiter l'existant. Côté Kleos, seule la
+> correspondance des faits publiés est conservée, sans limite (11.2).
+
 | Objet | Rétention proposée | Raison |
 |---|---|---|
 | Enregistrements B rédigés (relais), révisions 2 à 5 | 14 jours après la dernière stabilisation qui les couvre (X = 14, paramètre) | Retraiter après un changement de vue, de prompt ou de modèle ; couvrir une reprise tardive ; borner l'exposition des secrets résiduels (1.4). **Remplacé en révision 6 par la ligne suivante** |
@@ -1290,6 +1358,12 @@ des mémoires d'agent plus récentes au juge pour un gain non mesuré, et coûte
 ---
 
 ## 6. Modes de défaillance
+
+> **Révision 7.** Les lignes qui touchent le poste, le protocole, la rédaction, la vue et
+> le map sont reprises par hypomnema (conception §11). Restent du ressort de Kleos : Kleos
+> en panne, tête de chaîne déplacée, fait faux, stores d'agent tardifs, session sans space
+> exploitable, juge amont en panne, secret détecté dans un fait candidat. La ligne « vraie
+> branche » est réécrite en 11.4 : F21 montre que les branches sœurs sont fréquentes.
 
 | Défaillance | Comportement attendu | Perte possible |
 |---|---|---|
@@ -1338,6 +1412,14 @@ des mémoires d'agent plus récentes au juge pour un gain non mesuré, et coûte
 (Patch 58, 69 et 70 y sont de petits deltas, candidats PR). Le supprimer ou le réécrire
 sur place créerait le plus gros site de conflit possible (niveau « réécriture »).
 
+> **Révision 7.** Les deux raisons ci-dessus (conflit au rebase, candidats PR) sont
+> caduques depuis le gel upstream du 2026-10-22 (Kleos #32360). La conclusion tient pour
+> une autre raison : hypomnema reprend tout ce que kleos-ingest devait faire, donc le crate
+> n'a plus d'usage, et le retirer est un ménage sans urgence. Les idées reprises dans la
+> table ci-dessous le sont désormais par `hypomnema-agent`. Cartes : `f18dc3c4` recentrée
+> le 2026-10-24 sur le consommateur Kleos ; `6322672e` porte le hook d'étiquette de space ;
+> `20d18577` reste en `wontfix`.
+
 | Morceau | Sort |
 |---|---|
 | Curseur par offset et offset durable (`tailer.rs:61-119`) | Idée reprise, réécrite : fin de ligne obligatoire (2.3) et acquittement par le relais |
@@ -1363,6 +1445,13 @@ Cartes (recommandations, non appliquées par cette étude) :
 
 ## 8. Lots ordonnés et portes mesurables
 
+> **Révision 7.** Cette table décrit la cible de la révision 6. Ses lots passent ainsi :
+> F (1) et F (5) au lot 1 d'hypomnema (contrat du fil, fichier de motifs) ; F (2), F (3)
+> et F (4) restent à Kleos (lot K0 de 11.6) ; 0 au lot 0 d'hypomnema, déjà exécuté pour
+> (d), (i), (j), mesures F21 à F26 ; 1, 2 et 3 aux lots 1 à 3 d'hypomnema ; 4 au lot 6
+> d'hypomnema (map), dont la porte de qualité des faits est reprise comme porte de
+> publication de Kleos (11.5) ; 5 et 6 restent à Kleos, réécrits en lots K1 à K4 (11.6).
+
 | Lot | Contenu | Porte mesurable |
 |---|---|---|
 | **F. Gel avant tout code** (verdict 1.3) | (1) contrat HTTP démon vers relais, sections 2.3 et 2.4, versionné dans le dépôt du relais (révision 6 : avec `epoch_reason`, `stats`, `cc_version`, les marqueurs de 2.3, les réponses `same_view` et la route `stale`) ; (2) contrat du juge amont : prompt partagé, question de fidélité, schéma de verdict et effets (4.4, couche 1) ; (3) rev git épinglé de kleos-lib sur le fork VOCSAP et règle de bump écrite (à chaque merge upstream du fork, après un build vert) ; (4) liste des champs de `StoreRequest` et des fonctions de kleos-lib utilisés (révision 6 : trois fonctions plus le chargeur du lexique, 1.3), avec un test d'intégration jetable ; (5) **révision 6** : contrat du crate de rédaction partagé démon et relais : liste des formats de 1.4, `secret_patterns_version`, sémantique « valeur masquée, ligne conservée » | (1) schéma JSON du segment et table des réponses figés, relus par le lead ; (2) schéma de verdict figé et fixtures écrites : un fait inventé, un fait déformé, un doublon d'agent, une contradiction d'agent, un fait fidèle et distinct ; (3) le relais compile contre le rev épinglé, hors des `members` du `Cargo.toml` racine (`git diff Cargo.toml` vide) ; (4) le test jetable passe sur le rev épinglé ; (5) liste des formats relue par le lead contre F17 et F19 : chacun des cinq comptes de F17 (3, 4, 12, 51, 0) a un format qui le couvre, et `key`, `privatekey`, `api-key` (F19) y figurent |
@@ -1377,6 +1466,20 @@ Cartes (recommandations, non appliquées par cette étude) :
 ---
 
 ## 9. Questions ouvertes pour l'opérateur
+
+> **Révision 7 : état des questions.**
+>
+> | Question | État au 2026-10-24 |
+> |---|---|
+> | Q1 Niveaux de purge | Sans objet : la vue est calculée par `hypomnema-core` |
+> | Q2 Autorité d'archivage sur les mémoires de transcript | **Ouverte**, reprise telle quelle par le consommateur (11.4) ; recommandation (a) inchangée |
+> | Q3 Résumés de session | Tranchée par la topologie : les résumés vivent dans hypomnema (UI, CLI, MCP) ; aucune mémoire Kleos de résumé |
+> | Q4 Rattrapage de l'historique | Tranchée (#33968) : team-lead et sans agent, du plus récent au plus ancien, `backfill_days` |
+> | Q5 Emplacement du traitement serveur | Tranchée autrement : traitement dans `hypomnema-server`, consommateur Kleos séparé (11.1) |
+> | Q6 Rétention de A+ au relais | Tranchée (#33942) : sans limite côté hypomnema ; pas de rotation des secrets de F17 (#33978) ; rebalayage hors v1 |
+> | Q7 Arbitrage des `<channel>` | Tranchée : corps gardé à l'affichage, retiré de la vue présentée au modèle quand l'original est connu, par hypomnema |
+> | Q8 Seuils du filtre structurel | Tranchée par mesure (F24) : 5 sessions et ratio au plus 0,2 ; table locale au poste |
+> | Q9 Vue des sous-agents | Tranchée par mesure (F23) : `tool_result` d'agent du parent gardé entier |
 
 **Q1. Niveaux de purge.** Stockage : (a) **B rédigé, recommandé** (idée du challenger,
 environ 620 Mo sur 14 jours, surface de secrets traitée en 1.4) ; (b) A+ seulement, plus
@@ -1495,3 +1598,162 @@ la réécriture sur place de kleos-ingest sont écartés.
   révision 1 et toujours écartées : `upsert_conversation` ajoute chaque message sans clé
   d'idempotence (DÉDUIT, `kleos-lib/src/conversations.rs:712-774`) et `memorize` fait UNE
   mémoire par conversation (DÉDUIT, `kleos-server/src/routes/conversations/mod.rs:274-313`).
+- Révision 7 : conception hypomnema, `VOCSAP/hypomnema`,
+  `docs/superpowers/specs/2026-10-24-hypomnema-design.md` (commit `009d6b6`, puis
+  `7db51d0`, version du contrat du §10 citée par la section 11), sections 3, 4, 5, 6,
+  7.1, 7.4, 10, 12 ;
+  Kleos #33908 (préfixe forké), #33942 (topologie), #33945 (dépôt), #33962 (space côté
+  poste), #33968 (portée du map), #33978 (pas de rotation), #33981 (lot 0 d'hypomnema) ;
+  hook `~/.claude/hooks/session-start-kleos-label.sh` et son test
+  `hooks/tests/test-session-start-kleos-label.py` (dépôt claude-config) ;
+  `kleos-lib/src/auth.rs:62`, `:159-161`, `:335-343` (portées de clés) ;
+  `kleos-lib/src/llm/mod.rs:45`, `:62`, `:76` (coupure du raisonnement).
+
+---
+
+## 11. Consommateur Kleos (révision 7)
+
+Cette section fait foi pour tout ce qui reste à Kleos. Le contrat d'entrée est le §10 de
+la conception hypomnema, au commit `7db51d0` ; en cas d'écart entre les deux textes, le §10 d'hypomnema
+l'emporte pour la forme du flux, et cette section pour ce que Kleos en fait.
+
+### 11.1 Place et forme
+
+- **Processus séparé** de kleos-server et de `hypomnema-server`, sur LXC 121, binaire
+  Rust qui dépend de kleos-lib (`think_setting`, `load_prompt`, `connect_encrypted`,
+  chargeur du lexique). Nom provisoire : `kleos-transcript-consumer`.
+- **Base propre**, SQLCipher : curseur du flux, état candidat des faits par
+  `(lineage_id, branch_id, fact_id)`, correspondance vers `(memory_id, version)`,
+  conflits retenus, file `to_dedup` (4.8), refus de la couche 0. La correspondance est
+  gardée sans limite ; le reste suit la rétention d'hypomnema.
+- **Deux jetons**, tous deux dans un `EnvironmentFile` 0600 : un jeton de lecture
+  hypomnema dédié au consommateur, et une clé API Kleos à portée écriture, envoyée en
+  `Authorization: Bearer`.
+- **Le verdict R de 1.3, relu.** Sa force décisive, E9 (le dreamer modifié à chaque merge
+  upstream), est annulée par le gel du 2026-10-22. Le processus séparé reste retenu pour
+  une autre raison : une panne ou une fuite du consommateur ne touche pas le processus
+  qui sert les agents. La condition de renversement 2 (transaction SQLite partagée entre
+  le juge et le stockage) reste non remplie : le consommateur ne partage aucune base.
+- **Emplacement du code : crate membre du workspace Kleos** (Q10, tranchée par
+  l'opérateur le 2026-10-25). Le gel retire E10 (conflit sur la ligne `members`) et la
+  règle de bump d'un rev épinglé disparaît ; le crate dépend de kleos-lib par chemin.
+
+### 11.2 Entrée : le flux d'hypomnema
+
+`GET /v1/feed?after=<seq>&limit=N`, puis `POST /v1/feed/ack {consumer, seq}` après le
+traitement **transactionnel** de chaque événement dans la base du consommateur. Un
+événement rejoué rend le même contenu, et son traitement est idempotent : un arrêt
+brutal entre le traitement et l'acquittement produit au pire un rejeu sans effet.
+
+| Événement | Effet côté Kleos |
+|---|---|
+| `session_meta` | Étiquettes, `git_root`, `host_id`, `file_key`, versions, `parent_session` : résolution du space (11.3) |
+| `epoch_opened`, `epoch_superseded` | Trace seulement ; l'acquittement autorise hypomnema à supprimer l'époque remplacée |
+| `facts_updated` | Mise à jour de l'état candidat : `fact_id` stable, `branch_id`, version, statut (`proposé`, `décidé`, `mesuré`, `abandonné`), catégorie Kleos, importance proposée, uuid des tours sources, drapeau `abandoned` (`/rewind`), `map_version` |
+| `lineage_stabilized {lineage_id, branch_id}` | Publication de la branche (11.4) ; une branche sœur encore vivante n'est pas touchée |
+| `lineage_reopened` | La branche passe en révision : ses faits publiés seront comparés à la prochaine stabilisation |
+| `lineage_merged {from, into}` | Réécriture de la correspondance de `from` vers `into` ; aucune republication |
+| `remap {motif}` | Comparaison selon la table de 2.8 : rien pour un fait identique, version pour un fait révisé, publication pour un fait distinct, **aucun archivage pour un fait absent** |
+
+**Garde de version, échec fermé.** Un événement `facts_updated` dont la
+`secret_patterns_version` est inférieure au minimum configuré n'entre pas dans l'état
+candidat : il est consigné et acquitté, pour que le flux avance. La ré-extraction par
+hypomnema produit ensuite un `remap` sous une version suffisante.
+
+**Lecture des tours sources** pour le juge amont :
+`GET /v1/sessions/{id}/read?around=<uuid>`. Le consommateur ne lit jamais les
+enregistrements A+ en masse.
+
+### 11.3 Space d'une session
+
+Le consommateur ne voit pas le disque du poste (Kleos #33962). Ordre de résolution, sur
+les seules données reçues :
+
+1. **Étiquette `kleos-space`**, émise par le hook dédié
+   `~/.claude/hooks/session-start-kleos-label.sh` (carte `6322672e`). Forme figée avec
+   hypomnema : l'`additionalContext` entier du hook vaut `<<label kleos-space=<nom>
+   /label>>`, motif `^<<label kleos-space=[a-z0-9_-]{1,64} /label>>$`, lu par égalité
+   stricte d'un élément `content` d'une ligne `attachment` SessionStart. Un hook dédié,
+   et non une ligne de plus dans `session-start-kleos.sh`, parce que ce dernier réinjecte
+   des mémoires : une mémoire qui cite le format donnerait une fausse étiquette avec une
+   recherche par ligne. Le nom est celui de `resolve_project_name`, la même règle que le
+   hook principal, sans créer de marqueur.
+2. **Étiquette de fichier marqueur** `.kleos-space`, lue sur le poste par
+   `hypomnema-agent`, pour les sessions antérieures au hook, normalisée comme
+   `normalize_space_name`.
+3. **Nom du dépôt** de `git_root`, normalisé de même.
+4. Sinon, aucun space.
+
+Une session de sous-agent prend le space de sa `parent_session`. Un nom qui désigne le
+dossier personnel ou une racine, ou l'absence de space : faits gardés, non publiés
+(4.5). Une étiquette qui diverge du marqueur : l'étiquette l'emporte, l'écart est
+consigné.
+
+### 11.4 Publication et révision
+
+**Ce qui devient une mémoire** (repris de 4.3) : un fait de l'état stabilisé d'une
+branche, au statut `décidé` ou `mesuré`, non `abandoned`, qui passe la couche 0 puis la
+couche 1 (4.4). La **liste négative** du juge amont est désormais construite par le
+consommateur : les marqueurs `{stored: id}` de la session, résolus par
+`GET /memory/{id}` ; un fait qui recouvre un store de l'agent est rendu `doublon` sans
+publication.
+
+**Champs de la publication** (4.5) : `source=kleos-transcript` ; catégorie du fait ;
+importance `min(proposée, 5)` ; `created_at` = `ts` du tour source ; `session_id` ;
+`space` (11.3) ; tags `transcript`, le projet, `turn:<uuid>`,
+`fact:<lineage8>-<branch>-<fact_id>`.
+
+**Révision par branche** (point 3 de 4.3). F21 rend les branches sœurs fréquentes : le
+bloc commun appartient à une branche racine, et chaque branche révise ses faits de son
+côté. Une révision d'une branche sur un fait publié depuis la racine suit la chaîne de
+versions si la tête connue est intacte ; la seconde branche qui révise le même fait
+rencontre le refus de parent périmé (F12) et publie une mémoire neuve, que le juge
+nightly annote (4.6). Ce cas, nommé « jamais observé » en révision 6, est désormais un
+chemin nominal, à mesurer au lot K3.
+
+**Inchangés :** idempotence par l'état `intention` et le tag `fact:` (4.3) ; règle
+d'autorité, le consommateur ne révise et n'archive que ses propres publications ; couches
+2 à 5 de 4.4 ; juge nightly (4.6) ; dédup de fond (4.8) ; question Q2 ouverte.
+
+### 11.5 Porte de publication
+
+La qualité de l'extraction ne dépend plus de Kleos : le modèle du map est branché par
+l'utilisateur d'hypomnema (LiteLLM ou Ollama, aucun défaut). Le consommateur tourne donc
+**en ombre**, sans écrire dans Kleos, tant que sa porte n'est pas passée, et y retourne
+après tout changement de `map_version` qui change de modèle. Porte, reprise des lots 4 et
+5 de la section 8 :
+
+- au moins 60 % de faits publiables jugés utiles, au plus 5 % jugés faux, sur un tirage
+  de 40 jugé à l'aveugle par un juge indépendant (autre modèle que le juge amont) ;
+- au moins 99 % de JSON valide après relance côté hypomnema, et 0 réponse tronquée
+  acceptée (lu dans le flux et dans `/v1/health`) ;
+- 0 secret publié sur le corpus de calibration, par les comptes de #32381 ;
+- les fixtures du lot F (2) : 100 % des faits inventés ou déformés non publiés, 100 %
+  des faits fidèles et distincts publiés.
+
+### 11.6 Lots Kleos
+
+| Lot | Contenu | Porte mesurable | Dépend de |
+|---|---|---|---|
+| **K0 Gel** | Contrat du juge amont (lot F (2)) ; liste des champs de `StoreRequest` et test d'intégration jetable (lot F (4)) ; fixtures d'événements du flux, relues contre le §10 d'hypomnema ; squelette du crate dans le workspace (Q10) | Schéma de verdict et fixtures écrits ; test jetable vert ; chaque type d'événement du §10 a au moins une fixture | Rien |
+| **K1 Lecture du flux, en ombre** | Curseur, acquittement, état candidat, `lineage_merged`, garde de version, résolution du space | Flux de fixture rejoué deux fois : état identique ; 20 arrêts brutaux au hasard : 0 perte, 0 doublon ; 100 % des sessions de fixture reçoivent le space attendu par l'ordre de 11.3, 0 pour un `cwd` personnel ou racine | Lots 3 et 10 d'hypomnema (stockage, route de flux) |
+| **K2 Couches 0 et 1, en ombre** | Détecteur de secrets sur le fichier de motifs épinglé ; juge amont avec liste négative et tours sources lus par `read?around` | Fixtures de secrets : 100 % bloqués, 0 des 50 faits sans secret bloqué ; porte de 11.5 sur le corpus de calibration | K1 ; lot 6 d'hypomnema (map) |
+| **K3 Publication** | Écriture dans Kleos, révision par branche, `remap`, idempotence | Portes du lot 5 de la section 8 qui restent à Kleos : second passage, 0 nouvelle mémoire ; 0 mémoire de transcript dans les tiers poussés ; lignée rouverte : une version 2 et aucune seconde tête ; coupure simulée : 0 doublon ; `remap` : 0 archivage par absence ; branches sœurs de fixture : une version et une mémoire neuve annotée | K2 passé |
+| **K4 Nettoyage a posteriori** | Juge nightly borné aux mémoires de transcript (4.6) ; bande grise (4.8) | Celles du lot 5 pour la bande grise et la contradiction après coup | K3 ; étape 2 de l'étude nightly |
+
+**Ordre.** K0 peut commencer tout de suite. K1 attend la route de flux d'hypomnema.
+Décision opérateur du 2026-10-25 : cette route peut passer juste après le lot 6
+d'hypomnema plutôt qu'au lot 10 ; sa place exacte se fixe au fil des lots, selon ce
+qu'ils découvrent.
+
+### 11.7 Questions ouvertes (révision 7)
+
+**Q10. Emplacement du consommateur. Tranchée le 2026-10-25 : (a).** (a) **Crate du
+workspace Kleos** :
+dépendance à kleos-lib par chemin, plus de bump à tenir, et le gel retire le risque de
+conflit sur `members` (E10). (b) Dépôt séparé sur un rev épinglé, comme le prévoyait la
+révision 3 : isole davantage, au prix du bump et du test jetable à chaque changement de
+kleos-lib. (c) Module d'hypomnema : écarté, hypomnema ne doit dépendre ni de l'API de
+Kleos ni de ses décisions de publication.
+
+**Q2** (autorité d'archivage) reste ouverte telle quelle.
