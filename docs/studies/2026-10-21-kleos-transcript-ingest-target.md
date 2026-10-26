@@ -45,6 +45,7 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | 5 | 2026-10-21 | Dédup de fond, space par session, juge amont Haiku, bande grise Sonnet, gel ELv2 |
 | 6 | 2026-10-22 | A+ calculé au démon, plus de B au relais ; détecteur de secrets avant publication ; injections repérées par la structure ; « extraire là où c'est écrit » généralisé ; renvoi motivé (`rewrite`, `view_upgrade`) ; points secondaires du challenger (erreurs Windows en français, ligne illisible, `/rewind`, enregistrement énorme) |
 | 7 | 2026-10-24 | Décisions #33942, #33968, #33978 ; conception hypomnema (commit `009d6b6`). Topologie client poste → serveur hypomnema → consommateur Kleos séparé ; démon, protocole, vue A+, rédaction, stockage et map transférés à hypomnema ; space transmis par une étiquette de hook ; map de toutes les sessions dès la mise en service ; rétention sans limite côté hypomnema ; mesures du lot 0 d'hypomnema intégrées (F21 à F26) ; section 11 « Consommateur Kleos » |
+| 7.1 | 2026-10-26 | Contrat du §10 d'hypomnema épinglé à `ef02cee` : `secret_patterns_version` remplacée par `secret_patterns_rev` (ordonnée, garde du consommateur) et `secret_patterns_hash` (égalité seule) ; annexe A d'hypomnema, qui fait foi sur les sections reprises ; quatre divergences relevées en section 11 |
 
 ### Ce que les révisions 2 à 7 changent
 
@@ -1600,8 +1601,8 @@ la réécriture sur place de kleos-ingest sont écartés.
   mémoire par conversation (DÉDUIT, `kleos-server/src/routes/conversations/mod.rs:274-313`).
 - Révision 7 : conception hypomnema, `VOCSAP/hypomnema`,
   `docs/superpowers/specs/2026-10-24-hypomnema-design.md` (commit `009d6b6`, puis
-  `7db51d0`, version du contrat du §10 citée par la section 11), sections 3, 4, 5, 6,
-  7.1, 7.4, 10, 12 ;
+  `7db51d0`, puis `ef02cee`, version du contrat du §10 citée par la section 11), sections
+  3, 4, 5, 6, 7.1, 7.4, 10, 12 et annexe A ;
   Kleos #33908 (préfixe forké), #33942 (topologie), #33945 (dépôt), #33962 (space côté
   poste), #33968 (portée du map), #33978 (pas de rotation), #33981 (lot 0 d'hypomnema) ;
   hook `~/.claude/hooks/session-start-kleos-label.sh` et son test
@@ -1614,8 +1615,18 @@ la réécriture sur place de kleos-ingest sont écartés.
 ## 11. Consommateur Kleos (révision 7)
 
 Cette section fait foi pour tout ce qui reste à Kleos. Le contrat d'entrée est le §10 de
-la conception hypomnema, au commit `7db51d0` ; en cas d'écart entre les deux textes, le §10 d'hypomnema
+la conception hypomnema, au commit `ef02cee` ; en cas d'écart entre les deux textes, le §10 d'hypomnema
 l'emporte pour la forme du flux, et cette section pour ce que Kleos en fait.
+
+Depuis `ef02cee`, l'annexe A de la conception hypomnema reformule les sections 1.4, 2.1 à
+2.8, 3.3, 3.4 et 4.1 à 4.3 de cette étude, qu'hypomnema reprenait jusque-là par renvoi.
+Pour tout ce qui relève d'hypomnema, la conception fait foi, notamment sur quatre points
+où elle diverge de cette étude :
+- balayage `stat` de repli toutes les 60 s, au lieu de 10 min ;
+- fenêtre du map calculée par le tokenizer du modèle branché, au lieu de 36 000 caractères fixes ;
+- un changement de modèle ou de prompt ne vaut que pour les fenêtres à venir, sauf `remap`
+  sur commande, au lieu de rouvrir les lignées ;
+- préfixe classé injection : 5 sessions **et** un ratio d'au plus 0,2, au lieu de 5 sessions.
 
 ### 11.1 Place et forme
 
@@ -1656,9 +1667,13 @@ brutal entre le traitement et l'acquittement produit au pire un rejeu sans effet
 | `remap {motif}` | Comparaison selon la table de 2.8 : rien pour un fait identique, version pour un fait révisé, publication pour un fait distinct, **aucun archivage pour un fait absent** |
 
 **Garde de version, échec fermé.** Un événement `facts_updated` dont la
-`secret_patterns_version` est inférieure au minimum configuré n'entre pas dans l'état
-candidat : il est consigné et acquitté, pour que le flux avance. La ré-extraction par
-hypomnema produit ensuite un `remap` sous une version suffisante.
+`secret_patterns_rev` est inférieure à la révision minimale configurée n'entre pas dans
+l'état candidat : il est consigné et acquitté, pour que le flux avance. La ré-extraction
+par hypomnema produit ensuite un `remap` de motif `patterns_upgrade` sous une révision
+suffisante. `secret_patterns_rev` numérote l'ensemble de motifs **livré**, celui que le
+consommateur épingle ; `secret_patterns_hash`, empreinte de l'ensemble effectif (livré
+plus motifs de l'utilisateur), n'entre pas dans la garde : un motif utilisateur produit
+une empreinte que le consommateur ne peut pas connaître.
 
 **Lecture des tours sources** pour le juge amont :
 `GET /v1/sessions/{id}/read?around=<uuid>`. Le consommateur ne lit jamais les
