@@ -1,0 +1,4 @@
+{"seq":1,"kind":"epoch_opened","schema_version":1,"payload":{"file_key":"fk-ep-01","epoch":1,"epoch_reason":"rewrite","view_version":1,"secret_patterns_rev":4,"secret_patterns_hash":"0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"}}
+{"seq":2,"kind":"epoch_superseded","schema_version":1,"payload":{"file_key":"fk-ep-01","epoch":0,"by_epoch":1}}
+{"seq":3,"kind":"epoch_opened","schema_version":1,"payload":{"file_key":"fk-ep-01","epoch":2,"epoch_reason":"view_upgrade","view_version":2,"secret_patterns_rev":4,"secret_patterns_hash":"0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"}}
+{"seq":4,"kind":"epoch_superseded","schema_version":1,"payload":{"file_key":"fk-ep-01","epoch":1,"by_epoch":2}}
