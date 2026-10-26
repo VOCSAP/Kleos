@@ -7828,8 +7828,8 @@ modèle, aucune écriture dans Kleos.
   attend K2.
 - `publish` : corps `StoreRequest` d'une publication (source
   `kleos-transcript`, importance plafonnée à 5, tags `transcript`, projet,
-  `turn:`, `fact:<lineage8>-<branch_id>-<fact_id>`, `parent_memory_id` pour
-  une version).
+  `turn:`, `fact:<lineage8>-<fact_id>` sans la branche, que
+  `branch_root_changed` réécrit, `parent_memory_id` pour une version).
 
 **Fichiers :** `Cargo.toml`, `Cargo.lock`, `kleos-transcript-consumer/**`,
 `docs/dev-notes/local-patches.md`.
