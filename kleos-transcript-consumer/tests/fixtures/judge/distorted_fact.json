@@ -1,0 +1,29 @@
+{
+  "case": "distorted_fact",
+  "fact": {
+    "content": "The demo cache must never be cleared in production.",
+    "category": "decision",
+    "source_turns": ["00000000-0000-4000-8000-000000000211"]
+  },
+  "source_turns": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000211",
+      "role": "assistant",
+      "text": "Clearing the demo cache in production is safe outside the peak hours, but it slows the next requests."
+    }
+  ],
+  "neighbours": [
+    {
+      "memory_id": 4101,
+      "content": "The demo cache is warmed at 06:00 each day.",
+      "source": "claude-session"
+    }
+  ],
+  "expected_verdict": {
+    "fidelity": "infidele",
+    "relation": "distinct",
+    "neighbour_id": null,
+    "reason": "The source turns say clearing is safe outside peak hours; the fact states the opposite."
+  },
+  "expected_effect": { "drop": { "reason": "unfaithful" } }
+}

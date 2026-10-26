@@ -5526,6 +5526,16 @@ name = "kleos-token-client"
 version = "1.10.0"
 
 [[package]]
+name = "kleos-transcript-consumer"
+version = "1.10.0"
+dependencies = [
+ "kleos-lib",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

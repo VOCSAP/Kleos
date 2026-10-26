@@ -1,0 +1,4 @@
+{"seq":1,"kind":"lineage_stabilized","schema_version":1,"payload":{"lineage_id":"9999aaaabbbbcccc","branch_id":"b0"}}
+{"seq":2,"kind":"lineage_reopened","schema_version":1,"payload":{"lineage_id":"9999aaaabbbbcccc","branch_id":"b0"}}
+{"seq":3,"kind":"facts_updated","schema_version":1,"payload":{"lineage_id":"9999aaaabbbbcccc","branch_id":"b0","session_id":"sess-reo-01","secret_patterns_rev":4,"secret_patterns_hash":"0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0","map_version":{"model":"example-model-1","prompt":"map-v1","reasoning_cutoff":"off","view_version":1},"facts":[{"fact_id":1,"version":2,"status":"decided","category":"issue","importance":5,"content":"The demo build fails when the lock file is stale.","source_turns":["00000000-0000-4000-8000-0000000000d1"],"abandoned":false}]}}
+{"seq":4,"kind":"lineage_stabilized","schema_version":1,"payload":{"lineage_id":"9999aaaabbbbcccc","branch_id":"b0"}}

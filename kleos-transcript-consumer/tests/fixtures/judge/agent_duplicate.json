@@ -1,0 +1,29 @@
+{
+  "case": "agent_duplicate",
+  "fact": {
+    "content": "The demo importer rejects files larger than 50 MB.",
+    "category": "discovery",
+    "source_turns": ["00000000-0000-4000-8000-000000000221"]
+  },
+  "source_turns": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000221",
+      "role": "assistant",
+      "text": "The demo importer rejects any file larger than 50 MB with a size error."
+    }
+  ],
+  "neighbours": [
+    {
+      "memory_id": 4201,
+      "content": "Demo importer: files above 50 MB are rejected.",
+      "source": "claude-session"
+    }
+  ],
+  "expected_verdict": {
+    "fidelity": "fidele",
+    "relation": "doublon",
+    "neighbour_id": 4201,
+    "reason": "Memory 4201 stored by the agent already states the same limit."
+  },
+  "expected_effect": { "drop": { "reason": "duplicate" } }
+}

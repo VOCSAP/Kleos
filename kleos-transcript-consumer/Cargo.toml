@@ -1,0 +1,15 @@
+[package]
+name = "kleos-transcript-consumer"
+version = "1.10.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[features]
+bundled-sqlite = ["kleos-lib/bundled-sqlite"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+kleos-lib = { path = "../kleos-lib", version = "1.10.0" }

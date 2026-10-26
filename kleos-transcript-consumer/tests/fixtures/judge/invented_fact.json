@@ -1,0 +1,28 @@
+{
+  "case": "invented_fact",
+  "fact": {
+    "content": "The team decided to migrate the demo service to a managed queue next quarter.",
+    "category": "decision",
+    "source_turns": ["00000000-0000-4000-8000-000000000201"]
+  },
+  "source_turns": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000201",
+      "role": "user",
+      "text": "Could you check why the demo service restarts every night?"
+    },
+    {
+      "uuid": "00000000-0000-4000-8000-000000000202",
+      "role": "assistant",
+      "text": "The restart comes from a scheduled maintenance task. Nothing else is configured."
+    }
+  ],
+  "neighbours": [],
+  "expected_verdict": {
+    "fidelity": "infidele",
+    "relation": "distinct",
+    "neighbour_id": null,
+    "reason": "Nothing in the source turns mentions a migration or a managed queue."
+  },
+  "expected_effect": { "drop": { "reason": "unfaithful" } }
+}

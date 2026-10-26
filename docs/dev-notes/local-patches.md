@@ -7796,3 +7796,59 @@ silencieuse de la baseline n'est devenue avertissement.
 registre local et les exceptions de suppression observées sont validés; ne pas
 le raccorder aux hooks ou retirer les protections existantes avant le lot
 d'activation séparé.
+
+---
+
+## Patch 78 -- `kleos-transcript-consumer` : gel du contrat (lot K0)
+
+Carte roadmap f18dc3c4, spec agent-forge `spec_ce5abd08`. Crate neuf, additif
+pur : aucun fichier upstream modifié hors de la ligne `members` du `Cargo.toml`
+racine.
+
+**Objet :** premier lot du consommateur Kleos des faits d'hypomnema, décrit en
+section 11 de `docs/studies/2026-10-21-kleos-transcript-ingest-target.md`
+(révision 7.1). Contrat d'entrée : §10 de la conception hypomnema au commit
+`ef02cee` et schéma du flux du plan hypomnema, lot 3. Le lot fige les formes
+avant tout code de lecture du flux : aucun binaire, aucun appel réseau ni
+modèle, aucune écriture dans Kleos.
+
+**Approche :**
+- `feed` : `FeedItem {seq, kind, schema_version, payload}` et décodage typé des
+  9 kinds (`session_meta`, `epoch_opened`, `epoch_superseded`,
+  `facts_updated`, `lineage_stabilized`, `lineage_merged`,
+  `lineage_reopened`, `branch_root_changed`, `remap`). Échec fermé : kind
+  inconnu, `schema_version` autre que 1, champ requis absent, valeur hors
+  vocabulaire et ancien champ `secret_patterns_version` sont refusés ; un
+  champ en trop est toléré. Les champs nuls de `session_meta` doivent être
+  présents.
+- `judge` : verdict du juge amont (fidélité, relation) et `effect()`, qui
+  applique la couche 1 de 4.4 ; la fidélité prime sur la relation, et une
+  contradiction sans voisin identifié est écartée. Question de fidélité figée
+  dans `prompts/upstream_judge_fidelity.txt` ; le câblage sur `load_prompt`
+  attend K2.
+- `publish` : corps `StoreRequest` d'une publication (source
+  `kleos-transcript`, importance plafonnée à 5, tags `transcript`, projet,
+  `turn:`, `fact:<lineage8>-<branch_id>-<fact_id>`, `parent_memory_id` pour
+  une version).
+
+**Fichiers :** `Cargo.toml`, `Cargo.lock`, `kleos-transcript-consumer/**`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-transcript-consumer --features
+bundled-sqlite`, 27 tests : 10 fichiers de fixtures du flux couvrant les 9
+kinds et les 4 motifs de `remap`, refus du décodage, 5 fixtures du juge (fait
+inventé, déformé, doublon d'agent, contradiction d'agent, fidèle et distinct),
+test d'intégration jetable du corps `StoreRequest` et de la signature de
+`think_setting`, `load_prompt`, `Database::connect_encrypted` et
+`lexicon::word_class`. Chaque test nomme sa mutation, et les 27 mutations ont
+été rejouées une à une sur une copie hors dépôt, rouge constaté (le test des
+signatures de kleos-lib rougit à la compilation). Clippy se
+lance avec `--no-deps` : sans lui, `-D warnings` remonte les avertissements
+préexistants de kleos-lib.
+
+**Écarts relevés :** `branch_root_changed` (plan hypomnema, lot 3) manque à la
+table 11.2 de l'étude. Les formes proposées par Kleos pour les payloads du lot
+6 d'hypomnema (statuts en anglais ASCII, `map_version` en objet, `content`
+d'un fait, `remap` par lignée) attendent la relecture du peer hypomnema.
+
+**Conditions de retrait :** aucune ; le crate est propre au fork.

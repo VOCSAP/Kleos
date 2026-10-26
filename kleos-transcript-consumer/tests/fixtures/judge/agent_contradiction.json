@@ -1,0 +1,29 @@
+{
+  "case": "agent_contradiction",
+  "fact": {
+    "content": "The demo scheduler runs jobs in parallel.",
+    "category": "state",
+    "source_turns": ["00000000-0000-4000-8000-000000000231"]
+  },
+  "source_turns": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000231",
+      "role": "assistant",
+      "text": "After the change, the demo scheduler runs jobs in parallel."
+    }
+  ],
+  "neighbours": [
+    {
+      "memory_id": 4301,
+      "content": "The demo scheduler runs jobs one at a time.",
+      "source": "claude-session"
+    }
+  ],
+  "expected_verdict": {
+    "fidelity": "fidele",
+    "relation": "contredit",
+    "neighbour_id": 4301,
+    "reason": "Memory 4301 says jobs run one at a time."
+  },
+  "expected_effect": { "hold_conflict": { "neighbour_id": 4301 } }
+}
