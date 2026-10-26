@@ -10,7 +10,6 @@ use serde_json::Value;
 fn fact(importance: i32, parent: Option<i64>) -> PublishFact {
     PublishFact {
         lineage_id: "0123456789abcdef".into(),
-        branch_id: "b1".into(),
         fact_id: 4,
         category: FactCategory::Decision,
         importance,
@@ -55,7 +54,7 @@ fn body_deserializes_into_store_request_with_every_contract_field() {
             "transcript",
             "demo-project",
             "turn:11111111-2222-3333-4444-555555555555",
-            "fact:01234567-b1-4"
+            "fact:01234567-4"
         ]
     );
     assert_eq!(req.parent_memory_id, None);

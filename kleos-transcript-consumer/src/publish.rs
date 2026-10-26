@@ -15,7 +15,6 @@ pub struct SourceTurn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishFact {
     pub lineage_id: String,
-    pub branch_id: String,
     pub fact_id: u32,
     pub category: FactCategory,
     pub importance: i32,
@@ -44,7 +43,9 @@ pub fn store_request(fact: &PublishFact, session: &PublishSession) -> StoreReque
             "transcript".to_string(),
             session.project.clone(),
             format!("turn:{}", fact.turn.uuid),
-            format!("fact:{lineage8}-{}-{}", fact.branch_id, fact.fact_id),
+            // No branch_id: branch_root_changed rewrites it, which would change
+            // the tag of an already published memory and republish it.
+            format!("fact:{lineage8}-{}", fact.fact_id),
         ]),
         session_id: Some(session.session_id.clone()),
         space: session.space.clone(),
