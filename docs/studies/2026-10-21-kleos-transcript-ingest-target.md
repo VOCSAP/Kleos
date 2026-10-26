@@ -46,6 +46,7 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | 6 | 2026-10-22 | A+ calculé au démon, plus de B au relais ; détecteur de secrets avant publication ; injections repérées par la structure ; « extraire là où c'est écrit » généralisé ; renvoi motivé (`rewrite`, `view_upgrade`) ; points secondaires du challenger (erreurs Windows en français, ligne illisible, `/rewind`, enregistrement énorme) |
 | 7 | 2026-10-24 | Décisions #33942, #33968, #33978 ; conception hypomnema (commit `009d6b6`). Topologie client poste → serveur hypomnema → consommateur Kleos séparé ; démon, protocole, vue A+, rédaction, stockage et map transférés à hypomnema ; space transmis par une étiquette de hook ; map de toutes les sessions dès la mise en service ; rétention sans limite côté hypomnema ; mesures du lot 0 d'hypomnema intégrées (F21 à F26) ; section 11 « Consommateur Kleos » |
 | 7.1 | 2026-10-26 | Contrat du §10 d'hypomnema épinglé à `ef02cee` : `secret_patterns_version` remplacée par `secret_patterns_rev` (ordonnée, garde du consommateur) et `secret_patterns_hash` (égalité seule) ; annexe A d'hypomnema, qui fait foi sur les sections reprises ; quatre divergences relevées en section 11 |
+| 7.2 | 2026-10-26 | Contrat épinglé à `e99b9a2` (lot 3 d'hypomnema, `0b069bb`, puis réponses à Q11 et Q12) : `source` de chaque étiquette (`hook`, `marker_file`) ; `branch_root_changed` ajouté au flux ; étiquette lue dans `hook_success` seulement ; toute copie ouvre sa propre branche ; purge des époques remplacées conditionnée à l'enregistrement des consommateurs ; fichier de motifs renommé `redaction-patterns.toml` ; Q11 (inscription d'un consommateur) et Q12 (identité d'un fait `(lineage_id, fact_id)`, branche en attribut) tranchées par hypomnema |
 
 ### Ce que les révisions 2 à 7 changent
 
@@ -1601,7 +1602,8 @@ la réécriture sur place de kleos-ingest sont écartés.
   mémoire par conversation (DÉDUIT, `kleos-server/src/routes/conversations/mod.rs:274-313`).
 - Révision 7 : conception hypomnema, `VOCSAP/hypomnema`,
   `docs/superpowers/specs/2026-10-24-hypomnema-design.md` (commit `009d6b6`, puis
-  `7db51d0`, puis `ef02cee`, version du contrat du §10 citée par la section 11), sections
+  `7db51d0`, puis `ef02cee`, puis `0b069bb`, puis `e99b9a2`, version du contrat du §10
+  citée par la section 11), sections
   3, 4, 5, 6, 7.1, 7.4, 10, 12 et annexe A ;
   Kleos #33908 (préfixe forké), #33942 (topologie), #33945 (dépôt), #33962 (space côté
   poste), #33968 (portée du map), #33978 (pas de rotation), #33981 (lot 0 d'hypomnema) ;
@@ -1615,7 +1617,7 @@ la réécriture sur place de kleos-ingest sont écartés.
 ## 11. Consommateur Kleos (révision 7)
 
 Cette section fait foi pour tout ce qui reste à Kleos. Le contrat d'entrée est le §10 de
-la conception hypomnema, au commit `ef02cee` ; en cas d'écart entre les deux textes, le §10 d'hypomnema
+la conception hypomnema, au commit `e99b9a2` ; en cas d'écart entre les deux textes, le §10 d'hypomnema
 l'emporte pour la forme du flux, et cette section pour ce que Kleos en fait.
 
 Depuis `ef02cee`, l'annexe A de la conception hypomnema reformule les sections 1.4, 2.1 à
@@ -1628,13 +1630,25 @@ où elle diverge de cette étude :
   sur commande, au lieu de rouvrir les lignées ;
 - préfixe classé injection : 5 sessions **et** un ratio d'au plus 0,2, au lieu de 5 sessions.
 
+Le lot 3 d'hypomnema (`0b069bb`) précise quatre points du contrat, repris ci-dessous :
+- chaque étiquette de `session_meta` porte sa `source`, `hook` ou `marker_file` (11.2, 11.3) ;
+- toute session qui copie une autre ouvre sa propre branche, et un changement de
+  propriétaire du bloc commun émet `branch_root_changed` (11.2, 11.4) ;
+- une époque remplacée n'est jamais supprimée tant qu'aucun consommateur n'est enregistré
+  (11.2) ;
+- le fichier de motifs livré s'appelle `patterns/redaction-patterns.toml` (11.6).
+
+Les fixtures du flux écrites au lot K0 (`kleos-transcript-consumer/tests/fixtures/feed/`)
+sont copiées octet pour octet dans le dépôt hypomnema, où un test de conformité compare
+aux leurs les clés de chaque événement émis et les valeurs de `source`.
+
 ### 11.1 Place et forme
 
 - **Processus séparé** de kleos-server et de `hypomnema-server`, sur LXC 121, binaire
   Rust qui dépend de kleos-lib (`think_setting`, `load_prompt`, `connect_encrypted`,
   chargeur du lexique). Nom provisoire : `kleos-transcript-consumer`.
 - **Base propre**, SQLCipher : curseur du flux, état candidat des faits par
-  `(lineage_id, branch_id, fact_id)`, correspondance vers `(memory_id, version)`,
+  `(lineage_id, fact_id)`, la branche en attribut (Q12), correspondance vers `(memory_id, version)`,
   conflits retenus, file `to_dedup` (4.8), refus de la couche 0. La correspondance est
   gardée sans limite ; le reste suit la rétention d'hypomnema.
 - **Deux jetons**, tous deux dans un `EnvironmentFile` 0600 : un jeton de lecture
@@ -1658,12 +1672,13 @@ brutal entre le traitement et l'acquittement produit au pire un rejeu sans effet
 
 | Événement | Effet côté Kleos |
 |---|---|
-| `session_meta` | Étiquettes, `git_root`, `host_id`, `file_key`, versions, `parent_session` : résolution du space (11.3) |
-| `epoch_opened`, `epoch_superseded` | Trace seulement ; l'acquittement autorise hypomnema à supprimer l'époque remplacée |
+| `session_meta` | Instantané complet : étiquettes avec leur `source` (`hook`, `marker_file`), `git_root`, `host_id`, `file_key`, versions, `parent_session` ; résolution du space (11.3) |
+| `epoch_opened`, `epoch_superseded` | Trace seulement. Hypomnema supprime une époque remplacée quand tous les consommateurs enregistrés ont acquitté son `epoch_superseded`, ou 30 jours après le remplacement (`HYPOMNEMA_SUPERSEDED_GRACE_DAYS`), et jamais tant qu'aucun consommateur n'est enregistré. Un consommateur arrêté plus longtemps que ce délai perd la correspondance des faits de ces époques |
 | `facts_updated` | Mise à jour de l'état candidat : `fact_id` stable, `branch_id`, version, statut (`proposé`, `décidé`, `mesuré`, `abandonné`), catégorie Kleos, importance proposée, uuid des tours sources, drapeau `abandoned` (`/rewind`), `map_version` |
 | `lineage_stabilized {lineage_id, branch_id}` | Publication de la branche (11.4) ; une branche sœur encore vivante n'est pas touchée |
 | `lineage_reopened` | La branche passe en révision : ses faits publiés seront comparés à la prochaine stabilisation |
 | `lineage_merged {from, into}` | Réécriture de la correspondance de `from` vers `into` ; aucune republication |
+| `branch_root_changed {lineage_id, from, to}` | Le bloc commun change de propriétaire, par exemple quand un ancêtre arrive après sa copie : la racine passe de `b0` (la copie) à `b1` (l'ancêtre). Ne changent de branche que les faits dont toutes les sources sont dans le bloc commun ; ceux de la partie vivante de `from` y restent. Réécriture de leur attribut de branche de `from` vers `to`, aucune republication ; aucun `facts_updated` ne suit, leur contenu et leur version ne changent pas. Au lot 6 d'hypomnema, l'événement gagne `moved_fact_ids`, qui les liste ; avant, le consommateur ne sait pas lesquels bougent (Q12) |
 | `remap {motif}` | Comparaison selon la table de 2.8 : rien pour un fait identique, version pour un fait révisé, publication pour un fait distinct, **aucun archivage pour un fait absent** |
 
 **Garde de version, échec fermé.** Un événement `facts_updated` dont la
@@ -1674,6 +1689,11 @@ suffisante. `secret_patterns_rev` numérote l'ensemble de motifs **livré**, cel
 consommateur épingle ; `secret_patterns_hash`, empreinte de l'ensemble effectif (livré
 plus motifs de l'utilisateur), n'entre pas dans la garde : un motif utilisateur produit
 une empreinte que le consommateur ne peut pas connaître.
+
+La route `GET /v1/feed` reste fermée jusqu'après le lot 6 d'hypomnema ; depuis le lot 3,
+hypomnema écrit déjà dans sa table `feed` les événements `session_meta`, `epoch_opened`,
+`epoch_superseded`, `lineage_merged` et `branch_root_changed`. Le flux vit dans la base
+de chaque locataire : un consommateur lit le flux d'un seul locataire.
 
 **Lecture des tours sources** pour le juge amont :
 `GET /v1/sessions/{id}/read?around=<uuid>`. Le consommateur ne lit jamais les
@@ -1687,15 +1707,24 @@ les seules données reçues :
 1. **Étiquette `kleos-space`**, émise par le hook dédié
    `~/.claude/hooks/session-start-kleos-label.sh` (carte `6322672e`). Forme figée avec
    hypomnema : l'`additionalContext` entier du hook vaut `<<label kleos-space=<nom>
-   /label>>`, motif `^<<label kleos-space=[a-z0-9_-]{1,64} /label>>$`, lu par égalité
-   stricte d'un élément `content` d'une ligne `attachment` SessionStart. Un hook dédié,
+   /label>>`, motif `^<<label kleos-space=[a-z0-9_-]{1,64} /label>>$`. Hypomnema le lit
+   par égalité stricte (espaces de bord retirés) dans une seule structure : une ligne
+   `attachment` de type `hook_success`, `hookEvent = SessionStart`, dont le `command`
+   désigne ce hook et dont le `stdout` JSON porte `hookSpecificOutput.additionalContext`.
+   Aucun repli sur un élément de `hook_additional_context` : sur 3 807 transcripts,
+   aucune de ces lignes ne partage son `toolUseID` avec un `hook_success` (Kleos #36070),
+   et un tel élément ne peut donc pas être attribué à un hook. Une session sans
+   `hook_success` n'a pas d'étiquette de hook et passe à l'étape 2. Dans `session_meta`,
+   cette étiquette porte `source = hook`. Un hook dédié,
    et non une ligne de plus dans `session-start-kleos.sh`, parce que ce dernier réinjecte
    des mémoires : une mémoire qui cite le format donnerait une fausse étiquette avec une
    recherche par ligne. Le nom est celui de `resolve_project_name`, la même règle que le
    hook principal, sans créer de marqueur.
 2. **Étiquette de fichier marqueur** `.kleos-space`, lue sur le poste par
    `hypomnema-agent`, pour les sessions antérieures au hook, normalisée comme
-   `normalize_space_name`.
+   `normalize_space_name` ; `source = marker_file` dans `session_meta`. Le format
+   d'échange la prévoit depuis le lot 3 d'hypomnema ; son producteur, l'agent qui lit
+   `.kleos-space`, arrive avec le lot 2.
 3. **Nom du dépôt** de `git_root`, normalisé de même.
 4. Sinon, aucun space.
 
@@ -1716,7 +1745,7 @@ publication.
 **Champs de la publication** (4.5) : `source=kleos-transcript` ; catégorie du fait ;
 importance `min(proposée, 5)` ; `created_at` = `ts` du tour source ; `session_id` ;
 `space` (11.3) ; tags `transcript`, le projet, `turn:<uuid>`,
-`fact:<lineage8>-<branch>-<fact_id>`.
+`fact:<lineage8>-<fact_id>` (sans la branche, depuis la révision 7.2 : Q12).
 
 **Révision par branche** (point 3 de 4.3). F21 rend les branches sœurs fréquentes : le
 bloc commun appartient à une branche racine, et chaque branche révise ses faits de son
@@ -1725,6 +1754,12 @@ versions si la tête connue est intacte ; la seconde branche qui révise le mêm
 rencontre le refus de parent périmé (F12) et publie une mémoire neuve, que le juge
 nightly annote (4.6). Ce cas, nommé « jamais observé » en révision 6, est désormais un
 chemin nominal, à mesurer au lot K3.
+
+Depuis `0b069bb`, toute session qui copie une autre ouvre sa propre branche, même quand
+elle l'inclut strictement : une reprise ou un fork ne prolonge jamais la branche de
+l'ancêtre. La session racine porte `b0`, et un `branch_id` émis ne change jamais. Toute
+révision d'un fait du bloc commun par une session reprise passe donc par le chemin
+ci-dessus, et pas seulement celle d'une branche sœur.
 
 **Inchangés :** idempotence par l'état `intention` et le tag `fact:` (4.3) ; règle
 d'autorité, le consommateur ne révise et n'archive que ses propres publications ; couches
@@ -1751,8 +1786,8 @@ après tout changement de `map_version` qui change de modèle. Porte, reprise de
 | Lot | Contenu | Porte mesurable | Dépend de |
 |---|---|---|---|
 | **K0 Gel** | Contrat du juge amont (lot F (2)) ; liste des champs de `StoreRequest` et test d'intégration jetable (lot F (4)) ; fixtures d'événements du flux, relues contre le §10 d'hypomnema ; squelette du crate dans le workspace (Q10) | Schéma de verdict et fixtures écrits ; test jetable vert ; chaque type d'événement du §10 a au moins une fixture | Rien |
-| **K1 Lecture du flux, en ombre** | Curseur, acquittement, état candidat, `lineage_merged`, garde de version, résolution du space | Flux de fixture rejoué deux fois : état identique ; 20 arrêts brutaux au hasard : 0 perte, 0 doublon ; 100 % des sessions de fixture reçoivent le space attendu par l'ordre de 11.3, 0 pour un `cwd` personnel ou racine | Lots 3 et 10 d'hypomnema (stockage, route de flux) |
-| **K2 Couches 0 et 1, en ombre** | Détecteur de secrets sur le fichier de motifs épinglé ; juge amont avec liste négative et tours sources lus par `read?around` | Fixtures de secrets : 100 % bloqués, 0 des 50 faits sans secret bloqué ; porte de 11.5 sur le corpus de calibration | K1 ; lot 6 d'hypomnema (map) |
+| **K1 Lecture du flux, en ombre** | Enregistrement du consommateur (Q11), curseur, acquittement dont celui de `epoch_superseded`, état candidat, `lineage_merged`, `branch_root_changed`, garde de version, résolution du space | Flux de fixture rejoué deux fois : état identique ; 20 arrêts brutaux au hasard : 0 perte, 0 doublon ; 100 % des sessions de fixture reçoivent le space attendu par l'ordre de 11.3, 0 pour un `cwd` personnel ou racine ; après `branch_root_changed` de fixture, la correspondance du bloc commun est sous `to` et 0 republication | Lot 3 d'hypomnema (stockage, livré à `0b069bb`) ; route de flux, après le lot 6 |
+| **K2 Couches 0 et 1, en ombre** | Détecteur de secrets sur le fichier de motifs épinglé (`patterns/redaction-patterns.toml` d'hypomnema et son fichier de verrou) ; juge amont avec liste négative et tours sources lus par `read?around` | Fixtures de secrets : 100 % bloqués, 0 des 50 faits sans secret bloqué ; porte de 11.5 sur le corpus de calibration | K1 ; lot 6 d'hypomnema (map) |
 | **K3 Publication** | Écriture dans Kleos, révision par branche, `remap`, idempotence | Portes du lot 5 de la section 8 qui restent à Kleos : second passage, 0 nouvelle mémoire ; 0 mémoire de transcript dans les tiers poussés ; lignée rouverte : une version 2 et aucune seconde tête ; coupure simulée : 0 doublon ; `remap` : 0 archivage par absence ; branches sœurs de fixture : une version et une mémoire neuve annotée | K2 passé |
 | **K4 Nettoyage a posteriori** | Juge nightly borné aux mémoires de transcript (4.6) ; bande grise (4.8) | Celles du lot 5 pour la bande grise et la contradiction après coup | K3 ; étape 2 de l'étude nightly |
 
@@ -1772,3 +1807,25 @@ kleos-lib. (c) Module d'hypomnema : écarté, hypomnema ne doit dépendre ni de 
 Kleos ni de ses décisions de publication.
 
 **Q2** (autorité d'archivage) reste ouverte telle quelle.
+
+**Q11. Enregistrement d'un consommateur. Tranchée par hypomnema le 2026-10-26** (choix
+du concepteur, écrit dans son §10 à `e99b9a2`). L'inscription se fait seulement par
+la commande d'administration `hypomnema-server feed consumer add --tenant <t> <nom>`,
+jamais implicitement : ni par un premier `POST /v1/feed/ack`, ni par la création d'un
+jeton. La purge ne change donc de comportement que par un acte de l'opérateur. Un
+consommateur inscrit part d'un acquittement à 0 ; l'ack d'un consommateur non inscrit
+reçoit `404 unknown_consumer`, et le refus est compté. Commande et route arrivent avec
+l'ouverture du flux, après le lot 6. Pour K1 : l'inscription est une étape du
+déploiement, et un `404 unknown_consumer` arrête le consommateur au lieu de boucler.
+
+**Q12. Faits touchés par `branch_root_changed`. Tranchée par hypomnema le 2026-10-26**
+(choix du concepteur). L'identité d'un fait est `(lineage_id, fact_id)` : les `fact_id`
+sont attribués par lignée, sans collision entre branches, et `branch_id` est un attribut
+du fait (la branche qui détient ses sources), pas une part de son identité. Ne bougent
+que les faits dont toutes les sources sont dans le bloc commun ; `moved_fact_ids` les
+listera au lot 6 ; aucun `facts_updated` n'est réémis. Conséquence pour Kleos :
+l'état candidat est indexé par `(lineage_id, fact_id)` (11.1). Le tag figé au lot K0,
+`fact:<lineage8>-<branch_id>-<fact_id>`, change à chaque changement de racine : un fait
+déplacé aurait un tag différent de celui de sa mémoire déjà publiée, et l'idempotence
+par le tag (4.3) le republierait. Décision Kleos : le tag devient
+`fact:<lineage8>-<fact_id>`, sans la branche (spec agent-forge `spec_f4900e5a`).
