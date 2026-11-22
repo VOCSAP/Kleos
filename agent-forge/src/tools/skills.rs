@@ -6,6 +6,7 @@
 use crate::json_io::Output;
 use crate::kleos_client::KleosClient;
 use crate::tools::{ToolError, ToolResult};
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// Build a `KleosClient`, mapping its error to `ToolError` for uniform handling.
@@ -21,7 +22,7 @@ fn kleos_err(e: crate::kleos_client::KleosClientError) -> ToolError {
 
 // --- SkillSearch ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SkillSearchInput {
     pub query: Option<String>,
     pub limit: Option<usize>,
@@ -50,7 +51,7 @@ pub fn skill_search(input: SkillSearchInput) -> ToolResult {
 
 // --- SkillCapture ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SkillCaptureInput {
     pub description: Option<String>,
     pub agent: Option<String>,
@@ -89,7 +90,7 @@ pub fn skill_capture(input: SkillCaptureInput) -> ToolResult {
 
 // --- SkillRecordExec ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SkillRecordExecInput {
     pub skill_id: Option<i64>,
     pub success: Option<bool>,
@@ -127,7 +128,7 @@ pub fn skill_record_exec(input: SkillRecordExecInput) -> ToolResult {
 
 // --- SkillFix ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SkillFixInput {
     pub skill_id: Option<i64>,
     pub hint: Option<String>,
@@ -160,7 +161,7 @@ pub fn skill_fix(input: SkillFixInput) -> ToolResult {
 
 // --- SkillDerive ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SkillDeriveInput {
     pub parent_ids: Option<Vec<i64>>,
     pub direction: Option<String>,
@@ -207,7 +208,7 @@ pub fn skill_derive(input: SkillDeriveInput) -> ToolResult {
 
 // --- SkillLineage ---
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SkillLineageInput {
     pub skill_id: Option<i64>,
 }

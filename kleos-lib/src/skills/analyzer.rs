@@ -1,6 +1,8 @@
+//! Selects and analyzes owner-scoped skill evolution candidates.
+
 use super::types::ExecutionAnalysis;
 use crate::db::Database;
-use crate::Result;
+use crate::{EngError, Result};
 use rusqlite::params;
 
 // -- Levenshtein edit distance --
@@ -74,7 +76,20 @@ pub async fn correct_skill_id(db: &Database, name: &str, user_id: i64) -> Result
     .await
 }
 
-pub const ANALYSIS_SYSTEM_PROMPT: &str = "You are a skill execution analyzer. Given a task, the skill that was applied, and the execution result, analyze whether the skill was helpful and provide structured feedback. Return JSON with fields: skill_applied (bool), skill_helpful (bool), tool_calls (string[]), error_category (string|null), improvement_notes (string|null).";
+/// Embedded default for the skill-execution analysis system prompt.
+/// Overridable at runtime via the prompt repository under
+/// `skills/analyze_execution/system.txt`.
+pub const ANALYSIS_SYSTEM_PROMPT_DEFAULT: &str =
+    include_str!("../../prompts/skills/analyze_execution/system.txt");
+
+/// Resolve the skill-execution analysis system prompt, honoring any runtime
+/// override.
+pub fn analysis_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt(
+        "skills/analyze_execution/system",
+        ANALYSIS_SYSTEM_PROMPT_DEFAULT,
+    )
+}
 
 /// Persist an execution analysis to the database.
 /// Inserts into execution_analyses, creates skill_judgments entries, and updates counters.
@@ -280,6 +295,7 @@ pub async fn get_capture_candidates(
                      AND NOT EXISTS ( \
                          SELECT 1 FROM skill_records sr \
                          WHERE sr.is_active = 1 \
+                           AND sr.user_id = ?4 \
                            AND ( \
                                LOWER(m.content) LIKE '%' || LOWER(sr.name) || '%' \
                                OR LOWER(m.content) LIKE '%' || LOWER(COALESCE(sr.description, '')) || '%' \
@@ -299,6 +315,42 @@ pub async fn get_capture_candidates(
         Ok(rows)
     })
     .await
+}
+
+/// Retry autonomous derivation at most once per pair each day, across restarts.
+const DERIVE_RETRY_SECONDS: i64 = 86_400;
+
+/// Produces an owner-scoped, order-independent key for an autonomous skill pair.
+fn derive_attempt_key(user_id: i64, parents: &[i64]) -> Result<String> {
+    if parents.len() != 2 || parents[0] == parents[1] {
+        return Err(EngError::InvalidInput(
+            "autonomous derivation requires two distinct parents".into(),
+        ));
+    }
+    Ok(format!(
+        "dreamer:derive:{user_id}:{}:{}",
+        parents[0].min(parents[1]),
+        parents[0].max(parents[1])
+    ))
+}
+
+/// Atomically claims one autonomous derivation attempt before any LLM calls.
+/// Successful children suppress future candidates; unsuccessful attempts remain
+/// in cooldown. Expiration is limited to this owner's derivation bookkeeping.
+pub async fn claim_derive_attempt(db: &Database, user_id: i64, parents: &[i64]) -> Result<bool> {
+    let key = derive_attempt_key(user_id, parents)?;
+    let prefix = format!("dreamer:derive:{user_id}:%");
+    db.transaction(move |conn| {
+        conn.execute(
+            "DELETE FROM app_state WHERE key LIKE ?1 AND updated_at <= datetime('now', ?2)",
+            params![prefix, format!("-{DERIVE_RETRY_SECONDS} seconds")],
+        )?;
+        let claimed = conn.execute(
+            "INSERT OR IGNORE INTO app_state (key, value, updated_at) VALUES (?1, 'attempted', datetime('now'))",
+            params![key],
+        )?;
+        Ok(claimed == 1)
+    }).await
 }
 
 /// Pairs of active skills whose tag sets overlap at least `similarity`
@@ -354,12 +406,31 @@ pub async fn get_derive_candidates(
             lineage.entry(r.0).or_default().insert(r.1);
         }
 
+        // Filter cooling pairs before applying the limit so one failing pair
+        // cannot starve otherwise eligible work. The atomic claim also guards
+        // concurrent cycles after this read-only selection step.
+        let mut cooldown_stmt = conn.prepare(
+            "SELECT key FROM app_state WHERE key LIKE ?1 AND updated_at > datetime('now', ?2)",
+        )?;
+        let cooling = cooldown_stmt
+            .query_map(
+                params![
+                    format!("dreamer:derive:{user_id}:%"),
+                    format!("-{DERIVE_RETRY_SECONDS} seconds")
+                ],
+                |row| row.get::<_, String>(0),
+            )?
+            .collect::<std::result::Result<std::collections::HashSet<_>, _>>()?;
+
         let ids: Vec<i64> = tags_by_skill.keys().copied().collect();
         let mut scored: Vec<(f64, i64, i64, String, String)> = Vec::new();
         for i in 0..ids.len() {
             for j in (i + 1)..ids.len() {
                 let a = ids[i];
                 let b = ids[j];
+                if cooling.contains(&derive_attempt_key(user_id, &[a, b])?) {
+                    continue;
+                }
                 let (name_a, tags_a) = &tags_by_skill[&a];
                 let (name_b, tags_b) = &tags_by_skill[&b];
                 let inter = tags_a.intersection(tags_b).count();
@@ -399,31 +470,37 @@ pub async fn get_derive_candidates(
     .await
 }
 
+/// Tests for edit-distance scoring and skill candidate analysis queries.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Verifies identical strings have zero edit distance.
     #[test]
     fn test_edit_distance_identical() {
         assert_eq!(edit_distance("hello", "hello"), 0);
     }
 
+    /// Verifies a single-character deletion counts as distance 1.
     #[test]
     fn test_edit_distance_one() {
         assert_eq!(edit_distance("hello", "helo"), 1);
     }
 
+    /// Verifies a two-character transposition counts as distance 2.
     #[test]
     fn test_edit_distance_swap() {
         assert_eq!(edit_distance("abc", "bac"), 2);
     }
 
+    /// Verifies edit distance against an empty string equals the other string's length.
     #[test]
     fn test_edit_distance_empty() {
         assert_eq!(edit_distance("", "abc"), 3);
         assert_eq!(edit_distance("abc", ""), 3);
     }
 
+    /// Verifies ExecutionAnalysis deserializes correctly from JSON.
     #[test]
     fn test_analysis_deserialize() {
         let json = r#"{"skill_applied":true,"skill_helpful":false,"tool_calls":["read_file"],"error_category":"timeout","improvement_notes":"needs retry"}"#;
@@ -433,10 +510,13 @@ mod tests {
         assert_eq!(a.tool_calls.len(), 1);
     }
 
+    /// Opens a fresh in-memory database for a single test.
     async fn memory_db() -> Database {
         Database::connect_memory().await.expect("in-mem db")
     }
 
+    /// Inserts a skill_records row with the given execution/success counts
+    /// and a `created_at` offset from now, returning the new row id.
     async fn seed_skill(
         db: &Database,
         _user_id: i64,
@@ -467,6 +547,7 @@ mod tests {
         .expect("seed skill")
     }
 
+    /// Inserts a skill_tags row linking `tag` to `skill_id`.
     async fn seed_skill_tag(db: &Database, skill_id: i64, tag: &str) {
         let tag = tag.to_string();
         db.write(move |conn| {
@@ -480,6 +561,7 @@ mod tests {
         .expect("seed tag");
     }
 
+    /// Inserts a skill_lineage_parents row linking `child_id` to `parent_id`.
     async fn seed_lineage(db: &Database, child_id: i64, parent_id: i64) {
         db.write(move |conn| {
             conn.execute(
@@ -492,6 +574,8 @@ mod tests {
         .expect("seed lineage");
     }
 
+    /// Verifies a skill below the success-rate threshold is returned as a
+    /// failing candidate.
     #[tokio::test]
     async fn failing_candidates_returns_failing_skill() {
         let db = memory_db().await;
@@ -502,6 +586,8 @@ mod tests {
         assert_eq!(ids, vec![id]);
     }
 
+    /// Verifies a skill below `min_executions` is not returned as a failing
+    /// candidate even if its success rate is 0.
     #[tokio::test]
     async fn failing_candidates_ignores_underused() {
         let db = memory_db().await;
@@ -512,6 +598,8 @@ mod tests {
         assert!(ids.is_empty());
     }
 
+    /// Verifies a parent skill with a recently created fixed child is
+    /// excluded from failing candidates while the cooldown is active.
     #[tokio::test]
     async fn failing_candidates_respects_cooldown() {
         let db = memory_db().await;
@@ -540,6 +628,8 @@ mod tests {
         assert!(ids.is_empty(), "cooldown should hide parent");
     }
 
+    /// Verifies duplicate-content memories collapse to a single capture
+    /// candidate and unrelated memories are excluded.
     #[tokio::test]
     async fn capture_candidates_dedupes() {
         let db = memory_db().await;
@@ -562,6 +652,59 @@ mod tests {
         assert_eq!(rows, vec!["use ripgrep over grep".to_string()]);
     }
 
+    /// Persistent claims serialize competing cycles and separate users and parent order.
+    #[tokio::test]
+    async fn maintenance_derive_claim_is_atomic() {
+        let db = memory_db().await;
+        let (a, b) = tokio::join!(
+            claim_derive_attempt(&db, 1, &[6, 135]),
+            claim_derive_attempt(&db, 1, &[135, 6])
+        );
+        assert_eq!(usize::from(a.unwrap()) + usize::from(b.unwrap()), 1);
+        assert!(claim_derive_attempt(&db, 2, &[6, 135]).await.unwrap());
+        assert!(claim_derive_attempt(&db, 1, &[6]).await.is_err());
+        db.write(|conn| {
+            conn.execute("UPDATE app_state SET updated_at = datetime('now', '-25 hours') WHERE key = 'dreamer:derive:1:6:135'", [])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(claim_derive_attempt(&db, 1, &[6, 135]).await.unwrap());
+        assert!(!claim_derive_attempt(&db, 2, &[6, 135]).await.unwrap());
+    }
+
+    /// A recently attempted pair is skipped before the candidate limit is applied.
+    #[tokio::test]
+    async fn maintenance_derive_cooldown() {
+        let db = memory_db().await;
+        let a = seed_skill(&db, 1, "alpha", 5, 5, 600).await;
+        let b = seed_skill(&db, 1, "beta", 5, 5, 600).await;
+        for id in [a, b] {
+            seed_skill_tag(&db, id, "shell").await;
+        }
+        db.write(move |conn| {
+            conn.execute(
+                "INSERT INTO app_state (key, value) VALUES (?1, 'attempted')",
+                params![format!("dreamer:derive:1:{a}:{b}")],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(get_derive_candidates(&db, 1, 0.5, 1)
+            .await
+            .unwrap()
+            .is_empty());
+        db.write(|conn| {
+            conn.execute("UPDATE app_state SET updated_at = datetime('now', '-25 hours') WHERE key LIKE 'dreamer:derive:%'", [])?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(
+            get_derive_candidates(&db, 1, 0.5, 1).await.unwrap().len(),
+            1
+        );
+    }
+
+    /// Verifies two skills sharing all tags are returned as a derive
+    /// candidate pair with a direction hint naming both skills.
     #[tokio::test]
     async fn derive_candidates_finds_similar_pair() {
         let db = memory_db().await;
@@ -577,6 +720,8 @@ mod tests {
         assert!(pairs[0].1.contains("shell-cheatsheet"));
     }
 
+    /// Verifies a pair with an existing derived child skill is suppressed
+    /// from future derive candidates.
     #[tokio::test]
     async fn derive_candidates_skip_already_derived() {
         let db = memory_db().await;

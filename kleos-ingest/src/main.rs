@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::Path;
 use tracing_subscriber::EnvFilter;
 
 mod config;
@@ -24,6 +25,15 @@ struct Cli {
 
     #[arg(long, help = "Process existing files once then exit (no watcher loop)")]
     one_shot: bool,
+}
+
+fn open_ledger(config: &config::Config, dry_run: bool) -> ledger::Ledger {
+    let path = if dry_run {
+        Path::new(":memory:")
+    } else {
+        &config.ledger_path
+    };
+    ledger::Ledger::open(path).expect("failed to open ledger database")
 }
 
 #[tokio::main]
@@ -55,7 +65,7 @@ async fn main() {
         "kleos-ingest starting"
     );
 
-    let ledger = ledger::Ledger::open(&config.ledger_path).expect("failed to open ledger database");
+    let ledger = open_ledger(&config, cli.dry_run);
     let writer = writer::KleosWriter::new(&config);
 
     if cli.one_shot {

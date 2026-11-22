@@ -6,15 +6,18 @@ use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::gate::{
-    check_command_with_context, check_ssh_dns_rebind, cleanup_expired_approvals, complete_gate,
-    complete_latest_gate, mark_gate_timed_out, parse_ssh_target, read_gate_decision,
-    respond_to_gate, store_gate_request, GateCheckRequest, GateCheckResult, GateRequestInsert,
-    PendingApproval, APPROVAL_TIMEOUT_SECS, TOOLS_REQUIRING_APPROVAL,
+    approval_patterns, approval_timeout_secs, check_command_with_whitelist, check_ssh_dns_rebind,
+    cleanup_expired_approvals, complete_gate, complete_latest_gate, mark_gate_timed_out,
+    parse_ssh_target, read_gate_decision, respond_to_gate, store_gate_request, GateCheckRequest,
+    GateCheckResult, GateRequestInsert, LatestGateCompletion, PendingApproval,
+    TOOLS_REQUIRING_APPROVAL,
 };
 
+mod no_wait;
 mod types;
 use types::{CompleteBody, CompleteLatestBody, GuardBody, RespondBody};
 
+/// Builds the command-gate HTTP routes.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/gate/check", post(check_handler))
@@ -25,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/guard", post(guard_handler))
 }
 
+/// Evaluates and records a command under the authenticated user's gate policy.
 async fn check_handler(
     ResolvedDb(db): ResolvedDb,
     State(state): State<AppState>,
@@ -76,8 +80,60 @@ async fn check_handler(
         .credd
         .resolve_text_shell_safe(&db, auth.effective_user_id(), &body.agent, &body.command)
         .await?;
-    let mut resolved_patterns = Vec::new();
-    for pattern in &state.config.eidolon.gate.blocked_patterns {
+
+    // Patch 19b: resolve blocked + require_approval patterns via the cascade
+    // fichier > env > defaults. Defaults come from the boot-time config
+    // (TOML + env loaders); the cascade only re-checks at the boundary of
+    // each /gate/check call so live edits to the file are picked up within
+    // the loader's 5s TTL window.
+    let gate_cfg = &state.config.eidolon.gate;
+    let blocked_env = std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS").ok();
+    let blocked_raw = approval_patterns::load(
+        gate_cfg.blocked_patterns_file.as_deref(),
+        blocked_env.as_deref(),
+        &gate_cfg.blocked_patterns,
+    );
+    let require_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS").ok();
+    let require_approval_raw = approval_patterns::load(
+        gate_cfg.require_approval_patterns_file.as_deref(),
+        require_env.as_deref(),
+        &gate_cfg.require_approval_patterns,
+    );
+    // Patch 19c: operator-extensible OS-specific deny rules. Loaded through
+    // the same cascade (file > env > defaults Vec::new()) -- typically used
+    // to add Windows-flavoured destructive patterns that the Linux-centric
+    // hardcoded `check_dangerous_patterns` does not cover.
+    let extra_dangerous_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS").ok();
+    let extra_dangerous_raw = approval_patterns::load(
+        gate_cfg.extra_dangerous_patterns_file.as_deref(),
+        extra_dangerous_env.as_deref(),
+        &gate_cfg.extra_dangerous_patterns,
+    );
+
+    // Patch 25: whitelist cascade for blocked + require_approval only.
+    // Empty whitelist (file missing/empty AND env unset) = no exemption
+    // applied (pre-Patch 25 behavior preserved on that cascade).
+    let blocked_whitelist_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS").ok();
+    let blocked_whitelist_raw = approval_patterns::load(
+        gate_cfg.blocked_whitelist_patterns_file.as_deref(),
+        blocked_whitelist_env.as_deref(),
+        &gate_cfg.blocked_whitelist_patterns,
+    );
+    let require_approval_whitelist_env =
+        std::env::var("ENGRAM_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS").ok();
+    let require_approval_whitelist_raw = approval_patterns::load(
+        gate_cfg.require_approval_whitelist_patterns_file.as_deref(),
+        require_approval_whitelist_env.as_deref(),
+        &gate_cfg.require_approval_whitelist_patterns,
+    );
+
+    // credd-resolve patterns so `{{secret:...}}` placeholders work uniformly
+    // across all three cascade levels.
+    let mut resolved_patterns = Vec::with_capacity(blocked_raw.len());
+    for pattern in &blocked_raw {
         resolved_patterns.push(
             state
                 .credd
@@ -85,12 +141,56 @@ async fn check_handler(
                 .await?,
         );
     }
-    let mut result = check_command_with_context(
+    let mut resolved_require_approval = Vec::with_capacity(require_approval_raw.len());
+    for pattern in &require_approval_raw {
+        resolved_require_approval.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+    let mut resolved_extra_dangerous = Vec::with_capacity(extra_dangerous_raw.len());
+    for pattern in &extra_dangerous_raw {
+        resolved_extra_dangerous.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+
+    // Patch 25: credd-resolve whitelist patterns too, for parity with blocklists.
+    let mut resolved_blocked_whitelist = Vec::with_capacity(blocked_whitelist_raw.len());
+    for pattern in &blocked_whitelist_raw {
+        resolved_blocked_whitelist.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+    let mut resolved_require_approval_whitelist =
+        Vec::with_capacity(require_approval_whitelist_raw.len());
+    for pattern in &require_approval_whitelist_raw {
+        resolved_require_approval_whitelist.push(
+            state
+                .credd
+                .resolve_text(&db, auth.user_id, &body.agent, pattern)
+                .await?,
+        );
+    }
+
+    let mut result = check_command_with_whitelist(
         &db,
         &body,
         auth.effective_user_id(),
         Some(&resolved_command),
         &resolved_patterns,
+        &resolved_require_approval,
+        &resolved_extra_dangerous,
+        &resolved_blocked_whitelist,
+        &resolved_require_approval_whitelist,
         &state.config,
         body.session_id.as_deref(),
     )
@@ -385,12 +485,26 @@ async fn check_handler(
         }
     }
 
-    // If the command was allowed (not blocked, not pending secrets), and the tool
-    // requires human approval, pause here and wait for a decision via /gate/respond.
-    if result.allowed && !result.requires_approval && !body.skip_approval {
-        let tool_name = body.tool_name.as_deref().unwrap_or("");
-        if TOOLS_REQUIRING_APPROVAL.contains(&tool_name) {
-            let gate_id = result.gate_id;
+    // If the command was allowed (not blocked, not pending secrets), and either
+    // (a) the tool itself requires human approval, or (b) a Patch 19b
+    // `require_approval_patterns` match has been recorded (signalled via
+    // `requires_approval=true` from `check_command_with_context`), pause here
+    // and wait for a decision via /gate/respond.
+    //
+    // Note: `has_secret_placeholders` also sets `requires_approval=true` but
+    // pairs it with `allowed=false`, so the outer `result.allowed` guard keeps
+    // it on its own "client must resolve secrets and retry" path.
+    if result.allowed && no_wait::agent_skips_approval_wait(&body.agent) {
+        return Ok((StatusCode::CREATED, Json(json!(result))));
+    }
+
+    let tool_name = body.tool_name.as_deref().unwrap_or("");
+    let pattern_triggered_approval = result.requires_approval;
+    if result.allowed
+        && !body.skip_approval
+        && (TOOLS_REQUIRING_APPROVAL.contains(&tool_name) || pattern_triggered_approval)
+    {
+        let gate_id = result.gate_id;
             let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
 
             {
@@ -412,13 +526,63 @@ async fn check_handler(
                 );
             }
 
+            // Patch 21 (2026-05-22): bridge the pending gate into the
+            // `approvals` table so the TUI consumer of /approvals/pending
+            // can see and decide it. The approvals row carries `gate_id`
+            // (column added by tenant v56 / main v64) so the decide
+            // handler can relay the decision back to this caller through
+            // `state.pending_approvals`. Failure to insert is logged but
+            // does not fail the gate: the existing timeout path stays
+            // authoritative (caller will be denied after
+            // KLEOS_APPROVAL_TIMEOUT_SECS).
+            //
+            // Patch 21.1 (2026-05-22, hyp_aa454644): restrict the bridge
+            // to commands that volontarily matched a
+            // `require_approval_patterns` entry
+            // (`pattern_triggered_approval`). The legacy
+            // `TOOLS_REQUIRING_APPROVAL` path (tool_name is in {Bash,
+            // Write, Edit, WebFetch, WebSearch}) keeps its upstream
+            // behavior: in-memory wait + silent timeout, no TUI row. This
+            // avoids polluting the TUI with every Bash from Claude Code
+            // when no explicit pattern matched, while preserving the
+            // approval workflow for commands the operator chose to gate.
+            if pattern_triggered_approval {
+                let approval_req = kleos_lib::approvals::CreateApprovalRequest {
+                    action: body.command.clone(),
+                    context: Some(
+                        json!({
+                            "tool_name": tool_name,
+                            "resolved_command": result.resolved_command,
+                            "session_id": body.session_id,
+                        })
+                        .to_string(),
+                    ),
+                    requester: body.agent.clone(),
+                    window_secs: Some(approval_timeout_secs() as i64),
+                };
+                if let Err(err) = kleos_lib::approvals::create_approval_with_gate(
+                    &db,
+                    &approval_req,
+                    auth.user_id,
+                    gate_id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "gate: failed to bridge gate_id={} into approvals table: {}",
+                        gate_id,
+                        err
+                    );
+                }
+            }
+
             // Notify any watchers (e.g. TUI) that a new approval is pending.
             if let Some(ref notify) = state.approval_notify {
                 let _ = notify.send(());
             }
 
             let wait_outcome =
-                tokio::time::timeout(std::time::Duration::from_secs(APPROVAL_TIMEOUT_SECS), rx)
+                tokio::time::timeout(std::time::Duration::from_secs(approval_timeout_secs()), rx)
                     .await;
 
             // SECURITY (SEC-CRIT-2): resolve the outcome against the DB, which
@@ -463,7 +627,7 @@ async fn check_handler(
                     tool_name,
                     body.agent
                 );
-                return Ok((StatusCode::CREATED, Json(json!(result))));
+                return Ok((StatusCode::CREATED, Json(no_wait::approved_response(&result))));
             } else {
                 tracing::warn!(
                     "gate: DENIED/TIMEOUT gate_id={} tool={} agent={}",
@@ -484,12 +648,12 @@ async fn check_handler(
                 };
                 return Ok((StatusCode::CREATED, Json(json!(denied_result))));
             }
-        }
     }
 
     Ok((StatusCode::CREATED, Json(json!(result))))
 }
 
+/// Records an approval decision and wakes the matching pending request.
 async fn respond_handler(
     ResolvedDb(db): ResolvedDb,
     State(state): State<AppState>,
@@ -555,6 +719,7 @@ async fn respond_handler(
     Ok(Json(result))
 }
 
+/// Completes a specific gate after verifying that its agent stored an outcome.
 async fn complete_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -613,6 +778,22 @@ async fn complete_handler(
     Ok(Json(json!({ "ok": true, "kleos_stores": stored_count })))
 }
 
+/// Non-negotiable prohibition keywords. The i18n lexicon may EXTEND this set
+/// (for example with French markers) through the `prohibition_marker` class,
+/// but it can never SHRINK it: these are always checked so an empty or hostile
+/// lexicon override (via `KLEOS_LEXICON_REPOSITORY`) cannot silently disable
+/// prohibition detection in the gate.
+const BASELINE_PROHIBITIONS: &[&str] = &[
+    "never",
+    "do not",
+    "don't",
+    "must not",
+    "prohibited",
+    "forbidden",
+    "blocked",
+    "banned",
+];
+
 /// Simple guard endpoint that checks if an action conflicts with high-importance static rules.
 /// This is a simplified version without LLM integration - it only does keyword matching.
 async fn guard_handler(
@@ -634,10 +815,14 @@ async fn guard_handler(
     let user_id = auth.effective_user_id();
     let rules: Vec<Value> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // static rule must not be enforced as a conflict guard; is_archived = 0
+            // excludes rejected rules for the same reason.
             let mut stmt = conn.prepare(
                 "SELECT id, content, importance FROM memories
                  WHERE is_static = 1 AND importance >= 8 AND is_forgotten = 0
                  AND user_id = ?1
+                 AND status != 'pending' AND is_archived = 0 AND is_superseded = 0
                  ORDER BY importance DESC LIMIT 20",
             )?;
             let rows = stmt.query_map(params![user_id], |row| {
@@ -671,19 +856,11 @@ async fn guard_handler(
     // Simple heuristic: if any rule contains prohibition keywords and the action
     // contains related terms, warn. Without LLM, we can't do semantic matching.
     let action_lower = body.action.to_lowercase();
-    let prohibition_keywords = [
-        "never",
-        "don't",
-        "do not",
-        "must not",
-        "prohibited",
-        "forbidden",
-    ];
 
     let mut matched_rules = Vec::new();
     for rule in &rules {
         let content = rule["content"].as_str().unwrap_or("").to_lowercase();
-        let has_prohibition = prohibition_keywords.iter().any(|k| content.contains(k));
+        let has_prohibition = BASELINE_PROHIBITIONS.iter().any(|k| content.contains(k));
 
         // Very basic: check if any significant word from the action appears in the rule
         let action_words: Vec<&str> = action_lower
@@ -747,16 +924,11 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
     };
 
     const ACTIVATION_THRESHOLD: f64 = 0.6;
-    const PROHIBITIONS: &[&str] = &[
-        "never",
-        "do not",
-        "don't",
-        "must not",
-        "prohibited",
-        "forbidden",
-        "blocked",
-        "banned",
-    ];
+
+    // Prohibition markers via lexicon,
+    // diacritic + casing tolerant via fold_for_matching. Memories written
+    // in French with proper accents (interdit, déclenché, etc.) match
+    // against the bare ASCII forms the user may produce.
 
     let command_lower = command.to_lowercase();
     let command_tokens: Vec<&str> = command_lower
@@ -768,13 +940,38 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
         if mem.activation < ACTIVATION_THRESHOLD {
             continue;
         }
-        let content_lower = mem.content.to_lowercase();
-        let has_prohibition = PROHIBITIONS.iter().any(|k| content_lower.contains(k));
+        let content_lower_for_baseline = mem.content.to_lowercase();
+        // Baseline keywords are always enforced (ASCII, case-insensitive) so a
+        // hostile or empty lexicon override cannot disable the gate. The lexicon
+        // adds diacritic-tolerant and multi-language markers on top.
+        let baseline_hit = BASELINE_PROHIBITIONS
+            .iter()
+            .any(|k| content_lower_for_baseline.contains(k));
+        let lexicon_hit = kleos_lib::lexicon::supported_languages()
+            .iter()
+            .any(|lang| {
+                let folded_content = kleos_lib::lexicon::fold_word_for_class(
+                    &mem.content,
+                    lang,
+                    "prohibition_marker",
+                );
+                kleos_lib::lexicon::word_class(lang, "prohibition_marker")
+                    .iter()
+                    .any(|k| {
+                        folded_content.contains(&kleos_lib::lexicon::fold_word_for_class(
+                            k,
+                            lang,
+                            "prohibition_marker",
+                        ))
+                    })
+            });
+        let has_prohibition = baseline_hit || lexicon_hit;
         if !has_prohibition {
             continue;
         }
         // Require at least one shared token to avoid tripping on rules that
         // happen to contain "never" but talk about something unrelated.
+        let content_lower = mem.content.to_lowercase();
         let overlaps = command_tokens.iter().any(|t| content_lower.contains(t));
         if !overlaps {
             continue;
@@ -789,6 +986,7 @@ async fn brain_grounded_check(state: &AppState, user_id: i64, command: &str) -> 
     None
 }
 
+/// Completes the newest eligible gate or reports its current lifecycle state.
 async fn complete_latest_handler(
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
@@ -803,27 +1001,41 @@ async fn complete_latest_handler(
     )
     .await?
     {
-        Some((gate_id, count)) => Ok(Json(json!({
+        LatestGateCompletion::Completed {
+            gate_id,
+            stored_count,
+        } => Ok(Json(json!({
             "ok": true,
             "completed": true,
             "gate_id": gate_id,
-            "kleos_stores": count,
+            "kleos_stores": stored_count,
         }))),
-        None => Ok(Json(json!({
+        LatestGateCompletion::NoOpenGate => Ok(Json(json!({
             "ok": true,
             "completed": false,
             "reason": "no open gate for session",
         }))),
+        LatestGateCompletion::AwaitingMemory { gate_id } => Ok(Json(json!({
+            "ok": true,
+            "completed": false,
+            "gate_id": gate_id,
+            "reason": "awaiting memory store",
+        }))),
     }
 }
 
+/// Loads reviewed model-selection directives for gate response enrichment.
 async fn agent_model_enrichment(db: &kleos_lib::db::Database, user_id: i64) -> Option<String> {
     let rules: Vec<String> = db
         .read(move |conn| {
+            // status != 'pending' is the review-gate predicate: an unreviewed
+            // rule must not be injected into agent-model enrichment; is_archived = 0
+            // excludes rejected rules for the same reason.
             let mut stmt = conn.prepare(
                 "SELECT content FROM memories
                  WHERE is_static = 1 AND is_forgotten = 0 AND importance >= 8
                  AND user_id = ?1
+                 AND status != 'pending' AND is_archived = 0 AND is_superseded = 0
                  AND (content LIKE '%agent.model.preference%'
                       OR content LIKE '%force-agent-models%'
                       OR content LIKE '%delegate to opencode%'
@@ -942,6 +1154,7 @@ pub(crate) fn is_forge_exempt(file_path: &str) -> bool {
     EXEMPT_EXTS.iter().any(|ext| lower.ends_with(ext))
 }
 
+/// Truncates a string to a character limit and appends an ellipsis when needed.
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -951,6 +1164,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Regression tests for Forge-gate path extraction and exemptions.
 #[cfg(test)]
 mod forge_gate_tests {
     use super::{extract_write_edit_path, is_forge_exempt};

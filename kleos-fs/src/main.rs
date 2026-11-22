@@ -263,6 +263,11 @@ fn cmd_kw(args: &[String]) -> ExitCode {
 
     // Open with O_NOFOLLOW to prevent symlink-swap TOCTOU between
     // canonicalize_within_roots and the actual write.
+    //
+    // Patch 44 (VOCSAP): Windows has no O_NOFOLLOW. cfg-gate so the Unix path
+    // stays byte-identical, and on non-Unix refuse to write through an existing
+    // symlink (best-effort TOCTOU parity) before a normal open.
+    #[cfg(unix)]
     let open_result = {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
@@ -270,6 +275,23 @@ fn cmd_kw(args: &[String]) -> ExitCode {
             .create(true)
             .truncate(true)
             .custom_flags(libc::O_NOFOLLOW)
+            .open(&target)
+    };
+    #[cfg(not(unix))]
+    let open_result = {
+        if let Ok(meta) = std::fs::symlink_metadata(&target) {
+            if meta.file_type().is_symlink() {
+                eprintln!(
+                    "kw: refusing to write through symlink {}",
+                    target.display()
+                );
+                return ExitCode::from(2);
+            }
+        }
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
             .open(&target)
     };
     match open_result {

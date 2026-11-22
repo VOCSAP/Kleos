@@ -1,6 +1,6 @@
 [package]
 name = "kleos-server"
-version = "1.7.3"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 description = "HTTP server for Kleos -- persistent semantic memory and cognitive infrastructure for AI agents"
@@ -17,15 +17,22 @@ path = "src/main.rs"
 name = "kleos_server"
 
 [features]
-default = ["piv"]
+default = ["piv", "ml"]
 piv = ["kleos-mcp/piv"]
+# Local ML inference in kleos-lib (ONNX embedder + cross-encoder reranker +
+# LanceDB ANN indices). Disable for a lean server that uses remote embedding
+# and reranking providers over HTTP and FTS + sqlite-vec retrieval.
+ml = ["kleos-lib/ml"]
 
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher"] }
-kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
-kleos-client = { path = "../kleos-client", version = "1.2.1", default-features = false }
-kleos-mcp = { path = "../kleos-mcp", version = "1.2.1", default-features = false }
-agent-forge = { path = "../agent-forge", version = "1.2.1" }
+# default-features = false so the ml stack is controlled solely by this
+# crate's own `ml` feature above; brain_hopfield is re-added explicitly since
+# the dreamer's growth reflection consumes dream-cycle telemetry.
+kleos-lib = { path = "../kleos-lib", version = "1.10.0", default-features = false, features = ["sqlcipher", "brain_hopfield"] }
+kleos-cred = { path = "../kleos-cred", version = "1.10.0" }
+kleos-client = { path = "../kleos-client", version = "1.10.0", default-features = false }
+kleos-mcp = { path = "../kleos-mcp", version = "1.10.0", default-features = false }
+agent-forge = { path = "../agent-forge", version = "1.10.0" }
 percent-encoding = "2.3"
 axum = { workspace = true, features = ["ws"] }
 hmac = { workspace = true }
@@ -43,7 +50,9 @@ tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
-reqwest = { workspace = true }
+# `stream` is used directly by routes/onboard (bytes_stream); previously it
+# arrived only transitively via the ml stack's deps, so an ml-off build lost it.
+reqwest = { workspace = true, features = ["stream"] }
 url = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
@@ -60,11 +69,18 @@ dirs = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["test-utils"] }
+kleos-lib = { path = "../kleos-lib", version = "1.10.0", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true }
 tempfile = { workspace = true }
 ed25519-dalek = { workspace = true }
+# Patch 49: axum's Query<T> extractor deserializes via serde_urlencoded (see axum's own
+# Cargo.lock dependency block), not serde_json. A #[serde(default = ...)] test written
+# against serde_json::from_str exercises a different Deserializer and can pass while the
+# real HTTP extraction path (query string) still fails. Declared explicitly per the
+# "transitive crate needs a direct Cargo.toml entry" convention -- it is already resolved
+# transitively via axum, but not usable from test code without this line.
+serde_urlencoded = "0.7"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/kleos-server-{ target }{ archive-suffix }"

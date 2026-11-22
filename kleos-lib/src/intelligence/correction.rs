@@ -1,8 +1,9 @@
 //! Memory correction -- replace a memory with corrected content while preserving lineage.
 
 use crate::db::Database;
+use crate::embeddings::EmbeddingProvider;
 use crate::memory;
-use crate::memory::types::{Memory, StoreRequest};
+use crate::memory::types::{Memory, UpdateRequest};
 use crate::Result;
 
 /// Correct a memory: create a new version with corrected content, link it to
@@ -15,33 +16,46 @@ pub async fn correct_memory(
     corrected_content: &str,
     reason: Option<&str>,
 ) -> Result<Memory> {
+    correct_memory_with_embedder(db, None, user_id, memory_id, corrected_content, reason).await
+}
+
+/// [`correct_memory`] with the server embedder, so the corrected text gets its
+/// own vector instead of none.
+#[tracing::instrument(skip(db, embedder, corrected_content, reason))]
+pub async fn correct_memory_with_embedder(
+    db: &Database,
+    embedder: Option<&dyn EmbeddingProvider>,
+    user_id: i64,
+    memory_id: i64,
+    corrected_content: &str,
+    reason: Option<&str>,
+) -> Result<Memory> {
     // Fetch the original (validates ownership)
     let original = memory::get(db, memory_id, user_id).await?;
 
-    // Store the corrected version with same metadata
-    let store_result = memory::store(
-        db,
-        StoreRequest {
-            content: corrected_content.to_string(),
-            category: original.category.clone(),
-            source: original.source.clone(),
-            importance: original.importance,
-            tags: original
-                .tags
-                .as_ref()
-                .and_then(|t| serde_json::from_str(t).ok()),
-            session_id: original.session_id.clone(),
-            is_static: Some(original.is_static),
-            user_id: Some(user_id),
-            space_id: original.space_id,
-            ..Default::default()
-        },
-        None,
-        false,
-    )
-    .await?;
+    // The corrected text is the next version of the original, chained and
+    // carrying its metadata. memory::store would start an unrelated version 1,
+    // keep the original latest, and could fold a close correction back into
+    // the original as a duplicate. update refuses an original that is no
+    // longer the latest version, before anything below is written.
+    let req = UpdateRequest {
+        content: Some(corrected_content.to_string()),
+        category: None,
+        importance: None,
+        tags: None,
+        is_static: None,
+        status: None,
+        embedding: None,
+        chunk_embeddings: None,
+    };
+    let corrected = match embedder {
+        Some(embedder) => {
+            memory::update_with_chunks(db, embedder, memory_id, req, user_id, false).await?
+        }
+        None => memory::update(db, memory_id, req, user_id, false).await?,
+    };
 
-    let new_id = store_result.id;
+    let new_id = corrected.id;
 
     // Create 'supersedes' link from new to old
     memory::insert_link(db, new_id, memory_id, 1.0, "supersedes", user_id).await?;
@@ -56,6 +70,7 @@ pub async fn correct_memory(
         Ok(())
     })
     .await?;
+    memory::search::invalidate_search_cache(user_id);
 
     // Record the correction in reconsolidations table
     let reason_text = reason.unwrap_or("manual correction").to_string();

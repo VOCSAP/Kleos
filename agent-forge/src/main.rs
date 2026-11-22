@@ -11,20 +11,34 @@ use agent_forge::json_io::{read_input, write_output, Output};
 use agent_forge::tools;
 
 /// Top-level CLI: every invocation specifies a subcommand plus input/output JSON paths.
+/// `--input` and `--output` are `Option`al at the parser level because the `Help`
+/// (and Phase 2 `Schema`) subcommands print to stdout and need no file I/O. All
+/// other subcommands require both flags and validate at dispatch time.
 #[derive(Parser)]
 #[command(name = "agent-forge")]
 #[command(about = "Structured reasoning and code quality workflow")]
+// Disable clap's auto-generated `help` subcommand so our `Commands::Help`
+// variant can claim the name. The `--help` flag remains available.
+#[command(disable_help_subcommand = true)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Path to input JSON file
+    /// Path to input JSON file (required for every subcommand except `help`).
     #[arg(long)]
-    input: PathBuf,
+    input: Option<PathBuf>,
 
-    /// Path to output JSON file
+    /// Path to output JSON file (required for every subcommand except `help`).
     #[arg(long)]
-    output: PathBuf,
+    output: Option<PathBuf>,
+
+    /// Slug naming this invocation's scratch pair, used INSTEAD of --input and
+    /// --output. Resolves to `<scratch>/<slug>.in.json` and
+    /// `<scratch>/<slug>.out.json`, where `<scratch>` is `$AGENT_FORGE_SCRATCH_DIR`
+    /// or `~/.agent-forge/scratch`. The caller states a NAME, never a path, so the
+    /// location stops being a free parameter that each caller invents differently.
+    #[arg(long)]
+    name: Option<String>,
 
     /// Path to database file
     #[arg(long, default_value = "~/.agent-forge/forge.db")]
@@ -54,14 +68,38 @@ enum Commands {
     ListSpecs,
     GetSpec,
     Stats,
+    /// Assemble the review record for a spec. Present only in `fluency` builds.
+    #[cfg(feature = "fluency")]
+    Review,
+    /// Render requirements, design, and tasks. Present only in `fluency` builds.
+    #[cfg(feature = "fluency")]
+    SpecArtifacts,
     RepoMap,
     SearchCode,
+    CodeContext,
+    CodeRelations,
     SkillSearch,
     SkillCapture,
     SkillRecordExec,
     SkillFix,
     SkillDerive,
     SkillLineage,
+    /// Print structured documentation about agent-forge to stdout. With no
+    /// argument, prints the overview + workflow + subcommand list. With a
+    /// subcommand name (kebab-case, e.g. `spec-task`), prints that
+    /// subcommand's input schema. Ignores `--input` and `--output`.
+    Help {
+        /// Name of the subcommand to detail. Omit for the overview.
+        subcommand: Option<String>,
+    },
+    /// Print the machine-readable JSON Schema for the given subcommand's
+    /// input. Derived via `schemars` from the actual `*Input` struct, so it
+    /// stays in sync with the dispatch path. Ignores `--input` and `--output`.
+    Schema {
+        /// Name of the subcommand whose input schema to print (kebab-case).
+        #[arg(long)]
+        command: String,
+    },
 }
 
 /// Expand a leading `~/` in a path string to the user's home directory.
@@ -74,137 +112,356 @@ fn expand_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Print the help output for `subcommand` to stdout and exit with the
+/// appropriate code. Used by the `Help` variant before any DB / file I/O so
+/// agents can discover the schema without side effects.
+fn run_help(subcommand: Option<String>) -> ! {
+    use tools::help::{per_subcmd, KNOWN_SUBCOMMANDS, OVERVIEW};
+    match subcommand.as_deref() {
+        None => {
+            print!("{}", OVERVIEW);
+            std::process::exit(0);
+        }
+        Some(name) => match per_subcmd(name) {
+            Some(text) => {
+                print!("{}", text);
+                std::process::exit(0);
+            }
+            None => {
+                eprintln!("agent-forge help: unknown subcommand '{}'", name);
+                eprintln!("Valid subcommands:");
+                for n in KNOWN_SUBCOMMANDS {
+                    eprintln!("  {}", n);
+                }
+                std::process::exit(2);
+            }
+        },
+    }
+}
+
+/// Print the JSON Schema for `command_name` to stdout and exit. Mirrors
+/// `run_help` for the machine-readable surface.
+fn run_schema(command_name: &str) -> ! {
+    use tools::help::KNOWN_SUBCOMMANDS;
+    use tools::schema::for_command;
+    match for_command(command_name) {
+        Some(json) => {
+            println!("{}", json);
+            std::process::exit(0);
+        }
+        None => {
+            eprintln!(
+                "agent-forge schema: no input schema for '{}'",
+                command_name
+            );
+            eprintln!("Valid subcommands:");
+            for n in KNOWN_SUBCOMMANDS {
+                eprintln!("  {}", n);
+            }
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Resolve the directory holding `--name`-derived scratch files: the
+/// `AGENT_FORGE_SCRATCH_DIR` environment variable when set and non-empty,
+/// otherwise `~/.agent-forge/scratch` (alongside the default `--db`, which is
+/// why that home is the right one). Creates the directory if it is missing and
+/// exits with a named error rather than panicking when it cannot.
+fn scratch_dir() -> PathBuf {
+    let dir = match std::env::var("AGENT_FORGE_SCRATCH_DIR") {
+        Ok(v) if !v.trim().is_empty() => PathBuf::from(v.trim()),
+        _ => match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
+            Ok(home) if !home.trim().is_empty() => {
+                PathBuf::from(home.trim()).join(".agent-forge").join("scratch")
+            }
+            _ => {
+                eprintln!(
+                    "agent-forge: cannot resolve a scratch directory: neither \
+                     AGENT_FORGE_SCRATCH_DIR nor HOME/USERPROFILE is set. \
+                     Pass --input/--output explicitly, or set one of them."
+                );
+                std::process::exit(2);
+            }
+        },
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "agent-forge: cannot create scratch directory {}: {e}",
+            dir.display()
+        );
+        std::process::exit(2);
+    }
+    dir
+}
+
+/// Validate a `--name` slug BEFORE it is ever joined onto a directory.
+///
+/// The slug is a string an agent supplies that becomes a filesystem path, so it
+/// is treated as hostile input: only `[A-Za-z0-9._-]` is accepted, and `..` is
+/// rejected outright. Without this, `--name ../../etc/passwd` would escape the
+/// scratch directory, which is precisely the class of defect the flag exists to
+/// avoid (a caller choosing a location). Enforced here, at the single point
+/// where a name becomes a path.
+fn validate_slug(slug: &str) -> Result<(), String> {
+    if slug.is_empty() {
+        return Err("--name must not be empty".to_string());
+    }
+    if slug.contains("..") {
+        return Err(format!("--name {slug:?} must not contain '..'"));
+    }
+    if let Some(bad) = slug
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-'))
+    {
+        return Err(format!(
+            "--name {slug:?} contains {bad:?}; only letters, digits, '.', '_' and '-' \
+             are allowed (it is a NAME, not a path)"
+        ));
+    }
+    Ok(())
+}
+
+/// Extract the `(input, output)` paths from the CLI args, exiting with a
+/// descriptive error if they cannot be determined. Used by every subcommand
+/// except `Help`, which prints to stdout instead.
+///
+/// This is the ONLY place a path is decided, which is why `--name` is resolved
+/// here and nowhere else. Precedence is per-field and deliberate: an explicit
+/// `--input`/`--output` always wins over the `--name`-derived path, so no
+/// existing caller changes behaviour. Mixing them (say `--name` plus `--input`
+/// alone) is therefore well defined rather than silently surprising: the
+/// explicit half is honoured and the other half is derived.
+fn require_io(cli: &Cli) -> (PathBuf, PathBuf) {
+    let derived = match cli.name.as_deref() {
+        Some(slug) => {
+            if let Err(msg) = validate_slug(slug) {
+                eprintln!("agent-forge: {msg}");
+                std::process::exit(2);
+            }
+            let dir = scratch_dir();
+            Some((
+                dir.join(format!("{slug}.in.json")),
+                dir.join(format!("{slug}.out.json")),
+            ))
+        }
+        None => None,
+    };
+
+    let input = cli
+        .input
+        .clone()
+        .or_else(|| derived.as_ref().map(|(i, _)| i.clone()))
+        .unwrap_or_else(|| {
+            eprintln!(
+                "agent-forge: --input <FILE> is required for this subcommand \
+                 (or pass --name <SLUG> to derive it under the scratch directory)"
+            );
+            std::process::exit(2);
+        });
+    let output = cli
+        .output
+        .clone()
+        .or_else(|| derived.as_ref().map(|(_, o)| o.clone()))
+        .unwrap_or_else(|| {
+            eprintln!(
+                "agent-forge: --output <FILE> is required for this subcommand \
+                 (or pass --name <SLUG> to derive it under the scratch directory)"
+            );
+            std::process::exit(2);
+        });
+    (input, output)
+}
+
+/// Echo the result envelope on stdout, in addition to the `--output` file.
+///
+/// The file stays the machine-readable contract; stdout is what a caller
+/// actually observes. Until this existed, every subcommand printed nothing at
+/// all and exited 0 even on `success: false`, so a caller could not tell a
+/// logged hypothesis from a rejected one without reading the file back. That
+/// silence also broke the PostToolUse hook that gates code edits on seeing a
+/// `spec_`/`hyp_` identifier in the command's output: a perfectly valid call
+/// left no trace for it to match, and the next edit was refused.
+///
+/// A rendering failure is reported on stderr and left non-fatal: the envelope
+/// has already been persisted, so the run itself succeeded.
+fn emit_stdout(output: &Output) {
+    match serde_json::to_string_pretty(output) {
+        Ok(json) => println!("{}", json),
+        Err(e) => eprintln!("Failed to render output on stdout: {}", e),
+    }
+}
+
 /// Parse args, open the forge DB, dispatch to the requested tool, and write
 /// the JSON result to `--output`. Any error becomes an `Output::error` payload.
+/// The `Help` variant short-circuits before any DB or file I/O.
 fn main() {
     let cli = Cli::parse();
+
+    // Short-circuit help: prints to stdout, no DB, no --input/--output needed.
+    if let Commands::Help { subcommand } = cli.command {
+        run_help(subcommand);
+    }
+
+    // Short-circuit schema: same contract as help (stdout, no DB, no files).
+    if let Commands::Schema { command } = &cli.command {
+        run_schema(command);
+    }
+
+    // Every other subcommand requires --input and --output.
+    let (input_path, output_path) = require_io(&cli);
 
     let db_path = expand_path(&cli.db);
     let db = match Database::open(&db_path) {
         Ok(db) => db,
         Err(e) => {
             let output = Output::error(format!("Database error: {}", e));
-            write_output(&cli.output, &output).ok();
+            write_output(&output_path, &output).ok();
+            emit_stdout(&output);
             std::process::exit(1);
         }
     };
 
     let result = match cli.command {
-        Commands::SpecTask => read_input(&cli.input)
+        Commands::Help { .. } => unreachable!("Help is handled above"),
+        Commands::Schema { .. } => unreachable!("Schema is handled above"),
+        Commands::SpecTask => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::spec::spec_task(&db, input).map_err(|e| e.to_string())),
         Commands::LogHypothesis => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::hypothesis::log_hypothesis(&db, input).map_err(|e| e.to_string())
                 })
         }
         Commands::LogOutcome => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::hypothesis::log_outcome(&db, input).map_err(|e| e.to_string())
                 })
         }
         Commands::RecallErrors => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::hypothesis::recall_errors(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::Verify => read_input(&cli.input)
+        Commands::Verify => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::verify::verify(&db, input).map_err(|e| e.to_string())),
-        Commands::ChallengeCode => read_input(&cli.input)
+        Commands::ChallengeCode => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::verify::challenge_code(&db, input).map_err(|e| e.to_string())),
         Commands::CommentCheck => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::comments::comment_check(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::SessionDiff => read_input(&cli.input)
+        Commands::SessionDiff => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::verify::session_diff(&db, input).map_err(|e| e.to_string())),
-        Commands::Checkpoint => read_input(&cli.input)
+        Commands::Checkpoint => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::session::checkpoint(&db, input).map_err(|e| e.to_string())),
-        Commands::Rollback => read_input(&cli.input)
+        Commands::Rollback => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::session::rollback(&db, input).map_err(|e| e.to_string())),
-        Commands::SessionLearn => read_input(&cli.input)
+        Commands::SessionLearn => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::session::session_learn(&db, input).map_err(|e| e.to_string())),
         Commands::SessionRecall => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::session::session_recall(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::Think => read_input(&cli.input)
+        Commands::Think => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::think::think(&db, input).map_err(|e| e.to_string())),
         Commands::DeclareUnknowns => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::think::declare_unknowns(&db, input).map_err(|e| e.to_string())
                 })
         }
         Commands::ConsiderApproaches => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::approaches::consider_approaches(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::UpdateSpec => read_input(&cli.input)
+        Commands::UpdateSpec => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::spec::update_spec(&db, input).map_err(|e| e.to_string())),
-        Commands::ListSpecs => read_input(&cli.input)
+        Commands::ListSpecs => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::spec::list_specs(&db, input).map_err(|e| e.to_string())),
-        Commands::GetSpec => read_input(&cli.input)
+        Commands::GetSpec => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::spec::get_spec(&db, input).map_err(|e| e.to_string())),
-        Commands::RepoMap => read_input(&cli.input)
+        Commands::RepoMap => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| {
                 tools::ast::repo_map::repo_map(&db, input).map_err(|e| e.to_string())
             }),
         Commands::SearchCode => {
-            read_input(&cli.input)
+            read_input(&input_path)
                 .map_err(|e| e.to_string())
                 .and_then(|input| {
                     tools::ast::search::search_code(&db, input).map_err(|e| e.to_string())
                 })
         }
-        Commands::SkillSearch => read_input(&cli.input)
+        Commands::CodeContext => {
+            read_input(&input_path)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::code_context::code_context(&db, input).map_err(|e| e.to_string())
+                })
+        }
+        Commands::CodeRelations => {
+            read_input(&input_path)
+                .map_err(|e| e.to_string())
+                .and_then(|input| {
+                    tools::code_context::code_relations(&db, input).map_err(|e| e.to_string())
+                })
+        }
+        Commands::SkillSearch => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_search(input).map_err(|e| e.to_string())),
-        Commands::SkillCapture => read_input(&cli.input)
+        Commands::SkillCapture => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_capture(input).map_err(|e| e.to_string())),
-        Commands::SkillRecordExec => read_input(&cli.input)
+        Commands::SkillRecordExec => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_record_exec(input).map_err(|e| e.to_string())),
-        Commands::SkillFix => read_input(&cli.input)
+        Commands::SkillFix => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_fix(input).map_err(|e| e.to_string())),
-        Commands::SkillDerive => read_input(&cli.input)
+        Commands::SkillDerive => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_derive(input).map_err(|e| e.to_string())),
-        Commands::SkillLineage => read_input(&cli.input)
+        Commands::SkillLineage => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::skills::skill_lineage(input).map_err(|e| e.to_string())),
-        Commands::Stats => read_input(&cli.input)
+        Commands::Stats => read_input(&input_path)
             .map_err(|e| e.to_string())
             .and_then(|input| tools::stats::stats(&db, input).map_err(|e| e.to_string())),
+        #[cfg(feature = "fluency")]
+        Commands::Review => read_input(&input_path)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::emit::review(&db, input).map_err(|e| e.to_string())),
+        #[cfg(feature = "fluency")]
+        Commands::SpecArtifacts => read_input(&input_path)
+            .map_err(|e| e.to_string())
+            .and_then(|input| tools::emit::spec_artifacts(&db, input).map_err(|e| e.to_string())),
     };
 
     let output = match result {
@@ -212,8 +469,10 @@ fn main() {
         Err(e) => Output::error(e),
     };
 
-    if let Err(e) = write_output(&cli.output, &output) {
+    if let Err(e) = write_output(&output_path, &output) {
         eprintln!("Failed to write output: {}", e);
         std::process::exit(1);
     }
+
+    emit_stdout(&output);
 }

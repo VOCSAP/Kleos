@@ -37,6 +37,7 @@ pub struct SummaryStepState {
     pub scroll: u16,
 }
 
+/// State transitions for the summary/install step.
 impl SummaryStepState {
     /// Create the default summary step state.
     pub fn new() -> Self {
@@ -88,6 +89,55 @@ fn draw_plan_summary(
         .split(area);
 
     let mut lines: Vec<Line> = Vec::new();
+
+    // Upgrade notice: shown persistently at the top of the summary so the
+    // user knows secrets are being preserved and the existing config will be
+    // backed up rather than silently overwritten.
+    if state.is_upgrade {
+        if let Some(existing) = &state.existing_install {
+            lines.push(Line::from(vec![Span::styled(
+                "Upgrade detected:",
+                Style::default().fg(COLOR_WARN).add_modifier(Modifier::BOLD),
+            )]));
+            lines.push(Line::from(vec![
+                Span::raw("  Existing install detected at "),
+                Span::styled(
+                    existing.install_dir.to_string_lossy().to_string(),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                "  Secrets will be preserved; existing config will be backed up before overwrite.",
+                Style::default().fg(COLOR_DIM),
+            )));
+            lines.push(Line::from(""));
+        }
+    }
+
+    // Failure banner: rendered persistently until the user retries (Enter,
+    // which clears it before starting a new attempt) or navigates back
+    // (Esc/Backspace, which also clears it) -- see `handle_summary_input`. A
+    // failed install must never look identical to the plain pre-install
+    // summary, which previously let the process report "cancelled" and exit
+    // 0 for what was actually a failure.
+    if let Some(err) = &step_state.install_error {
+        lines.push(Line::from(vec![Span::styled(
+            " INSTALLATION FAILED ",
+            Style::default()
+                .fg(Color::White)
+                .bg(COLOR_ERROR)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            err.as_str(),
+            Style::default().fg(COLOR_ERROR),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "Press Enter to retry, or Esc to go back and adjust settings.",
+            Style::default().fg(COLOR_DIM),
+        )]));
+        lines.push(Line::from(""));
+    }
 
     // Components section.
     lines.push(Line::from(vec![Span::styled(
@@ -324,6 +374,7 @@ struct CollectingProgress {
     lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+// Buffers progress callbacks so the TUI thread can drain them per frame.
 impl InstallProgress for CollectingProgress {
     /// Append a "phase: detail" line.
     fn on_phase(&self, phase: &str, detail: &str) {
@@ -395,8 +446,11 @@ pub async fn handle_summary_input(
 
     match key.code {
         KeyCode::Enter => {
-            // Run installation.
+            // Run installation. Clear any error from a previous failed
+            // attempt -- this is the "retry" acknowledgement of the failure
+            // banner above.
             step_state.installing = true;
+            step_state.install_error = None;
             step_state
                 .progress_lines
                 .push("Starting installation...".to_string());
@@ -436,6 +490,10 @@ pub async fn handle_summary_input(
             }
         }
         KeyCode::Esc | KeyCode::Backspace => {
+            // Navigating away also acknowledges a failed attempt's error --
+            // it should not reappear stale once the user returns having
+            // changed nothing, only to look identical to a fresh retry.
+            step_state.install_error = None;
             return StepResult::Back;
         }
         KeyCode::Char('q') => {

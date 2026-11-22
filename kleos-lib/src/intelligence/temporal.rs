@@ -59,14 +59,18 @@ const MONTHLY_TOLERANCE_SECS: f64 = 432_000.0;
 /// silently skipped to avoid hallucinated recurrence claims.
 #[tracing::instrument(skip(db), fields(user_id))]
 pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<TemporalPattern>> {
-    // --- 1. Load timestamps grouped by category ---
-    let rows: Vec<(i64, String, String)> = db
+    // --- 1. Load timestamps grouped by category + space ---
+    // Patch 37 -- include space_id so the recurrence buckets do not mix
+    // memories across projects. NULL legacy memories form their own
+    // bucket (Some(None) key), still detected if dense enough but never
+    // merged with spaced rows.
+    let rows: Vec<(i64, String, String, Option<i64>)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, category, created_at \
+                "SELECT id, category, created_at, space_id \
                      FROM memories \
                      WHERE is_forgotten = 0 AND user_id = ?2 \
-                     ORDER BY category, created_at \
+                     ORDER BY space_id, category, created_at \
                      LIMIT ?1",
             )?;
 
@@ -75,6 +79,7 @@ pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<Temporal
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
                 ))
             })?;
 
@@ -82,18 +87,23 @@ pub async fn detect_patterns(db: &Database, user_id: i64) -> Result<Vec<Temporal
         })
         .await?;
 
-    // --- 2. Group by category ---
+    // --- 2. Group by (space_id, category) ---
+    // Patch 37 -- bucket key includes space_id so recurrence detection
+    // never mixes memories across projects.
     use std::collections::HashMap;
-    let mut by_category: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
-    for (id, category, created_at_str) in rows {
+    let mut by_space_category: HashMap<(Option<i64>, String), Vec<(i64, i64)>> = HashMap::new();
+    for (id, category, created_at_str, space_id) in rows {
         let ts = parse_sqlite_timestamp(&created_at_str);
-        by_category.entry(category).or_default().push((id, ts));
+        by_space_category
+            .entry((space_id, category))
+            .or_default()
+            .push((id, ts));
     }
 
-    // --- 3. Analyse each category ---
+    // --- 3. Analyse each (space, category) bucket ---
     let mut patterns: Vec<TemporalPattern> = Vec::new();
 
-    for (category, mut entries) in by_category {
+    for ((_space_id, category), mut entries) in by_space_category {
         if entries.len() < MIN_SAMPLE_SIZE {
             continue;
         }
@@ -352,10 +362,15 @@ pub async fn time_travel(
     if let Some(q) = query {
         let pattern = format!("%{}%", q);
         db.read(move |conn| {
+            // Review-gate: status != 'pending' withholds unreviewed memories and
+            // is_archived = 0 drops rejected content. is_latest is intentionally
+            // NOT filtered here so time-travel can still surface superseded
+            // versions as they existed at the requested timestamp.
             let mut stmt = conn.prepare(
                 "SELECT id, content, category, importance, created_at \
                      FROM memories \
                      WHERE created_at <= ?1 AND is_forgotten = 0 \
+                       AND is_archived = 0 AND status != 'pending' \
                        AND content LIKE ?2 AND user_id = ?4 \
                      ORDER BY created_at DESC LIMIT ?3",
             )?;
@@ -375,10 +390,14 @@ pub async fn time_travel(
         .await
     } else {
         db.read(move |conn| {
+            // Review-gate, same as the query arm above: withhold pending and
+            // rejected content; keep superseded versions for time-travel.
             let mut stmt = conn.prepare(
                 "SELECT id, content, category, importance, created_at \
                      FROM memories \
-                     WHERE created_at <= ?1 AND is_forgotten = 0 AND user_id = ?3 \
+                     WHERE created_at <= ?1 AND is_forgotten = 0 \
+                       AND is_archived = 0 AND status != 'pending' \
+                       AND user_id = ?3 \
                      ORDER BY created_at DESC LIMIT ?2",
             )?;
 

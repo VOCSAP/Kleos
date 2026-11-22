@@ -25,6 +25,7 @@ pub const ACTIVE_USER_IDS_SUBQUERY: &str = "SELECT id FROM users WHERE is_active
 /// Must be 64 hex characters (32 bytes).
 static API_KEY_PEPPER: OnceLock<Option<[u8; 32]>> = OnceLock::new();
 
+/// Return the validated process-wide API key pepper when configured.
 fn get_pepper() -> Option<[u8; 32]> {
     *API_KEY_PEPPER.get_or_init(|| {
         crate::kleos_env("API_KEY_PEPPER").ok().and_then(|hex| {
@@ -64,7 +65,9 @@ pub enum Scope {
     Admin,
 }
 
+/// Render an API scope in its stable lowercase wire representation.
 impl std::fmt::Display for Scope {
+    /// Write the lowercase scope token.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Read => write!(f, "read"),
@@ -74,9 +77,12 @@ impl std::fmt::Display for Scope {
     }
 }
 
+/// Parse a lowercase API scope token.
 impl std::str::FromStr for Scope {
+    /// Scope parsing reports the shared Kleos error type.
     type Err = crate::EngError;
 
+    /// Convert a scope token into its typed representation.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "read" => Ok(Self::Read),
@@ -110,6 +116,7 @@ pub struct ApiKey {
     pub hash_version: i32,
 }
 
+/// Default deserialized API keys to the legacy hash version.
 fn default_hash_version() -> i32 {
     HASH_VERSION_LEGACY
 }
@@ -139,10 +146,16 @@ pub struct AuthContext {
     /// session can never manage another user's account. Only tenant DATA
     /// operations follow the delegation, via `effective_user_id()`.
     pub act_as: Option<i64>,
+    /// Effective whole-instance grant carried into middleware-free MCP tool
+    /// dispatch. `None` means the request is not delegated; Admin delegation
+    /// records `Write` because it may perform either logical operation.
+    pub act_as_access: Option<crate::spaces::InstanceAccess>,
     pub identity: Option<IdentityCtx>,
 }
 
+/// Provide authorization helpers for an authenticated request context.
 impl AuthContext {
+    /// Return whether the context carries the requested scope or admin scope.
     pub fn has_scope(&self, scope: &Scope) -> bool {
         self.key.scopes.contains(scope) || self.key.scopes.contains(&Scope::Admin)
     }
@@ -183,26 +196,34 @@ fn hash_key_v2(raw_key: &str) -> Option<String> {
 ///
 /// Retained as a reference implementation only. `validate_key` does not use
 /// it because its per-row loop needs both hashes precomputed AND the SEC-C5
-/// Normalise a raw API key to its canonical `kleos_<hex>` form.
+/// downgrade-attack guard that rejects v1 rows while pepper is configured.
+/// Wiring this helper back in would drop that guard.
+#[allow(dead_code)]
+fn hash_key_versioned(raw_key: &str, version: i32) -> Option<String> {
+    match version {
+        HASH_VERSION_LEGACY => Some(hash_key_v1(raw_key)),
+        HASH_VERSION_PEPPERED => hash_key_v2(raw_key),
+        _ => None,
+    }
+}
+
+/// Normalise a raw API key, preserving its canonical prefix for hash lookups.
 ///
-/// Accepts four prefixes for backwards compatibility:
-///   - `kleos_` (canonical, new keys mint with this)
-///   - `kl_`    (shorthand alias)
-///   - `engram_` (legacy, pre-rename)
-///   - `eg_`     (legacy shorthand)
-///
-/// All prefixes map to the same canonical `kleos_` form so hash lookups
-/// succeed regardless of which prefix the caller used.
+/// SECURITY (SEC-LOW-2): `eg_` is a short alias for `engram_` and maps to it.
+/// `kleos_` keys preserve their prefix because hashes were computed on that
+/// form when the PEPPER was introduced (VOCSAP deployment). Converting to
+/// `engram_` would cause a hash mismatch for all pepper-era keys.
 fn normalize_key(raw_key: &str) -> Option<String> {
-    let hex_portion = if let Some(rest) = raw_key.strip_prefix("kleos_") {
-        rest
-    } else if let Some(rest) = raw_key.strip_prefix("kl_") {
-        rest
-    } else if let Some(rest) = raw_key.strip_prefix("engram_") {
-        rest
-    } else {
-        raw_key.strip_prefix("eg_")?
-    };
+    let (canonical_prefix, hex_portion) =
+        if let Some(rest) = raw_key.strip_prefix("engram_") {
+            ("engram_", rest)
+        } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
+            ("kleos_", rest)
+        } else if let Some(rest) = raw_key.strip_prefix("eg_") {
+            ("engram_", rest)
+        } else {
+            return None;
+        };
 
     // Accept both 32-char (new format) and 64-char (legacy TS format) keys
     let valid_len = hex_portion.len() == 32 || hex_portion.len() == 64;
@@ -210,7 +231,7 @@ fn normalize_key(raw_key: &str) -> Option<String> {
         return None;
     }
 
-    Some(format!("kleos_{}", hex_portion.to_ascii_lowercase()))
+    Some(format!("{}{}", canonical_prefix, hex_portion.to_ascii_lowercase()))
 }
 
 /// Generate a new random API key.
@@ -403,8 +424,11 @@ pub async fn create_key_with_expiry(
 pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
     let normalized_key =
         normalize_key(raw_key).ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
-    // Extract hex portion after the `kleos_` prefix (6 chars)
-    let hex_portion = normalized_key[6..].to_string();
+    // Split on '_' to handle prefixes of different lengths (kleos_=6, engram_=7)
+    let hex_portion = normalized_key
+        .split_once('_')
+        .map(|(_, hex)| hex.to_string())
+        .ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
     let key_prefix = hex_portion[..8].to_string();
 
     // Compute hashes for the current canonical form (`kleos_<hex>`)
@@ -522,6 +546,7 @@ pub async fn validate_key(db: &Database, raw_key: &str) -> Result<AuthContext> {
         key: api_key,
         user_id,
         act_as: None,
+        act_as_access: None,
         identity: None,
     })
 }
@@ -619,6 +644,31 @@ pub async fn list_keys(db: &Database, user_id: i64) -> Result<Vec<ApiKey>> {
     .await
 }
 
+/// List every active API key across users for an authorized admin caller.
+///
+/// Authorization is intentionally enforced by the route before this
+/// unscoped query is called. The returned records never include key hashes.
+#[tracing::instrument(skip(db))]
+pub async fn list_all_keys(db: &Database) -> Result<Vec<ApiKey>> {
+    db.read(move |conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, user_id, key_prefix, name, scopes, rate_limit, is_active,
+                        agent_id, last_used_at, expires_at, created_at, hash_version
+                 FROM api_keys
+                 WHERE is_active = 1
+                 ORDER BY created_at DESC",
+        )?;
+
+        let keys = stmt
+            .query_map([], row_to_api_key_rusqlite)?
+            .map(|result| result.map_err(EngError::from))
+            .collect::<Result<Vec<ApiKey>>>()?;
+
+        Ok(keys)
+    })
+    .await
+}
+
 // --- Row mapping ---
 
 /// Standard row mapping: expects columns 0-11 in order:
@@ -687,12 +737,14 @@ fn row_to_api_key_rusqlite_with_offset(row: &rusqlite::Row<'_>) -> crate::Result
     })
 }
 
+/// Regression tests for API key creation, validation, and listing.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
     use crate::db::Database;
 
+    /// Create an isolated database for authentication tests.
     async fn setup_db() -> Database {
         let db_path = std::env::temp_dir()
             .join(format!("engram-auth-test-{}.db", uuid::Uuid::new_v4()))
@@ -706,6 +758,7 @@ mod tests {
         Database::connect_with_config(&config, None).await.unwrap()
     }
 
+    /// Insert an active administrative user and return its identifier.
     async fn make_user(db: &Database, username: &str) -> i64 {
         let username = username.to_string();
         db.write(move |conn| {
@@ -719,6 +772,7 @@ mod tests {
         .unwrap()
     }
 
+    /// Key creation persists a valid absolute expiry timestamp.
     #[tokio::test]
     async fn create_key_with_expiry_persists_absolute_timestamp() {
         let db = setup_db().await;
@@ -743,6 +797,7 @@ mod tests {
         assert_eq!(api_key.rate_limit, 250);
     }
 
+    /// Deactivating a user invalidates that user's otherwise-active key.
     #[tokio::test]
     async fn validate_key_rejects_deactivated_user() {
         let db = setup_db().await;
@@ -774,6 +829,7 @@ mod tests {
         assert!(matches!(err, crate::EngError::Auth(_)));
     }
 
+    /// Key creation rejects malformed absolute expiry timestamps.
     #[tokio::test]
     async fn create_key_with_expiry_rejects_malformed_timestamp() {
         let db = setup_db().await;
@@ -791,5 +847,33 @@ mod tests {
         .expect_err("malformed expires_at must be rejected");
 
         assert!(matches!(err, crate::EngError::InvalidInput(_)));
+    }
+
+    /// The unscoped admin query returns active keys owned by different users.
+    #[tokio::test]
+    async fn list_all_keys_spans_users_and_excludes_revoked_keys() {
+        let db = setup_db().await;
+        let first_user = make_user(&db, "list-all-first").await;
+        let second_user = make_user(&db, "list-all-second").await;
+        let (first_key, _) = create_key(&db, first_user, "first-active", vec![Scope::Read], None)
+            .await
+            .expect("create first key");
+        let (second_key, _) =
+            create_key(&db, second_user, "second-active", vec![Scope::Read], None)
+                .await
+                .expect("create second key");
+        let (revoked_key, _) =
+            create_key(&db, second_user, "second-revoked", vec![Scope::Read], None)
+                .await
+                .expect("create key to revoke");
+        revoke_key(&db, second_user, revoked_key.id)
+            .await
+            .expect("revoke key");
+
+        let keys = list_all_keys(&db).await.expect("list all keys");
+
+        assert!(keys.iter().any(|key| key.id == first_key.id));
+        assert!(keys.iter().any(|key| key.id == second_key.id));
+        assert!(!keys.iter().any(|key| key.id == revoked_key.id));
     }
 }

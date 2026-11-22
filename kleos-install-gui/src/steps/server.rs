@@ -10,6 +10,38 @@ use eframe::egui;
 use crate::theme;
 use crate::wizard::InstallerApp;
 
+/// Validation error for the host field, if any.
+///
+/// Mirrors the TUI's host validator: empty or containing a space is invalid.
+fn host_error(host: &str) -> Option<&'static str> {
+    if host.is_empty() || host.contains(' ') {
+        Some("Host must not be empty or contain spaces.")
+    } else {
+        None
+    }
+}
+
+/// Validation error for the port field, if any.
+///
+/// Mirrors the TUI's port validator: must parse as a `u16` and be greater
+/// than zero -- `0` is not a valid bind port.
+fn port_error(port_buf: &str) -> Option<&'static str> {
+    match port_buf.parse::<u16>() {
+        Ok(p) if p > 0 => None,
+        _ => Some("Port must be a number between 1 and 65535."),
+    }
+}
+
+/// Return `true` if every field on the server configuration step is valid.
+///
+/// CORS origins are optional and have no validator.
+pub fn is_valid(app: &InstallerApp) -> bool {
+    host_error(&app.server_host_buf).is_none()
+        && port_error(&app.server_port_buf).is_none()
+        && !app.server_data_dir_buf.is_empty()
+        && !app.server_db_path_buf.is_empty()
+}
+
 /// Draw the server configuration step.
 ///
 /// Renders a form with fields for host, port, data directory, database path,
@@ -27,20 +59,16 @@ pub fn draw_server_config(ui: &mut egui::Ui, app: &mut InstallerApp) {
     // -- Host --
     ui.label("Bind host:");
     ui.add(egui::TextEdit::singleline(&mut app.server_host_buf).hint_text("127.0.0.1"));
-    if app.server_host_buf.is_empty() {
-        ui.colored_label(theme::COLOR_ERROR, "Host cannot be empty.");
+    if let Some(err) = host_error(&app.server_host_buf) {
+        ui.colored_label(theme::COLOR_ERROR, err);
     }
     ui.add_space(8.0);
 
     // -- Port --
     ui.label("Port:");
     ui.add(egui::TextEdit::singleline(&mut app.server_port_buf).hint_text("4200"));
-    let port_valid = app.server_port_buf.parse::<u16>().is_ok();
-    if !port_valid {
-        ui.colored_label(
-            theme::COLOR_ERROR,
-            "Port must be a number between 1 and 65535.",
-        );
+    if let Some(err) = port_error(&app.server_port_buf) {
+        ui.colored_label(theme::COLOR_ERROR, err);
     }
     ui.add_space(8.0);
 

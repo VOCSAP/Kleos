@@ -65,7 +65,7 @@ pub struct InstallResult {
     pub installed_components: Vec<String>,
     /// Directory where the binaries were placed.
     pub install_dir: PathBuf,
-    /// Path to the written `engram.toml` file.
+    /// Path to the written `kleos.toml` file.
     pub config_path: PathBuf,
     /// The initial API key generated for the first user.
     pub api_key: String,
@@ -80,6 +80,7 @@ struct DownloadProgressAdapter<'a> {
     inner: &'a dyn InstallProgress,
 }
 
+/// Bridge install-level progress callbacks to the download layer's trait.
 impl<'a> DownloadProgress for DownloadProgressAdapter<'a> {
     /// Forward per-chunk progress to the install progress handler.
     fn on_progress(&self, component: &str, bytes_downloaded: u64, total_bytes: u64) {
@@ -99,6 +100,7 @@ impl<'a> DownloadProgress for DownloadProgressAdapter<'a> {
     fn on_error(&self, _component: &str, _error: &str) {}
 }
 
+/// Execution of an assembled installation plan.
 impl InstallPlan {
     /// Execute the installation plan, reporting progress via `progress`.
     ///
@@ -108,7 +110,7 @@ impl InstallPlan {
     /// 3. Download each selected component binary.
     /// 4. Verify checksums for all downloaded files.
     /// 5. Move binaries to `install_dir` and set executable permissions on Unix.
-    /// 6. Write `engram.toml` and `.env` to `config_dir`.
+    /// 6. Write `kleos.toml` and `.env` to `config_dir`.
     /// 7. Install system integration (systemd unit, launchd plist, or nothing).
     /// 8. Return an `InstallResult` summarising the completed installation.
     ///
@@ -135,9 +137,14 @@ impl InstallPlan {
         let checksums = fetch_checksums(&release)?;
 
         // Step 3 + 4: download and verify each component.
-        let platform = Platform::detect();
+        let platform = Platform::detect()?;
         let suffix = platform.release_suffix();
-        let tmp_dir = make_tempdir()?;
+        // Held for the rest of `execute`; its `Drop` impl removes the temp
+        // dir (and every downloaded binary copy in it) on both the success
+        // and error paths, since dropping runs during early-return unwinding
+        // too.
+        let tmp_dir_guard = make_tempdir()?;
+        let tmp_dir = tmp_dir_guard.path();
         let mut pending: Vec<(String, String, PathBuf)> = Vec::new();
 
         for component_id in &self.components {
@@ -188,8 +195,13 @@ impl InstallPlan {
             progress.on_component_installed(component_id);
         }
 
-        // Step 6: write configuration.
+        // Step 6: write configuration. On an upgrade, back up the existing
+        // kleos.toml/.env first so a bad write or a mistaken secret
+        // regeneration is recoverable.
         progress.on_phase("config", "Writing configuration files");
+        if self.is_upgrade {
+            backup_existing_config(&self.config_dir, progress)?;
+        }
         self.config.write_config(&self.config_dir)?;
 
         // Step 7: system integration.
@@ -211,7 +223,7 @@ impl InstallPlan {
         let result = InstallResult {
             installed_components: self.components.clone(),
             install_dir: self.install_dir.clone(),
-            config_path: self.config_dir.join("engram.toml"),
+            config_path: self.config_dir.join("kleos.toml"),
             api_key: self.config.security.initial_api_key.clone(),
             server_url,
         };
@@ -234,7 +246,7 @@ fn setup_system_integration(
             install_systemd_unit(&unit, *auto_start)?;
         }
         SystemIntegration::Launchd { auto_start } => {
-            let plist = generate_launchd_plist(config, install_dir, config_dir);
+            let plist = generate_launchd_plist(config, install_dir, config_dir)?;
             install_launchd_plist(&plist, *auto_start)?;
         }
         SystemIntegration::WindowsService => {
@@ -247,15 +259,76 @@ fn setup_system_integration(
     Ok(())
 }
 
+/// Back up the existing `kleos.toml` and `.env` in `config_dir` before they
+/// are overwritten during an upgrade.
+///
+/// Each file is backed up independently, and only if it currently exists (a
+/// detected install may be missing one of the two, e.g. a hand-rolled
+/// `.env`-only setup). Delegates the actual copy to
+/// [`crate::upgrade::backup_config`] and reports each backup's destination
+/// through `progress.on_phase` so the UI can surface it. A failed backup is
+/// propagated (rather than swallowed) so a bad upgrade never silently
+/// overwrites the only copy of an existing config.
+fn backup_existing_config(
+    config_dir: &Path,
+    progress: &dyn InstallProgress,
+) -> Result<(), InstallError> {
+    for name in ["kleos.toml", ".env"] {
+        let path = config_dir.join(name);
+        if !path.exists() {
+            continue;
+        }
+        let backup_path = crate::upgrade::backup_config(&path)?;
+        progress.on_phase(
+            "backup",
+            &format!("Backed up existing {name} to {}", backup_path.display()),
+        );
+    }
+    Ok(())
+}
+
+/// RAII guard around a temporary download working directory: removes the
+/// directory tree when dropped.
+///
+/// Without this, every downloaded binary is left behind under the system
+/// temp root after each run (success or failure), since `make_tempdir`
+/// previously returned a bare `PathBuf` that nothing ever cleaned up.
+/// Dropping runs on both the success return and every `?`-early-return in
+/// `InstallPlan::execute`, so cleanup happens on both paths without
+/// duplicating cleanup calls at each exit point.
+struct TempDirGuard {
+    /// The directory this guard removes on drop.
+    path: PathBuf,
+}
+
+/// Expose the guarded path for use as a working directory.
+impl TempDirGuard {
+    /// Borrow the path of the guarded temporary directory.
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Remove the guarded temp directory tree when the guard goes out of scope.
+impl Drop for TempDirGuard {
+    /// Best-effort recursive removal; a destructor cannot propagate an error
+    /// and the OS temp root is cleaned periodically regardless, so a failure
+    /// here (e.g. a file locked by another process) is not fatal.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Create a private temporary working directory for downloaded binaries under
-/// the system temp root.
+/// the system temp root, wrapped in a [`TempDirGuard`] that removes it again
+/// once dropped.
 ///
 /// The directory name is randomized and created atomically with `create()`
 /// (not `create_dir_all`), which fails if the path already exists. This
 /// defeats a local attacker who pre-creates a fixed `/tmp/kleos-install` (as a
 /// symlink or with planted files) to hijack the downloaded binaries before
 /// they are copied into the install dir (TOCTOU). On Unix it is mode 0700.
-fn make_tempdir() -> Result<PathBuf, InstallError> {
+fn make_tempdir() -> Result<TempDirGuard, InstallError> {
     use rand::rngs::OsRng;
     use rand::TryRngCore;
 
@@ -273,7 +346,7 @@ fn make_tempdir() -> Result<PathBuf, InstallError> {
         builder.mode(0o700);
     }
     builder.create(&base)?;
-    Ok(base)
+    Ok(TempDirGuard { path: base })
 }
 
 /// Set the executable bit on a file (Unix-only).

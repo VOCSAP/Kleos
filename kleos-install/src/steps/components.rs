@@ -30,6 +30,7 @@ pub struct ComponentsStepState {
     pub focused_index: usize,
 }
 
+/// Selection state and navigation for the component-picker step.
 impl ComponentsStepState {
     /// Build the initial step state from the current wizard state.
     ///
@@ -152,8 +153,15 @@ fn draw_component_list(
         .map(|(i, comp)| {
             let is_checked = state.selected_components.iter().any(|s| s == comp.id);
             let is_focused = !step_state.on_profiles() && step_state.focused_index == i;
+            // A component is only "locked" (shown checked and unremovable)
+            // when it is both required AND actually part of the current
+            // selection. `required` alone is not enough: e.g. `kleos-server`
+            // is required but is not part of the AgentHost profile, so
+            // rendering it locked/checked there would falsely claim it will
+            // be installed.
+            let is_locked = comp.required && is_checked;
 
-            let checkbox = if comp.required {
+            let checkbox = if is_locked {
                 "[*]"
             } else if is_checked {
                 "[x]"
@@ -161,7 +169,7 @@ fn draw_component_list(
                 "[ ]"
             };
 
-            let checkbox_style = if comp.required {
+            let checkbox_style = if is_locked {
                 Style::default().fg(COLOR_COMPLETE)
             } else if is_checked {
                 Style::default().fg(COLOR_ACTIVE)

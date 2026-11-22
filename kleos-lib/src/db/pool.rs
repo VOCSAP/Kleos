@@ -70,6 +70,24 @@ impl DatabasePools {
         Ok(pools)
     }
 
+    pub async fn new_read_only(
+        db_uri: &str,
+        config: DbPoolConfig,
+        encryption_key: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        let reader = build_read_only_pool(db_uri, config.max_readers, config, encryption_key)?;
+        let writer =
+            build_read_only_pool(db_uri, config.writer_count.max(1), config, encryption_key)?;
+        let pools = Self {
+            reader,
+            writer,
+            config,
+            db_path: db_uri.to_owned(),
+        };
+        pools.validate_read_only().await?;
+        Ok(pools)
+    }
+
     pub fn reader(&self) -> &Pool {
         &self.reader
     }
@@ -163,6 +181,27 @@ impl DatabasePools {
 
         Ok(())
     }
+
+    async fn validate_read_only(&self) -> Result<()> {
+        for (label, pool) in [("reader", &self.reader), ("writer", &self.writer)] {
+            let conn = pool.get().await.map_err(|error| {
+                EngError::Internal(format!(
+                    "failed to acquire {label} pool connection: {error}"
+                ))
+            })?;
+            conn.interact(|conn| conn.query_row("SELECT 1", [], |_| Ok(())))
+                .await
+                .map_err(|error| {
+                    EngError::Internal(format!(
+                        "failed to validate {label} pool connection: {error}"
+                    ))
+                })?
+                .map_err(|error| {
+                    EngError::Internal(format!("failed to read {label} pool connection: {error}"))
+                })?;
+        }
+        Ok(())
+    }
 }
 
 fn build_pool(
@@ -197,6 +236,43 @@ fn build_pool(
         }))
         .build()
         .map_err(|e| EngError::Internal(format!("failed to build sqlite pool for {db_path}: {e}")))
+}
+
+fn build_read_only_pool(
+    db_uri: &str,
+    max_size: usize,
+    config: DbPoolConfig,
+    encryption_key: Option<[u8; 32]>,
+) -> Result<Pool> {
+    let mut manager = PoolManagerConfig::new(db_uri);
+    manager.pool = Some(PoolConfig::new(max_size));
+
+    manager
+        .builder(Runtime::Tokio1)
+        .map_err(|error| {
+            EngError::Internal(format!(
+                "failed to configure read-only sqlite pool for {db_uri}: {error}"
+            ))
+        })?
+        .post_create(Hook::async_fn(move |conn, _| {
+            Box::pin(async move {
+                conn.interact(move |conn| apply_read_only_pragmas(conn, config, encryption_key))
+                    .await
+                    .map_err(|error| {
+                        HookError::message(format!(
+                            "failed to initialize read-only sqlite connection: {error}"
+                        ))
+                    })?
+                    .map_err(HookError::Backend)?;
+                Ok(())
+            })
+        }))
+        .build()
+        .map_err(|error| {
+            EngError::Internal(format!(
+                "failed to build read-only sqlite pool for {db_uri}: {error}"
+            ))
+        })
 }
 
 fn apply_pragmas(
@@ -266,6 +342,28 @@ fn apply_pragmas(
     // pooled connection.
     conn.execute_batch("PRAGMA optimize;")?;
 
+    Ok(())
+}
+
+fn apply_read_only_pragmas(
+    conn: &mut deadpool_sqlite::rusqlite::Connection,
+    config: DbPoolConfig,
+    encryption_key: Option<[u8; 32]>,
+) -> deadpool_sqlite::rusqlite::Result<()> {
+    if let Some(ref key) = encryption_key {
+        use zeroize::Zeroize;
+
+        let mut key_sql = format!(
+            "PRAGMA key = {};",
+            crate::encryption::format_pragma_key(key).as_str()
+        );
+        let result = conn.execute_batch(&key_sql);
+        key_sql.zeroize();
+        result?;
+        conn.pragma_query_value(None, "schema_version", |_| Ok(()))?;
+    }
+    conn.busy_timeout(Duration::from_millis(config.busy_timeout_ms))?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
     Ok(())
 }
 

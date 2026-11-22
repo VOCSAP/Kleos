@@ -299,6 +299,7 @@ pub async fn log_action(db: &Database, req: LogActionRequest) -> Result<ActionEn
             "service": &entry.service,
             "action": &entry.action,
         }),
+        user_id,
     )
     .await
     {
@@ -564,6 +565,34 @@ struct GenericLlmRequest {
     system: String,
 }
 
+/// Embedded defaults for the narration prompt pair, overridable at runtime via
+/// the prompt repository under `broca/narrate/{system,user}.txt`.
+const NARRATE_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/narrate/system.txt");
+const NARRATE_USER_DEFAULT: &str = include_str!("../../prompts/broca/narrate/user.txt");
+
+/// Resolves the narration system prompt through the prompt repository.
+fn narrate_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("broca/narrate/system", NARRATE_SYSTEM_DEFAULT)
+}
+
+/// Renders the narration user prompt for one agent action through the prompt
+/// repository, falling back to the embedded default template.
+fn narrate_user_prompt(
+    agent: &str,
+    service: &str,
+    action: &str,
+    payload: &serde_json::Value,
+) -> String {
+    let payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string());
+    let vars = serde_json::json!({
+        "agent": agent,
+        "service": service,
+        "action": action,
+        "payload": payload,
+    });
+    crate::llm::prompts::load_and_render("broca/narrate/user", NARRATE_USER_DEFAULT, &vars)
+}
+
 /// Generate a narrative for a stored action via LLM.
 ///
 /// Used as a fallback when no template matched at ingest. Returns a short,
@@ -601,17 +630,8 @@ pub async fn llm_narrate(
 
     let model = broca_llm_model();
 
-    let system = "You translate technical agent actions into plain English. One sentence only.";
-    let user_prompt = format!(
-        "Convert this agent action into a single plain English sentence a non-technical person \
-         would understand. Be concise and natural. No technical jargon, no IDs, no JSON terms.\n\n\
-         Agent: {agent}\n\
-         Service: {service}\n\
-         Action: {action}\n\
-         Details: {payload}\n\n\
-         Respond with only the sentence, nothing else.",
-        payload = serde_json::to_string_pretty(payload).unwrap_or_else(|_| payload.to_string()),
-    );
+    let system = narrate_system_prompt();
+    let user_prompt = narrate_user_prompt(agent, service, action, payload);
 
     // Detect endpoint style -- mirrors narrator.ts detection logic.
     let is_ollama_or_openai_compat = url_base.contains("11434")
@@ -705,7 +725,19 @@ pub(crate) async fn call_llm_endpoint<B: serde::Serialize>(
     body: B,
     api_key: Option<String>,
 ) -> std::result::Result<String, String> {
-    let mut req = BROCA_LLM_CLIENT.post(url).json(&body);
+    // Optionally inject the operator-controlled thinking-mode flag (KLEOS_LLM_THINK)
+    // so every Broca / Chiasm caller honours it without each call site remembering
+    // to add it. When unset, take the original path verbatim (no serde round-trip,
+    // so the JSON key order on the wire is unchanged): the feature is a strict no-op.
+    let mut req = match crate::llm::think_setting() {
+        Some(setting) => {
+            let mut v = serde_json::to_value(&body)
+                .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+            crate::llm::inject_reasoning_setting(&mut v, Some(setting));
+            BROCA_LLM_CLIENT.post(url).json(&v)
+        }
+        None => BROCA_LLM_CLIENT.post(url).json(&body),
+    };
     if let Some(key) = api_key {
         req = req.bearer_auth(key);
     }
@@ -1061,32 +1093,32 @@ fn scrub_llm_error(e: &str) -> &'static str {
 /// optional fields (`agent`, `service`, `since`, `limit`) and nothing else.
 /// If the LLM is unavailable or returns non-JSON, the function falls back
 /// to [`ask_keyword_heuristic`] so the pipeline always makes progress.
+/// Embedded default for the ask-plan system prompt, overridable at runtime via
+/// the prompt repository under `broca/ask_plan/system.txt`.
+const ASK_PLAN_SYSTEM_DEFAULT: &str = include_str!("../../prompts/broca/ask_plan/system.txt");
+/// Patch 16 -- VOCSAP-only overlay: upstream overlays only the ask-plan
+/// system prompt, VOCSAP additionally wraps the question in an overridable
+/// user template (`broca/ask_plan/user.txt`).
+const ASK_PLAN_USER_DEFAULT: &str = include_str!("../../prompts/broca/ask_plan/user.txt");
+
+/// Resolves the ask-plan system prompt through the prompt repository.
+fn ask_plan_system_prompt() -> std::borrow::Cow<'static, str> {
+    crate::llm::prompts::load_prompt("broca/ask_plan/system", ASK_PLAN_SYSTEM_DEFAULT)
+}
+
 async fn ask_plan_call(question: &str) -> AskPlan {
     let Some(url_base) = broca_llm_url() else {
         tracing::debug!("ask: LLM not configured, using keyword heuristic for plan");
         return ask_keyword_heuristic(question);
     };
 
-    let system = "You translate a user question about an agent system into a JSON query plan. \
-        Return ONLY a JSON object with these optional fields and nothing else -- no explanation, \
-        no markdown, no code fences:\n\
-        {\"agent\":\"<agent-name>\",\"service\":\"<service-name>\",\
-        \"since\":\"<ISO-8601-datetime>\",\"limit\":<integer 1-50>}\n\n\
-        SERVICE CATALOG (set `service` to route to the right data source):\n\
-        - broca: action logs, what agents did, activity history (DEFAULT)\n\
-        - soma: agent registry, who is online, agent status, capabilities\n\
-        - chiasm: task coordination, assignments, task status, blockers\n\
-        - thymus: evaluations, quality scores, rubrics, drift detection\n\
-        - axon: events, channels, pub/sub activity\n\
-        - loom: workflows, runs, step execution, orchestration\n\n\
-        Rules:\n\
-        - Omit fields that are not implied by the question.\n\
-        - Set `service` to the most relevant data source for the question.\n\
-        - If the question is about agent activity or \"what did X do\", use broca (default).\n\
-        - For time-based questions (\"today\", \"last hour\", \"recent\") omit `since` and use a \
-          reasonable limit instead.\n\
-        - Default limit is 20. Maximum is 50.\n\
-        - If unsure which service, omit `service` (defaults to broca).";
+    let system = ask_plan_system_prompt();
+    // Patch 16 -- overlay-capable user template (defaults to `{{question}}`).
+    let user_template = crate::llm::prompts::load_prompt("broca/ask_plan/user", ASK_PLAN_USER_DEFAULT);
+    let user_prompt = crate::llm::template::interpolate(
+        user_template.as_ref(),
+        &serde_json::json!({ "question": question }),
+    );
 
     let model = broca_llm_model();
 
@@ -1113,7 +1145,7 @@ async fn ask_plan_call(question: &str) -> AskPlan {
                 },
                 OpenAiMessage {
                     role: "user".to_string(),
-                    content: question.to_string(),
+                    content: user_prompt.clone(),
                 },
             ],
             temperature: 0.2,
@@ -1122,7 +1154,7 @@ async fn ask_plan_call(question: &str) -> AskPlan {
         call_llm_endpoint(&url, body, broca_llm_api_key()).await
     } else {
         let body = GenericLlmRequest {
-            prompt: question.to_string(),
+            prompt: user_prompt.clone(),
             system: system.to_string(),
         };
         call_llm_endpoint(&url_base, body, broca_llm_api_key()).await
@@ -1179,8 +1211,13 @@ async fn ask_plan_call(question: &str) -> AskPlan {
 fn ask_keyword_heuristic(question: &str) -> AskPlan {
     let lower = question.to_lowercase();
 
-    // Known service names to look for in the question.
-    let known_services = ["kleos", "chiasm", "axon", "loom", "soma", "thymus", "broca"];
+    // Known service names to look for in the question. `engram` is the legacy
+    // tag still emitted by some older fanouts and any leftover data already
+    // stored before the post-rebrand fix to activity::fanout_broca; keep it as
+    // a backward-compatible alias so the ask plan can still resolve those rows.
+    let known_services = [
+        "kleos", "chiasm", "axon", "loom", "soma", "thymus", "broca", "engram",
+    ];
 
     let service = known_services
         .iter()
@@ -1232,8 +1269,14 @@ async fn ask_summarize_call(question: &str, rows: &[AskRow]) -> String {
     };
 
     let model = broca_llm_model();
-    let system = "You answer questions about an AI agent activity log. Be concise and direct. \
-        Cite relevant action ids in parentheses, e.g. (id:42). Answer in 1-3 sentences only.";
+
+    // Patch 15 -- prompt overlay for broca/ask_summary (system + user template).
+    let (system_cow, user_template_cow) = crate::llm::prompts::load_pair(
+        "broca/ask_summary",
+        include_str!("../../prompts/broca/ask_summary/system.txt"),
+        include_str!("../../prompts/broca/ask_summary/user.txt"),
+    );
+    let system: &str = system_cow.as_ref();
 
     // Truncate rows list at 4 096 bytes to keep prompt size bounded.
     // `floor_char_boundary` would be ideal but is nightly-only; instead find
@@ -1255,8 +1298,12 @@ async fn ask_summarize_call(question: &str, rows: &[AskRow]) -> String {
         &rows_json
     };
 
-    let user_prompt = format!(
-        "Question: {question}\n\nMatched action log rows (JSON):\n{rows_excerpt}\n\nAnswer:"
+    let user_prompt = crate::llm::template::interpolate(
+        user_template_cow.as_ref(),
+        &serde_json::json!({
+            "question": question,
+            "rows_excerpt": rows_excerpt,
+        }),
     );
 
     let is_openai_compat = url_base.contains("11434")

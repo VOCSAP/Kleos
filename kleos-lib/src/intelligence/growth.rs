@@ -3,6 +3,8 @@
 //! Observes recent activity, generates observations about patterns, and
 //! stores them as growth memories.
 
+// Dream-cycle telemetry only exists when the brain substrate is compiled in.
+#[cfg(feature = "brain_hopfield")]
 use crate::brain::dream::types::DreamCycleResult;
 use crate::config::Config;
 use crate::cred::{has_secret_patterns, CreddClient};
@@ -10,37 +12,125 @@ use crate::db::Database;
 use crate::intelligence::llm::{call_llm, is_llm_available};
 use crate::intelligence::types::{
     GrowthObservation, GrowthReflectRequest, GrowthReflectResult, LlmOptions,
+    ScoredGrowthObservation,
 };
 use crate::{EngError, Result};
 use rusqlite::OptionalExtension;
 use tracing::{info, warn};
 
-#[tracing::instrument(skip(db), fields(user_id, limit))]
-/// Lists recent growth observations owned by `user_id` for the requested limit.
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
+// Patch 17c -- optional external reject patterns for growth observations.
+// Loads `<prompt_repo>/growth/reject_patterns.txt` at every validation call
+// (no caching: dreamer fires every 30 min, hot-tunable matters more than
+// micro-perf). Format: one substring per line, case-insensitive, blank lines
+// and lines starting with `#` ignored. Any match rejects the observation
+// (treated as NOTHING). Resolution mirrors `kleos-lib::llm::prompts`:
+// `KLEOS_LLM_PROMPT_REPOSITORY` first, then `$KLEOS_DATA_DIR/prompts`.
+fn growth_reject_patterns() -> Vec<String> {
+    use std::path::PathBuf;
+    let repo: Option<PathBuf> = std::env::var_os("KLEOS_LLM_PROMPT_REPOSITORY")
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+                if let Some(raw) = std::env::var_os(env) {
+                    let candidate = PathBuf::from(raw).join("prompts");
+                    if candidate.is_dir() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            None
+        });
+    let Some(repo) = repo else {
+        return Vec::new();
+    };
+    let path = repo.join("growth").join("reject_patterns.txt");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.to_lowercase())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[tracing::instrument(skip(db), fields(limit, space_id, include_unscoped))]
 pub async fn list_observations(
     db: &Database,
-    user_id: i64,
     limit: usize,
+    // Patch 33 -- optional space filter (#3028 fix). None preserves the
+    // upstream behaviour (no filter; observations from all spaces are
+    // returned). Some(N) applies the inclusive partitioning convention:
+    //   include_unscoped = Some(true)  -> space N + default + legacy NULL
+    //   include_unscoped = Some(false) / None -> strict space N only
+    space_id: Option<i64>,
+    include_unscoped: Option<bool>,
+    user_id: i64,
 ) -> Result<Vec<GrowthObservation>> {
+    // Patch 33 -- build (extra_clause, params) where positional indices
+    // match the order in `params_vec`. LIMIT is always the last param.
+    let (extra_clause, mut params_vec): (String, Vec<rusqlite::types::Value>) = match space_id {
+        Some(sid) if matches!(include_unscoped, Some(true)) => (
+            " AND (space_id = ?1 \
+                OR space_id = (SELECT id FROM spaces \
+                               WHERE user_id = ?2 AND name = 'default' LIMIT 1) \
+                OR space_id IS NULL)"
+                .to_string(),
+            vec![
+                rusqlite::types::Value::Integer(sid),
+                rusqlite::types::Value::Integer(user_id),
+            ],
+        ),
+        Some(sid) => (
+            " AND space_id = ?1".to_string(),
+            vec![rusqlite::types::Value::Integer(sid)],
+        ),
+        None => (String::new(), Vec::new()),
+    };
+    // Upstream #70 -- isolate growth observations by owner. user_id is bound
+    // after the space params so the ?1/?2 indices inside extra_clause stay
+    // valid; Patch 33 space partitioning and the upstream user_id filter are
+    // unioned here (same discipline as the intelligence pair sweeps).
+    let uid_idx = params_vec.len() + 1;
+    params_vec.push(rusqlite::types::Value::Integer(user_id));
+    let limit_idx = params_vec.len() + 1;
+    // Review-gate predicate (upstream): unreviewed (pending) or rejected
+    // (is_archived = 1) growth observations must not be listed as active
+    // observations. Unioned with the Patch 33 space_id + upstream user_id
+    // scoping already built into `extra_clause`/`uid_idx` above.
+    let sql = format!(
+        "SELECT id, content, source, importance, created_at \
+         FROM memories \
+         WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?{uid_idx}{extra_clause} \
+           AND status != 'pending' AND is_archived = 0 AND is_superseded = 0 \
+         ORDER BY created_at DESC LIMIT ?{limit_idx}"
+    );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, content, source, importance, created_at \
-                 FROM memories \
-                 WHERE category = 'growth' AND is_forgotten = 0 AND user_id = ?2 \
-                 ORDER BY created_at DESC LIMIT ?1",
-        )?;
-
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut all_params: Vec<rusqlite::types::Value> = params_vec;
+        all_params.push(rusqlite::types::Value::Integer(limit as i64));
         let observations = stmt
-            .query_map(rusqlite::params![limit as i64, user_id], |row| {
-                Ok(GrowthObservation {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    source: row.get(2)?,
-                    importance: row.get(3)?,
-                    created_at: row.get(4)?,
-                })
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .query_map(
+                rusqlite::params_from_iter(all_params.iter().cloned()),
+                |row| {
+                    Ok(GrowthObservation {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(rusqlite_to_eng_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(rusqlite_to_eng_error)?;
 
         Ok(observations)
     })
@@ -51,66 +141,135 @@ pub async fn list_observations(
 /// Converts one growth observation into an insight memory.
 pub async fn materialize(db: &Database, observation_id: i64, user_id: i64) -> Result<i64> {
     db.write(move |conn| {
-        let result: Option<(String, String)> = conn
+        // Patch 33 -- also read the source observation's space_id so the
+        // promoted insight stays in the same project bucket (no
+        // cross-project leak when materialize is called from a
+        // tenant-shared dreamer).
+        // Upstream #70 -- scope by owner: alice must not materialize bob's
+        // observation. The user_id filter (upstream) is unioned with the
+        // Patch 33 space_id propagation (VOCSAP).
+        // Review-gate predicate (upstream): an unreviewed (pending) or
+        // rejected (is_archived = 1) observation must not be materialized
+        // into an insight.
+        let result: Option<(String, String, Option<i64>)> = conn
             .query_row(
-                "SELECT content, source FROM memories \
-                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2",
+                "SELECT content, source, space_id FROM memories \
+                 WHERE id = ?1 AND category = 'growth' AND user_id = ?2 \
+                 AND status != 'pending' AND is_archived = 0",
                 rusqlite::params![observation_id, user_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
 
-        let (content, source) = result.ok_or_else(|| {
+        let (content, source, source_space_id) = result.ok_or_else(|| {
             EngError::NotFound(format!("growth observation {} not found", observation_id))
         })?;
 
+        // Patch 33 -- propagate space_id of the source observation. NULL
+        // is preserved when the source is a pre-v57 legacy observation.
         conn.execute(
             "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-             source_count, is_static, is_forgotten, confidence, status, user_id, \
+             source_count, is_static, is_forgotten, confidence, status, space_id, \
              created_at, updated_at) \
              VALUES (?1, 'insight', ?2, 8, 1, 1, 1, 1, 0, 1.0, 'approved', ?3, \
              datetime('now'), datetime('now'))",
-            rusqlite::params![content, source, user_id],
-        )?;
+            rusqlite::params![content, source, source_space_id],
+        )
+        .map_err(rusqlite_to_eng_error)?;
 
         Ok(conn.last_insert_rowid())
     })
     .await
 }
 
-/// Service-specific reflection prompts.
+/// Embedded defaults for the service-specific reflection system prompts.
+/// Each is overridable at runtime via the prompt repository under
+/// `growth/<service>/system.txt`.
+const ENGRAM_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/engram/system.txt");
+const CLAUDE_CODE_REFLECTION_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/system.txt");
+const EIDOLON_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/eidolon/system.txt");
+const DEFAULT_REFLECTION_DEFAULT: &str = include_str!("../../prompts/growth/default/system.txt");
+
+// Patch 16 -- embedded defaults for the per-service rules suffix and user
+// templates. Colocated with the upstream system prompts (Option C): the same
+// Rules text is duplicated across the four services so an operator can tune
+// one without touching the others. Realigned on the upstream slug naming
+// (growth/<service>/...) at the f4e7eb3f merge.
+const ENGRAM_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/engram/system_suffix.txt");
+const CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/system_suffix.txt");
+const EIDOLON_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon/system_suffix.txt");
+const DEFAULT_REFLECTION_SUFFIX_DEFAULT: &str =
+    include_str!("../../prompts/growth/default/system_suffix.txt");
+const ENGRAM_REFLECTION_USER_DEFAULT: &str = include_str!("../../prompts/growth/engram/user.txt");
+const CLAUDE_CODE_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/claude_code/user.txt");
+const EIDOLON_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/eidolon/user.txt");
+const DEFAULT_REFLECTION_USER_DEFAULT: &str =
+    include_str!("../../prompts/growth/default/user.txt");
+
+struct ServicePromptPaths {
+    system_id: &'static str,
+    system_default: &'static str,
+    suffix_id: &'static str,
+    suffix_default: &'static str,
+    user_id: &'static str,
+    user_default: &'static str,
+}
+
+// Map the dispatch key to a canonical prompt slug. The kleos / engram
+// aliasing collapses to the same canonical files so legacy growth rows
+// tagged "kleos" still pick up the same reflection prompt as "engram" rows.
+fn service_prompt_paths(service: &str) -> ServicePromptPaths {
+    match service {
+        "engram" | "kleos" => ServicePromptPaths {
+            system_id: "growth/engram/system",
+            system_default: ENGRAM_REFLECTION_DEFAULT,
+            suffix_id: "growth/engram/system_suffix",
+            suffix_default: ENGRAM_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/engram/user",
+            user_default: ENGRAM_REFLECTION_USER_DEFAULT,
+        },
+        "claude-code" => ServicePromptPaths {
+            system_id: "growth/claude_code/system",
+            system_default: CLAUDE_CODE_REFLECTION_DEFAULT,
+            suffix_id: "growth/claude_code/system_suffix",
+            suffix_default: CLAUDE_CODE_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/claude_code/user",
+            user_default: CLAUDE_CODE_REFLECTION_USER_DEFAULT,
+        },
+        "eidolon" => ServicePromptPaths {
+            system_id: "growth/eidolon/system",
+            system_default: EIDOLON_REFLECTION_DEFAULT,
+            suffix_id: "growth/eidolon/system_suffix",
+            suffix_default: EIDOLON_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/eidolon/user",
+            user_default: EIDOLON_REFLECTION_USER_DEFAULT,
+        },
+        _ => ServicePromptPaths {
+            system_id: "growth/default/system",
+            system_default: DEFAULT_REFLECTION_DEFAULT,
+            suffix_id: "growth/default/system_suffix",
+            suffix_default: DEFAULT_REFLECTION_SUFFIX_DEFAULT,
+            user_id: "growth/default/user",
+            user_default: DEFAULT_REFLECTION_USER_DEFAULT,
+        },
+    }
+}
+
+/// Service-specific reflection prompts. An explicit `prompt_override` wins;
+/// otherwise the per-service embedded default is resolved through the prompt
+/// repository so operators can override it at runtime.
 fn get_prompt_for_service(service: &str, prompt_override: Option<&str>) -> String {
     if let Some(override_prompt) = prompt_override {
         return override_prompt.to_string();
     }
-
-    match service {
-        "engram" => "You are Kleos's internal self-reflection process. Kleos is a persistent memory system.\n\
-            Examine the recent activity and ask yourself:\n\
-            - Which memories get searched most vs never?\n\
-            - What contradictions persist unresolved?\n\
-            - What knowledge gaps exist (frequent searches with no results)?\n\
-            - What categories are growing fastest?\n\
-            - Are memory quality patterns improving or degrading?".to_string(),
-
-        "claude-code" => "You are the self-reflection process for Claude Code agent sessions.\n\
-            Examine the session activity and ask yourself:\n\
-            - Did a particular approach to a task work well or poorly?\n\
-            - Did the user correct a pattern that should be remembered?\n\
-            - Was there drift from expected behavior? Why?\n\
-            - Was something learned about the codebase or infrastructure?\n\
-            - Was there a communication style the user preferred?".to_string(),
-
-        "eidolon" => "You are Eidolon's self-reflection process. Eidolon is the daemon that orchestrates the neurosymbolic brain.\n\
-            Examine the dream cycle results and ask yourself:\n\
-            - What did this dream cycle reveal about memory patterns?\n\
-            - Which patterns keep merging (over-correlated)?\n\
-            - What connections are surprising?\n\
-            - Is the substrate getting better or worse at targeted activation?".to_string(),
-
-        _ => "You are a self-reflection process for a service in the Syntheos ecosystem.\n\
-            Examine the recent activity and extract ONE useful observation about patterns, improvements, or concerns.".to_string(),
-    }
+    let paths = service_prompt_paths(service);
+    crate::llm::prompts::load_prompt(paths.system_id, paths.system_default).into_owned()
 }
 
 /// Validate that an observation is meaningful (not empty, not meta-commentary).
@@ -124,6 +283,14 @@ fn validate_observation(text: &str) -> bool {
     }
     if trimmed.starts_with("I don't") || trimmed.starts_with("There is nothing") {
         return false;
+    }
+    // Patch 17c -- optional external reject patterns (hot-tunable via file).
+    let patterns = growth_reject_patterns();
+    if !patterns.is_empty() {
+        let lower = trimmed.to_lowercase();
+        if patterns.iter().any(|p| lower.contains(p)) {
+            return false;
+        }
     }
     true
 }
@@ -151,6 +318,7 @@ async fn resolve_growth_observation(
 /// describe what the consolidation cycle did. These are prepended to the
 /// recent-memory context so the LLM reflects on both what happened in
 /// the brain and what the agent recently experienced.
+#[cfg(feature = "brain_hopfield")]
 pub fn build_dream_context(
     result: &DreamCycleResult,
     pattern_count: usize,
@@ -199,26 +367,39 @@ pub async fn reflect(
     }
 
     let system_prompt = get_prompt_for_service(&req.service, req.prompt_override.as_deref());
+    let paths = service_prompt_paths(&req.service);
+    let suffix = crate::llm::prompts::load_prompt(paths.suffix_id, paths.suffix_default);
+    let full_system = format!(
+        "{}\n{}",
+        system_prompt.trim_end(),
+        suffix.trim_end()
+    );
 
-    let rules = "\nRules:\n\
-        - Output ONE concise observation (1-3 sentences max)\n\
-        - Write in first person as the service\n\
-        - Be specific -- not generic advice\n\
-        - If nothing interesting happened, output exactly: NOTHING\n\
-        - Do NOT output meta-commentary, explanations, or multiple options\n\
-        - Do NOT repeat things already known";
-
-    let full_system = format!("{}{}", system_prompt, rules);
-
-    let mut user_prompt = format!("Recent activity:\n\n{}\n\n", req.context.join("\n"));
-    if let Some(ref existing) = req.existing_growth {
-        let truncated = crate::validation::truncate_on_char_boundary(existing, 4000);
-        user_prompt.push_str(&format!(
-            "Things I already know (do NOT repeat these):\n{}\n\n",
-            truncated
-        ));
-    }
-    user_prompt.push_str("What did I learn or notice? One observation, or NOTHING.");
+    let existing_block = match req.existing_growth.as_deref() {
+        Some(existing) => {
+            // Patch 39: utf-8 safe truncation -- raw &existing[..4000]
+            // panics when byte 4000 lands inside a multi-byte glyph
+            // (frequent on FR/CJK/emoji content). Caps at 4000 bytes
+            // or the largest prefix ending on a char boundary below.
+            let truncated = crate::str_safe::truncate_at_char(existing, 4000);
+            format!(
+                "Things I already know (do NOT repeat these):\n{}\n\n",
+                truncated
+            )
+        }
+        None => String::new(),
+    };
+    let context_joined = req.context.join("\n");
+    let vars = serde_json::json!({
+        "context": context_joined,
+        "existing_block": existing_block,
+    });
+    let user_prompt = crate::llm::prompts::load_and_render(
+        paths.user_id,
+        paths.user_default,
+        &vars,
+    );
+    let user_prompt = user_prompt.trim_end().to_string();
 
     let opts = LlmOptions {
         temperature: 0.7,
@@ -255,9 +436,16 @@ pub async fn reflect(
     let prefix_clone = prefix.clone();
     let is_dup: bool = db
         .read(move |conn| {
+            // Dedup guard (spam prevention), not a content-surfacing path: a
+            // recent pending or approved observation SHOULD suppress a duplicate,
+            // so status is deliberately not filtered here. Only rejected/archived
+            // rows are excluded (is_archived = 0), matching the store-dedup rule at
+            // memory/mod.rs so a genuinely recurring pattern can resurface after a
+            // reject rather than being silently suppressed forever.
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM memories WHERE category = 'growth' \
+                     AND is_archived = 0 \
                      AND substr(content, 1, 200) = ?1 \
                      AND user_id = ?2 \
                      AND created_at > datetime('now', '-24 hours')",
@@ -282,17 +470,21 @@ pub async fn reflect(
 
     let trimmed_for_closure = trimmed.clone();
     let source_c = source.clone();
+    // Patch 33 -- stamp space_id so the observation stays in the
+    // project bucket of the context that generated it (#3028 fix).
+    let space_id_for_closure = req.space_id;
     let (memory_id, reflection_id) = db
         .write(move |conn| {
             let trimmed_refl = trimmed_for_closure.clone();
             conn.execute(
                 "INSERT INTO memories (content, category, source, importance, version, is_latest, \
-                 source_count, is_static, is_forgotten, is_archived, confidence, status, user_id, \
+                 source_count, is_static, is_forgotten, is_archived, confidence, status, space_id, user_id, \
                  created_at, updated_at) \
-                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, \
+                 VALUES (?1, 'growth', ?2, 7, 1, 1, 1, 1, 0, 1, 1.0, 'approved', ?3, ?4, \
                  datetime('now'), datetime('now'))",
-                rusqlite::params![trimmed_for_closure, source_c, user_id],
-            )?;
+                rusqlite::params![trimmed_for_closure, source_c, space_id_for_closure, user_id],
+            )
+            .map_err(rusqlite_to_eng_error)?;
 
             let memory_id = conn.last_insert_rowid();
 
@@ -322,6 +514,162 @@ pub async fn reflect(
         stored_memory_id: Some(memory_id),
         reflection_id: Some(reflection_id),
     })
+}
+
+/// Extract lowercase keyword tokens from text, filtering short words and
+/// common English/German stopwords to reduce noise in overlap scoring.
+fn extract_keywords(text: &str) -> std::collections::HashSet<String> {
+    const STOPWORDS: &[&str] = &[
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+        "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+        "that", "this", "these", "those", "i", "my", "we", "our", "it", "its", "in", "on", "at",
+        "to", "for", "of", "and", "or", "but", "not", "with", "from", "by", "as",
+        // German
+        "ich", "mein", "wir", "unser", "es", "ist", "sind", "war", "waren", "die", "der", "das",
+        "ein", "eine", "und", "oder", "aber", "nicht", "mit", "von", "zu", "für", "als", "aus",
+        "bei", "nach", "über",
+    ];
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() > 2)
+        .map(|w| w.to_lowercase())
+        .filter(|w| !STOPWORDS.contains(&w.as_str()))
+        .collect()
+}
+
+/// Score a single observation against query keywords.
+/// Returns a value in [0.0, 1.0]: keyword_overlap * 0.6 + recency * 0.4.
+fn score_observation(
+    obs: &GrowthObservation,
+    query_keywords: &std::collections::HashSet<String>,
+) -> f64 {
+    let obs_keywords = extract_keywords(&obs.content);
+
+    let keyword_score = if query_keywords.is_empty() || obs_keywords.is_empty() {
+        0.0
+    } else {
+        let overlap = query_keywords.intersection(&obs_keywords).count() as f64;
+        let denominator = (query_keywords.len() as f64).sqrt() * (obs_keywords.len() as f64).sqrt();
+        overlap / denominator
+    };
+
+    // Recency: decay over days. 1.0 at age=0, ~0.5 at 7 days, ~0.2 at 30 days.
+    // An unparseable timestamp sinks the row (recency 0.0) instead of falling
+    // back to "now", which would wrongly float a malformed observation to the top.
+    let recency_score =
+        match chrono::NaiveDateTime::parse_from_str(&obs.created_at, "%Y-%m-%d %H:%M:%S") {
+            Ok(dt) => {
+                let days = chrono::Utc::now()
+                    .signed_duration_since(dt.and_utc())
+                    .num_seconds()
+                    .max(0) as f64
+                    / 86_400.0;
+                1.0 / (1.0 + days * 0.1)
+            }
+            Err(_) => 0.0,
+        };
+
+    keyword_score * 0.6 + recency_score * 0.4
+}
+
+/// Retrieve growth observations matching `query` via the full-text index,
+/// regardless of age. Complements the recency pool in `context_growth` so an
+/// old but highly relevant observation is not excluded by the recency window.
+/// Mirrors `list_observations`' ownership/forgotten predicates, and returns an
+/// empty vec when `query` has no usable FTS tokens (empty or all-stopword).
+async fn match_observations(
+    db: &Database,
+    user_id: i64,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<GrowthObservation>> {
+    // Best-effort relevance channel: on oversized input, skip the FTS match
+    // (degrade to the recency pool) rather than rejecting the whole request.
+    if query.len() > crate::validation::MAX_FTS_QUERY_LEN {
+        return Ok(Vec::new());
+    }
+    let match_expr = crate::memory::fts::fts_or_match_query(query);
+    if match_expr.is_empty() {
+        return Ok(Vec::new());
+    }
+    db.read(move |conn| {
+        // Review-gate predicate: unreviewed (pending) or rejected (is_archived = 1)
+        // growth observations must not surface via the FTS match channel.
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.content, m.source, m.importance, m.created_at \
+                 FROM memories_fts \
+                 JOIN memories m ON m.id = memories_fts.rowid \
+                 WHERE memories_fts MATCH ?1 \
+                   AND m.category = 'growth' AND m.is_forgotten = 0 AND m.user_id = ?2 \
+                   AND m.status != 'pending' AND m.is_archived = 0 AND m.is_superseded = 0 \
+                 ORDER BY memories_fts.rank LIMIT ?3",
+        )?;
+        let observations = stmt
+            .query_map(
+                rusqlite::params![match_expr, user_id, limit as i64],
+                |row| {
+                    Ok(GrowthObservation {
+                        id: row.get(0)?,
+                        content: row.get(1)?,
+                        source: row.get(2)?,
+                        importance: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(observations)
+    })
+    .await
+}
+
+/// Retrieve the top-N growth observations most relevant to `query`.
+///
+/// Builds a candidate pool from the most recent observations UNION the
+/// full-text matches for `query` (so an old but highly relevant observation
+/// still competes), scores each by keyword overlap and recency, and returns
+/// the top `limit`. When `query` is empty the FTS pool is empty and scoring
+/// collapses to pure recency.
+#[tracing::instrument(skip(db), fields(user_id, limit))]
+pub async fn context_growth(
+    db: &Database,
+    user_id: i64,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ScoredGrowthObservation>> {
+    let pool_size = (limit * 10).min(200);
+
+    // Recency pool (also the sole pool when `query` is empty), then merge in
+    // full-text matches of any age, de-duplicated by id.
+    let mut observations = list_observations(db, pool_size, None, None, user_id).await?;
+    let mut seen: std::collections::HashSet<i64> = observations.iter().map(|o| o.id).collect();
+    for obs in match_observations(db, user_id, query, pool_size).await? {
+        if seen.insert(obs.id) {
+            observations.push(obs);
+        }
+    }
+
+    let query_keywords = extract_keywords(query);
+    let mut scored: Vec<(f64, GrowthObservation)> = observations
+        .into_iter()
+        .map(|obs| {
+            let score = score_observation(&obs, &query_keywords);
+            (score, obs)
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(scored
+        .into_iter()
+        .take(limit)
+        .map(|(score, obs)| ScoredGrowthObservation {
+            id: obs.id,
+            content: obs.content,
+            source: obs.source,
+            score: (score * 1000.0).round() / 1000.0,
+            created_at: obs.created_at,
+        })
+        .collect())
 }
 
 /// Tests the growth reflection helpers and validation rules.
@@ -368,5 +716,138 @@ mod tests {
     fn test_get_prompt_default() {
         let p = get_prompt_for_service("unknown_service", None);
         assert!(p.contains("self-reflection process"));
+    }
+
+    /// Stopwords and short words are excluded from keyword extraction.
+    #[test]
+    fn test_extract_keywords_filters_stopwords() {
+        let kw = extract_keywords("the quick brown fox and a dog");
+        assert!(!kw.contains("the"));
+        assert!(!kw.contains("and"));
+        assert!(kw.contains("fox")); // len=3 passes the >2 filter and is not a stopword
+        assert!(kw.contains("quick"));
+        assert!(kw.contains("brown"));
+    }
+
+    /// Words of length <= 2 are always filtered out.
+    #[test]
+    fn test_extract_keywords_min_length() {
+        let kw = extract_keywords("I am ok go now");
+        assert!(!kw.contains("i"));
+        assert!(!kw.contains("am"));
+        assert!(!kw.contains("ok"));
+        assert!(!kw.contains("go"));
+    }
+
+    /// German stopwords are excluded.
+    #[test]
+    fn test_extract_keywords_german_stopwords() {
+        let kw = extract_keywords("ich habe eine neue Erkenntnis gemacht");
+        assert!(!kw.contains("ich"));
+        assert!(!kw.contains("eine"));
+        assert!(kw.contains("neue"));
+        assert!(kw.contains("erkenntnis"));
+        assert!(kw.contains("gemacht"));
+    }
+
+    /// Test fixture: a GrowthObservation with the given content and timestamp.
+    fn make_obs(content: &str, created_at: &str) -> GrowthObservation {
+        GrowthObservation {
+            id: 1,
+            content: content.to_string(),
+            source: "test".to_string(),
+            importance: 7,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    /// A perfectly matching observation scores higher than an unrelated one.
+    #[test]
+    fn test_score_observation_keyword_ranking() {
+        let query_kw = extract_keywords("docker compose sidecar");
+        let recent = "2099-01-01 00:00:00"; // far future = maximum recency
+        let relevant = make_obs("fixing docker compose sidecar configuration", recent);
+        let irrelevant = make_obs("the German lexicon was migrated to toml", recent);
+        let score_rel = score_observation(&relevant, &query_kw);
+        let score_irrel = score_observation(&irrelevant, &query_kw);
+        assert!(
+            score_rel > score_irrel,
+            "relevant={score_rel:.3} should beat irrelevant={score_irrel:.3}"
+        );
+    }
+
+    /// An empty query collapses scoring to pure recency.
+    #[test]
+    fn test_score_observation_empty_query_uses_recency() {
+        let empty_kw = extract_keywords("");
+        let newer = make_obs("some observation about memory", "2099-06-01 12:00:00");
+        let older = make_obs("some observation about memory", "2020-01-01 00:00:00");
+        let score_new = score_observation(&newer, &empty_kw);
+        let score_old = score_observation(&older, &empty_kw);
+        assert!(
+            score_new > score_old,
+            "newer={score_new:.3} should beat older={score_old:.3}"
+        );
+    }
+
+    /// A malformed timestamp yields zero recency instead of falling back to
+    /// "now", so a bad-`created_at` row cannot float to the top on recency.
+    #[test]
+    fn test_score_observation_unparseable_timestamp_sinks() {
+        let empty_kw = extract_keywords("");
+        let valid_recent = make_obs("some observation about memory", "2099-01-01 00:00:00");
+        let malformed = make_obs("some observation about memory", "not-a-timestamp");
+        let score_valid = score_observation(&valid_recent, &empty_kw);
+        let score_bad = score_observation(&malformed, &empty_kw);
+        assert_eq!(
+            score_bad, 0.0,
+            "unparseable timestamp must score 0 on an empty query, not max recency"
+        );
+        assert!(
+            score_valid > score_bad,
+            "valid recent={score_valid:.3} must beat malformed-timestamp row={score_bad:.3}"
+        );
+    }
+
+    /// The candidate pool is FTS-augmented: an old observation pushed out of the
+    /// recency window still surfaces when it matches the query. Regression guard
+    /// for the recency-window limitation (recency-only pools could never see it).
+    #[tokio::test]
+    async fn test_context_growth_surfaces_old_relevant_observation() {
+        let db = Database::connect_memory().await.expect("connect_memory");
+        db.write(move |conn| {
+            // Fill the recency window with recent, unrelated growth observations.
+            for i in 0..40 {
+                conn.execute(
+                    "INSERT INTO memories (content, category, source, user_id, created_at) \
+                         VALUES (?1, 'growth', 'test', 1, datetime('now'))",
+                    rusqlite::params![format!(
+                        "recent unrelated reflection {i} about cooking dinner"
+                    )],
+                )?;
+            }
+            // One OLD observation -- the only one matching the query terms.
+            conn.execute(
+                "INSERT INTO memories (content, category, source, user_id, created_at) \
+                     VALUES (?1, 'growth', 'test', 1, '2020-01-01 00:00:00')",
+                rusqlite::params!["learned to fix the docker compose sidecar networking"],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed growth observations");
+
+        // limit=3 -> recency pool caps at 30 rows, so the 41st-by-recency old
+        // observation is excluded from the recency pool; only the FTS channel
+        // can surface it.
+        let results = context_growth(&db, 1, "docker compose sidecar", 3)
+            .await
+            .expect("context_growth");
+        assert!(
+            results
+                .iter()
+                .any(|o| o.content.contains("docker compose sidecar")),
+            "old but FTS-relevant observation must surface; got {results:?}"
+        );
     }
 }

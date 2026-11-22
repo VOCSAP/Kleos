@@ -1,6 +1,6 @@
 [package]
 name = "kleos-credd"
-version = "1.7.3"
+version = "1.10.0"
 edition = "2021"
 rust-version.workspace = true
 description = "Credential management daemon for Kleos"
@@ -14,24 +14,34 @@ path = "src/lib.rs"
 name = "kleos-credd"
 path = "src/main.rs"
 
+[features]
+default = ["piv"]
+# YubiKey PIV request signing; links libpcsclite. The cred-broker delivery
+# build disables it because the broker image has no PC/SC library.
+piv = ["kleos-lib/piv"]
+
 [dependencies]
-kleos-lib = { path = "../kleos-lib", version = "1.2.1", features = ["sqlcipher", "piv"] }
-kleos-cred = { path = "../kleos-cred", version = "1.2.1" }
+kleos-lib = { path = "../kleos-lib", version = "1.10.0", features = ["sqlcipher"] }
+kleos-cred = { path = "../kleos-cred", version = "1.10.0" }
 
 # Web framework
 axum.workspace = true
-tower.workspace = true
+tower = { workspace = true, features = ["util"] }
 tower-http.workspace = true
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["http1", "server", "service", "tokio"] }
 
 # Async
 tokio.workspace = true
 
-# HTTP client for proxy
+# HTTP client for proxy; futures for streaming the capped proxy body.
 reqwest.workspace = true
+futures.workspace = true
 
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 # Utils
 chrono.workspace = true
@@ -40,7 +50,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 clap.workspace = true
 async-trait.workspace = true
-nix = { version = "0.29", features = ["user"] }
+nix = { version = "0.29", features = ["fs", "user"] }
 rpassword = "7"
 anyhow = "1"
 hex = "0.4"

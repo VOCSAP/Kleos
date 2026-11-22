@@ -46,9 +46,13 @@ pub async fn consolidate(db: &Database, memory_ids: &[String], user_id: i64) -> 
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
                 .join(",");
+            // status != 'pending' is the review-gate predicate: a pending memory
+            // must not be folded into a consolidated summary, which would
+            // launder unreviewed content into an approved parent.
             let sql = format!(
                 "SELECT id, content, category, importance \
-                 FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0",
+                 FROM memories WHERE id IN ({}) AND user_id = ?1 AND is_forgotten = 0 \
+                 AND status != 'pending' AND is_superseded = 0",
                 placeholders
             );
             let mut stmt = conn.prepare(&sql)?;
@@ -206,6 +210,21 @@ pub async fn find_consolidation_candidates(
     let pairs: Vec<(i64, i64)> = db
         .read(move |conn| {
             let mut stmt = conn.prepare(
+                // Patch 17d -- exclude memories already consumed by a prior
+                // consolidation. The `is_consolidated` flag is set on sources
+                // by `consolidate()` line 131; this query is the missing
+                // counterpart -- without it the same memories cycle back into
+                // candidates and the dreamer accumulates consolidation outputs
+                // indefinitely. The filter preserves the upstream-intended
+                // multi-level capability: a fresh consolidation output starts
+                // with `is_consolidated = 0` and remains eligible until a
+                // higher-level sweep consumes it (sets the flag to 1).
+                // Patch 33 -- anti-leak filter: never consolidate across
+                // spaces. NULL-safe so two non-spaced rows of the SAME owner
+                // (space_id IS NULL, e.g. lib-direct inserts or pre-Patch 33
+                // legacy) still cluster together; spaced rows only match
+                // within their own space. user_id below guarantees owner
+                // isolation in either case.
                 "SELECT ml.source_id, ml.target_id \
                      FROM memory_links ml \
                      JOIN memories ms ON ms.id = ml.source_id \
@@ -216,7 +235,10 @@ pub async fn find_consolidation_candidates(
                        AND ms.is_latest = 1 AND mt.is_latest = 1 \
                        AND ms.is_archived = 0 AND mt.is_archived = 0 \
                        AND ms.is_consolidated = 0 AND mt.is_consolidated = 0 \
+                       AND ms.is_superseded = 0 AND mt.is_superseded = 0 \
                        AND ms.user_id = ?2 AND mt.user_id = ?2 \
+                       AND (ms.space_id = mt.space_id \
+                            OR (ms.space_id IS NULL AND mt.space_id IS NULL)) \
                      ORDER BY ml.similarity DESC \
                      LIMIT 200",
             )?;
@@ -427,6 +449,8 @@ fn row_to_memory(row: &rusqlite::Row<'_>) -> crate::Result<Memory> {
         updated_at: row.get(45)?,
         is_superseded: row.get::<_, i32>(46)? != 0,
         is_consolidated: row.get::<_, i32>(47)? != 0,
+        // This custom SELECT does not fetch lang; not used by consolidation logic.
+        lang: None,
     })
 }
 

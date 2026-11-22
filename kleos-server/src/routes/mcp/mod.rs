@@ -13,6 +13,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use kleos_client::{render_path, resolve_tool_name, Method, Scope as RouteScope};
 use kleos_lib::auth::{AuthContext, Scope};
+use kleos_lib::spaces::InstanceAccess;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -158,6 +159,10 @@ async fn handle_single_rpc(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
+            let arguments = match memory_list_arguments(&name, arguments) {
+                Ok(arguments) => arguments,
+                Err(message) => return Some(rpc_error(id, -32602, &message)),
+            };
 
             // Charge per-tool rate-limit tokens before dispatch.
             if let Some(route) = resolve_tool_name(&name) {
@@ -225,7 +230,8 @@ async fn handle_single_rpc(
 
 /// Builds a client-safe error message for a failed internal dispatch.
 /// Full details are logged server-side; the client sees only the tool name
-/// and HTTP status to prevent leaking handler internals (CWE-209).
+/// and HTTP status unless the handler returned a narrowly recognized Forge
+/// validation message that is safe and necessary for the caller to correct.
 fn sanitize_dispatch_error(tool_name: &str, status_code: u16, internal_msg: &str) -> String {
     tracing::warn!(
         tool = tool_name,
@@ -233,7 +239,60 @@ fn sanitize_dispatch_error(tool_name: &str, status_code: u16, internal_msg: &str
         detail = internal_msg,
         "MCP tool dispatch failed"
     );
+    if tool_name.starts_with("forge_") {
+        if safe_forge_missing_spec(status_code, internal_msg) {
+            return format!(
+                "tool '{tool_name}' could not find that spec in remote Kleos; \
+                 local and remote Forge spec IDs are separate"
+            );
+        }
+        if let Some(detail) = safe_forge_validation_detail(status_code, internal_msg) {
+            return format!("tool '{tool_name}' rejected input: {detail}");
+        }
+    }
     format!("tool '{}' failed (HTTP {})", tool_name, status_code)
+}
+
+/// Recognize a bounded Forge missing-spec error without exposing backend details.
+fn safe_forge_missing_spec(status_code: u16, internal_msg: &str) -> bool {
+    if status_code != 404 {
+        return false;
+    }
+    let Some(spec_id) = internal_msg.trim().strip_prefix("Spec not found: ") else {
+        return false;
+    };
+    spec_id.starts_with("spec_")
+        && spec_id.len() <= 80
+        && spec_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+/// Return a bounded allowlisted Forge validation detail for 400-class input errors.
+fn safe_forge_validation_detail(status_code: u16, internal_msg: &str) -> Option<&str> {
+    if !matches!(status_code, 400 | 422) {
+        return None;
+    }
+    let detail = internal_msg.trim();
+    if detail.is_empty()
+        || detail.len() > 300
+        || detail.chars().any(char::is_control)
+        || detail.contains('/')
+        || detail.contains('\\')
+        || detail.contains("://")
+    {
+        return None;
+    }
+    const SAFE_PREFIXES: &[&str] = &[
+        "Minimum 2 acceptance criteria required",
+        "Minimum 3 edge cases required",
+        "task_type must be one of:",
+        "status must be one of:",
+    ];
+    SAFE_PREFIXES
+        .iter()
+        .any(|prefix| detail.starts_with(prefix))
+        .then_some(detail)
 }
 
 /// Dispatches a single tool call through the internal router.
@@ -280,6 +339,21 @@ async fn dispatch_tool(
             "insufficient scope: tool '{}' requires {:?}",
             name, required
         ));
+    }
+
+    // The outer POST /mcp transport is logically read-capable, so delegated
+    // access must be checked against each actual tool before internal dispatch.
+    if auth.act_as.is_some() {
+        let required_access = route_scope_to_instance_access(route.scope);
+        let delegated = auth
+            .act_as_access
+            .ok_or_else(|| "delegated MCP request is missing its grant context".to_string())?;
+        if !delegated.satisfies(required_access) {
+            return Err(format!(
+                "insufficient delegated access: tool '{name}' requires {}",
+                required_access.as_str()
+            ));
+        }
     }
 
     let path = render_path(route.path, &mut args)?;
@@ -335,6 +409,26 @@ async fn dispatch_tool(
 
     let parsed: Result<Value, _> = serde_json::from_slice(&body_bytes);
     if status.is_success() {
+        if status == StatusCode::MULTI_STATUS {
+            let body = parsed
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_else(|_| String::from_utf8_lossy(&body_bytes).into_owned());
+            return Err(format!(
+                "tool '{}' returned a partial result requiring caller recovery: {}",
+                name, body
+            ));
+        }
+        if let Some(body) = parsed
+            .as_ref()
+            .ok()
+            .filter(|body| body.get("attachments_committed") == Some(&Value::Bool(false)))
+        {
+            return Err(format!(
+                "tool '{}' partially persisted its memory but did not commit attachments: {}",
+                name, body
+            ));
+        }
         parsed.or_else(|_| {
             let text = String::from_utf8_lossy(&body_bytes).into_owned();
             Ok(json!({ "content": text }))
@@ -369,12 +463,41 @@ async fn dispatch_tool(
     }
 }
 
+/// `memory_list` is read by agents, so it hides retired memories unless
+/// `exclude_superseded` is the boolean `false`. Errors are invalid params.
+fn memory_list_arguments(name: &str, arguments: Value) -> Result<Value, String> {
+    if resolve_tool_name(name).map(|route| route.name) != Some("memory.list") {
+        return Ok(arguments);
+    }
+    let mut map = match arguments {
+        Value::Null => serde_json::Map::new(),
+        Value::Object(map) => map,
+        _ => return Err("Invalid params: memory_list arguments must be an object".into()),
+    };
+    match map.get("exclude_superseded") {
+        None | Some(Value::Null) => {
+            map.insert("exclude_superseded".into(), Value::Bool(true));
+        }
+        Some(Value::Bool(_)) => {}
+        Some(_) => return Err("Invalid params: exclude_superseded must be a boolean".into()),
+    }
+    Ok(Value::Object(map))
+}
+
 /// Converts a route-registry scope to an auth-module scope.
 fn route_scope_to_auth_scope(scope: RouteScope) -> Scope {
     match scope {
         RouteScope::Read => Scope::Read,
         RouteScope::Write => Scope::Write,
         RouteScope::Admin => Scope::Admin,
+    }
+}
+
+/// Converts a route-registry scope to the whole-instance delegation level.
+fn route_scope_to_instance_access(scope: RouteScope) -> InstanceAccess {
+    match scope {
+        RouteScope::Read => InstanceAccess::Read,
+        RouteScope::Write | RouteScope::Admin => InstanceAccess::Write,
     }
 }
 
@@ -595,6 +718,46 @@ mod tests {
         assert_eq!(sanitized, "tool 'test_tool' failed (HTTP 500)");
         assert!(!sanitized.contains("SQLITE"));
         assert!(!sanitized.contains("/data"));
+    }
+
+    /// Forge input errors expose only allowlisted, actionable validation details.
+    #[test]
+    fn forge_validation_error_is_actionable_and_bounded() {
+        let actionable = sanitize_dispatch_error(
+            "forge_spec_task",
+            400,
+            "Minimum 2 acceptance criteria required",
+        );
+        assert_eq!(
+            actionable,
+            "tool 'forge_spec_task' rejected input: Minimum 2 acceptance criteria required"
+        );
+
+        let sensitive = sanitize_dispatch_error(
+            "forge_spec_task",
+            400,
+            "Minimum 2 acceptance criteria required at /data/private.db",
+        );
+        assert_eq!(sensitive, "tool 'forge_spec_task' failed (HTTP 400)");
+    }
+
+    /// Forge missing-spec errors explain the local and remote identifier boundary.
+    #[test]
+    fn forge_missing_spec_error_explains_identifier_scope() {
+        let actionable =
+            sanitize_dispatch_error("forge_update_spec", 404, "Spec not found: spec_3a807975");
+        assert_eq!(
+            actionable,
+            "tool 'forge_update_spec' could not find that spec in remote Kleos; \
+             local and remote Forge spec IDs are separate"
+        );
+
+        let sensitive = sanitize_dispatch_error(
+            "forge_update_spec",
+            404,
+            "Spec not found: spec_3a807975 at /data/private.db",
+        );
+        assert_eq!(sensitive, "tool 'forge_update_spec' failed (HTTP 404)");
     }
 
     /// Verifies multibyte output previews truncate without panicking.

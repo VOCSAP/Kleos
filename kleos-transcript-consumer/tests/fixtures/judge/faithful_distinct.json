@@ -1,0 +1,29 @@
+{
+  "case": "faithful_distinct",
+  "fact": {
+    "content": "The demo exporter writes its output as newline-delimited JSON.",
+    "category": "discovery",
+    "source_turns": ["00000000-0000-4000-8000-000000000241"]
+  },
+  "source_turns": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000241",
+      "role": "assistant",
+      "text": "The demo exporter writes its output as newline-delimited JSON, one record per line."
+    }
+  ],
+  "neighbours": [
+    {
+      "memory_id": 4401,
+      "content": "The demo importer rejects files larger than 50 MB.",
+      "source": "claude-session"
+    }
+  ],
+  "expected_verdict": {
+    "fidelity": "fidele",
+    "relation": "distinct",
+    "neighbour_id": null,
+    "reason": "Stated by the source turn; no neighbour covers the exporter format."
+  },
+  "expected_effect": { "publish": { "relation_tag": "relation:distinct" } }
+}

@@ -1,0 +1,6 @@
+Question: {{question}}
+
+Matched action log rows (JSON):
+{{rows_excerpt}}
+
+Answer:

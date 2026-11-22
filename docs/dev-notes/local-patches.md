@@ -1,0 +1,7854 @@
+# Local Patches -- Kleos VOCSAP Fork
+
+**Date de création :** 2026-05-11
+**Dernière mise à jour :** 2026-10-22. Merge upstream de reference : 8182e57f du 2026-10-22 (13 commits, 1 conflit textuel, 1 incoherence cross-region corrigee).
+**Contexte :** Ce fichier répertorie tous les changements locaux (non upstream) appliqués
+sur la branche `local/patches` VOCSAP. À consulter impérativement avant tout merge ou
+rebase depuis Ghost-Frame/Kleos pour identifier les conflits prévisibles et les
+re-appliquer si perdus.
+
+---
+
+## Statut apres merge upstream 8182e57f (2026-10-22)
+
+**Branche :** `ccr-bfdfcf62-1j7z1k`. Commit de merge `418cdd26`. Perimetre : 13 commits Ghost-Frame/Kleos depuis `7ce95482` jusqu'a `8182e57f` inclus, dont PR #221. La borne de relicence `f1db1cf7` est exclue.
+
+### Resolutions et patches impactes
+
+- **`kleos-server/src/dreamer.rs`** : unique conflit textuel. Upstream n'ajoutait qu'un doc-comment a `recent_memory_contents`, helper deja present dans la base `7ce95482`. Patch 35 avait remplace ce helper par `recent_memory_contents_for_space`; la resolution conserve la boucle per-space et le filtrage `user_id`, `space_id` et `status != 'pending'`. **Patch 35 est conserve**, aucun patch n'est absorbe par ce merge.
+- **`kleos-lib/src/db/mod.rs`** : incoherence semantique invisible pour git. Upstream ajoutait `tenant_write_policy` au struct et a quatre constructeurs, mais le littéral read-only restait dans un hunk disjoint et causait `E0063`. Ajout de `tenant_write_policy: OnceLock::new()` sans bind, car ce coffre est read-only et non tenant.
+
+### Pieges et points ouverts
+
+- Un merge propre textuellement ne garantit pas la coherence cross-region : le `cargo check -p kleos-lib --features bundled-sqlite` a ete necessaire pour trouver `E0063`.
+- `/broca/ingest` est desormais authentifie upstream ; verifier les clients et relais qui l'appellent avant deploy.
+- Le mode `read_only` des quotas est inerte en production : l'operateur a mesure le 2026-10-22 qu'aucune variable `QUOTA` n'est definie dans `/etc/kleos/kleos.env`.
+- Suivi : carte `63e84473`.
+
+---
+
+## Gel upstream
+
+**Borne :** dernier commit upstream merge `8182e57f`; `f1db1cf7` (`Relicense under PolyForm Noncommercial 1.0.0`) et tout commit posterieur sont exclus.
+
+**Raison et regle :** l'usage professionnel interne est permis par ELv2 et interdit par PolyForm NC. Plus aucun merge ne doit prendre `f1db1cf7` ni un commit posterieur. Tout correctif upstream necessaire doit etre reecrit localement sans reprendre de code recu sous PolyForm NC. Ne plus ouvrir de PR upstream sans relire le `CONTRIBUTING` post-relicence.
+
+**Relais de transcripts :** le rev epingle de `kleos-lib` doit suivre chaque merge du fork apres un build vert, donc `418cdd26` ou un commit posterieur des que le relais existe. Il reste anterieur a `f1db1cf7` tant que ce gel tient.
+
+**Condition de levee :** une relicence upstream compatible ou une decision explicite de l'operateur leve le gel entier. Cette lecture est celle du lead et ne constitue pas un avis juridique.
+
+---
+
+## Statut apres merge upstream 7ce95482 (2026-08-23)
+
+**Branche :** `merge/upstream-7ce95482`. Commit de merge `733a9466` (deja commite, working tree propre). Merge-base `d905d4e7` (2026-06-28), `upstream/main` `7ce95482` (2026-08-21), 156 commits upstream absorbes, 21 conflits resolus. **Build vert** sur `kleos-lib`, `kleos-mcp`, `kleos-server`, `kleos-cli` et `agent-forge`.
+
+### Perimetre upstream (rappel du message de merge)
+
+- **#217 `e5526e80`** : `kleos-sidecar` perd son `MemoryGate` LLM et son file watcher, devient un moteur de code-context deterministe adosse au nouveau `agent-forge` CodeIndex. `gate.rs` et `watcher.rs` supprimes upstream.
+- **#168** : review gate -- les memoires peuvent etre routees vers une inbox `pending`, filtrage de statut cable sur 12 surfaces de lecture.
+- **#206 `79b4efe5`** : le dispatch des migrations passe de `MAX(version)` a un applied-set, plus nouveaux `db/schema_manifest.rs` et `db/converge.rs` (**verifie presents** : `kleos-lib/src/db/schema_manifest.rs`, `kleos-lib/src/db/converge.rs`).
+- 6 migrations monolith (97..102) et 5 migrations tenant (80..84) -- chiffres repris tels quels du message de merge `733a9466`, non recomptes independamment dans ce statut.
+- GUI Memory Galaxy reecrite, durcissement isolation multi-tenant, travail backup/PITR, durcissement ingestion, workflow MCP agent-forge.
+
+### Patches abandonnes (absorbes upstream)
+
+| Patch | Preuve upstream | Verification |
+|---|---|---|
+| **14 / 14b / 14c** -- `KLEOS_LLM_THINK` | Absorbe via notre propre PR #135, commit upstream `f857f7cd` | Fonctions `think_setting()` et `inject_openai_compat_reasoning()` desormais dans `kleos-lib/src/llm/mod.rs` upstream (deja documente commit local `6a25f78c`, cf. section Patch 14 plus bas et `CLAUDE.md` projet) |
+| **48** -- `KLEOS_RERANKER_TIMEOUT_SECS` | Absorbe via notre PR #134, commit upstream `6886a6c9` | Vit desormais dans `kleos-lib/src/reranker/mod.rs`, plus dans `http.rs` |
+| **39** -- UTF-8 safety | Upstream livre `truncate_on_char_boundary` (`validation.rs`) et `floor_char_boundary` (`chunking.rs`) | `kleos-lib/src/str_safe.rs` **toujours present**, un seul appelant restant (`kleos-lib/src/intelligence/growth.rs:384` -- verifie via `aidex_query`, `lib.rs:59` n'est que la declaration `mod str_safe;`). Nettoyage a faire en suivi. |
+| **8 volet A** -- GUI 401 sous-routes SPA | Upstream porte notre fix exact | Couvre en plus `/gui/auth` et `/gui/logout` (non re-verifie ligne a ligne, repris du message de merge) |
+| **30, 31, 11, volet sidecar du 14** | Code hote disparu upstream (`gate.rs`, `watcher.rs`, route compress supprimes, commit `e5526e80`, PR #217) | Coherent avec la suppression `kleos-sidecar` documentee ci-dessus |
+
+### Patches re-accroches (nouveau site)
+
+- **Patch 42** -- reaccroche sur `vector/lance.rs` reecrit par upstream (fichier confirme present : `kleos-lib/src/vector/lance.rs`, aux cotes de `vector/mod.rs`).
+- **Patch 43** -- realigne sur `vector::MIN_ROWS_FOR_INDEX`. Verifie : la constante vit desormais dans `kleos-lib/src/vector/mod.rs:25` (`pub const MIN_ROWS_FOR_INDEX: usize = 256;`) et `lance.rs` la re-exporte via `pub use super::{..., MIN_ROWS_FOR_INDEX};` (`lance.rs:21`).
+- **Patch 35 / 35.1** -- unionne avec l'appel upstream `existing_growth_context` et le predicat SQL review-gate. Verifie dans `kleos-server/src/dreamer.rs` : nouvelle fonction `existing_growth_context()` (feed `existing_growth` a `GrowthReflectRequest` via `growth::list_observations`) integree dans la boucle per-(user, space) documentee comme Patch 35 (commentaire inline "Patch 35 -- iterate per space to fix Kleos #3028").
+- **Patch 19b / 21 / 25** -- unionne avec le guard anti self-approval upstream. Verifie : `kleos-lib/src/gate/mod.rs` porte `responder_agent: Option<String>` et un test `respond_rejects_agent_self_approval` (ligne ~1143).
+- **Patch 32** -- etendu : `#[derive(..., JsonSchema)]` pose sur les nouveaux types upstream `ImplementationTask` (`agent-forge/src/spec_types.rs:10`) et `TestProperty` (`agent-forge/src/spec_types.rs:19`). Verifie par lecture directe du fichier.
+- **Patch 38 residu** -- `validate_override_repo` et `reload_overrides` supprimes upstream comme dead code (commit `25ff58a9`, non re-diffe individuellement dans ce statut) alors que nos routes admin les appellent. Restaures dans un module lateral `kleos-lib/src/lexicon/vocsap.rs` (**fichier confirme present** aux cotes de `cache.rs`, `loader.rs`, `mod.rs`).
+- **Patch 7** (prefixe cles `engram_`) -- a survecu a l'auto-merge. Verifie : `kleos-lib/src/auth.rs:425` fait desormais `.split_once('_')` au lieu de supposer un prefixe fixe de 6 caracteres, donc les cles de l'ere pepper continuent de valider.
+- **Patch 41** -- motivation d'origine morte : upstream a remplace `MAX(version)` par un applied-set dans le dispatch des migrations (commit `79b4efe5`, PR #206, cf. ci-dessus). Decision : `kleos-lib/src/db/vocsap/mod.rs` **inchange**. Le canal overlay n'est plus une protection contre le skip de migration, c'est desormais un canal anti-conflit au sens de la table de delta (`CLAUDE.md` projet). Upstream introduit en parallele `db/schema_manifest.rs` et `db/converge.rs` (verifies presents ci-dessus), meme philosophie declarative, manifests vides a ce jour (non verifie en detail).
+
+### Pieges rencontres au merge
+
+- **`kleos-sidecar/Cargo.toml`** : pin `kleos-lib` fige a `1.2.1` dans le bloc `[target.'cfg(windows)'.dependencies]` alors que le workspace est en `1.10.0` -- cassait le build Windows du sidecar. Verifie par `git diff d905d4e7 733a9466 -- kleos-sidecar/Cargo.toml` : le pin passe a `1.10.0` (`features = ["sqlcipher"]` conserve), et une dependance `agent-forge` a ete ajoutee coherente avec la nouvelle description du crate ("Agent session proxy with batched memory writes and local code-context retrieval").
+- **Nouveau fichier `.gitleaksignore`** a la racine : trois faux positifs verifies dans du code de test upstream (`agent-forge/src/emit/gatekeeper.rs:346` et `:351` -- fixtures du test `ignores_marker_inside_an_identifier` ; `kleos-install-core/src/upgrade.rs:312` -- valeurs hex synthetiques dans un test de `read_preserved_secrets`). Le fichier documente lui-meme sa discipline : chaque entree a ete lue ligne par ligne avant listing, ne jamais ajouter une empreinte sans ouvrir la ligne signalee, ne jamais utiliser `--no-verify` a la place. Le numero de ligne fait partie de l'empreinte gitleaks -- un edit upstream qui deplace ces lignes rendra l'entree perimee et le scan re-bloquera, ce qui est voulu (re-verification attendue, pas contournement automatique).
+
+### Conditions de retrait
+
+Merge structurel, pas un patch retirable. Les statuts individuels evoluent au fil des absorptions upstream futures :
+
+- Patch 39 (`str_safe.rs`) est candidat a un retrait complet des que son unique appelant restant (`intelligence/growth.rs`) est migre vers les helpers upstream `truncate_on_char_boundary`/`floor_char_boundary`.
+- Patch 41 (canal overlay `vocsap/mod.rs`) reste utile tant qu'upstream n'a pas absorbe nos overlays VOCSAP dans `db/schema_manifest.rs`/`db/converge.rs` -- a reevaluer si ces deux modules upstream se remplissent.
+- Patch 38 residu (`lexicon/vocsap.rs`) retirable si upstream restaure `validate_override_repo`/`reload_overrides` ou si nos routes admin sont reecrites pour ne plus en dependre.
+
+---
+
+## Statut apres merge upstream f4e7eb3f (2026-06-26)
+
+**Branche** : `merge/upstream-f4e7eb3f`. `HEAD` = `23e17d66` (tip `local/patches` post-727d97fc), `MERGE_HEAD` = `f4e7eb3f`. 75 fichiers stages. Strategie : "Base upstream + re-appli VOCSAP" (upstream canonique, on ne re-applique que les extensions VOCSAP non couvertes par les PR mergees).
+
+### Evenement majeur : absorption upstream des 2 PR VOCSAP
+
+Upstream Ghost-Frame a accepte et merge les deux PR VOCSAP. Leur fondation bascule donc de "delta local" a "code upstream" :
+
+| Patch | Avant f4e7eb3f | Apres f4e7eb3f |
+|---|---|---|
+| **15 / 16 -- prompt overlay** (`KLEOS_LLM_PROMPT_REPOSITORY`, `llm::prompts` + `llm::template`) | delta local CONSERVE | **fondation ABSORBEE upstream**. Le loader cascade et l'arborescence `prompts/<service>/<purpose>/` sont desormais upstream. Restructure visible : `growth/<slug>_reflection/` -> `growth/<slug>/` (rename upstream). Verifier si des extensions VOCSAP residuelles subsistent (suffixes Patch 16, ids specifiques) ; sinon Patch 15/16 retirables. |
+| **38 -- i18n core lexicon** (`KLEOS_LEXICON_REPOSITORY`, module `lexicon/`) | delta local CONSERVE | **fondation ABSORBEE upstream**. Module `lexicon/{cache,loader,mod}.rs` + overlay TOML desormais upstream. Verifier residus VOCSAP (classes ajoutees, baselines en/fr). |
+
+Consequence : ces patches restent visibles au grep (tokens presents) mais ne sont plus du delta a defendre au rebase -- ils SONT upstream. La carte `delta-upstream` doit etre reduite en consequence.
+
+### Canal schema overlay (Patch 41)
+
+Le merge f4e7eb3f n'a touche le canal overlay que via deux suivis, documentes en detail plus bas :
+- **Suivi 41a** : guard `table_exists` prefixe sur tous les overlays.
+- **Suivi 41b** : ajout de l'overlay monolith manquant `conversations.space_id` (symetrique au tenant).
+
+### Patch 5 (rappel)
+
+`KLEOS_EMBEDDING_BACKEND` reste **ABANDONNE** (cf. table aa6a0bec ligne ~79 et section Patch 5 en bas). Token absent du source ; selection backend via presence de `KLEOS_EMBEDDING_URL` (`embeddings/openai.rs`). Inchange par ce merge.
+
+### Tests
+
+Build + `cargo test -p kleos-lib` verts sur **WSL ET Windows**, **4 workers** (`--test-threads=4`), avec `KLEOS_NET_ALLOW_PRIVATE` unset (sinon 6 unittests net/gate echouent et masquent les binaires d'integration par fail-fast cible -- cf. Suivi 41a). Detail dans Suivi 41b.
+
+### Audit de presence (2026-06-26)
+
+Verification source de tous les patches listes : tous PRESENTS sauf les absences/absorptions deja documentees (1, 4 absorbes ; 5 abandonne ; 6 remplace par 7 ; 18 retire ; 19 abandonne ; 27 partiellement obsolete) + les 2 fondations 15/16 et 38 desormais upstream (ci-dessus). Aucun patch cense present n'a ete droppe par ce merge.
+
+### Conditions de retrait
+
+Merge structurel, pas un patch retirable. Les statuts individuels evoluent quand upstream absorbe d'autres features VOCSAP (cf. PR backlog).
+
+---
+
+## Statut apres merge upstream 727d97fc / release 1.7.3 (2026-06-24)
+
+**Branche :** `local/patches` (base merge-base `3ee0b0bf`, tag de sauvegarde
+`backup/pre-merge-727d97fc@2035dc4c`).
+**Type :** merge (non rebase) de `Ghost-Frame/Kleos` upstream `727d97fc` (main FF, 47
+commits depuis le merge-base ; 144 commits VOCSAP sur `local/patches`). **Driver des
+conflits :** commit upstream `6b984784` (#93 security audit + monolith multi-user
+isolation) = 9 conflits sur 10. **10 fichiers en conflit, 13 blocs**, tous de contenu.
+Plan pre-merge : `docs/dev-notes/merge-main-into-local-patches-plan.md`.
+
+**Etat a la redaction :** working tree resolu, **`cargo check --workspace` vert (WSL)**,
+`cargo clippy --workspace` propre (seuls warnings de style pre-existants), tests
+`eidolon-supervisor` + `kleos-mcp` verts. Merge **non committe**. Deploy serveur Linux
+(WSL build release) + reconciliation LXC 121 a venir.
+
+### Resolution conflit par conflit
+
+| # | Fichier | Effort | Resolution |
+|---|---|---|---|
+| 1 | `eidolon-supervisor/src/checks/rule_match.rs` | MOYEN | Filtre `tool_name` Patch 46 reapplique sur la struct `CompiledRule` upstream (regex pre-compilees). `check_type==RuleMatch` deja filtre dans `compile_rules`. Tests Patch 46 adaptes a la nouvelle signature `check(entry, &[CompiledRule])` via `compile_rules`. |
+| 2 | `kleos-approval-tui/src/main.rs` | MOYEN (2 blocs + 1 cross-region) | Union : client long-poll Patch 20 (`http_longpoll_timeout`) + `connect_timeout(10s)` upstream + `decided_by` resolu au startup (TUI-1) au lieu du literal "tui-operator". Pattern non-bloquant Patch 20b (`DecideOutcome`/`decide_handle`) preserve. Cross-region : `apply_decide_outcome` (sync) appelait `self.fetch_pending().await` (fragment upstream) -> remplace par `last_fetch_completed_at = None` (refresh via tick loop). |
+| 3 | `kleos-cli/src/main.rs` | FAIBLE | Juxtaposition : bras `Commands::Space` (Patch 33) + `Commands::Forge` (upstream #96). |
+| 4 | `kleos-lib/src/db/tenant_migrations.rs` | FAIBLE-MOYEN | Accepte v72/73/74 upstream (tables disjointes des overlays Patch 41, verifie). Commentaire overlay + appel `apply_tenant_overlays` conserves (survit dans `run_tenant_migrations_to`, seul chemin reel). |
+| 5 | `kleos-lib/src/gate/mod.rs` | MOYEN | Combine : self-approval guard upstream #93 (place avant l'UPDATE) + `WHERE status IN ('pending','pending_approval')` Patch 21. |
+| 6 | `kleos-lib/src/llm/local.rs` | FAIBLE | Bloc `think` Patch 14 conserve (upstream avait vide son cote ; `think` toujours consomme en aval). |
+| 7 | `kleos-mcp/src/tools.rs` | MOYEN-ELEVE | Patch 18 (`KLEOS_MCP_TOOL_ALLOWLIST`) **obsolete** (supprime par "Curate the daily MCP surface", superseded par `DAILY_TOOL_NAMES`). Base upstream entiere (registry underscore-normalize + dedup, `is_mcp_blocked`, tests) + greffe Patch 33 (auto-inject `space` dans `dispatch` + helpers `maybe_inject_space`/`read_session_space_name`). |
+| 8 | `kleos-server/src/dreamer.rs` | ELEVE (2 blocs) | Fusion des deux dimensions multi-tenant : boucle par-user (upstream #101 `brain_results` HashMap, `dream_cycle` deserialise per-user) + boucle par-space (Patch 35). `recent_memory_contents_for_space` filtre desormais `user_id` ET `space_id` (upstream a re-ajoute `memories.user_id` migration 64 / tenant v55 -> sans le predicat user, fuite cross-tenant en monolith). |
+| 9 | `kleos-server/src/middleware/rate_limit.rs` | MOYEN (2 blocs) | Union des deux bypass trusted-IP : CIDR config upstream #93 (`is_rate_limit_exempt`) + fichier whitelist Patch 28 (`preauth_ip_trusted_set`). Limite : `KLEOS_PREAUTH_IP_LIMIT` env var prioritaire, fallback sur `config.preauth_ip_rpm` upstream (les deux defauts = 60). `preauth_ip_limit()` prend desormais un argument fallback. |
+| 10 | `kleos-server/src/routes/prompts/mod.rs` | MOYEN-ELEVE | Piege dur #1 **resolu favorablement** : `growth.rs::list_observations` s'est auto-merge en signature unifiee `(db, limit, space_id, include_unscoped, user_id)` (union Patch 33 + upstream #70). Call site aligne : `(&db, growth_limit, None, None, auth.effective_user_id())` -- garde le None/None Patch 33 + le fix delegation `effective_user_id` upstream. |
+
+### Incoherences cross-region (attrapees uniquement au `cargo check`)
+
+| Fichier | Erreur | Fix |
+|---|---|---|
+| `kleos-approval-tui/src/main.rs:445` | `self.fetch_pending().await` dans fn sync + methode inexistante (fragment upstream auto-merge dans `apply_decide_outcome` Patch 20b) | Remplace par `last_fetch_completed_at = None` (mecanisme refresh Patch 20b) |
+| `kleos-server/src/routes/approvals/mod.rs:180` | `respond_to_gate` a gagne un 6e param `responder_agent` (#93) ; call site Patch 21 bridge passait 5 args | Ajoute `None` (path operator-facing, guard non applicable) + aligne `auth.user_id` -> `effective_user_id()` (coherent avec `decide` au-dessus) |
+
+### Pieges durs (statut)
+
+1. **`list_observations`** : auto-merge favorable en signature unifiee. 3 call sites accordes (`growth.rs` def, `routes/growth/mod.rs:53`, `routes/prompts/mod.rs:414`).
+2. **Overlays Patch 41** : `apply_tenant_overlays` toujours appele dans `run_tenant_migrations_to` (seul chemin). v72-74 upstream = tables disjointes, zero collision.
+3. **Double agent-forge** : upstream #96 a internalise agent-forge (`forge_*` tables, `Commands::Forge`, mcp `forge.*`). Binaire externe VOCSAP coexiste. Pas de collision de routes/CLI au `cargo check`. A auditer fonctionnellement au deploy.
+
+### Conditions de retrait
+
+Merge structurel, pas un patch retirable. Les resolutions individuelles deviennent obsoletes
+si upstream absorbe les features VOCSAP correspondantes (cf. backlog PR upstream :
+prompts-overrides, i18n kleos-ingest).
+
+---
+
+## Statut apres merge upstream aa6a0bec (2026-06-01)
+
+**Branche :** `local/merge-upstream-aa6a0bec` (base `local/patches @404e2975`, tag de
+sauvegarde `pre-merge-aa6a0bec-local-patches@404e2975`).
+**Type :** merge (non rebase) de `Ghost-Frame/Kleos` upstream `aa6a0bec` (main FF, 142
+commits). **Motivation :** reduction de la dette de divergence, pas les ajouts
+fonctionnels (decision operateur, cf. Kleos #6825). 50 fichiers en conflit, resolus par
+lots (Lot 0 migrations a Lot 8). Etat a la redaction : working tree resolu et **build
+Windows des 4 binaires CLI/MCP/sh/tui vert**, merge **non committe**, deploy serveur
+Linux (WSL) + reconciliation LXC 121 a venir.
+
+### Patches locaux impactes par le merge
+
+| Patch | Statut aa6a0bec | Detail |
+|---|---|---|
+| 2, 10 -- cfg(windows) sqlcipher (sidecar, approval-tui) | **CONSERVE + bump 1.1.2 -> 1.2.1** | Delta VOCSAP (absent de main). Les blocs cfg(windows) de kleos-cli/kleos-cred/agent-forge sont **desormais upstream** (presents dans main, deja a 1.2.1) et ne sont plus a notre charge. Cf. note bump plus bas. |
+| 5 / 8B / 8C -- embedding Ollama base_url | **ABANDONNE** | Upstream a refactore `OpenAiProvider::from_env` (struct `url`/`Option`, lit `KLEOS_EMBEDDING_URL` / `_API_KEY` / `_MODEL`). Notre `KLEOS_EMBEDDING_OPENAI_BASE_URL/_API_KEY/_MODEL` + `new()` manuel abandonne. Touche `main.rs` + `embeddings/openai.rs`. **FOLLOW-UP deploy** : `/etc/kleos/kleos.env` doit utiliser `KLEOS_EMBEDDING_URL` (sinon embedding casse, vector search degrade). |
+| 14 / 14b / 14c -- LLM thinking-mode toggle | CONSERVE | Hors conflit. |
+| 15 / 16 -- dynamic prompt overlay | CONSERVE | Hors conflit (submodule + cascade). |
+| 17b / 17c / 17d -- context/growth/consolidation | CONSERVE | Hors conflit. |
+| **18 -- KLEOS_MCP_TOOL_ALLOWLIST** | **RETIRE** | Collision avec la liste curatee upstream `DAILY_TOOL_NAMES` (mcp/tools.rs). Choix operateur : `DAILY_TOOL_NAMES` seul. Supprimes : `parse_allowlist`/`allowed`/`matches_pattern` + 7 tests + `ALLOWLIST_ENV`. Docs nettoyees : `CLAUDE.md` projet (env var + note Patch 18 RETIRE), `KLEOS.md` global (aucune occurrence finalement). `kleos-mcp/tests/integration.rs` ne reference plus l'allowlist (confirme par build/test verts). |
+| **19 -- kleos-mcp stdio newline framing** | **ABANDONNE** | Upstream a livre son propre framing **dual** (NDJSON + Content-Length/LSP auto-detecte au 1er octet), superieur au NDJSON-only de Patch 19. `stdio.rs` resolu **byte-identique a main** (181 lignes, 0 delta, 0 test). NB : une 1re resolution avait reintroduit par erreur 2 lignes de l'ancien `read_message` dans `read_content_length_msg` (regression de merge cross-region), corrigee par `git checkout main -- stdio.rs`. |
+| 19b / 19c -- cascade gate + approval_timeout | CONSERVE | `gate/mod.rs` 3 hunks vers ours (`approval_timeout_secs` 19c + `status IN ('pending','pending_approval')` 21). Le fix securite upstream `skip_approval` (`serde skip_deserializing`, anti-bypass client) etait hors conflit et absorbe par auto-merge. |
+| 20 / 20b / 20c -- supervisor/approvals long-poll + migrations | CONSERVE, **migrations renumerotees** | Voir bloc migrations ci-dessous. |
+| 21 / 21.1 -- bridge gate_id <-> approvals | CONSERVE, **migration renum v64 -> v84 (main)** | `status IN ('pending','pending_approval')` conserve. |
+| 23 -- cooldown adaptatif TUI | CONSERVE | `kleos-approval-tui` uniquement. |
+| 25 -- matcher gate regex + whitelist + subcommand splitter | CONSERVE | Hors conflit. |
+| 26 -- WARN tracing rate-limit 429 | CONSERVE | Hors conflit. |
+| **27 -- kleos-sh Write/Edit pseudo-commande** | **PARTIELLEMENT OBSOLETE** | `kleos-sh/main.rs` resolu vers la conception upstream `ParsedHook` (choix operateur) : forward `tool_name` + `tool_input` au gate, `command` vide pour non-Bash. Le helper `extract_command_for_tool` (pseudo-commande `write:/path`) et ses tests sont retires comme morts. Consequence : les patterns `gate-rules` cibles sur `write:/path` ne matchent plus. **FOLLOW-UP securite** : verifier que le validator gate server-side (Patch 25) inspecte `tool_input`/`context` pour proteger les ecritures sensibles (.env, .ssh, /etc), sinon ajuster `gate-rules` ou le matcher. |
+| **28 -- KLEOS_PREAUTH_IP_LIMIT** | CONSERVE, **DEFAULT 20 -> 60** | `rate_limit.rs` : env var + trusted file conserves, mais `DEFAULT_PREAUTH_IP_LIMIT` bumpe 20 -> 60 pour suivre le nouveau `const PREAUTH_IP_LIMIT = 60` upstream (justifie bursts MCP). Override `KLEOS_PREAUTH_IP_LIMIT` inchange. |
+| 32 -- agent-forge help/schema | CONSERVE | Hors conflit. |
+| 33 -- spaces / 37 -- space_id / 38 -- i18n lexicon | CONSERVE, **re-greffe** | `space_id` re-greffe dans `temporal.rs`/`contradiction.rs` apres prise de theirs. Patch 38 i18n garde comme **base** d'`extraction.rs` et `personality.rs` (apport upstream porte par-dessus). |
+
+### Migrations -- collision de numeros (Lot 0, point dur)
+
+Collision frontale VOCSAP vs upstream sur les numeros de migration (aucune feature VOCSAP
+absorbee upstream : gate_id / supervisor / space_id / structured_facts tous absents
+upstream).
+
+- **Renumerotation TENANT** : VOCSAP v55-v59 (supervisor_injections_repair P20,
+  approvals_gate_id P21, conversations_space_id P33, structured_facts_unique +
+  structured_facts_extraction_source P38) collisionnaient avec upstream v55-v59
+  (`*_user_id_readd`). Renumerotes **v55-v59 -> v72-v76** (upstream tenant max = 71).
+- **Renumerotation MAIN** : VOCSAP v64 approvals_gate_id collisionnait avec upstream v64
+  `readd_user_id_memory_core`. Renumerote **v64 -> v84**. NB : l'**upstream main max reel
+  = 83** (`cred_audit_attribution_columns`, declaree en macro multi-ligne donc ratee par
+  un grep single-line qui donnait 82 ; les memoires #6817/#7451 anterieures disaient v83,
+  valeur corrigee a v84 par le Lot 0 -- valeur confirmee dans le code
+  `migrations.rs:1268-1271`).
+- **Corps idempotents** : les 6 corps VOCSAP utilisent `table_has_column` /
+  `CREATE INDEX IF NOT EXISTS`, donc re-run en v72-v76 / v84 = **no-op sur LXC 121** (qui
+  a deja applique les versions au sens VOCSAP ; le runner `MAX(version)` skippera les
+  upstream v55-v59 / v64).
+- **Format upstream** : macro `tenant_migration!(ver, desc, fn)` / `migration!(ver, desc,
+  fn)` vs struct-literal VOCSAP -- divergence STRUCTURELLE. Dispatch : `tenant_migrations.rs`
+  auto-dispatch (`for m in TENANT_MIGRATIONS.iter()`), `migrations.rs` (main) dispatch
+  MANUEL (bloc `if current_version < MIGRATION_X` a ne pas oublier, cf. test
+  `every_static_migration_is_dispatched`).
+- **Reconciliation LXC 121** : prevue via migrations idempotentes additionnelles qui
+  re-appliquent les `user_id_readd` upstream SKIPPED. Detail complet :
+  `docs/dev-notes/merge-upstream-aa6a0bec-plan-todo.md` (gitignored) + Kleos #6817 / #7451.
+
+### Decisions de resolution par fichier (intelligence + autres)
+
+- **`extraction.rs`** : cas inverse des autres fichiers intelligence -- ours Patch 38 i18n
+  (988 lignes, regex multilingues + lexicon) garde comme **base** (delta upstream minimal).
+  Seul apport upstream porte chirurgicalement : scoping `user_id` dans les 3 INSERT de
+  `fast_extract_facts` + schema v76/v77 `ON CONFLICT user_id`. Helper mort
+  `rusqlite_to_eng_error` retire.
+- **`temporal.rs`** : upstream a supprime tout le sous-systeme `temporal_facts` (6 fns, 0
+  caller survivant verifie par grep) -- suppression dead-code acceptee. `detect_patterns`
+  resolue vers theirs (signature `user_id`) avec Patch 37 `space_id` re-greffe.
+- **`contradiction.rs`** : conflit cosmetique seul -- theirs `conn.prepare(` single-line +
+  commentaire VOCSAP conserve, filtres `space_id` (37.1) / `is_forgotten` (38.3) preserves,
+  error-style upstream adopte (`?` natif, `rusqlite_to_eng_error` supprime).
+- **`personality.rs`** : resolution = **UNION**. Scan emotions i18n lexicon ours conserve
+  ET extension env-var upstream `EXTRA_EMOTION_KEYWORDS` restauree + recablee (verifiee si
+  lexicon non matche). Regle operateur fichiers i18n : garder upstream + ajouter notre i18n
+  par-dessus, pas remplacer.
+- **`kleos-sh/main.rs`** : voir Patch 27 ci-dessus (conception upstream `ParsedHook`).
+- **Struct-literal pattern dominant** : conflits ou ours liste explicitement les champs
+  VOCSAP (`space_id`/`include_unscoped`/`parent_memory_id`/`chunk_embeddings`) a `None` et
+  theirs utilise `..Default::default()`. Resolution = theirs, **avec garde-fou** : verifier
+  que le cote ours ne contient que des valeurs == Default. Exceptions reelles : `routes/memory/mod.rs`
+  (valeurs reelles `resolved_space_id` / `body.include_unscoped` -> garder ours + ajouter
+  `..Default` car SearchRequest a gagne 6 champs upstream), `sync.rs` (theirs ajoute
+  `sync_id`), pagerank test (`include_unscoped: Some(false)` intentionnel).
+
+### Faux positifs et pieges de build
+
+- **Dead-code `cred/bootstrap.rs` (11 warnings build Windows)** : **FAUX POSITIFS** specifiques
+  Windows. Le bloc appelant (`bootstrap.rs:161-168`, ECDH/PIV bootstrap) est garde par
+  `#[cfg(not(target_os = "windows"))]` -- Unix-only par design. Sur Linux (LXC 121, cible
+  reelle) le code est appele, 0 warning. Fichier identique a main. **NE PAS patcher**
+  (regle : pas d'attribut cosmetique sur code upstream).
+- **Build Windows des binaires** : la feature `bundled-sqlite` n'existe PAS sur
+  kleos-cli/kleos-sh/kleos-mcp/kleos-approval-tui (elle est sur kleos-lib) ET est inutile :
+  sur Windows le bundling SQLCipher est deja cable via les blocs `[target.'cfg(windows)'.dependencies]`.
+  Commande correcte : `cargo build --release -p kleos-cli -p kleos-sh -p kleos-mcp -p kleos-approval-tui -j 4`
+  (SANS `--features`).
+
+### Follow-ups ouverts post-merge
+
+1. **Deploy embedding** : `/etc/kleos/kleos.env` -> `KLEOS_EMBEDDING_URL` (cf. Patch 5/8B/8C).
+2. **Securite gate** : valider la protection des ecritures sensibles cote serveur apres le
+   retrait de la pseudo-commande `write:/path` (cf. Patch 27).
+3. **Reconciliation migrations LXC 121** au premier boot du nouveau binaire.
+4. **Build serveur Linux (WSL) + deploy LXC 121** (procedure CLAUDE.md projet).
+
+### Lecons methodologiques (promues dans les rules)
+
+Les pieges de merge rencontres (incoherences cross-region detectables seulement au build,
+union perl qui casse le nesting d'accolades, take-theirs dans une fn de signature ours,
+`Default` impl incomplet, helper prive par-module disparu, default const a re-aligner sur
+upstream) sont documentes dans `~/.claude/rules/rust-upstream-fork.md`.
+
+---
+
+## Statut après rebase v1.1.5 (2026-05-18)
+
+`local/patches` HEAD = `473f214`, 17 commits semantiques au-dessus de main = `80982dc`
+(upstream/main qui inclut tags v1.1.3 / v1.1.4 / v1.1.5 sans bump Cargo.toml version,
+qui reste 1.1.2).
+
+| Patch | Statut v1.1.5 | Commit |
+|---|---|---|
+| 1 -- agent-forge/Cargo.toml cfg(windows) bundled rusqlite | ABSORBE depuis v1.1.2 (26e930b) | drop |
+| 2, 10 -- Cargo.toml cfg(windows) sqlcipher (sidecar, approval-tui) | RE-APPLIQUE | `fe53eef` |
+| 4 -- kleos-cred derive-db-key cfg(unix) | **ABSORBE upstream v1.1.5** (commit `133e783 fix(ci): cfg-gate Unix-only APIs for Windows cross-compilation`) | drop |
+| 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `b4fef72` |
+| 5/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `53d1d72` |
+| 3, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE (conflit textuel resolu : retrait du `#[cfg(unix)]` que upstream a ajoute sur `resolve_key_via_credd` -- notre wrapper dispatch deja entre `_socket` et `_tcp`) | `2cc1977` -> `d3c4716` apres rebase |
+| 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE (conflit textuel resolu, upstream a adopte la convention `KLEOS_SIDECAR_*` pour son nouveau `GATE_MODEL`) | `fe023d4` -> `4c5d377` |
+| 12 -- hooks bundle preservation | RE-APPLIQUE, preserve byte-a-byte | `e86bb03` -> `10c829e` |
+| **13 -- fix(broca,activity,growth) post-rebrand engram->kleos** (NOUVEAU 2026-05-18) | 2 commits separes pour faciliter PR upstream eventuelle | `61b9c3c` + `a72008d` |
+| **14 -- LLM thinking-mode toggle (`LLM_THINK` / `KLEOS_SIDECAR_LLM_THINK`)** (NOUVEAU 2026-05-18) | Permet d'utiliser Qwen3 et autres reasoning models sans casser Kleos qui lit le champ `response` Ollama | a commiter |
+| **14b -- Mirror `think` -> `reasoning_effort` sur OpenAI-compat** (NOUVEAU 2026-05-19) | Contourne le bug Ollama #14820 : le param `think` est ignore sur `/v1/chat/completions`. Mesure: Broca ask 47s -> 6s sur qwen3:8b-ctx16k. | a commiter |
+| **15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)** (NOUVEAU 2026-05-19) | 17 call sites LLM surchargeables a chaud via fichier (`broca`, `chiasm`, `skills`, `extraction`, `memory`, `growth`, `loom`). Mecanisme cascade env + cache mtime TTL 5s. Submodule `prompts-overrides` (VOCSAP/Kleos.prompts) pour les overrides VOCSAP. Catalog dans `docs/dev-notes/llm-prompts-catalog.md`. | a commiter |
+| **18 -- kleos-mcp allowlist (`KLEOS_MCP_TOOL_ALLOWLIST`)** (NOUVEAU 2026-05-21) | Filtre additif sur `kleos-mcp/src/tools.rs::registry()` pour restreindre la registry MCP (474 routes -> 15 a 140 selon profil Minimal/Standard/Advanced). Matcher manuel exact + suffix `.*`. Var unset/vide = comportement upstream. Tests: 7 unitaires inline. Cf. section dediee "Patch 18" plus bas. | `5c12c88` |
+| **19 -- kleos-mcp stdio newline framing** (NOUVEAU 2026-05-21) | Remplace le framing LSP `Content-Length: NN\r\n\r\n{body}` par newline-delimited JSON per spec MCP stdio. Resout timeout 30s cote tout client MCP conforme (Claude Code, Claude Desktop). Bug upstream Ghost-Frame pur (commits `2dcebf0`/`7dee90d`/`92a94bc`, aucun patch VOCSAP avant). 8 tests unitaires inline (gap upstream). **CANDIDAT PR UPSTREAM**. Cf. section dediee plus bas. | a commiter |
+| **Hooks VOCSAP -- fixes + extensions** (cumulatif 2026-05-20/2026-05-21) | Voir section dediee "Hooks VOCSAP" plus bas. Couvre les fixes du 2026-05-20 (alignement bodies `/gate/check`, `/gate/complete-latest`, commenting GROWTH.md) et les ajouts du 2026-05-21 (bloc `ensure_eidolon_running`, hook `eidolon-supervisor-drain-pending.sh`, cascade env vars URL/KEY, fixes flags `kleos-cli list/context`, README `eidolon-supervisor/`). Decalage permanent vs upstream (le bundle `hooks/full` a ete retire upstream, Patch 12 le conserve). | a commiter |
+| kleos-mcp refonte standalone | ABANDONNE (decision v1.1.0) | n/a |
+
+**Drops vs v1.1.2** : Patch 4 (`b83f495`) etait re-applique en v1.1.2 mais a ete absorbe
+upstream depuis. Lors du rebase v1.1.5 il a ete drop via `git rebase --skip` (le diff
+devenait vide vs HEAD post-application upstream).
+
+**Branche topic utilisee** : `local/patches-fixupstream` cree depuis `local/patches`,
+rebase sur le nouveau `main` (80982dc), puis `git reset --hard` de `local/patches` vers
+`local/patches-fixupstream` apres validation. Push remote via `--force-with-lease`.
+Branche topic supprimee post-merge.
+
+**Issues upstream identifiees pendant v1.1.5** :
+
+1. **`kleos-lib/src/services/chiasm/tasks.rs:646-659`** (et logique identique dans
+   `services/broca.rs`) : heuristic `is_openai_compat = url.contains("11434")` est
+   trop agressif. Si `LLM_URL=http://host:11434/api/generate` (Ollama native), le code
+   append `/v1/chat/completions` -> URL bidon `http://host:11434/api/generate/v1/chat/completions`
+   -> 404. **Workaround** : configurer `LLM_URL=http://host:11434/v1/chat/completions`
+   verbatim (le path `/chat/completions` desactive l'append). A reporter upstream :
+   le heuristic devrait verifier le path complet, ou laisser le verbatim si l'URL
+   semble explicite (`/v1/chat/completions` OR `/api/generate`).
+
+2. **`kleos-lib/src/activity.rs:261`** : `service: Some("engram".to_string())` hardcode
+   dans `fanout_broca`. Residu legacy pre-rebrand. Consequence : tout event poste via
+   `POST /activity` (ou `kleos-cli activity`) atterrit dans `broca_actions` avec
+   `service="engram"`, mais `kleos-lib/src/services/broca.rs:1209` filtre par
+   `known_services = ["kleos","chiasm","axon","loom","soma","thymus","broca"]`.
+   `engram` absent -> Broca `ask` retourne toujours vide alors que `feed` montre les
+   events. **Workaround** : Patch local potentiel changer la ligne en `"kleos"` ou
+   patcher `known_services` pour ajouter `"engram"`. Pas encore appliqué -- candidat
+   Patch 13.
+
+**Nouvelles env vars v1.1.5 (TOUTES optionnelles avec defaults)** :
+
+| Var | Defaut | Usage |
+|---|---|---|
+| `KLEOS_SIDECAR_GATE_MODEL` | = compress_model | Modele LLM pour memory gate (file watcher quality filter, nouveau module sidecar) |
+| `KLEOS_SIDECAR_GATE_PACE_MS` | `1500` | Pacing entre gate LLM calls (0 = disable) |
+| `KLEOS_SIDECAR_MAX_TURNS_PER_EXTRACT` | `10` | Limite tours par extraction (hardware tuning) |
+| `CHIASM_LLM_URL` | -> `LLM_URL` | LLM pour AI plan generation (POST /tasks/{id}/plan) |
+| `CHIASM_LLM_API_KEY` | -> `LLM_API_KEY` | API key Chiasm LLM |
+| `CHIASM_LLM_MODEL` | -> `LLM_MODEL` | Modele Chiasm |
+
+**Migrations DB ajoutees v1.1.5** : monolith 60 (chiasm_extended_fields), 61 (chiasm_path_claims),
+62 (chiasm_agent_keys), 63 (handoff_atoms) + tenant 52/53/54. Auto-applied au boot.
+
+**Deploy v1.1.5 effectue 2026-05-18** :
+- LXC 121 : 5 binaires `/usr/local/bin/` (kleos-server, kleos-cli, kleos-credd, kleos-mcp, cred),
+  migrations OK, /health 200.
+- Windows : 10 binaires `~/.cargo/bin/` (kleos-cli, kr/ke/kw, agent-forge, kleos-sh,
+  kleos-sidecar, eidolon-supervisor, engram-approval-tui, cred).
+- Backups locaux : `backup/v1.1.2-2026-05-18/{server,windows}/` (508 MB total).
+- Tags git backup pousses sur origin : `backup/local-patches-before-rebase-v1.1.3-2026-05-18`,
+  `backup/main-before-rebase-v1.1.3-2026-05-18`.
+
+---
+
+## Statut après rebase v1.1.2 (2026-05-15, historique)
+
+`local/patches-1.1.2` a été reconstruite sur la base `upstream/main = v1.1.2 + fix CI (4669ed5)`.
+Branche resultante : 14 commits semantiques au-dessus de main (sera renommee en
+`local/patches` apres validation + deploy).
+
+| Patch | Statut v1.1.2 | Commit |
+|---|---|---|
+| 1 -- agent-forge/Cargo.toml cfg(windows) bundled rusqlite | **ABSORBE upstream** (26e930b, syntaxe workspace=true) | drop |
+| 2, 10 -- Cargo.toml cfg(windows) sqlcipher (sidecar, approval-tui) | RE-APPLIQUE + bump 1.1.0 -> 1.1.2 | `fe53eef` |
+| 4 -- kleos-cred derive-db-key cfg(unix) | RE-APPLIQUE | `b83f495` |
+| 7 -- kleos-lib auth normalize_key kleos_ prefix | RE-APPLIQUE | `b4fef72` |
+| 5/8B/8C -- embedding Ollama base_url + SPA prefix match | RE-APPLIQUE | `53d1d72` |
+| 3, 9 -- kleos-sh Windows port + gate curl subprocess | RE-APPLIQUE | `2cc1977` |
+| 11 -- kleos-sidecar namespace OLLAMA env vars | RE-APPLIQUE | `fe023d4` |
+| **12 -- hooks bundle preservation** (NOUVEAU v1.1.2) | RE-APPLIQUE | `e86bb03` |
+| kleos-mcp refonte standalone | **ABANDONNE** (decision v1.1.0) | n/a |
+
+**ABANDONNE -- kleos-mcp standalone refactor (decision audit 2026-05-13) :** la refonte
+locale ~2000 lignes (Database, LocalModelClient, modules auth/tools/transport) etait
+jamais testee en prod. Le proxy HTTP upstream simple est conserve. Si un jour
+kleos-mcp devient critique, ajouter des patches minimaux cibles, **pas une refonte
+parallele**.
+
+**TAKE_UPSTREAM (fixes automatiquement appliques par la base v1.1.0) :**
+- `kleos-lib/src/{intelligence/*,episodes,facts,pack,services/broca,graph/*}.rs` :
+  fixes SQL `user_id` drop sur tenant-sharded tables (commits upstream a0880ee +
+  a798947). **Fixe un bug latent** qui existait en prod LXC 121 v1.0.0.
+- `kleos-client/*` : nouvelle crate extraite par upstream (Client + routes registry
+  + signed HTTP). Remplace l'inline Client de v1.0.0 dans kleos-cli/main.rs.
+- `kleos-server/src/routes/{auth_keys, graph, intelligence, mcp_schema}` : fixes
+  upstream divers.
+- `kleos-lib/src/db/migrations.rs` : migration 58 `api_key_hash_version_fixup`
+  retiree, migration 19 simplifiee (idempotente directement). La prod LXC 121 a
+  deja applique migration 58 historique, retirer du source ne casse pas la DB.
+
+Reference complete : `docs/dev-notes/v1.1.0-rebase-audit.md`.
+
+**TAKE_UPSTREAM supplementaire en v1.1.2 :**
+- `agent-forge/Cargo.toml` : bloc `[target.'cfg(windows)'.dependencies]` ajoute par
+  upstream (26e930b) avec `rusqlite = { workspace = true, features = ["bundled"] }`.
+  Notre Patch 1 historique (`version = "0.31"`) est rendu redondant et plus
+  divergent que la version upstream (qui s'aligne sur la version workspace). Drop
+  pendant le rebase v1.1.2 via `git checkout --ours agent-forge/Cargo.toml`.
+- `kleos-cli` : sous-commande `Activity` (PIV) et refacto `Client` extraite en
+  crate `kleos-client` deja absorbes en v1.1.0. v1.1.2 ajoute query-string
+  forwarding + percent-encoded params + non-JSON response handling cote client,
+  rien a porter cote VOCSAP.
+- `kleos-lib/src/intelligence/temporal.rs` (+506 lignes) : nouvelle implementation
+  temporal pattern detection upstream. Aucun chevauchement avec nos patches.
+- `kleos-server/src/routes/broca/*` (+997 lignes), `soma/*` (+134), `thymus/*`
+  (+80) : nouvelles routes upstream. Aucun chevauchement avec nos patches.
+- Bump cargo workspace version 1.1.0 -> 1.1.2 sur les 17 crates. Nos patches 2
+  et 10 (Cargo.toml cfg(windows) sqlcipher) ont du etre mis a jour pour referencer
+  `kleos-lib = { ..., version = "1.1.2", ... }` au lieu de "1.1.0".
+  - **Merge aa6a0bec (2026-06-01)** : re-bump `1.1.2 -> 1.2.1` sur ces memes 2 blocs
+    (`kleos-approval-tui/Cargo.toml:28`, `kleos-sidecar/Cargo.toml:37`). Les bumps
+    intermediaires les avaient rates car les versions sont hardcodees par crate (pas
+    `version.workspace = true`), donc invisibles au build (path dep -> `^1.1.2` accepte
+    1.2.1). Piege recurrent : a chaque bump workspace, re-grep
+    `version = "<ancienne>"` dans les blocs `[target.'cfg(windows)'.dependencies]`
+    delta VOCSAP. Les blocs kleos-cli/kleos-cred/agent-forge sont desormais upstream
+    (presents dans main, deja a jour) et ne sont plus a notre charge.
+
+---
+
+## Patch kleos-cli activity (PIV) -- DEJA AMONT v1.1.0, rien a porter
+
+**Verification 2026-05-14** : le diff `+325/-2` initialement etiquete "patch
+local activity" entre `c46fc94` (v1.0.0) et `main` (v1.1.0) ne correspondait
+pas a un patch local non porte mais a la **refactorisation upstream** qui a
+extrait `struct Client` (anciennement inline dans `kleos-cli/src/main.rs`)
+vers la crate `kleos-client`.
+
+- La sous-commande `Commands::Activity` (ajoutee par upstream `725ed3e`,
+  10 mai 2026) est presente en v1.1.0 et utilise directement
+  `client.post("/activity", body).await` (API publique propre).
+- Le bloc `enroll_identity_key` qui appelait jadis `client.http.post(&url)`
+  est en v1.1.0 reecrit en `client.post("/identity-keys/enroll", body).await`
+  (kleos-cli/src/main.rs:1302).
+
+**Conclusion** : aucun patch a porter cote VOCSAP. Le code v1.1.0 upstream
+est deja conforme a l'usage souhaite. L'analyse du diff `c46fc94..main` doit
+toujours decouper "diff applique par upstream" vs "patch local divergent",
+sinon on poursuit des fantomes.
+
+---
+
+## Patch 1 -- Windows port : SQLite bundled pour agent-forge (ABSORBE en v1.1.2)
+
+**Statut :** ABSORBE upstream a partir de v1.1.2 (commit `26e930b
+fix(agent-forge): add bundled rusqlite for Windows`). Le bloc upstream utilise
+`rusqlite = { workspace = true, features = ["bundled"] }`, plus aligne sur le
+workspace que notre version historique `version = "0.31"`. Conserve ici pour
+historique.
+
+**Pour les rebases anterieurs a v1.1.2 uniquement** : ajouter a la fin de
+`agent-forge/Cargo.toml` :
+```toml
+[target.'cfg(windows)'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
+```
+
+---
+
+## Patch 2 -- Windows port : sqlcipher feature pour kleos-sidecar
+
+**Fichier :** `kleos-sidecar/Cargo.toml`
+**Statut upstream :** Absent. Seul crate kleos-lib-dépendant sans override Windows.
+**Symptôme si absent :** `LINK : fatal error LNK1181: cannot open input file 'sqlite3.lib'`
+
+```toml
+# Ajouter à la fin du fichier :
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", version = "1.1.0", features = ["sqlcipher"] }
+```
+
+**Pourquoi :** kleos-lib nécessite SQLCipher sur Windows. Les autres crates (kleos-cli,
+kleos-mcp, kleos-cred) ont déjà cet override -- kleos-sidecar était le seul oublié.
+
+---
+
+## Patch 3 -- Windows port : cfg-gate Unix socket dans kleos-sh
+
+**Fichier :** `kleos-sh/src/main.rs`
+**Statut upstream :** Absent.
+**Symptôme si absent :** `error[E0433]: could not find 'unix' in 'os'` à la compilation.
+**Analyse complète :** `docs/dev-notes/kleos-sh-windows-port.md`
+
+Deux fonctions touchées :
+
+**A) `resolve_key_via_credd()`** -- split en deux implémentations cfg-gated :
+- `#[cfg(unix)]`     : `resolve_key_via_credd_socket()` -- UnixStream inchangé
+- `#[cfg(not(unix))]`: `resolve_key_via_credd_tcp()`   -- TcpStream via CREDD_BIND
+
+**B) `read_hostname()`** -- ajout fallback COMPUTERNAME :
+```rust
+#[cfg(not(unix))]
+if let Ok(h) = std::env::var("COMPUTERNAME") { ... }
+```
+
+**Env var mapping résultant :**
+
+| Plateforme | Transport | Env var |
+|---|---|---|
+| Linux/macOS | Unix socket | `CREDD_SOCKET` |
+| Windows | TCP | `CREDD_BIND` (défaut `127.0.0.1:4400`) |
+
+---
+
+## Patch 4 -- Windows port : OpenOptionsExt gated dans derive-db-key (ABSORBE en v1.1.5)
+
+**Statut :** ABSORBE upstream a partir de v1.1.5 (commit `133e783 fix(ci): cfg-gate
+Unix-only APIs for Windows cross-compilation`). Upstream a applique le meme fix avec
+une variante de syntaxe : `#[cfg(unix)]` sur l'import au lieu d'un bloc inline.
+Semantiquement equivalent. Notre commit `b83f495` a ete drop pendant le rebase v1.1.5
+(diff vide vs HEAD post-application upstream). Conserve ici pour historique.
+
+**Fichier :** `kleos-cred/src/bin/derive-db-key.rs`
+**Symptôme historique si absent :** `error[E0433]: use of undeclared type 'OpenOptionsExt'`
+
+```rust
+// Pour les rebases anterieurs a v1.1.5 uniquement :
+let mut opts = std::fs::OpenOptions::new();
+opts.write(true).create(true).truncate(true);
+#[cfg(unix)]
+{
+    use std::os::unix::fs::OpenOptionsExt;
+    opts.mode(0o600);
+}
+let mut f = opts.open(path).unwrap_or_else(|e| { ... });
+```
+
+**Note sécurité :** Sur Windows, les ACL APPDATA protègent déjà le fichier. `0o600` n'a pas d'équivalent direct mais la protection est équivalente par héritage d'ACL.
+
+---
+
+## Patch 5 -- Embedding backend configurable (KLEOS_EMBEDDING_BACKEND) -- ABANDONNE
+
+> **ABANDONNE depuis le merge aa6a0bec (cf. table de statut aa6a0bec, ligne ~79).** Upstream
+> a refactore `OpenAiProvider::from_env` : la selection du backend OpenAI-compatible se fait
+> desormais par **presence de `KLEOS_EMBEDDING_URL`** (avec `KLEOS_EMBEDDING_API_KEY` /
+> `KLEOS_EMBEDDING_MODEL`), pas par un flag `KLEOS_EMBEDDING_BACKEND`. Le token
+> `KLEOS_EMBEDDING_BACKEND` est **totalement absent du source** ; verifie 2026-06-26 sur
+> `merge/upstream-f4e7eb3f`. La description ci-dessous est conservee a titre historique
+> (mecanisme VOCSAP d'origine), elle ne reflete plus le code. Cote LXC 121, configurer
+> `KLEOS_EMBEDDING_URL=http://192.168.10.16:11434/v1` (+ API_KEY/MODEL) au lieu des anciennes
+> `KLEOS_EMBEDDING_OPENAI_*`.
+
+**Fichiers (historique) :**
+- `kleos-lib/src/embeddings/openai.rs`
+- `kleos-server/src/main.rs`
+
+**Statut upstream :** Mecanisme superseded par upstream (`KLEOS_EMBEDDING_URL` detection). Voir encadre ci-dessus.
+**Contexte :** L'upstream hardcode `OnnxProvider` (modèle ONNX local). Le serveur VOCSAP
+utilise Ollama (192.168.10.16:11434) via l'API OpenAI-compatible. Sans ce patch, le
+serveur essaie de charger un modèle ONNX inexistant et le vector search est désactivé.
+
+**A) `openai.rs` -- `base_url` configurable**
+
+`OpenAiProvider` gagne un champ `base_url` (plus d'URL hardcodée) :
+
+```rust
+pub struct OpenAiProvider {
+    http: reqwest::Client,
+    base_url: String,   // nouveau
+    api_key: String,
+    model: String,
+    dim: usize,
+}
+
+pub fn new(
+    http: reqwest::Client,
+    base_url: Option<String>,  // nouveau -- None = api.openai.com/v1
+    api_key: String,
+    model: Option<String>,
+    dim: usize,
+) -> Self { ... }
+```
+
+URLs construites dynamiquement : `format!("{}/embeddings", self.base_url)`
+
+**B) `main.rs` -- sélection du backend**
+
+```rust
+use kleos_lib::embeddings::openai::OpenAiProvider;  // ajout import
+
+// Dans le spawn de l'embedder :
+let embedding_backend = std::env::var("KLEOS_EMBEDDING_BACKEND")
+    .unwrap_or_else(|_| std::env::var("ENGRAM_EMBEDDING_BACKEND").unwrap_or_default());
+
+if embedding_backend == "openai" {
+    // Lire KLEOS_EMBEDDING_OPENAI_{BASE_URL,API_KEY,MODEL}
+    // Instancier OpenAiProvider
+} else {
+    // Comportement upstream inchangé : OnnxProvider
+}
+```
+
+**Env vars requises côté serveur :**
+```
+KLEOS_EMBEDDING_BACKEND=openai
+KLEOS_EMBEDDING_OPENAI_BASE_URL=http://192.168.10.16:11434/v1
+KLEOS_EMBEDDING_OPENAI_API_KEY=<token>
+KLEOS_EMBEDDING_OPENAI_MODEL=bge-m3
+KLEOS_EMBEDDING_DIM=1024
+```
+
+---
+
+## Patch 6 -- Auth : accepter le préfixe `kleos_` dans normalize_key (REMPLACE PAR PATCH 7)
+
+**Statut :** INCOMPLET. Patch 6 était un premier essai correct dans l'intention mais incorrect
+dans l'implémentation. Remplacé intégralement par Patch 7. Conservé ici pour l'historique.
+
+**Erreur de Patch 6 :** `normalize_key` convertissait `kleos_<hex>` en `engram_<hex>` avant
+le hash. Or les clés pepper-era (générées depuis que `KLEOS_API_KEY_PEPPER` est défini) ont
+leur hash calculé sur la forme `kleos_<hex>`. La conversion produisait un mismatch permanent.
+
+---
+
+## Patch 7 -- Auth : préserver le préfixe original dans normalize_key
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, a survecu a l'auto-merge.** `kleos-lib/src/auth.rs:425` fait desormais `.split_once('_')` au lieu de supposer un prefixe fixe de 6 caracteres -- les cles `engram_` de l'ere pepper continuent de valider. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Fichier :** `kleos-lib/src/auth.rs`
+**Statut upstream :** Absent.
+**Symptôme si absent :** GUI retourne "Invalid API Key" pour toute clé à préfixe `kleos_`.
+
+**Cause racine :** Les clés générées depuis que `KLEOS_API_KEY_PEPPER` est configuré ont
+leur hash stocké en DB sur la forme canonique `kleos_<hex>` (c'est le préfixe produit
+lors de la génération). `normalize_key` ne doit donc PAS convertir `kleos_` en `engram_`.
+
+**Deux corrections dans `auth.rs` :**
+
+**A) `normalize_key` -- préserver le préfixe**
+
+```rust
+// AVANT (Patch 6 -- incorrect)
+fn normalize_key(raw_key: &str) -> Option<String> {
+    let hex_portion = if let Some(rest) = raw_key.strip_prefix("engram_") {
+        rest
+    } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
+        rest           // extrait le hex mais...
+    } else {
+        raw_key.strip_prefix("eg_")?
+    };
+    Some(format!("engram_{}", hex_portion...))  // ...force toujours engram_ -> mismatch
+}
+
+// APRES (Patch 7 -- correct)
+fn normalize_key(raw_key: &str) -> Option<String> {
+    let (canonical_prefix, hex_portion) =
+        if let Some(rest) = raw_key.strip_prefix("engram_") {
+            ("engram_", rest)   // engram_ reste engram_
+        } else if let Some(rest) = raw_key.strip_prefix("kleos_") {
+            ("kleos_", rest)    // kleos_ reste kleos_ (pepper-era)
+        } else if let Some(rest) = raw_key.strip_prefix("eg_") {
+            ("engram_", rest)   // eg_ -> engram_ (alias court legacy)
+        } else {
+            return None;
+        };
+    // ...validation hex...
+    Some(format!("{}{}", canonical_prefix, hex_portion.to_ascii_lowercase()))
+}
+```
+
+**B) `validate_key` -- extraction hex robuste**
+
+```rust
+// AVANT -- hypothèse engram_ (7 chars), tronque kleos_ (6 chars) silencieusement
+let hex_portion = normalized_key[7..].to_string();
+
+// APRES -- split_once indépendant de la longueur du préfixe
+let hex_portion = normalized_key
+    .split_once('_')
+    .map(|(_, hex)| hex.to_string())
+    .ok_or_else(|| crate::EngError::Auth("invalid key format".into()))?;
+```
+
+**Règle de hashing par génération :**
+
+| Époque | Préfixe clé | Forme canonique hash | Hash version |
+|---|---|---|---|
+| Avant PEPPER | `engram_<hex>` | `engram_<hex>` | v1 (SHA-256 nu) |
+| Depuis PEPPER | `kleos_<hex>` | `kleos_<hex>` | v2 (SHA-256 + pepper) |
+
+**Note :** Le champ `key_prefix` en DB contient toujours les 8 premiers chars du hex (sans
+le préfixe textuel). Le lookup par `key_prefix` fonctionne donc pour les deux formes.
+
+---
+
+## Patch 8 -- GUI : activation et fix CSP SvelteKit
+
+**Statut au 2026-08-23 (merge 7ce95482) : volet A ABANDONNE, absorbe upstream.** Le fix 401 sur sous-routes SPA est desormais porte par upstream, qui couvre en plus `/gui/auth` et `/gui/logout`. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Concerne :** Déploiement sur LXC 121 (kleos-server Linux musl)
+**Statut upstream :** N/A -- problème de configuration déploiement + patch de fichier statique généré.
+
+Ce patch couvre deux problèmes liés à l'interface web, indépendants mais toujours
+présents ensemble lors d'un redéploiement.
+
+---
+
+### A) 401 sur sous-routes SvelteKit -- SPA_ROUTES match exact
+
+**Symptôme :** La page affiche `401: {"error":"Authentication required..."}` quand
+le navigateur est sur une sous-route comme `/gui/memories`, `/search/details`, etc.
+(rafraîchissement ou bookmark sur un sous-chemin du SvelteKit).
+
+**Cause :** `gui_spa_middleware` utilisait `SPA_ROUTES.contains(&path)` (match exact).
+Les sous-routes comme `/gui/settings` ne sont pas dans la liste, donc le middleware
+tombait en `next.run()` → `api_routes` → `auth_middleware` → 401.
+
+**Fichier :** `kleos-server/src/routes/gui/mod.rs` -- `gui_spa_middleware`.
+
+**Fix (appliqué dans le code) :** Remplacer le `contains` par un matching par préfixe :
+- `"/"` reste exact (pour éviter de capturer toutes les routes)
+- Les autres entrées (`/gui`, `/search`, etc.) matchent aussi leurs sous-chemins via
+  `path.starts_with(&format!("{}/", spa))`
+
+**Statut :** Fix commité et déployé. Validé le 2026-05-12.
+
+---
+
+### B) 401 sur GET / -- variables d'environnement GUI manquantes
+
+**Symptôme :** La page web répond `401: {"error":"Authentication required. Provide
+X-Kleos-Sig header or Bearer token."}` au lieu d'afficher la page de login.
+
+**Cause :** `gui_spa_middleware` n'intercepte les requêtes HTML que si
+`state.config.gui_enabled = true`. Ce flag est positionné uniquement si
+`ENGRAM_GUI_PASSWORD` (traduit depuis `KLEOS_GUI_PASSWORD` par `migrate_env_prefix`)
+est non-vide. Sans lui, le middleware passe la main à `api_routes`, qui applique
+`auth_middleware` → 401.
+
+Fichiers concernés : `kleos-lib/src/config.rs:826` (lit `ENGRAM_GUI_PASSWORD`)
+et `kleos-server/src/routes/gui/mod.rs:722` (condition `!state.config.gui_enabled`).
+
+**Fix :** Vérifier que `/etc/kleos/kleos.env` (sur LXC 121) contient :
+```env
+KLEOS_GUI_PASSWORD=1
+KLEOS_GUI_BUILD_DIR=/usr/local/share/kleos/gui-build
+```
+Ces deux lignes sont déjà dans `deploy/kleos.env`. Si l'env LXC est plus ancien,
+les ajouter manuellement puis `systemctl restart kleos`.
+
+---
+
+### C) Page blanche CSP -- éléments inline SvelteKit bloqués
+
+**Symptôme :** Après login réussi, la page GUI est blanche. La console du navigateur
+affiche :
+```
+Refused to apply inline style because it violates CSP directive "style-src 'self'"
+Refused to execute inline script because it violates CSP directive "script-src 'self'"
+```
+
+**Cause :** SvelteKit (build prod, `adapter-static`) génère dans `index.html` :
+1. `<body style="display: contents">` -- style inline sur `<body>`
+2. Un bloc `<script>` inline d'initialisation (définit `__sveltekit_*`)
+
+Le serveur impose `style-src 'self'; script-src 'self' 'wasm-unsafe-eval'`
+dans son CSP (`kleos-server/src/server.rs`), ce qui bloque les deux.
+
+**Fix : patcher `index.html` sur le LXC et créer deux fichiers compagnons.**
+
+Le build GUI est à `/usr/local/share/kleos/gui-build/`. Ce répertoire est `.gitignored`
+(artefact de build), le patch se re-applique à chaque redéploiement de la GUI.
+
+```bash
+GUI=/usr/local/share/kleos/gui-build
+
+# 1. Externaliser le style inline : remplacer l'attribut style par une classe
+sed -i 's/style="display: contents"/class="sk-root"/' "$GUI/index.html"
+
+# 2. Créer le CSS correspondant
+echo '.sk-root { display: contents }' > "$GUI/_app/root.css"
+
+# 3. Injecter le <link> dans index.html (avant </head>)
+sed -i 's|</head>|    <link href="/_app/root.css" rel="stylesheet">\n</head>|' "$GUI/index.html"
+
+# 4. Extraire le script inline
+#    a. Repérer le bloc <script>...</script> inline dans index.html
+grep -n "<script>" "$GUI/index.html"
+#    b. Copier le contenu du bloc dans _app/init.js (sans les balises <script>)
+#    c. Remplacer le bloc entier par : <script src="/_app/init.js"></script>
+```
+
+**Vérification après patch :**
+```bash
+curl -sI http://localhost:4200/_app/root.css | grep "200"
+curl -sI http://localhost:4200/_app/init.js  | grep "200"
+```
+
+**Note :** Le bloc `<script>` varie à chaque build SvelteKit -- l'extraction manuelle
+est nécessaire. La correction permanente serait de configurer SvelteKit pour externaliser
+son init script (non supporté nativement par `adapter-static` à ce jour).
+
+---
+
+## Patch 9 -- Windows : gate.rs subprocess curl + exec.rs Windows shell
+
+**Fichiers :**
+- `kleos-sh/src/gate.rs` -- `send_request()` (cfg-gate Windows via curl subprocess)
+- `kleos-sh/src/main.rs` -- `build_client()` (connect_timeout configurable)
+- `kleos-sh/src/exec.rs` -- `run_command()` (shell Windows)
+
+**Statut upstream :** Absent.
+**Date initiale :** 2026-05-12
+**Date resolution :** 2026-05-13 (Attempt 7)
+
+### A) gate.rs : gate check Windows -- RESOLU (Attempt 7)
+
+**Fichier :** `kleos-sh/src/gate.rs`
+
+#### Symptome (avant fix)
+
+Sur Windows, `kleos-sh.exe --gate-only -c "echo test"` echouait avec :
+- `reqwest async` : "operation timed out" (IOCP ne recoit pas les paquets)
+- `reqwest::blocking` : meme echec (utilise tokio IOCP en interne)
+- `std::net::TcpStream` brut : connect+write OK, read bloque jusqu'au timeout
+- `curl subprocess` (sans contrainte de port) : exit 28, source port=1434 (anormal), 0 octets recus
+
+Pendant ce temps, `curl.exe` lance directement depuis PowerShell sur la meme machine
+contre le meme endpoint retournait 201 en <1s.
+
+#### Cause racine identifiee (2026-05-13)
+
+**Deux problemes superposes** :
+
+1. **OPNSense (firewall homelab Proxmox)** droppait les paquets de retour destines
+   a un source port "registered" (port 1434, plage 1024-49151). Le client TCP
+   ouvrait depuis 1434 parce que la plage dynamique Windows defaut commencait a
+   1024 (consequence d'un `netsh set dynamicport start=1024 num=64511` applique
+   precedemment pour tenter de contourner le probleme).
+
+2. **curl Windows et `--local-port range`** : curl prend uniquement le PREMIER
+   port de la plage et ne scanne PAS les ports suivants. Si ce premier port est
+   en TIME_WAIT (cas typique apres un appel precedent), curl echoue avec exit 7
+   (EADDRINUSE) au lieu de retenter avec le port suivant. Toute plage
+   `--local-port` etait donc inutilisable apres le premier appel.
+
+#### Fix applique (Attempt 7)
+
+1. **OPNSense** nettoye le 2026-05-12 : regle `subnet_admin` (seq=25, quick=1)
+   ajoutee pour autoriser les retours quels que soient les ports.
+2. **netsh dynamicport** restaure aux defauts Microsoft (start=49152, num=16384)
+   pour tcp/udp en ipv4/ipv6.
+3. **gate.rs** : retrait integral de `--local-port` du subprocess curl. L'OS
+   choisit librement un port ephemere a chaque appel, evitant la collision
+   TIME_WAIT.
+4. **Nouvelle env var `KLEOS_SH_APPROVAL_TIMEOUT_SECS`** (defaut 12s) qui
+   pilote `curl --max-time`. Override jusqu'a 121s pour permettre au mode exec
+   d'attendre une approbation humaine via `engram-approval-tui`. Le mode
+   `--claude-hook` n'a pas besoin d'override -- il fail-open silencieusement
+   sur les tools dans `TOOLS_REQUIRING_APPROVAL` au timeout court.
+
+#### Etat du code (gate.rs)
+
+`send_request` reste split en deux implementations cfg-gatees :
+- `#[cfg(unix)]` : reqwest async inchange (Linux/macOS ne souffraient pas du bug).
+- `#[cfg(not(unix))]` : `tokio::process::Command` + curl subprocess, sans
+  `--local-port`, `--max-time` pilote par `KLEOS_SH_APPROVAL_TIMEOUT_SECS`.
+
+Le commentaire dans gate.rs documente l'historique complet (Attempts 1-7) pour
+eviter de re-tenter une approche deja invalidee.
+
+#### Verification de non-regression
+
+```powershell
+# 1. Connectivite base (tool Read = pas d'approval)
+$env:KLEOS_API_KEY="kleos_..."; $env:KLEOS_URL="http://192.168.10.21:4200"
+'{}' | kleos-sh.exe --gate-only --tool-name Read -c "ls"
+# Attendu: {"hookSpecificOutput":{"permissionDecision":"allow",...}} en <1s
+
+# 2. Tool require-approval sans TUI active (timeout court attendu)
+'{}' | kleos-sh.exe --gate-only --tool-name Bash -c "echo test"
+# Attendu: deny "gate timed out..." apres ~12s (fail-closed en mode exec)
+
+# 3. Avec TUI active et approbation manuelle
+$env:KLEOS_SH_APPROVAL_TIMEOUT_SECS="121"
+# Lancer engram-approval-tui dans un autre terminal
+'{}' | kleos-sh.exe --gate-only --tool-name Bash -c "echo test"
+# Approuver dans la TUI, le check renvoie allow dans la limite des 121s
+```
+
+**main.rs `build_client()` :** connect_timeout reste configurable
+(defaut 5s, env var `KLEOS_SH_CONNECT_TIMEOUT_SECS`), conserve pour les
+chemins reqwest (Unix uniquement post-Attempt 7, mais le reglage reste valide
+si une future implementation Windows revient a reqwest).
+
+**Env vars actives :**
+- `KLEOS_SH_APPROVAL_TIMEOUT_SECS` : Windows uniquement -- curl `--max-time`
+  pour `/gate/check`. Defaut 12s. Override 121s recommande pour attendre une
+  approbation humaine en mode exec.
+- `KLEOS_SH_CONNECT_TIMEOUT_SECS` : Unix uniquement -- reqwest connect_timeout.
+  Defaut 5s.
+- `KLEOS_SH_TIMEOUT_SECS` : Unix uniquement -- reqwest timeout total.
+
+---
+
+### B) Windows shell dans exec.rs
+
+**Symptome si absent :** `exec failed: failed to spawn shell: Le chemin d'acces specifie
+est introuvable. (os error 3)` en mode non-hook sur Windows.
+
+**Avant :**
+```rust
+Command::new("/bin/sh").arg("-c").arg(command)
+```
+
+**Apres :**
+```rust
+#[cfg(unix)]
+let (shell, flag): (&str, &str) = ("/bin/sh", "-c");
+#[cfg(not(unix))]
+let (shell, flag): (&str, &str) = ("cmd", "/C");
+
+Command::new(shell).arg(flag).arg(command)
+```
+
+**Note :** Ce bug n'affecte pas le mode `--claude-hook` (qui ne passe pas par exec.rs).
+Affecte uniquement le mode exec direct (`kleos-sh.exe -c "cmd"`).
+
+---
+
+## Patch 10 -- Windows : sqlcipher feature pour kleos-approval-tui
+
+**Fichier :** `kleos-approval-tui/Cargo.toml`
+**Statut upstream :** Absent.
+**Date :** 2026-05-13
+**Symptome si absent :** `LINK : fatal error LNK1181: cannot open input file 'sqlite3.lib'`
+au linkage final de `engram-approval-tui.exe`.
+
+```toml
+# Ajouter a la fin du fichier :
+[target.'cfg(windows)'.dependencies]
+kleos-lib = { path = "../kleos-lib", version = "1.1.0", features = ["sqlcipher"] }
+```
+
+**Pourquoi :** Identique aux Patches 1 et 2. `kleos-approval-tui` depend de
+`kleos-lib` (alors meme qu'il pourrait s'en passer en tant que pur client HTTP --
+voir TODO de refactoring ci-dessous). `kleos-lib` tire `libsqlite3-sys` sans la
+feature `bundled` par defaut, donc le linker MSVC cherche un `sqlite3.lib`
+systeme inexistant sur Windows. La feature `sqlcipher` de `kleos-lib` active
+SQLCipher embarque qui satisfait le linker.
+
+**TODO de refactoring (non bloquant) :** `kleos-approval-tui` est conceptuellement
+un client HTTP pur (parle a `kleos-server` via reqwest pour `/approvals/pending`,
+`/approvals/{id}/decide`). Il ne devrait pas tirer toute la couche DB de
+`kleos-lib`. Une refactorisation propre consisterait a extraire les types
+partages (proto/DTO) dans un sous-crate `kleos-proto` sans deps DB. Charge
+estimee : moyenne (extraction de structs serde). Hors scope du patch local
+courant.
+
+---
+
+## Patch 11 -- kleos-sidecar : namespacer OLLAMA_URL/MODEL en KLEOS_SIDECAR_OLLAMA_*
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, code hote disparu.** Upstream #217 (commit `e5526e80`) a supprime `gate.rs`/`watcher.rs` et refondu `kleos-sidecar` en moteur de code-context deterministe ; le site que ce patch namespacait n'existe plus. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Fichier :** `kleos-sidecar/src/main.rs`
+**Statut upstream :** Absent. Specifique au poste Windows VOCSAP.
+**Date :** 2026-05-14
+
+### Intention
+
+Permettre au binaire Windows `kleos-sidecar` (compression de contexte Claude
+Code via Ollama) de cibler un endpoint et un modele independants des variables
+generiques `OLLAMA_URL` / `OLLAMA_MODEL` utilisees par d'autres outils
+cote operateur (Claude CLI direct, scripts ponctuels, etc.).
+
+### Pourquoi pas upstream
+
+`OllamaConfig::from_env()` dans `kleos-lib` lit les variables generiques
+`OLLAMA_URL` / `OLLAMA_MODEL`. Toucher cette methode partagee impacterait
+tous les consommateurs (`kleos-server`, `kleos-ingest`, evolver skills) qui
+n'ont pas le meme besoin. Le sidecar Windows est le seul cas ou la collision
+de namespace est genante. Patch garde local.
+
+### Comment
+
+Override applique **uniquement cote sidecar**, sans modifier `kleos-lib`. Apres
+l'appel `OllamaConfig::from_env()`, on lit les variables namespacees et on
+surcharge les champs `url` et `model` si elles sont presentes. `OLLAMA_URL` /
+`OLLAMA_MODEL` restent en fallback pour migration douce (aucun breaking change).
+
+### Ce qui a ete fait
+
+`kleos-sidecar/src/main.rs:317-335` (bloc d'initialisation du LLM) :
+
+```rust
+// AVANT
+let llm_config = OllamaConfig::from_env();
+
+// APRES
+let llm_config = {
+    let mut cfg = OllamaConfig::from_env();
+    if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_URL") {
+        cfg.url = v;
+    }
+    if let Ok(v) = std::env::var("KLEOS_SIDECAR_OLLAMA_MODEL") {
+        cfg.model = v;
+    }
+    cfg
+};
+```
+
+Comportement attendu :
+
+| Env vars positionnees | URL / model effectifs |
+|---|---|
+| Aucune | defauts de `OllamaConfig::default()` (`127.0.0.1:11434`, `llama3.2:3b`) |
+| `OLLAMA_URL`/`OLLAMA_MODEL` seuls | valeurs `OLLAMA_*` (compat legacy) |
+| `KLEOS_SIDECAR_OLLAMA_URL`/`MODEL` seuls | valeurs sidecar-scoped |
+| Les deux ensembles | `KLEOS_SIDECAR_OLLAMA_*` prime sur `OLLAMA_*` |
+
+Autres parametres `OLLAMA_TIMEOUT_*`, `OLLAMA_CONCURRENCY`, `LLM_API_KEY` :
+non namespaces dans ce patch. Si un besoin sidecar-specifique apparait, etendre
+le bloc override avec la meme logique.
+
+### Comment reproduire le fix
+
+```bash
+# Sur une base fraiche (rebase sans ce patch)
+grep -n "OllamaConfig::from_env()" kleos-sidecar/src/main.rs
+# Doit retourner une seule ligne dans le bloc compress_enabled.
+
+# Remplacer cette ligne par le bloc override (voir section "Ce qui a ete fait").
+# Verifier :
+cargo check -p kleos-sidecar
+# Doit passer 0 erreur.
+```
+
+Variables a positionner cote poste Windows (operateur uniquement) :
+
+```env
+KLEOS_SIDECAR_OLLAMA_URL=http://192.168.10.16:11434/v1/chat/completions
+KLEOS_SIDECAR_OLLAMA_MODEL=llama3.2:3b
+```
+
+Une fois le binaire `kleos-sidecar.exe` recompile et redeploye, les
+`OLLAMA_URL` / `OLLAMA_MODEL` generiques peuvent etre repris pour d'autres
+outils sans impact sur le sidecar.
+
+### Note design : pourquoi pas une refacto kleos-lib ?
+
+Une refacto propre (ajouter `OllamaConfig::from_env_with_prefix(prefix)` dans
+`kleos-lib`) serait portable upstream et benefierait a tous les consommateurs.
+Charge : etendre la methode + adapter trois call sites. Si l'operateur juge
+le besoin generalisable a `kleos-ingest` ou `kleos-server`, ouvrir une PR
+upstream et supprimer ce patch local au merge suivant. En attendant, le patch
+chirurgical cote sidecar minimise la divergence.
+
+---
+
+## Patch 12 -- hooks bundle : preserver hooks/full + hooks/simple en attendant le rewrite upstream
+
+**Fichiers :** `hooks/full/*.sh` (8 scripts) et `hooks/simple/*.sh` (4 scripts)
+**Statut upstream :** Supprime par `bebb537` (chore: repo hygiene). Le nouveau
+`hooks/README.md` upstream documente : "The Kleos hooks bundle is under maintenance
+and not currently shipped. [...] A new hooks bundle will be reintroduced once the
+surface stabilises."
+**Date :** 2026-05-15
+**Commit :** `e86bb03 patch(hooks): preserve VOCSAP bundle pending upstream rewrite`
+
+### Intention
+
+Conserver les 12 scripts hook (session-start, user-prompt, mnemonic-observe,
+session-end, enforce-agent-forge, enforce-kleos-search, lib-eidolon,
+track-agent-forge) tels qu'ils existaient avant `bebb537`, pour pouvoir
+continuer a les iterer cote VOCSAP en attendant que la nouvelle version
+upstream stabilisee soit publiee.
+
+### Pourquoi pas upstream
+
+Decision upstream explicite (cf README) : "removed pending a rewrite that
+decouples them from operator-specific tooling". Le rewrite n'est pas encore
+disponible. Plutot que d'attendre sans hooks fonctionnels, on garde la version
+v1.1.0 era localement.
+
+### Comment
+
+Le `hooks/README.md` upstream (nouveau message "under maintenance") est
+conserve tel quel -- il documente correctement la divergence cote upstream.
+Seuls les 12 scripts .sh sont restaures depuis le tag de backup pre-rebase.
+
+### Ce qui a ete fait
+
+Le commit `e86bb03` recree :
+
+```
+hooks/full/enforce-agent-forge.sh        (3.8K)
+hooks/full/enforce-kleos-search.sh       (3.8K)
+hooks/full/lib-eidolon.sh                (1.6K)
+hooks/full/mnemonic-observe.sh           (1.8K)
+hooks/full/session-end.sh                (7.6K)
+hooks/full/session-start-kleos.sh        (9.2K)
+hooks/full/track-agent-forge.sh          (4.0K)
+hooks/full/user-prompt-lean.sh           (5.4K)
+hooks/simple/mnemonic-observe.sh         (1.6K)
+hooks/simple/session-end.sh              (697B)
+hooks/simple/session-start.sh            (~)
+hooks/simple/user-prompt.sh              (~)
+```
+
+Les blobs sont identiques byte-a-byte a ceux de v1.1.0 era (verifies via
+`git ls-tree` croise avec `backup/local-patches-before-rebase-v1.1.2-2026-05-15`).
+
+### Comment reproduire le fix
+
+Sur une base fraiche apres rebase qui aurait absorbe `bebb537` :
+
+```bash
+# Le tag de backup doit exister pour cette commande -- voir procedure
+# de rebase ci-dessous (etape 2 cree le tag).
+git checkout backup/local-patches-before-rebase-vX.Y.Z-YYYY-MM-DD -- \
+  hooks/full hooks/simple
+git add hooks/full hooks/simple
+git commit -m "patch(hooks): preserve VOCSAP bundle pending upstream rewrite"
+```
+
+### Cycle de vie attendu
+
+Ce patch est **temporaire**. Lorsque upstream publiera le nouveau hook bundle
+(annonce dans hooks/README.md upstream), il faudra :
+
+1. Comparer la nouvelle API hook upstream avec nos scripts actuels.
+2. Migrer nos personnalisations vers le nouveau format.
+3. Dropper ce Patch 12 lors du rebase qui integre le nouveau bundle.
+
+D'ici la, ne pas modifier `hooks/README.md` (qui reste la version upstream
+"under maintenance") pour eviter un conflit inutile au prochain rebase.
+
+---
+
+## Patch 13 -- fix engram residue (broca, activity, growth)
+
+**Statut :** commite 2026-05-18, 2 commits (`61b9c3c` + `a72008d`), pas encore push.
+**Contexte :** decouvert pendant les tests post-deploy v1.1.5 lorsque Broca `ask`
+retournait systematiquement vide alors que `/broca/feed` montrait bien les events.
+Audit complet : `docs/dev-notes/engram-residue-audit.md` (145 occurrences "engram"
+classees dans 7 categories).
+
+5 changements minimaux dans la couche kleos-lib pour passer le tag canonique a
+`"kleos"` cote write, tout en preservant `"engram"` en lecture pour les rows
+deja stockees :
+
+- `kleos-lib/src/activity.rs:261` : fanout broca, `service: "engram"` -> `"kleos"`
+- `kleos-lib/src/services/broca.rs:1209` : `known_services` ajoute `"engram"` comme alias
+- `kleos-lib/src/intelligence/growth.rs:424` : `GrowthReflectRequest.service` `"engram"` -> `"kleos"`
+- `kleos-lib/src/intelligence/growth.rs:91` : match arm `"engram" | "kleos"`
+- `kleos-lib/src/intelligence/growth.rs:407` : SELECT `source LIKE '%-growth'` (au lieu de strict `'engram-growth'`)
+
+Le commit 1 (`61b9c3c` broca+activity) est upstream-friendly (fix actif d'un bug
+visible). Le commit 2 (`a72008d` growth + docs) est local-only par prudence
+(touche un tag stocke en DB, upstream pourrait resister meme si techniquement
+safe via le LIKE retro-compat).
+
+---
+
+## Patch 14 -- LLM thinking-mode toggle
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE (14/14b/14c), absorbe via notre propre PR #135 (upstream `f857f7cd`).** Fonctions `think_setting()` et `inject_openai_compat_reasoning()` desormais upstream dans `kleos-lib/src/llm/mod.rs`. Le volet sidecar de ce patch est en outre mort avec la suppression de `kleos-sidecar/src/gate.rs` (PR #217). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Fichiers :**
+- `kleos-lib/src/llm/mod.rs` (fonction helper `think_enabled()`)
+- `kleos-lib/src/llm/types.rs` (champ `OllamaConfig.think: Option<bool>`)
+- `kleos-lib/src/llm/local.rs` (body injection, priorite override)
+- `kleos-lib/src/intelligence/llm.rs` (struct `OllamaRequest.think`)
+- `kleos-lib/src/services/broca.rs` (`call_llm_endpoint` merge `think` dans body)
+- `kleos-sidecar/src/main.rs` (lit `KLEOS_SIDECAR_LLM_THINK` -> `cfg.think`)
+
+**Statut upstream :** Absent. Modeles thinking (Qwen3, deepseek-r1, gpt-oss:20b)
+renvoient un champ `thinking` separe et un `response` souvent vide quand on hit
+`/api/generate` (Ollama natif) -- comportement documente dans
+`docs/dev-notes/dreamer-llm-contract.md`. Sans flag explicite cote client, le
+dreamer/Broca/Chiasm/sidecar deviennent muets quand l'operateur swap pour un
+modele thinking.
+**Date :** 2026-05-18 (post deploy v1.1.5, decouverte via consultation peer
+claude-peers `desktop-7b2civn-crawl4ai-rag` sur le choix de modele).
+
+### Intention
+
+Permettre a l'operateur de basculer le mode thinking on/off **sans recompiler**
+quand il swap pour un modele reasoning-capable (typiquement Qwen3:8b). Default
+safe = thinking off (= behavior actuel pour les non-thinking models comme
+`llama3.2:3b`).
+
+### Pourquoi pas upstream
+
+Le code upstream construit ses bodies Ollama sans le champ `think`, ce qui fait
+qu'Ollama applique le default du modele (true pour les modeles reasoning,
+ignore pour les autres). Tant qu'upstream cible les modeles non-thinking, c'est
+invisible. Patch candidat PR upstream legitime mais pas critique pour leur
+distribution -- garde local pour l'instant.
+
+### Comment
+
+Hierarchie de priorite (la plus specifique gagne) :
+
+| Niveau | Source | Periode de validite |
+|---|---|---|
+| 1 | `OllamaConfig.think = Some(true \| false)` | Override programmatique (test, init explicite) |
+| 2 | `KLEOS_SIDECAR_LLM_THINK` env var | Sidecar process only (lu dans `kleos-sidecar/src/main.rs`) |
+| 3 | `LLM_THINK` env var | Tous les autres consommateurs kleos-lib (dreamer, Broca, Chiasm) |
+| 4 | `false` | Default safe (aucune var set) |
+
+Toutes les vars sont booleennes parsees via `matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")`. Anything else, including unset, = `false`.
+
+Pattern aligne sur Patch 11 (`KLEOS_SIDECAR_OLLAMA_*` overrident les
+`OLLAMA_*` generiques) -- le sidecar a son propre namespace pour decoupler son
+choix de modele/endpoint/thinking du serveur Kleos qui peut etre tres different
+(Windows host vs LXC Linux, GPU local vs remote).
+
+### Ce qui a ete fait
+
+```rust
+// kleos-lib/src/llm/mod.rs (helper expose au workspace)
+pub fn think_enabled() -> bool {
+    std::env::var("LLM_THINK")
+        .ok()
+        .map(|s| matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+// kleos-lib/src/llm/types.rs (OllamaConfig accepte un override)
+pub struct OllamaConfig {
+    // ... champs existants ...
+    /// Per-config thinking-mode override. None = fallback sur LLM_THINK env var.
+    pub think: Option<bool>,
+}
+
+// kleos-lib/src/llm/local.rs (resolution de la priorite)
+let think = self.config.think.unwrap_or_else(super::think_enabled);
+let body = serde_json::json!({
+    // ...
+    "think": think,
+});
+
+// kleos-lib/src/intelligence/llm.rs (struct OllamaRequest field explicite)
+struct OllamaRequest {
+    // ...
+    think: bool,
+    // ...
+}
+let body = OllamaRequest {
+    // ...
+    think: crate::llm::think_enabled(),
+    // ...
+};
+
+// kleos-lib/src/services/broca.rs (merge dans body generique)
+let body_value = {
+    let mut v = serde_json::to_value(&body)
+        .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+    if let serde_json::Value::Object(ref mut map) = v {
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(crate::llm::think_enabled()));
+    }
+    v
+};
+let mut req = BROCA_LLM_CLIENT.post(url).json(&body_value);
+
+// kleos-sidecar/src/main.rs (override env sidecar-scope)
+if let Ok(v) = std::env::var("KLEOS_SIDECAR_LLM_THINK") {
+    cfg.think = Some(matches!(
+        v.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    ));
+}
+```
+
+Comportement attendu :
+
+| Env positionnees | Sidecar | Serveur (Broca/Chiasm/Dreamer) |
+|---|---|---|
+| Aucune | `think: false` | `think: false` |
+| `LLM_THINK=true` | `think: true` (fallback) | `think: true` |
+| `KLEOS_SIDECAR_LLM_THINK=false`, `LLM_THINK=true` | `think: false` (override sidecar) | `think: true` |
+| `KLEOS_SIDECAR_LLM_THINK=true`, `LLM_THINK=false` | `think: true` (override sidecar) | `think: false` |
+
+### Comment reproduire le fix
+
+```bash
+# Sur une base fraiche (rebase sans ce patch)
+
+# 1. helper public
+grep -n "pub fn think_enabled" kleos-lib/src/llm/mod.rs
+# Doit retourner une seule ligne. Sinon, ajouter la fonction (cf. snippet ci-dessus).
+
+# 2. struct OllamaConfig
+grep -n "pub think: Option<bool>" kleos-lib/src/llm/types.rs
+# Doit etre present + ajoute dans Default::default() : `think: None`.
+
+# 3. body injection LocalModelClient
+grep -n '"think": think' kleos-lib/src/llm/local.rs
+# Doit etre present, precede de `let think = self.config.think.unwrap_or_else(super::think_enabled);`.
+
+# 4. struct OllamaRequest dreamer
+grep -n "think: bool" kleos-lib/src/intelligence/llm.rs
+# Doit etre present + le caller call_llm doit populer `think: crate::llm::think_enabled()`.
+
+# 5. call_llm_endpoint merge broca
+grep -n 'entry("think".to_string())' kleos-lib/src/services/broca.rs
+# Doit etre present (or_insert pour ne pas ecraser un caller qui set deja think).
+
+# 6. override sidecar
+grep -n "KLEOS_SIDECAR_LLM_THINK" kleos-sidecar/src/main.rs
+# Doit etre present, juste apres les overrides KLEOS_SIDECAR_OLLAMA_URL/MODEL.
+
+# Validation
+cargo check -p kleos-lib -p kleos-sidecar
+# Doit passer 0 erreur.
+```
+
+### Configuration recommandee post-deploy
+
+**LXC 121 (`/etc/kleos/kleos.env`)** -- ne PAS positionner `LLM_THINK` si on
+tourne sur un modele non-thinking (default `llama3.2:3b`). Si swap vers
+`qwen3:8b` ou autre reasoning model, laisser quand meme `LLM_THINK` UNSET ou
+`=false` puisque Kleos lit le champ `response` Ollama et le thinking serait
+perdu -- on veut bypass.
+
+**Poste Windows** -- meme regle : ne PAS positionner `KLEOS_SIDECAR_LLM_THINK`
+si on swap le sidecar vers `qwen3:8b` ou autre reasoning. Default false bypass
+le thinking et garde `response` non-vide.
+
+Mettre `LLM_THINK=true` uniquement si :
+- Un nouveau caller dans Kleos sait lire le champ `thinking` separe (pas le cas
+  actuellement nulle part)
+- L'operateur veut explicitement les chains-of-thought dans les logs serveur
+  pour debug (rare et tres bruyant)
+
+### Note design : pourquoi pas inverser le default ?
+
+Default false a ete choisi pour ne pas casser le behavior actuel quand un
+operateur upgrade Kleos sans toucher a son env file. Si un jour un modele
+reasoning devient le default upstream (peu probable a court terme), inverser
+le default necessitera une migration d'env vars cote operateurs existants. Cf.
+discussion peer claude-peers 2026-05-18.
+
+---
+
+## Patch 14b -- Mirror `think` -> `reasoning_effort` (Ollama OpenAI-compat workaround)
+
+**Date** : 2026-05-19
+**Statut** : DEPLOYE sur LXC 121, validation end-to-end OK
+**Fichier touche** : `kleos-lib/src/services/broca.rs` (function `call_llm_endpoint`,
+~13 lignes ajoutees autour des lignes 732-756)
+
+### Probleme
+
+Le Patch 14 injecte `think: false` (param natif Ollama) dans le body de chaque
+appel LLM via `call_llm_endpoint`. Test empirique 2026-05-19 sur qwen3:8b-ctx16k :
+
+| Endpoint | Param | Latence Broca ask | Reasoning genere |
+|---|---|---|---|
+| `/v1/chat/completions` | `think:false` | 47s | ~750 chars (gaspilles) |
+| `/api/chat` natif | `think:false` | 5s | 0 chars |
+
+Le param `think` est **silencieusement ignore** par Ollama sur l'endpoint
+OpenAI-compat (`/v1/chat/completions`), confirme par l'issue upstream
+[ollama/ollama#14820](https://github.com/ollama/ollama/issues/14820)
+(closed mars 2026).
+
+### Solution officielle (Ollama upstream)
+
+L'endpoint OpenAI-compat honore le param OpenAI-standard `reasoning_effort`
+(string) :
+
+- `"high"`, `"medium"`, `"low"` -> thinking ON (avec effort variable)
+- `"none"` -> thinking OFF
+
+Mapping interne Ollama (cf. `openai/openai.go` upstream) : `reasoning_effort`
+est traduit vers le champ `Think` interne.
+
+### Patch applique
+
+```rust
+// kleos-lib/src/services/broca.rs:732-756 (call_llm_endpoint)
+let body_value = {
+    let mut v = serde_json::to_value(&body)
+        .map_err(|e| format!("LLM body serialization failed: {e}"))?;
+    if let serde_json::Value::Object(ref mut map) = v {
+        let think = crate::llm::think_enabled();
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(think));
+        let effort = if think { "high" } else { "none" };
+        map.entry("reasoning_effort".to_string())
+            .or_insert_with(|| serde_json::Value::String(effort.to_string()));
+    }
+    v
+};
+```
+
+Les deux params sont injectes systematiquement. Chaque endpoint Ollama
+ignore silencieusement celui qu'il ne reconnait pas :
+
+- `/v1/chat/completions` -> lit `reasoning_effort`, ignore `think`
+- `/api/chat` natif -> lit `think`, ignore `reasoning_effort`
+
+Pas de regression possible.
+
+### Mesure post-deploiement (LXC 121, qwen3:8b-ctx16k via OpenAI-compat)
+
+```
+Broca ask end-to-end : 47s (avant 14b) -> 6s (apres 14b)
+Reasoning tokens     : ~750 -> 0
+```
+
+### Pourquoi pas refactorer vers /api/chat natif ?
+
+Initialement le plan etait un Patch 15 refactorisant 6 call sites
+(`llm_narrate`, `ask_plan_call`, `ask_summarize_call`, `chiasm::generate_plan`,
+`loom::execute_llm_step`) pour supporter le format natif Ollama.
+Cout estime : ~300 lignes, 1h30 d'effort. La decouverte de
+`reasoning_effort` reduit le patch a 3 lignes pour le meme gain de latence.
+
+### Reference
+
+- Issue Ollama : https://github.com/ollama/ollama/issues/14820
+- Test empirique : Kleos #2136 (decouverte), #2148 (validation)
+
+---
+
+## Patch 14c -- Extend `reasoning_effort` injection to LocalModelClient / Loom / Atoms
+
+**Date** : 2026-05-19
+**Statut** : code applique, deploye sur LXC 121, validation end-to-end OK via `/skills/capture`
+**Fichiers touches** :
+- `kleos-lib/src/llm/mod.rs` (helper `inject_openai_compat_reasoning` ajoute, +18 lignes)
+- `kleos-lib/src/llm/local.rs` (LocalModelClient.call, body devient `mut`, appel helper)
+- `kleos-lib/src/services/loom.rs` (execute_llm_step, idem)
+- `kleos-lib/src/handoffs/atoms.rs` (extract_llm, idem)
+- Spec agent-forge : `spec_882f64c7`
+**Niveau delta upstream** : chirurgical (helper additif + 3 call sites 2 lignes chacun)
+
+### Probleme
+
+Patch 14b avait corrige l'injection `reasoning_effort` dans `broca::call_llm_endpoint`
+uniquement. Trois autres call sites construisent des payloads OpenAI-compat directement
+sans passer par ce helper :
+
+1. `kleos-lib/src/llm/local.rs::LocalModelClient.call` (utilise par `/skills/*` et le
+   Phase 5 `/context include_inference=true` du Patch 16).
+2. `kleos-lib/src/services/loom.rs::execute_llm_step` (workflow Loom de type `llm`).
+3. `kleos-lib/src/handoffs/atoms.rs::extract_llm` (extraction des atoms session
+   handoff).
+
+Sur LXC 121 (Qwen3 via `/v1/chat/completions`) ces 3 chemins envoyaient `think: false`
+mais pas `reasoning_effort`. Resultat : Qwen3 ecrit son output dans le reasoning block
+ignore par kleos-server, et `LocalModelClient.call` retourne erreur `ollama returned
+empty response` apres ~5-6s.
+
+Symptome observable post-deploy Patch 16 : `/skills/capture` echoue avec 500
+`Internal error: ollama returned empty response`.
+
+### Solution
+
+Factoriser le snippet Patch 14b dans un helper `pub(crate)`
+`inject_openai_compat_reasoning(body: &mut serde_json::Value)` cote `kleos-lib::llm`,
+puis l'appeler depuis les 3 sites. broca.rs:758 reste inline (Patch 14b deploye, on
+evite de le toucher pour minimiser le delta supplementaire).
+
+```rust
+// kleos-lib/src/llm/mod.rs
+pub(crate) fn inject_openai_compat_reasoning(body: &mut serde_json::Value) {
+    if let serde_json::Value::Object(ref mut map) = body {
+        let think = think_enabled();
+        map.entry("think".to_string())
+            .or_insert_with(|| serde_json::Value::Bool(think));
+        let effort = if think { "high" } else { "none" };
+        map.entry("reasoning_effort".to_string())
+            .or_insert_with(|| serde_json::Value::String(effort.to_string()));
+    }
+}
+```
+
+Helper idempotent : `or_insert_with` preserve toute valeur deja posee par le caller.
+No-op sur `serde_json::Value` non-Object. Le param est ignore silencieusement par
+Ollama si l'endpoint cible est `/api/generate` natif au lieu de `/v1/chat/completions`,
+donc l'appel est sans effet de bord sur les autres deployments.
+
+### Validation post-deploy
+
+```
+POST /skills/capture (description: "Deploy a Rust binary to a remote LXC...")
+-> HTTP 200 en 32s, slug="deploy-rust-binary-to-lxc", evolution_type="captured", skill_id=1
+```
+
+Avant 14c : 500 "ollama returned empty response" en 6s.
+
+### Cas non corriges (intentionnel)
+
+| Call site | Statut | Raison |
+|---|---|---|
+| `broca.rs:758` | Inline 14b deploye | Eviter d'editer du delta deja en prod |
+| `broca.rs:1147+`, `broca.rs:1330+` | Passent par `call_llm_endpoint` | 14b heritee transitivement |
+| `chiasm/tasks.rs:682,691` | Passent par `broca::call_llm_endpoint` | 14b heritee transitivement |
+
+### Reference
+
+- Memoire Kleos #2323 (implementation), #2332 (validation empirique)
+- Spec agent-forge : `spec_882f64c7`
+
+**Architecture actuelle :** `main` = upstream/main exact (synchronise via fetch +
+fast-forward), `local/patches` = branche topic VOCSAP avec ~8 commits semantiques
+au-dessus de main. Plus de merge `--allow-unrelated-histories` historique.
+
+### Procedure de rebase recommandee (variante topic branch -- adoptee v1.1.5)
+
+```bash
+# 1. Sync upstream sur main
+git fetch upstream main
+git checkout main
+git merge --ff-only upstream/main
+git push origin main
+
+# 2. Tags de backup avant rebase
+DATE=$(date +%Y-%m-%d)
+git tag "backup/local-patches-before-rebase-vX.Y.Z-$DATE" local/patches
+git tag "backup/main-before-rebase-vX.Y.Z-$DATE" main
+git push origin --tags
+
+# 3. Branche topic + rebase (preserve local/patches intacte pendant le travail)
+git checkout -b local/patches-fixupstream local/patches
+git rebase main
+# Resoudre les conflits patch par patch -- skip ceux absorbes (diff vide).
+
+# 4. Validation
+cargo check --workspace --all-features
+# Note: cargo check workspace echoue sur Windows pour les crates serveur
+# (openssl-sys cross-compile). Faire check par crate plateforme :
+#   Windows: -p kleos-sh -p agent-forge -p kleos-sidecar -p kleos-cred -p kleos-approval-tui
+#   WSL musl: -p kleos-server -p kleos-cli -p kleos-mcp -p kleos-credd
+
+# 5. Apres validation, aligner local/patches sur la branche topic
+git checkout local/patches
+git reset --hard local/patches-fixupstream
+git push --force-with-lease origin local/patches
+git branch -d local/patches-fixupstream
+
+# 6. Cleanup tag eventuel (apres deploy reussi)
+# git tag -d backup/main-before-rebase-vX.Y.Z-$DATE  # optionnel
+```
+
+**Pourquoi pas un `git merge --ff-only`** : le rebase a reecrit l'histoire, donc
+`local/patches-fixupstream` n'est PAS un descendant lineaire de `local/patches`.
+Le ff-only echoue avec "Not possible to fast-forward". `reset --hard` est l'operation
+adequate puisqu'on veut que `local/patches` adopte la nouvelle histoire.
+
+### Verification rapide : patches deja absorbes par upstream
+
+```bash
+# Patches Windows (1, 2, 5A, 5B, 9, 10)
+git show main:agent-forge/Cargo.toml | grep "cfg(windows)"
+git show main:kleos-sidecar/Cargo.toml | grep "cfg(windows)"
+git show main:kleos-approval-tui/Cargo.toml | grep "cfg(windows)"
+git show main:kleos-sh/src/main.rs | grep "cfg(not(unix))"
+git show main:kleos-cred/src/bin/derive-db-key.rs | grep "cfg(unix)"
+# Patch 8B -- embedding backend
+git show main:kleos-server/src/main.rs | grep "EMBEDDING_BACKEND"
+# Patch 7 -- auth kleos_ prefix
+git show main:kleos-lib/src/auth.rs | grep "kleos_\|split_once"
+# Patch 8C -- SPA prefix routing
+git show main:kleos-server/src/routes/gui/mod.rs | grep "starts_with.*spa"
+```
+
+Si la commande retourne du contenu : le patch est absorbe upstream, **supprimer**
+le commit local correspondant (drop pendant le rebase interactif). Sinon : le
+commit local s'applique normalement.
+
+### En cas de conflit gros patch (ex: refactor architectural upstream)
+
+Cf. exemple `kleos-cli activity` ci-dessus : si un patch fait reference a une
+API qui a change upstream (struct extrait dans une crate, champ devenu prive,
+signature modifiee), il faut **adapter** plutot que checkout brut. Inspecter
+la nouvelle API publique via `git show main:<crate>/src/<file>.rs | grep "pub "`,
+puis reecrire le commit local.
+
+### Patch 14/14b/14c -- passage a une semantique upstream-neutre (2026-06-29)
+
+**Changement :** Patch 14 injectait TOUJOURS `think` + `reasoning_effort`, avec
+un defaut OFF (`think_enabled()` retournait `false` quand `LLM_THINK` etait
+absent). Ce n'etait PAS neutre : un upstream sans champ `think` laisse le modele
+decider (thinking ON sur les reasoning models), alors que notre injection
+forcait OFF par defaut.
+
+**Nouvelle semantique :** `think_enabled() -> bool` est remplace par
+`think_setting() -> Option<bool>` (via `parse_think_setting(Option<String>)`,
+pur et teste). Lecture par `crate::kleos_env("LLM_THINK")` -> canonique
+`KLEOS_LLM_THINK`, fallback legacy `ENGRAM_LLM_THINK`. Table de parsing :
+absent/vide -> `None` ; `1/true/yes/on` -> `Some(true)` ; `0/false/no/off` ->
+`Some(false)` ; autre -> `None` + warn. `inject_openai_compat_reasoning` (et le
+coeur `inject_reasoning_setting(body, Option<bool>)`) font un early-return sur
+`None` : **body inchange = comportement upstream preserve**. Le bloc inline
+Patch 14b de `broca::call_llm_endpoint` delegue desormais au helper (dedup).
+`local.rs` resout `config.think.or_else(think_setting)` (la precedence sidecar
+Patch 11 `KLEOS_SIDECAR_LLM_THINK` est preservee) et n'injecte que si `Some`.
+
+**Impact ops (IMPORTANT) :** le defaut n'est plus OFF mais "no-op". Pour garder
+le reasoning OFF sur qwen3 cote VOCSAP, l'operateur DOIT poser
+`KLEOS_LLM_THINK=0` dans `/etc/kleos/kleos.env` (LXC 121). Sans cette variable,
+qwen3 repasse thinking-ON (et Broca renvoie des reponses vides, le contenu etant
+consomme dans le champ `thinking`). Pose cote LXC 121.
+
+**Fichiers touches :** `kleos-lib/src/llm/mod.rs` (think_setting + parse +
+inject neutre + core), `kleos-lib/src/llm/local.rs` (rework neutre + precedence
+config.think), `kleos-lib/src/services/broca.rs` (inline -> helper),
+`kleos-lib/src/llm/types.rs` (doc-ref). Niveau delta : chirurgical/refactor.
+
+**Volet PR upstream :** le mecanisme env-var pur (sans `OllamaConfig.think`,
+sans le path sidecar Patch 11) est propose en PR Ghost-Frame depuis un worktree
+base sur `upstream/main` (branche `pr/llm-thinking-neutral`, commit isole
+upstream-pur). `OllamaConfig.think` reste cote fork uniquement.
+
+**Conditions de retrait :** si upstream merge la PR thinking-neutral, le coeur
+`think_setting`/`parse_think_setting`/`inject_*` disparait du fork ; seul le
+delta `OllamaConfig.think` + precedence `local.rs` reste a maintenir.
+
+---
+
+## Patch 15 -- Dynamic LLM prompt overlay (`KLEOS_LLM_PROMPT_REPOSITORY`)
+
+**Date** : 2026-05-19
+**Statut** : code commite sur `local/patches-dynamic-prompt` (HEAD `a84221a`). Lots 1 a 6 termines, Lot 7 (cette doc) en cours.
+**Submodules associes** :
+- `prompts-overrides/` -> `https://github.com/VOCSAP/Kleos.prompts` (overrides VOCSAP, prive)
+- `wiki/Configuration.md` -- doc operateur publique
+
+### Intention
+
+Permettre a un operateur Kleos de surcharger n'importe quel prompt LLM hardcode dans le binaire `kleos-server` (system + user template) **sans recompilation**, via un dossier de fichiers `.txt` sur disque. Ouvre la voie a un tuning de prompts par operateur, par modele, par langue ou par incident. Refactor candidat a PR upstream : aucune regression si l'env var n'est pas definie ni le dossier present.
+
+### Pourquoi
+
+Session 2026-05-19 : on a decouvert qu'un prompt embedded (Broca `ask_plan` system) documente `service="broca"` comme DEFAULT pour les questions d'activite. Mais `actions.service` en DB stocke `"kleos"` (post-fix Patch 13) ou `"engram"` (legacy), **jamais `"broca"`**. Resultat : POST `/broca/ask` retournait `raw=[]` silencieusement parce que le LLM emettait `service=broca` -> 0 ligne SQL match. Sans mecanisme d'override, chaque ajustement de prompt requiert un cycle code -> commit -> build WSL -> deploy LXC complet (typique 15-20 minutes par iteration), trop long pour iterer sur le wording d'un prompt face a un nouveau modele.
+
+Plus largement, les 19 prompts LLM identifies dans le codebase (broca x3, chiasm x1, skills x5, extraction x2, memory x2, growth x4, prompts builder x1, loom fallback x1) sont tous **calibres pour les modeles d'upstream** (en l'occurrence llama3.2:3b ou la famille gpt-4). Pour le deploiement VOCSAP qui tourne sur qwen3:8b-ctx16k (Modelfile derive contexte 16384), certains prompts produisent des reponses sous-optimales et il faut pouvoir les ajuster sans recompiler.
+
+### Solution
+
+#### Mecanisme overlay
+
+```rust
+// kleos-lib/src/llm/prompts.rs
+pub fn load_prompt(id: &str, embedded_default: &'static str) -> Cow<'static, str>;
+pub fn load_pair(prefix: &str, def_sys: &'static str, def_user: &'static str)
+    -> (Cow<'static, str>, Cow<'static, str>);
+pub fn load_and_render(id: &str, default: &'static str, vars: &Value) -> String;
+```
+
+Resolution cascade pour le repo override :
+1. `KLEOS_LLM_PROMPT_REPOSITORY` (env var, path explicite) si defini
+2. `${KLEOS_DATA_DIR}/prompts` (ou `${ENGRAM_DATA_DIR}/prompts`) si le dossier existe
+3. Aucun -- embedded defaults via `include_str!()` bundle dans le binaire au build
+
+Cache : `Arc<String>` partage entre callers, invalidation `mtime` apres TTL 5s. Edits propages sans restart de `kleos-server`.
+
+Interpolation : `kleos-lib/src/llm/template.rs::interpolate(template, &vars)` rend les placeholders `{{path.to.field}}` avec un `serde_json::Value`. Variable manquante -> chaine vide (degrade gracieusement).
+
+#### Layout source-tree
+
+```
+kleos-lib/prompts/<service>/<purpose>/{system,user}.txt
+```
+
+Chaque `.txt` est embedde dans le binaire via `include_str!()`. Le contenu est byte-equivalent au literal Rust qu'il remplace, donc le binaire produit est identique en taille et en comportement par defaut. Le fichier `.txt` n'est PAS distribue avec le binaire -- il sert uniquement au build.
+
+#### Layout filesystem override
+
+```
+${root}/<service>/<purpose>/{system,user}.txt
+```
+
+Meme structure cote LXC ou cote dev. La fonction `load_pair(prefix, ...)` construit automatiquement les sous-paths `<prefix>/system` et `<prefix>/user`. Pas de fichier present = fallback embedded.
+
+#### Submodule prompts-overrides
+
+Pour VOCSAP, les overrides actifs vivent dans `https://github.com/VOCSAP/Kleos.prompts` (prive). Le main repo reference ce submodule via `prompts-overrides/` (racine). Cote LXC, l'operateur fait simplement :
+
+```bash
+cd /var/lib/kleos
+git clone https://github.com/VOCSAP/Kleos.prompts prompts
+# Updates :
+git -C /var/lib/kleos/prompts pull
+```
+
+Le sub embarque son propre `README.md` et `CLAUDE.md` avec catalog detaille et intentions par prompt.
+
+### Migration progress
+
+| Lot | Commit | Prompts |
+|---|---|---|
+| 1 -- foundations + pilot broca/ask_plan | `04eabaa` | 1 |
+| 2 -- broca + chiasm | `e994c69` | 3 |
+| 3 -- skills | `14b921b` | 5 |
+| 4 -- extraction + memory | `3d6ab46` | 4 |
+| 5 -- growth | `41ad013` | 4 |
+| 6 -- loom fallback | `a84221a` | 1 |
+| 7 -- catalog + doc | (en cours) | 0 |
+
+**17 call sites surchargeables au total**. 2 explicitement hors scope :
+- `prompts/agent_header` (build_living_prompt) : builder dynamique multi-sections, externalisation requerrait un templating engine.
+- `brain/oracle` : dead code (`#[allow(dead_code)]`).
+
+### Mesure end-to-end (LXC 121, qwen3:8b-ctx16k via /v1/chat/completions)
+
+Test pilote broca/ask_plan, sequence :
+
+1. Baseline (binaire avec embedded fix, aucun fichier override) :
+   ```
+   plan: {agent: 'Kleos', limit: 50, service: 'kleos', since: None}
+   ```
+2. Override force `service=loom, limit=3` via `/var/lib/kleos/prompts/broca/ask_plan/system.txt`, sleep 6s :
+   ```
+   plan: {agent: None, limit: 3, service: 'loom', since: None}
+   ```
+3. Hot-reload force `service=thymus, limit=11`, sleep 6s :
+   ```
+   plan: {agent: None, limit: 11, service: 'thymus', since: None}
+   ```
+4. Cleanup, retour baseline.
+
+**Trois inferences distinctes, AUCUN restart de kleos-server, TTL 5s respecte.** Le cache mtime invalidation + cascade env est operationnel.
+
+### Pourquoi pas DB / pas de cronjob FS->DB
+
+Discute avec l'operateur 2026-05-19 :
+- DB ajoute un couplage inutile pour un workflow ou les overrides changent rarement (semaines/mois).
+- Le filesystem permet `vim` + `git diff` + `git log` natifs, plus naturel pour iterer.
+- Le cache mtime fait quasiment aussi vite qu'une lecture DB (50 us au cold miss vs ~5-8s par appel LLM = 0.001% d'overhead).
+- Cronjob FS -> DB serait du double-bookkeeping pour zero gain.
+
+### Reference
+
+- Module : `kleos-lib/src/llm/prompts.rs` + `kleos-lib/src/llm/template.rs`
+- Catalog detaille : `docs/dev-notes/llm-prompts-catalog.md`
+- Doc operateur : `wiki/Configuration.md` section "LLM Prompts Overlay (VOCSAP Patch 15)"
+- Sub overrides : `https://github.com/VOCSAP/Kleos.prompts` (CLAUDE.md + README.md)
+- Plan d'execution : `~/.claude/plans/swirling-yawning-twilight.md`
+- Memoires Kleos : #2185 (pilote validation), #2197 (architecture finale), #2200 (hot-reload validation), #2208 (lots 1-6 complete)
+
+---
+
+## Patch 16 -- Extension overlay aux suffixes et a `context/inference`
+
+**Date** : 2026-05-19
+**Statut** : code complet, deploye sur LXC 121, validation empirique partielle (growth 4/4 services + skills/capture OK; context/inference indirect via skills/capture)
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/growth.rs` (helper `service_prompt_paths` ajoute, `reflect` re-route via suffix+user)
+- `kleos-lib/src/skills/evolver.rs` (3 const remplaces par 9 accessor functions, 9 call sites adaptes)
+- `kleos-lib/src/context/mod.rs` (Phase 5 Inference utilise `load_pair` + `interpolate`)
+- 19 nouveaux fichiers prompts sous `kleos-lib/prompts/` :
+  - `growth/{kleos,claude_code,eidolon,default}_reflection/{system_suffix,user}.txt` (8)
+  - `skills/{fix,derive,capture}_prompt/{name,desc,code}_user_suffix.txt` (9)
+  - `context/inference/{system,user}.txt` (2)
+- `docs/dev-notes/llm-prompts-catalog.md` (35 ids overlayables total : 17 Patch 15 + 18 Patch 16)
+- Specs agent-forge : `spec_7c400216` (Lot 1 growth), `spec_56c24f77` (Lot 2 skills), `spec_8153fc3c` (Lot 3 context)
+**Niveau delta upstream** : refactor (3 fichiers Rust touches dans des fonctions upstream) + additif (19 nouveaux files)
+
+### Probleme
+
+Patch 15 avait externalise les **persona** prompts (system) et les **user templates principaux** (5 cas), mais 3 categories restaient hardcodees :
+
+1. **Rules systeme** : `growth.rs:209-233` ajoutait 6 bullet rules au persona via `format!("{}{}", system, rules)`. Identiques sur les 4 services growth.
+2. **Shot suffixes** : `evolver.rs:34-36` 3 const `NAME/DESC/CODE_SHOT_SUFFIX` reutilises 9 fois (3 fonctions x 3 phases).
+3. **Paire `context/inference`** : `context/mod.rs:1019-1029` Phase 5 LLM inference hardcodait `system_prompt` et le format `user_prompt`.
+
+### Solution (convention Option C)
+
+Tous les nouveaux fichiers colocalises par `<service>/<purpose>/` -- pas de dossier `rules/` separe. Deux nouveaux suffixes de fichier :
+
+- `system_suffix.txt` : appende au system par le caller via `format!("{}\n{}", system.trim_end(), suffix.trim_end())`.
+- `<phase>_user_suffix.txt` : appende au user par le caller via `format!("...\n\n{}", suffix.trim())`.
+
+Suffix vide neutralise la regle correspondante (escape hatch intentionnel). Reutilisation des helpers Patch 15 `load_prompt`, `load_pair`, `load_and_render`, `template::interpolate`.
+
+Refactor `growth.rs::reflect` : factorisation du routage service via `service_prompt_paths()` qui retourne `{system,suffix,user}_{id,default}`. Compatibilite preservee : `get_prompt_for_service` reste appelle pour le system (alignement Patch 15) et delegue desormais a `service_prompt_paths`.
+
+Refactor `evolver.rs` : 3 const remplaces par 9 const `*_USER_SUFFIX_DEFAULT` + 9 accesseurs `fix_name_user_suffix()`, etc. Chaque fonction (`fix_skill`, `derive_skill`, `capture_skill`) charge ses 3 suffixes en debut puis les injecte dans les 3 `format!`.
+
+Refactor `context/mod.rs:1019` : `load_pair("context/inference", ...)` + `template::interpolate(user_tmpl, vars)` avec `{"query": ..., "top_facts": ...}`.
+
+### Validation
+
+- Build : `cargo build` 0 erreurs (10 warnings pre-existants ECDH cred/bootstrap)
+- Tests unitaires : `cargo test -p kleos-lib` 827/827 pass, 4 ignored, zero regression
+- Empirique post-deploy :
+  - `growth/reflect` 4/4 services (kleos, claude-code, eidolon, default) -> observations 1-3 phrases 1ere personne
+  - `skills/capture` -> slug kebab-case, evolution_type="captured" en ~32s (3 LLM calls)
+  - `context/inference` -- LocalModelClient valide indirectement via skills/capture (meme code path). Endpoint `/context` bloque par cap upstream 30s lorsque cold cache + LLM call > 30s (cf. Patch 16b).
+
+### Convention
+
+| Suffixe fichier | Concat cote caller | Exemples ids |
+|---|---|---|
+| `system.txt` | tel quel | `broca/ask_plan/system`, `growth/kleos_reflection/system` |
+| `user.txt` | `interpolate(template, vars)` | `broca/ask_plan/user`, `growth/kleos_reflection/user` |
+| `system_suffix.txt` | `format!("{}\n{}", system.trim_end(), suffix.trim_end())` | `growth/*/system_suffix` |
+| `<phase>_user_suffix.txt` | `format!("...\n\n{}", suffix.trim())` | `skills/fix_prompt/name_user_suffix` etc. |
+
+### Reference
+
+- Plan d'execution : `~/.claude/plans/mossy-launching-origami.md`
+- Cartographie initiale : `docs/dev-notes/llm-prompts-rules-todo.md` (gitignored)
+- Catalog detaille : `docs/dev-notes/llm-prompts-catalog.md`
+- Sub overrides : `https://github.com/VOCSAP/Kleos.prompts` (CLAUDE.md + README.md mis a jour)
+- Memoires Kleos : #2287 (passation pre-Patch-16), #2295 (Lot 1 growth), #2296 (Lot 2 skills), #2297 (Lot 3 context), #2299 (recap code), #2302 (doc 3 fichiers), #2305 (politique upstream), #2332 (validation empirique)
+
+---
+
+## Patch 16b -- `KLEOS_CONTEXT_TIMEOUT_SECS` env var pour /context
+
+**Date** : 2026-05-19
+**Statut** : code complet, deploiement attendu (operateur ajoute la variable dans `/etc/kleos/kleos.env` avant restart)
+**Fichier touche** : `kleos-server/src/routes/context/mod.rs` (one const + one fn + 1 ligne)
+**Spec agent-forge** : `spec_b896f973`
+**Niveau delta upstream** : additif (constante hardcodee devient configurable, default identique)
+
+### Probleme
+
+Le router `/context` (upstream S7-26) applique un `TimeoutLayer::with_status_code(REQUEST_TIMEOUT, Duration::from_secs(30))` hardcode. Sur LXC 121 avec Qwen3 :
+- cold semantic cache : ~14s
+- LLM call inference Patch 16 : ~15s
+- total > 30s -> HTTP 408
+
+Le default global `KLEOS_REQUEST_TIMEOUT_SECS=1800` (server.rs:19) est ignore par cette route specifique.
+
+### Solution
+
+Ajouter `DEFAULT_CONTEXT_TIMEOUT_SECS = 30` (preserve upstream behaviour) + `context_timeout()` qui lit `KLEOS_CONTEXT_TIMEOUT_SECS` env var et fallback sur la constante :
+
+```rust
+const DEFAULT_CONTEXT_TIMEOUT_SECS: u64 = 30;
+
+fn context_timeout() -> Duration {
+    let secs = std::env::var("KLEOS_CONTEXT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CONTEXT_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
+```
+
+Router conserve `S7-26` comment + ajoute "Patch 16b: configurable via KLEOS_CONTEXT_TIMEOUT_SECS, default 30". Default identique au comportement upstream quand l'env var est unset.
+
+### Deploiement operateur
+
+Sur LXC 121, dans `/etc/kleos/kleos.env` :
+```
+KLEOS_CONTEXT_TIMEOUT_SECS=60
+```
+
+Restart kleos-server. Le cap passe a 60s, l'inference Patch 16 entre dans le budget.
+
+### Validation
+
+- Build : `cargo check -p kleos-server` 0 erreurs.
+- Default behaviour preserve (env var unset -> 30s, identique upstream).
+- Operateur peut ajuster sans rebuild.
+
+### Reference
+
+- Spec agent-forge : `spec_b896f973`
+- Memoire Kleos #2332 (decouverte du blocker post-Patch 16)
+
+---
+
+## Patch 17a -- activation `KLEOS_USE_CHUNK_VECTOR_SEARCH` + backfill vector
+
+**Date** : 2026-05-20
+**Statut** : deploye sur LXC 121
+**Fichiers touches** : aucun (purement operationnel)
+**Niveau delta upstream** : **zero delta** (env var deja prevue par upstream commit `4b02bfe`, simplement non activee jusqu'ici)
+
+### Probleme
+
+`POST /context` retournait HTTP 408 a 60 s sur LXC 121 avec 2620 memories actives. Diagnostic via `GET /admin/vector_health` :
+- `lance_row_count = 434` sur 2620 memories actives (84% non indexees)
+- `chunk_lance_row_count = 0`
+- `vector_sync_pending_count = 0` (worker drain mais ne backfill pas l'historique)
+
+Cause : `use_chunk_vector_search = false` par defaut (`kleos-lib/src/config.rs:581`), et la feature opt-in n'avait jamais ete activee depuis son introduction upstream le 2026-04-28 (commit `4b02bfe`). Les 2186 memories sans vecteur Lance tombaient sur le fallback `vector_search` SQLite (sqlcipher decrypt par page, I/O-bound).
+
+### Solution
+
+1. Ajouter `KLEOS_USE_CHUNK_VECTOR_SEARCH=1` dans `/etc/kleos/kleos.env` (backup `/etc/kleos/kleos.env.bak-20260520-103231` cree avant edit).
+2. `systemctl restart kleos-server` -- le loader ouvre `chunk_vector_index` au boot tenant.
+3. `POST /admin/backfill_chunks` -- backfill complet en deux passes (30 min + 10 min, le TimeoutLayer serveur coupe a 30 min, repassage gere le reliquat ; 354 primary + 355 chunks finalises en 2eme passe, 0 failures).
+
+### Validation post-deploy
+
+- `lance_row_count` : 434 -> 2652 (~100% des memories actives)
+- `chunk_lance_row_count` : 0 -> 2216
+- `POST /search query="Patch 16"` : 319 ms (canal vector actif)
+- `POST /context include_static=false` : 8.78 s HTTP 200 (le bottleneck residuel Phase Static est traite par Patch 17b)
+
+### Reference
+
+- Memoires Kleos #2726 (deploy backfill), #2728 (decouverte Phase Static bottleneck residuel)
+
+---
+
+## Patch 17b -- durcir `get_static_memories` (filtre archived + importance + cap configurable)
+
+**Date** : 2026-05-20
+**Statut** : code complet, build WSL + deploy LXC 121 attendus
+**Fichier touche** : `kleos-lib/src/context/deps.rs` (1 const + 1 fn + clause WHERE modifiee)
+**Niveau delta upstream** : chirurgical (1 fichier source, ~20 lignes ajoutees + 8 modifiees)
+
+### Probleme
+
+Apres Patch 17a (vector index alimente), `POST /context` default (include_static=true) continue de timeout HTTP 408 a 60 s. La Phase 1 de `assemble_context_inner` (`kleos-lib/src/context/mod.rs:509-573`) re-embedde chaque memory statique via Ollama bge-m3 (~50 ms par appel sur LXC 116). Sur LXC 121, `get_static_memories` retourne **2176 statics** au lieu de la dizaine attendue : 2176 x 50 ms = ~110 s, depasse le TimeoutLayer 60 s avant meme le premier event SSE.
+
+Cause racine : `get_static_memories` (`kleos-lib/src/context/deps.rs:70`) ne filtre PAS `is_archived` dans sa clause WHERE. Le dreamer (`kleos-lib/src/intelligence/growth.rs:357`) insere chaque growth observation avec `is_static = 1` ET `is_archived = 1`. Intent upstream : le brouillon archive devient actif uniquement apres promotion explicite en insight (`POST /growth/materialize`, importance bump 7 -> 8, archived remis a 0). Mais le filtre `is_archived` manque cote query, donc les brouillons remontent comme statics actifs.
+
+Comparaison avec les autres call sites du flag `is_static = 1` dans la codebase :
+
+| Fichier | filtre `is_archived` | filtre `importance` |
+|---|---|---|
+| `context/deps.rs:72` (Phase Static, **bug**) | non | non |
+| `pack.rs:57` | =0 | non |
+| `gate/mod.rs:386, 571` | non | >=8 |
+| `personality.rs:1061` | non | LIMIT 20 |
+
+`pack` et `gate` sont disciplines. `context/deps.rs` ne l'est pas : c'est un oubli upstream.
+
+### Solution
+
+Trois changements dans `get_static_memories` :
+
+1. **Filtre `AND is_archived = 0`** : exclut les brouillons growth, aligne avec `pack.rs:57`.
+2. **Filtre `AND importance >= 8`** : ne retient que les insights promus, aligne avec `gate/mod.rs:386, 571`.
+3. **`LIMIT ?1` avec valeur configurable** via env var `KLEOS_CONTEXT_STATIC_LIMIT` (default 50), suivant le pattern Patch 16b :
+
+```rust
+const DEFAULT_CONTEXT_STATIC_LIMIT: usize = 50;
+
+fn context_static_limit() -> usize {
+    std::env::var("KLEOS_CONTEXT_STATIC_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_CONTEXT_STATIC_LIMIT)
+}
+```
+
+ORDER BY est etendu a `importance DESC, source_count DESC, created_at DESC` pour retenir les insights les plus importants, recurrents, recents si tie.
+
+### Effet attendu
+
+- Statics retournees : 2176 -> ~0 actuellement (aucun insight promu en DB sur LXC 121), <= 50 dans le futur
+- Phase Static : ~110 s -> <2.5 s meme pire cas
+- `POST /context` (default) : timeout 60 s -> sous 10 s
+
+### Deploiement operateur
+
+Build WSL : `cargo build --release --target x86_64-unknown-linux-gnu -p kleos-server`. Puis scp + restart sur LXC 121.
+
+Optionnel : override le default via `/etc/kleos/kleos.env` :
+```
+KLEOS_CONTEXT_STATIC_LIMIT=30
+```
+
+### Validation
+
+- Build : `cargo check -p kleos-lib` doit passer 0 erreurs.
+- Default behaviour preserve dans le sens "small per-user" (env var unset -> LIMIT 50).
+- Tests existants `deps.rs` non touches.
+- Operateur peut ajuster sans rebuild.
+
+### Conditions de retrait
+
+Si upstream merge une PR qui filtre `is_archived` dans `get_static_memories` (et/ou ajoute un parametre `only_promoted`), le Patch 17b devient redondant et peut etre retire au prochain rebase. Surveiller les commits sur `kleos-lib/src/context/deps.rs` upstream.
+
+### Reference
+
+- Memoires Kleos #2728 (decouverte cause racine), #2729 (mecanisme promotion), #2763 (distinction backfill vs Phase Static), #2767 (comportement dreamer by-design)
+
+---
+
+## Patch 17c -- durcissement prompt growth + filter file dynamique
+
+**Date** : 2026-05-20
+**Statut** : code complet (build WSL + deploy LXC 121 attendus), prompt override prets dans submodule prompts-overrides
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/growth.rs` (1 fn ajoutee + validate_observation etendu, ~45 lignes)
+- `prompts-overrides/growth/<service>/system_suffix.txt` x 4 (durcissement)
+- `prompts-overrides/growth/<service>/user.txt` x 4 (format guidance)
+- `prompts-overrides/growth/reject_patterns.txt` (nouveau, opt-in)
+
+**Niveau delta upstream** :
+- `growth.rs` : additif pur (nouvelle fn `growth_reject_patterns`) + chirurgical minimal (~5 lignes ajoutees dans `validate_observation`)
+- Submodule prompts-overrides : zero delta upstream
+
+### Probleme
+
+Apres Patch 17b (filtre `get_static_memories`), le dreamer continue de generer des brouillons de mauvaise qualite :
+- ~58 doublons stylistiques en 100 brouillons (memes faits, formulations differentes)
+- Verbosity moyenne 200 chars, 80% de pattern "Je remarque/I noticed que..."
+- Validateur upstream (`validate_observation`) trop laxe : seul `NOTHING` exact, `I don't`, `There is nothing` sont rejetes.
+
+Les overlays Patch 15 / 16 existaient mais aucune surcharge sur le `system_suffix` ou `user` des 4 services growth -- on tournait sur les defaults embedded qui n'imposent aucune structure stricte.
+
+### Solution -- deux couches complementaires
+
+**Couche A -- prompt override (zero delta upstream)** : 4 services `{kleos, claude_code, eidolon, default}_reflection` recoivent un `system_suffix.txt` durci qui :
+- biaise par defaut vers `NOTHING`
+- impose la structure `<fact>. <localisation>. <implication>.` (max 250 chars)
+- exige une localisation litterale presente dans l'input (anti-hallucination)
+- liste les openings interdits multilingues (`I noticed`, `Je remarque`, etc.)
+- formate des examples de bonne et mauvaise forme
+
+Et un `user.txt` qui rappelle le format attendu directement apres le `{{context}}`.
+
+Tests via Ollama direct (qwen3:8b-ctx16k @ temp=0.7, `reasoning_effort: none`) sur 7 scenarios montrent :
+- Verbosity divisee par 2 (100 vs 200 chars)
+- 2/2 `NOTHING` propres sur contextes vides
+- 5/7 sur format `fact.loc.impl.` respecte
+- 1/7 hallucination de localisation residuelle, 1/7 quote residuelle (limites du modele)
+
+**Couche B -- filter file externe** : nouveau fichier `prompts-overrides/growth/reject_patterns.txt` lu a chaque appel de `validate_observation` (resolution identique aux prompts : `KLEOS_LLM_PROMPT_REPOSITORY` puis `$KLEOS_DATA_DIR/prompts/growth/reject_patterns.txt`). Format : un substring par ligne, case-insensitive, `#` commentaire. Si match dans l'observation -> reject (traite comme NOTHING).
+
+Initial set de patterns inclut placeholders ` unknown.`, ` general.`, ` system.`, ` terminal.`, label prefixes `implication:`, `fact:`, et quotes inline. **Hot-tunable** : pas de cache, modification effective au prochain cycle dreamer (~30 min). Permet d'ajouter de nouveaux modes d'hallucination sans rebuild.
+
+### Garde-fous
+
+- Si le filter file est absent : aucun pattern applique, comportement identique a upstream. Filter purement opt-in.
+- Si pattern trop large : risque de drop d'observations legitimes -> garder la liste conservatrice. Le doc dans le fichier le rappelle.
+- Les forbidden openings (`I noticed que...`) sont **doublement** filtrees : prompt-side (LLM essaie de ne pas les emettre) + filter-side (rejet si le LLM bypass la regle).
+
+### Deploiement operateur
+
+1. Build WSL : `cargo build --release --target x86_64-unknown-linux-gnu -p kleos-server`
+2. Deploy LXC 121 (scp + systemctl restart)
+3. Push submodule : `git -C prompts-overrides add growth && git -C prompts-overrides commit && git push`
+4. Pull cote LXC 121 : `git -C /var/lib/kleos/prompts pull`
+5. TTL cache 5s prend effet, prochain cycle dreamer (~30 min) utilise les overrides
+
+### Conditions de retrait
+
+- Si upstream merge un `validate_observation` strict equivalent : le filter-side de Patch 17c devient redondant.
+- Si upstream introduit ses propres reject patterns par config : aligner les noms d'env vars et retirer le helper local.
+
+### Reference
+
+- Memoires Kleos #2822 (workflow prompt override Patch 17c), #2790 (review brouillons par sub-agent)
+- Submodule `prompts-overrides` (`VOCSAP/Kleos.prompts`) : section `growth/` et `reject_patterns.txt`
+
+---
+
+## Patch 17d -- anti-recursion consolidation (Couche A)
+
+**Date** : 2026-05-20
+**Statut** : code complet, build WSL + deploy LXC 121 attendus
+**Fichier touche** : `kleos-lib/src/intelligence/consolidation.rs` (clause WHERE de `find_consolidation_candidates`, +1 ligne SQL, +9 lignes de commentaire explicatif)
+**Niveau delta upstream** : chirurgical minimal
+
+### Probleme
+
+Le mecanisme de consolidation de Kleos (`kleos-lib/src/intelligence/consolidation.rs::sweep` -> `find_consolidation_candidates` -> `consolidate`) cree un memory `source='consolidation', is_static=1, is_archived=0, is_latest=1` par cluster de memories similaires. Sur LXC 121, observe le 2026-05-20 :
+
+- 1924 memories `source='consolidation'` actives en DB
+- ~500 nouvelles par jour depuis le 2026-05-17
+- Tous les outputs ont `is_consolidated = 0` (jamais consumes par un sweep superieur)
+
+Cause racine : la query `find_consolidation_candidates` (lignes 204-215) filtre `is_forgotten = 0 AND is_latest = 1 AND is_archived = 0` mais **ne filtre PAS `is_consolidated = 0`**. Pourtant `consolidate()` ligne 131 fait bien `UPDATE memories SET is_consolidated = 1 WHERE id = source_id` sur les sources d'une consolidation. Le flag est pose mais jamais consulte cote candidat.
+
+Verification independante par sub-agent Explore (memoire #2851) : confiance 92% que c'est un bug structurel (aucun signal d'intention multi-niveaux contraire). Verification upstream Ghost-Frame/Kleos : aucun fix existant, recents commits sur ce fichier sont du nettoyage Phase 5 (drop user_id).
+
+### Solution
+
+Ajouter dans la clause WHERE de `find_consolidation_candidates` :
+
+```sql
+AND ms.is_consolidated = 0 AND mt.is_consolidated = 0
+```
+
+Effet : un memory deja consume par une consolidation precedente est exclu des candidates futures. Les outputs neufs de consolidation (qui ont `is_consolidated = 0` par defaut SQL) **restent eligibles** -> preserve la possibilite multi-niveaux future (inspire mnemo dreamer 3-phase, cf. `docs/dev-notes/consolidation-multi-level-dream-todo.md`).
+
+NB : un fix alternatif aurait ete `AND ms.source != 'consolidation' AND mt.source != 'consolidation'`. Abandonne car il aurait bloque le multi-niveaux.
+
+### Conditions de retrait
+
+Si upstream merge un fix equivalent (ajout du filtre `is_consolidated` dans la query), le Patch 17d devient redondant et peut etre retire au prochain rebase. Surveiller commits sur `kleos-lib/src/intelligence/consolidation.rs` upstream.
+
+### Limites connues / non traite par ce patch
+
+Le Patch 17d Couche A **ne resout pas** :
+
+- **L'idempotence intra-niveau** : si le meme cluster revient au sweep suivant (parce que d'autres liens similarity ont change autour mais le cluster cible reste stable), on cree un nouveau consolidated identique au precedent. Solution B (versioning) traitera ce sujet. Cf. `docs/dev-notes/consolidation-versioning-solution-b-todo.md`.
+- **Le nettoyage des 1924 outputs deja accumules** : separate, Couche C (SQL UPDATE direct) traite ca en one-shot.
+- **Le multi-niveaux propre** : pre-requis sur Solution B + Solution D dediee. Cf. `consolidation-multi-level-dream-todo.md`.
+
+### Reference
+
+- Memoires Kleos #2848 (analyse mecanisme), #2851 (verification sub-agent + upstream clean), #2861 (revision plan post-feedback)
+- TODO files : `docs/dev-notes/consolidation-versioning-solution-b-todo.md`, `docs/dev-notes/consolidation-multi-level-dream-todo.md`
+
+---
+
+## Patch 18 -- allowlist d'outils kleos-mcp (`KLEOS_MCP_TOOL_ALLOWLIST`)
+
+### Symptome
+
+`kleos-mcp` expose une registry MCP de 474 routes canoniques + aliases (~600 entrees `tools/list`) cote client. La majorite (`admin.*`, `identity*`, `auth_keys*`, `security.*`, services Syntheos internes ...) n'est pas appelable utilement par un agent LLM. Pollution forte de la registry cote Claude Code, ralentissement de la selection d'outils, augmentation de la surface d'erreur.
+
+Audit /audit LXC 121 sur 14 jours : 45 paths distincts utilises = 9.5 % du catalogue ; top 8 = 92 % du trafic.
+
+### Approche
+
+Niveau **additif pur** sur `kleos-mcp/src/tools.rs::registry()` : lecture de l'env var `KLEOS_MCP_TOOL_ALLOWLIST` (CSV de patterns glob-lite), filtre des routes au moment d'emettre la `tools/list`. Defaut (var unset/vide) = comportement upstream strictement identique.
+
+Pourquoi cette approche plutot que toucher `kleos-client/src/routes.rs::ROUTES` :
+- `ROUTES` est la constante canonique partagee avec le runtime client HTTP. La toucher modifierait aussi le dispatcher kleos-client, hors scope.
+- Filtre `registry()` cote MCP, pas `dispatch()` (permissif). Le but est de cacher les tools cote LLM, pas de durcir un boundary de securite (cote `kleos-server` scope check).
+- Matcher manuel (`*`, suffix `.*`, exact) -- 15 lignes -- pour eviter d'ajouter une dep crate `glob`/`globset` qui elargit le delta.
+
+### Fichiers touches
+
+- `kleos-mcp/src/tools.rs` : ajout `parse_allowlist`, `matches_pattern`, `allowed` ; filtre dans `registry()` ; 7 tests unitaires inline (matcher + parsing + registry integration).
+- `docs/dev-notes/kleos-mcp-routes-inventory.csv` (etape 1 du plan)
+- `docs/dev-notes/kleos-mcp-routes-classified.csv` (etape 2)
+- `docs/dev-notes/kleos-mcp-routes-usage-30d.txt` (etape 3)
+- `docs/dev-notes/kleos-mcp-profiles.md` (etape 4)
+- `docs/dev-notes/extract-routes-inventory.py`, `docs/dev-notes/classify-routes.py` (outillage etapes 1-2)
+
+### Niveau delta
+
+**Additif pur** : aucune ligne upstream supprimee ni renommee. La fn `registry()` recoit 3 lignes d'appel a `allowed(...)` en plus. Le reste est de nouvelles fonctions et un bloc `#[cfg(test)] mod tests`. Aucune nouvelle dependance Cargo.toml.
+
+### Convention de syntaxe `KLEOS_MCP_TOOL_ALLOWLIST`
+
+- Var unset ou vide -> comportement upstream (toutes les routes).
+- CSV de patterns separes par virgules. Whitespace trimme. Entries vides ignorees.
+- Match exact : `memory.store`.
+- Suffix wildcard : `memory.*` (matche `memory.store`, `memory.recall`, ... ; matche aussi `memory` bare).
+- `*` seul matche tout.
+- Pas d'autre forme (`?`, `[abc]`, `**`, prefix wildcard).
+- Filtre porte sur les **noms canoniques**. Aliases suivent leur canonical.
+
+### Tests
+
+Unitaires (`cargo test -p kleos-mcp --lib --features 'kleos-lib/bundled-sqlite' tools::`) :
+1. `matches_exact` -- match exact OK, non-match OK.
+2. `matches_suffix_wildcard` -- `memory.*` matche `memory.store`, `memory`, mais pas `memories.recall` ni `memorystore`.
+3. `matches_star_alone` -- `*` matche tout.
+4. `allowed_with_empty_allowlist_is_permissive` -- `None` = passe-tout.
+5. `allowed_with_patterns_filters` -- combinaison patterns.
+6. `parse_allowlist_handles_whitespace_and_empties` -- parsing CSV avec whitespace et entries vides.
+7. `registry_includes_aliases_only_for_allowed_canonicals` -- integration `registry()` : `memory.store` allowlist -> canonical + alias `memory_store` presents ; `memory.recall` absent.
+
+Tests serialisent via `static ENV_LOCK: Mutex<()>` pour eviter les races sur `std::env::set_var` en parallele (cargo test --test-threads par defaut).
+
+### Conditions de retrait
+
+Si upstream Ghost-Frame absorbe le patch (candidate PR upstream legitime, beneficie a tous les forks consommateurs MCP), retirer du fork. Sinon, ce patch est stable : aucune evolution attendue tant que `ROUTES` ne change pas drastiquement de structure.
+
+### Reference
+
+- Plan parent : `docs/dev-notes/kleos-mcp-allowlist-plan-todo.md` (6 etapes)
+- Reference exploration : `docs/dev-notes/kleos-mcp-usage.md`
+- Profils proposes : `docs/dev-notes/kleos-mcp-profiles.md`
+- Memoires Kleos #2866 (env vars), #2867 (architecture 474 routes), #2876 (plan)
+
+---
+
+## Hooks VOCSAP -- decalage permanent vs upstream
+
+**Contexte general** : upstream Ghost-Frame a retire le bundle `hooks/*` du repo dans son cycle "repo hygiene" (cf. Patch 12). VOCSAP conserve `hooks/full/*.sh` + `hooks/simple/*.sh` et les fait evoluer pour rester compatibles avec le code serveur courant (routes Axum, signatures d'auth, conventions env vars). Cette section consolide toutes les modifications cumulatives. **Tant qu'upstream ne re-introduit pas de hooks, le decalage est permanent et n'a pas de cible de retrait.**
+
+### Inventaire des fichiers concernes (au 2026-05-21)
+
+```
+hooks/full/
+  lib-eidolon.sh                       # helper shared (URL/key resolution)
+  session-start-kleos.sh               # SessionStart bootstrap
+  session-end.sh                       # SessionEnd (renomme cote deploy: session-end-kleos.sh)
+  enforce-agent-forge.sh               # PreToolUse Write/Edit, gate spec_task
+  enforce-kleos-search.sh              # PreToolUse, gate kleos-cli search
+  track-agent-forge.sh                 # PostToolUse, marker file pour spec/verify
+  mnemonic-observe.sh                  # PostToolUse, fire-and-forget vers kleos-sidecar
+  user-prompt-lean.sh                  # UserPromptSubmit, context injection lean
+  eidolon-supervisor-drain-pending.sh  # PreToolUse, drain /supervisor/pending (NOUVEAU 2026-05-21)
+hooks/simple/
+  session-start.sh, session-end.sh, user-prompt.sh, mnemonic-observe.sh
+```
+
+### Historique cumulatif des modifications
+
+#### 2026-05-20 -- Coherence avec kleos-server routes
+
+Source : memoire Kleos #2871 (analyse) + #2875 (3 fixes deployes).
+
+| Fichier:ligne | Avant | Apres | Pourquoi |
+|---|---|---|---|
+| `enforce-agent-forge.sh:85-94` | `POST /gate/check {tool_name, tool_input.file_path}` | `POST /gate/check GateCheckRequest{command, agent, tool_name, context, skip_approval=true}` | Body avant ne matchait pas le type serde cote serveur (`kleos-lib/src/gate/mod.rs:33-49`), desserialization 422. `skip_approval=true` car le hook gere son propre state-file gate. |
+| `session-end.sh:60-66` | `POST /gate/complete {session_id, summary}` | `POST /gate/complete-latest {session_id, output, known_secrets:[]}` | La route `/gate/complete` attend `gate_id`, pas `session_id`. La route correcte pour terminer par session est `/gate/complete-latest` (`CompleteLatestBody`). Renomme `summary` -> `output`. Restaure l'enforcement Engram-store post-session. |
+| `session-start-kleos.sh:210-220` | `GET /growth/materialize?service&limit&max_bytes` | bloc commente avec TODO | La route serveur attend `POST {observation_id i64}` et materialise UNE observation. Semantique completement differente d'un export markdown agrege. GROWTH.md ne sera plus rafraichi par SessionStart tant qu'une vraie route d'export n'existe pas (candidat PR upstream `GET /growth/digest`). |
+
+Sources verifiees au 2026-05-20 : `kleos-lib/src/gate/mod.rs:33-49`, `kleos-server/src/routes/gate/types.rs:11-24`, `kleos-server/src/routes/growth/mod.rs:20-25`.
+
+#### 2026-05-21 -- Bloc ensure_eidolon_running + drain hook + cascade env vars
+
+Source : memoires Kleos #2918, #2919, #2920, #2924, #2925.
+
+**A. `session-start-kleos.sh` -- ajout du bloc `ensure_eidolon_running`**
+
+Insertion apres `rm -f $STATE_DIR/engram-searched`. Detecte si le process `eidolon-supervisor.exe` tourne via `tasklist.exe`. Sinon, charge `KLEOS_API_KEY` (cascade env -> `~/.config/eidolon/kleos-api-key.txt`), pose `KLEOS_SERVER_URL` + `HOME` puis lance le binaire detache via `powershell.exe Start-Process -WindowStyle Hidden`. Logs binaire dans `~/.claude/logs/eidolon-supervisor.{out,err}.log`. Non bloquant -- toute erreur est logguee et ignoree.
+
+**B. `session-start-kleos.sh` -- patches A+B `kleos-cli`**
+
+Lignes 218-225 et 241-262. Les flags `--json`, `--quiet`, `--budget` n'existent pas sur `kleos-cli list` ni `kleos-cli context` (verifie via `--help` : seuls `--limit` et `--offset`). Reecriture :
+- `list --limit 5` (sans flags fantome), output texte brut affecte directement a `RECENT_MEMORIES` (le format `#ID [score] content` est deja lisible, on retire le parsing python obsolete).
+- `context "..." --limit 8`, output JSON parse en python pour extraire `memories[].category+content`.
+
+**C. Nouveau hook `eidolon-supervisor-drain-pending.sh`**
+
+PreToolUse standalone, matcher `.*`, timeout 5s. Lit `session_id` depuis stdin JSON, source `lib-eidolon.sh`, GET `/supervisor/pending?session_id=...`. Parse la reponse : exit 2 si au moins une violation Critical en attente (block tool call avec message stderr), exit 0 + stderr sinon, exit 0 silent si aucune violation. Erreurs reseau / parse -> exit 0 (jamais bloquer sur panne d'infra).
+
+**D. Cascade env vars URL+KEY sur 3 hooks**
+
+Alignee sur le pattern upstream `kleos-sh/src/main.rs:310-313`.
+
+- URL : `KLEOS_SERVER_URL -> KLEOS_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL -> default http://127.0.0.1:4200`.
+- KEY : `KLEOS_API_KEY -> EIDOLON_API_KEY -> cred get eidolon -> ~/.config/eidolon/kleos-api-key.txt`.
+
+Fichiers touches :
+- `lib-eidolon.sh` -- nouveau header, `_EIDOLON_URL` resolu via cascade, `eidolon_key()` reecrit avec 4 niveaux.
+- `session-end.sh:127-138` -- `EIDOLON_URL_END` + `EIDOLON_KEY_END` alignes sur le meme pattern.
+- `session-start-kleos.sh:109-126` -- bloc `ensure_eidolon_running` adopte la meme cascade pour `export KLEOS_API_KEY` et `export KLEOS_SERVER_URL`. Default `http://127.0.0.1:4200` (au lieu du hardcode `192.168.10.21:4200`).
+
+Default URL legacy `localhost:7700` supprime partout : le service standalone "Eidolon" n'existe plus, les routes (`/gate/*`, `/activity`, `/prompt/generate`, `/growth/*`, `/supervisor/*`) sont toutes sur `kleos-server`.
+
+**E. README.md dans `eidolon-supervisor/`**
+
+Ajout d'un README operateur (10K) : env vars table, default rules + VOCSAP custom set 9 rules JSON copy-pastable, severity guide, architecture 3-canaux (`/supervisor/inject`, `/inbox`, `/axon/publish`), procedure de deploiement Linux/Windows/interactif, checks operationnels (SQL + curl), stubs `#[allow(dead_code)]` non implementes (`drift`, `scope`). Niveau delta upstream : additif pur sur dossier upstream, candidat PR upstream legitime.
+
+### Registration cote `~/.claude/claude-config/settings.json` (etat 2026-05-21)
+
+Les hooks repo sont copies (pas symlinks) dans `~/.claude/hooks/`. Etat reel apres retrait par l'operateur des 5 hooks non encore audites :
+
+| Event | Matcher | Hook | Type | Statut |
+|---|---|---|---|---|
+| `SessionStart` | `""` | `graphify-check.ps1` | externe | actif |
+| `SessionStart` | `""` | `session-start-kleos.sh` | VOCSAP | actif |
+| `SessionEnd` | `""` | `session-end-kleos.sh` | VOCSAP | actif |
+| `UserPromptSubmit` | `^/octo:` | `multi-llm-dispatch.sh` | externe | actif |
+| `PreToolUse` | `Bash` | `rtk-rewrite.sh` | externe | actif |
+| `PreToolUse` | `Bash` | `git-commit-guard.py` | externe | actif |
+| `PreToolUse` | `Write\|Edit\|MultiEdit` | `file-write-scanner.py` | externe | actif |
+| `PreToolUse` | `Write\|Edit\|MultiEdit` | `enforce-agent-forge.sh` | VOCSAP | actif (audite 2026-05-20) |
+| `PreToolUse` | `.*` | `eidolon-supervisor-drain-pending.sh` | VOCSAP | actif |
+| `PostToolUse` | `.*` | `mnemonic-observe.sh` | VOCSAP | actif (audite + patche 2026-05-21) |
+| `PostToolUse` | `Bash` | `post-tool-kleos-prompt.sh` | VOCSAP | actif (audite + patche 2026-05-21) |
+| `UserPromptSubmit` | `""` | `user-prompt-lean.sh` | VOCSAP | actif (audite + patche 2026-05-21) |
+| `PostToolUse` | `.*` | `track-agent-forge.sh` | VOCSAP | actif (audite OK 2026-05-21, aucun patch) |
+| `PreToolUse` | `.*` | `enforce-kleos-search.sh` | VOCSAP | actif (audite + patche 2026-05-21, gate BLOQUANT) |
+| `PreToolUse` | `Bash\|Write\|Edit\|MultiEdit` | `kleos-sh.exe --claude-hook --agent claude-code` (Patch 75) | upstream Ghost-Frame | actif (active 2026-05-21, gate BLOQUANT via /gate/check + /approvals) |
+
+**Fix connexe 2026-05-21 -- session-start-kleos.sh : bloc Mnemonic Node.js legacy remplace par lancement detache du binaire Rust `kleos-sidecar.exe`**. L'ancien bloc (lignes 155-167) cherchait `~/.local/lib/mnemonic/index.ts` (Node.js legacy upstream Ghost-Frame) qui n'a jamais existe sur les postes VOCSAP -> log "Mnemonic binary not found", sidecar jamais lance. Nouveau bloc `ensure_kleos_sidecar_running` calque sur `ensure_eidolon_running` (PowerShell `Start-Process` detache, cascade URL `KLEOS_URL -> KLEOS_SERVER_URL -> ENGRAM_EIDOLON_URL -> EIDOLON_URL`, fallback `KLEOS_API_KEY` via fichier `~/.config/eidolon/kleos-api-key.txt`). Niveau delta : chirurgical sur fichier VOCSAP-only. Necessite que `KLEOS_SIDECAR_WATCH` soit `true|false` (pas `0|1`) cote env operateur -- clap `bool` strict, contrairement a `KLEOS_SIDECAR_LLM_THINK` qui accepte `1|true|yes|on`.
+
+**Hooks deployes mais retires en attente d'audit (2026-05-21)** :
+
+| Hook | Event prevu | Raison du retrait |
+|---|---|---|
+| `enforce-kleos-search.sh` | PreToolUse `.*` | **Audite 2026-05-21 -> PATCH applique + remis en service (matcher elargi a `.*`)**. Gate BLOQUANT (exit 2) qui force un kleos-cli (search/context/recall/recall-due) avant tout tool Write/Edit/Bash non-bootstrap. 3 patches chirurgicaux : (a) regex Bash etendue de `search` a `(search\|context\|recall\|recall-due)` car `context` est la commande primaire recommandee par KLEOS.md (et n'aurait pas pose le stamp avant patch), (b) ajout d'un case `mcp__kleos__*` always-allow + auto-stamp pour rendre le profil Patch 18 (kleos-mcp Standard) operationnel cote workflow, (c) message d'erreur reformule pour mentionner `kleos-cli context` et l'alternative MCP. Matcher elargi de `Bash` (historique #2927) a `.*` pour aligner avec l'intent du hook ("blocks ALL tool calls" -- commentaire ligne 2). Stamp file path stable `~/.claude/session-env/engram-searched` (cleared par session-start-kleos.sh:64). Detail dans `docs/dev-notes/hooks-audit-enforce-kleos-search-todo.md`. |
+| `user-prompt-lean.sh` | UserPromptSubmit `""` | **Audite 2026-05-21 -> PATCH applique + remis en service**. Hook UserPromptSubmit (5 regles MANDATORY + recall top-3 memoires). Patch chirurgical 3 axes : (a) flags fantomes `--json --quiet` sur kleos-cli search remplaces par `kleos-cli context` (JSON natif), (b) header Bearer `KLEOS_SIDECAR_TOKEN` ajoute conditionnellement au POST `/recall` (sinon 401 silencieux), (c) cascade env vars `KLEOS_* -> ENGRAM_*` (fallback legacy) sur CLI/API_KEY/SIDECAR_URL/SIDECAR_TOKEN. Mentions "Engram" -> "Kleos" dans regles 2 et 4 pour alignement avec session-start-kleos.sh. Caveat ops (hors hook) : `/recall` retourne 502 sans `KLEOS_NET_ALLOW_PRIVATE=1` cote sidecar (SSRF guard sur 192.168.10.21 RFC1918), le fallback CLI prend le relais. Detail dans `docs/dev-notes/hooks-audit-user-prompt-lean-todo.md`. |
+| `post-tool-kleos-prompt.sh` | PostToolUse Bash | **Audite 2026-05-21 -> PATCH applique + remis en service**. Hook 100% local (aucun appel reseau), state-machine sur marker `~/.claude/session-env/last-bash-error` (Bash error -> Bash success -> prompt store Kleos). Patch chirurgical 1 ligne : format JSON output passe de `{"type":"text","text":...}` (schema non reconnu, system-reminder silently dropped) a `{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":...}}` aligne sur session-start-kleos.sh et user-prompt-lean.sh. Detail dans `docs/dev-notes/hooks-audit-post-tool-kleos-prompt-todo.md`. |
+| `track-agent-forge.sh` | PostToolUse `.*` | **Audite 2026-05-21 -> verdict OK (aucun patch) + remis en service**. Hook 100% local, state-machine sur 4 marker files dans `~/.claude/session-env/`. Transitions verifiees runtime : spec-task/log-hypothesis -> ecrit `agent-forge-active`, verify/challenge-code/session-diff -> ecrit markers correspondants, log-outcome -> cleanup. CLI sous-commandes verifiees contre `agent-forge --help`. Aliases MCP legacy preserves. Mineur documente : 3 markers (verified/challenged/diffed) produits mais jamais lus par `enforce-agent-forge.sh` (seul `agent-forge-active` consomme). Dead-code latent, probable vestige feature "completion gating" non deployee. Detail dans `docs/dev-notes/hooks-audit-track-agent-forge-todo.md`. |
+| `mnemonic-observe.sh` | PostToolUse `.*` | **Audite 2026-05-21 -> PATCH applique + remis en service**. Route `/observe` et payload `{tool, tool_name, summary, content}` compatibles `ObserveBody` (kleos-sidecar/src/routes.rs:293-304). Patch chirurgical : (a) cascade `KLEOS_SIDECAR_URL -> ENGRAM_SIDECAR_URL -> http://127.0.0.1:7711`, (b) Bearer `KLEOS_SIDECAR_TOKEN` injecte conditionnellement dans le subprocess curl. Validation E2E : POST avec Bearer -> `{accepted:true, pending:N}` ; sans Bearer -> HTTP 401. Detail dans `docs/dev-notes/hooks-audit-mnemonic-observe-todo.md`. |
+
+Chacun fera l'objet d'une analyse dediee (audit ligne par ligne contre le code kleos-server + kleos-sidecar Rust courant, comme fait pour `session-start-kleos.sh` en cette session) avant remise en service.
+
+### Conditions de retrait
+
+Aucune. Tant qu'upstream ne re-introduit pas le bundle `hooks/*` avec une logique equivalente, ces fichiers vivent en permanence dans `local/patches`. Une partie peut etre proposee en PR upstream (notamment le drain hook qui complete la route `/supervisor/pending` deja presente upstream sans drainer).
+
+---
+
+## Patch 19 -- kleos-mcp stdio newline framing
+
+### Symptome
+
+Cote client Claude Code, branchement de `kleos-mcp` via `.mcp.json` produit :
+```
+debug: Starting connection with timeout of 30000ms
+debug: Connection timeout triggered after 30011ms (limit: 30000ms)
+error: Connection failed: MCP server "kleos" connection timed out after 30000ms
+```
+
+Tout client MCP conforme (Claude Code, Claude Desktop) timeout 30s sur `initialize`. Le binaire est inutilisable comme MCP server, alors qu'il est explicitement vendu comme tel.
+
+### Cause racine
+
+`kleos-mcp/src/transport/stdio.rs` implementait le framing **LSP / Language Server Protocol** (`Content-Length: NN\r\n\r\n{body}`) au lieu du framing **MCP stdio** (newline-delimited JSON) requis par la spec (`https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio`).
+
+Origine probable : copie-colle d'un template Language Server Rust (rust-analyzer, tower-lsp, etc.) sans verifier que MCP a un framing different. La confusion est facile : "JSON-RPC sur stdio" -> LSP dans la tete d'un dev qui en a fait avant.
+
+Diag empirique par peer `desktop-7b2civn-kleos-8` (test A/B sur kleos-mcp.exe 1.1.2) :
+- newline-delimited stdin -> stdout 0 byte, jamais EOF (le serveur attend Content-Length).
+- LSP stdin (`Content-Length: NN\r\n\r\n{body}`) -> reponse en 6ms.
+
+Git log confirme : commits `2dcebf0` (creation initiale par Ghost-Frame), `7dee90d` (complete route registry), `92a94bc` (consolidation pipeline + auth middleware integration tests). Aucun patch VOCSAP sur ce fichier avant Patch 19.
+
+### Approche
+
+Patch chirurgical sur `kleos-mcp/src/transport/stdio.rs` uniquement. Niveau **chirurgical**, candidat PR upstream legitime (bug fix conforme spec, aucune option configurable VOCSAP-specifique). Pas d'env var ajoutee.
+
+- `read_message<R: BufRead>` : `read_line` + cap sur `line.len()` AVANT parser (defense OOM reelle) + skip blank lines + `trim_end_matches(\n|\r)` (tolerance CRLF defensive sur Windows pipes) + `serde_json::from_str` + return `Some(Value)`. EOF -> `Ok(None)`.
+- `write_message<W: Write>` : `serde_json::to_vec` + write_all body + write_all `b"\n"` + flush. Pas de CR.
+- `const MAX_MCP_MSG_SIZE: usize = 10 * 1024 * 1024` preservee (SEC-C4 upstream), deplacee au top du fichier pour visibilite.
+- `serve(app: App)` : signature publique inchangee.
+
+Choix de l'approche (a) `BufRead::read_line` plutot que (b) `serde_json::Deserializer::from_reader().into_iter::<Value>()` :
+- (a) permet d'enforcer le cap sur la taille brute AVANT le parser. (b) complique le cap par-message.
+- (a) skip blank lines defensives en `continue` direct.
+- (a) garde "1 ligne = 1 message" lisible cote PR upstream (la spec MCP est ecrite en ces termes).
+
+### Fichiers touches
+
+- `kleos-mcp/src/transport/stdio.rs` : refactor `read_message`/`write_message` (additif net : +22 -27 sur les fns existantes), plus ajout d'un nouveau module `#[cfg(test)] mod tests` avec 8 tests (gap upstream comble).
+
+Inchanges :
+- `kleos-mcp/src/transport/http.rs` (utilise `axum::Json<Value>`, hors scope).
+- `kleos-mcp/src/transport/mod.rs`, `kleos-mcp/src/lib.rs`, `kleos-mcp/src/main.rs`, `kleos-mcp/tests/integration.rs`.
+
+### Tests
+
+8 nouveaux tests inline dans `kleos-mcp/src/transport/stdio.rs::tests` :
+
+1. `read_message_parses_one_line` -- ligne JSON valide -> Value.
+2. `read_message_tolerates_crlf` -- ligne CRLF -> Value.
+3. `read_message_skips_blank_lines` -- skip "\n\n" -> ligne suivante.
+4. `read_message_returns_none_on_eof` -- input vide -> Ok(None).
+5. `read_message_returns_none_after_trailing_blank` -- input "\n" puis EOF -> Ok(None).
+6. `read_message_rejects_oversized_line` -- ligne > MAX_MCP_MSG_SIZE -> Err contains "exceeds max".
+7. `write_message_emits_compact_json_plus_newline` -- 1 seul `\n`, pas de CR, body roundtrippable.
+8. `round_trip_write_then_read` -- write puis read -> meme Value, second read -> None.
+
+Resultat : `cargo test -p kleos-mcp --features 'kleos-lib/bundled-sqlite'` -> **18 passed** (8 stdio + 7 tools::tests Patch 18 + 3 integration).
+
+### Validation empirique
+
+Smoke tests CLI Windows (Git Bash) :
+
+| Test | Resultat |
+|---|---|
+| Run 1 : framing newline, no allowlist | 2 lignes JSON, 0 `Content-Length`, 513 tools (sans filtre) |
+| Run 2 : framing newline + allowlist Standard | 2 lignes JSON, **81 tools** (84% reduction), 6/6 MUST_PRESENT, 0/4 MUST_ABSENT |
+| Run 3 : negative LSP framing (anti-regression) | exit 101, stderr `"expected value at line 1 column 1"` (parser refuse `Content-Length:`) |
+
+Validation peer kleos-8 (test stdio direct sur binaire Patch 18) avait deja montre 513 -> 81 tools avec framing LSP. Patch 19 preserve ce comportement avec framing newline conforme spec.
+
+### Niveau delta
+
+**Chirurgical** sur fichier upstream pur. Aucune dependance Cargo.toml ajoutee. Aucune env var.
+
+### Conditions de retrait
+
+Drop du patch local lorsque l'une des conditions suivantes est vraie :
+
+1. PR upstream Ghost-Frame merge un commit equivalent qui remplace le framing LSP par newline-delimited.
+2. Absorption semantique non identique (refactor a `mcp-sdk-rs` ou equivalent) -> resolution naturelle au rebase via `git rebase --skip` (diff devient vide).
+
+PR upstream legitime : (i) bug qui rend le binaire inutilisable cote tout client MCP conforme, (ii) aucune option configurable VOCSAP-specifique, (iii) aligne le code avec la spec officielle. Probabilite d'acceptation tres elevee.
+
+Titre suggere pour la PR : `fix(kleos-mcp): use newline-delimited JSON framing per MCP spec`.
+
+### Reference
+
+- Spec MCP stdio : `https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio`
+- Memoires Kleos #2940 (decouverte + analyse), #2933 (validation binaire Patch 18 OK), #2931 (peer outcome)
+
+---
+
+## Patch 19b -- Cascade operator-first pour blocked + require_approval gate patterns
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`, champ `responder_agent: Option<String>` + test `respond_rejects_agent_self_approval`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+### Symptome / motivation
+
+La GateConfig (`kleos-lib/src/config.rs::GateConfig`) charge les patterns de
+deny **une seule fois au boot** depuis deux sources : defaults Rust (10
+patterns destructifs hardcodes) + override CSV via env var
+`ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS`. Aucun hot-reload, aucun fichier
+dedie, aucun moyen d'**ecraser** entierement les defaults sans recompiler
+ou redemarrer.
+
+Manque aussi un cran intermediaire entre "allowed" et "blocked" : un pattern
+qui declenche `requires_approval=true` + creation d'une entree
+`/approvals/pending` consommable par `engram-approval-tui`, sans bloquer
+silencieusement. Le seul declencheur actuel etait `has_secret_placeholders`
+apres credd resolve.
+
+### Approche
+
+Nouveau module additif `kleos-lib/src/gate/approval_patterns.rs` (~110
+lignes hors tests) qui expose une primitive `load(file, env, defaults)`
+implementant une cascade **exclusive** :
+
+1. Fichier dedie (presence = priorite absolue, MEME vide). Defaut auto-
+   resolu sous `${KLEOS_DATA_DIR}/gate/<categorie>.txt` quand
+   `KLEOS_DATA_DIR` est defini ; override explicite via
+   `ENGRAM_EIDOLON_GATE_<categorie>_FILE`.
+2. Env var (set, MEME chaine vide = priorite). Existante pour
+   `blocked_patterns` (`ENGRAM_EIDOLON_GATE_BLOCKED_PATTERNS`) ;
+   nouvelle pour `require_approval_patterns`
+   (`ENGRAM_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS`).
+3. Defaults Rust (10 patterns pour `blocked_patterns`, `Vec::new()` pour
+   `require_approval_patterns`).
+
+Format fichier (commun aux deux familles) : 1 pattern par ligne, lignes
+`#` et blanches ignorees, `trim()` applique. Cache lecture **TTL 5s**
+par chemin (parite avec `kleos-lib/src/llm/prompts.rs::TTL_SECS` pose
+par Patch 17c).
+
+Insertion d'un bloc **2bis** dans `check_command_with_context` apres le
+deny et avant le bloc SSH : quand un pattern `require_approval` matche,
+le gate stocke avec status DB `pending_approval` (nouvelle valeur, statut
+DB est `TEXT` libre donc pas de migration) et retourne
+`requires_approval=true` pour que le caller hand-off vers
+`engram-approval-tui`.
+
+Le hardcoded `check_dangerous_patterns` (`validator.rs:23-294`) reste
+**intouchable** : garde-fou ultime, non configurable par design.
+
+### Niveau de delta
+
+- `kleos-lib/src/gate/approval_patterns.rs` (NEW) -- additif pur, 9 tests
+  inline + cache OnceLock.
+- `kleos-lib/src/gate/mod.rs` -- (1) declaration `pub mod`, (2) extension
+  signature `check_command_with_context` (nouveau param
+  `require_approval_patterns: &[String]`), (3) insertion bloc 2bis, (4) 4
+  tests Patch 19b inline. Chirurgical + additif.
+- `kleos-lib/src/config.rs` -- 3 nouveaux champs `GateConfig`
+  (`require_approval_patterns`, `blocked_patterns_file`,
+  `require_approval_patterns_file`) avec `#[serde(default)]`, helper
+  `gate_data_file()`, 4 nouveaux env loaders. Additif pur, defaults
+  preservent comportement upstream.
+- `kleos-server/src/routes/gate/mod.rs` -- caller `/gate/check`
+  re-route les 2 familles via `approval_patterns::load(...)`. Backward-
+  compat : sans fichier ni env, defaults bottent comme avant. Chirurgical.
+
+Niveau global : chirurgical + additif pur, candidat **PR upstream** si
+Ghost-Frame adopte la notion de patterns 3-niveaux.
+
+### Fichiers touches
+
+| Path | Action |
+|---|---|
+| `kleos-lib/src/gate/approval_patterns.rs` | NEW (loader + cache + 9 tests) |
+| `kleos-lib/src/gate/mod.rs` | extension signature + bloc 2bis + 4 tests |
+| `kleos-lib/src/config.rs` | 3 champs `GateConfig` + helper + 4 env loaders |
+| `kleos-server/src/routes/gate/mod.rs` | route les 2 familles via cascade |
+| `docs/dev-notes/local-patches.md` | cette section |
+| `CLAUDE.md` projet | mise a jour section Convention env vars |
+
+### Env vars + paths fichiers (resume)
+
+| Variable | Defaut | Effet |
+|---|---|---|
+| `KLEOS_EIDOLON_GATE_BLOCKED_PATTERNS` | unset | CSV legacy, niveau 2 de la cascade pour `blocked_patterns` |
+| `KLEOS_EIDOLON_GATE_BLOCKED_PATTERNS_FILE` | `${KLEOS_DATA_DIR}/gate/blocked_patterns.txt` | Path explicite, niveau 1 |
+| `KLEOS_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS` | unset | CSV nouveau, niveau 2 pour `require_approval_patterns` |
+| `KLEOS_EIDOLON_GATE_REQUIRED_APPROVAL_PATTERNS_FILE` | `${KLEOS_DATA_DIR}/gate/require_approval_patterns.txt` | Path explicite, niveau 1 |
+
+Tous les prefixes `KLEOS_*` sont traduits en `ENGRAM_*` au boot par
+`config::migrate_env_prefix()`, convention VOCSAP.
+
+### Tests
+
+- Unit : `cargo test -p kleos-lib --features bundled-sqlite gate::approval_patterns::`
+  -- 9 cas (cascade tous niveaux, vide intentionnel x2, parser comments,
+  parser CSV, cache TTL).
+- Integration : `cargo test -p kleos-lib --features bundled-sqlite gate::tests::patch19b_`
+  -- 4 cas (`require_approval_pattern_returns_pending_approval`,
+  `blocked_pattern_still_wins_over_require_approval`,
+  `no_match_passes_through_unchanged`,
+  `pending_secrets_still_set_after_no_approval_match`).
+- Empirique post-deploy : POST `/gate/check` avec command matchant un
+  pattern require_approval, verifier creation entree
+  `/approvals/pending` et acceptation depuis `engram-approval-tui`.
+
+### Workflow operateur
+
+```bash
+# Initial deploy LXC 121
+ssh root@192.168.10.21
+mkdir -p /var/lib/kleos/gate
+cat > /var/lib/kleos/gate/require_approval_patterns.txt << 'EOF'
+# Patterns qui declenchent une approval interactive via engram-approval-tui
+# Hot-tunable, TTL 5s
+apt install
+apt-get install
+docker rm
+docker rmi
+systemctl restart
+git push
+npm publish
+EOF
+chmod 644 /var/lib/kleos/gate/require_approval_patterns.txt
+systemctl restart kleos-server
+
+# Live edit anytime, no restart
+echo "kubectl apply" >> /var/lib/kleos/gate/require_approval_patterns.txt
+# Le gate prend en compte sous 5s
+
+# Override total blocked_patterns (skip defaults Rust)
+touch /var/lib/kleos/gate/blocked_patterns.txt
+# -> 0 pattern bloque cote config (check_dangerous_patterns hardcoded reste actif)
+```
+
+### Conditions de retrait
+
+Ce patch pourrait etre absorbe upstream si Ghost-Frame introduit une notion
+de "patterns a 3 niveaux" (allow / approval / deny) avec format fichier
+hot-tunable. Le code etant isole (1 module + 3 champs config + 1 bloc
+inseree + 1 nouveau status DB TEXT-libre), un rebase contre une convention
+upstream proche serait simple.
+
+### Extension glob '*' (Patch 19b suite)
+
+Le matcher historique `check_blocked_patterns` etait `contains`
+case-insensitive seul. L'extension ajoute le support du wildcard `*` dans
+la meme fn (chirurgical ~25 lignes ajoutees au validator.rs) :
+
+- Pattern sans `*` -> backward-compat (contains case-insensitive), aucun
+  changement comportement observable sur configs existantes.
+- Pattern avec `*` -> split en segments, chaque segment non-vide doit
+  apparaitre dans `command` en ordre. `*` seul match toute commande non-vide.
+- Exemples : `systemctl *`, `apt *install*`, `* | bash`.
+
+Affecte les deux familles (`blocked_patterns` + `require_approval_patterns`)
+puisqu'elles partagent le meme matcher. 5 tests inline `patch19b_glob_*`
+couvrent backward-compat, glob simple, glob multiples ordonnes, glob seul,
+bords (consecutive et boundary stars).
+
+### Patch 19c -- timeout env var + blocked_patterns externalises + extra_dangerous Windows
+
+Trois ameliorations interdependantes posees sur la cascade gate apres
+le fix contract long-poll de Patch 19b.
+
+#### 1. APPROVAL_TIMEOUT_SECS configurable via env var
+
+Pattern Patch 16b. La const `APPROVAL_TIMEOUT_SECS = 120` est preservee
+en tant que default pour ne pas casser les callers externes. Une nouvelle
+fn `approval_timeout_secs()` lit l'env var
+`KLEOS_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS` (apres migration KLEOS_*
+-> ENGRAM_* au boot par `config::migrate_env_prefix`) avec fallback sur
+la const + `warn!` log si la valeur n'est pas parseable. Le call site
+`routes/gate/mod.rs:check_handler` utilise la fn au lieu de la const.
+
+Motivation : 120s est court pour l'usage reel (operateur qui ne regarde
+pas l'ecran en continu). L'env var permet de tuner sans rebuild. Cote
+LXC 121, set dans `/etc/kleos/kleos.env` :
+```env
+KLEOS_EIDOLON_GATE_APPROVAL_TIMEOUT_SECS=600
+```
+Cote hook Windows, garder `KLEOS_SH_APPROVAL_TIMEOUT_SECS` >= timeout
+serveur + marge (e.g. 660 ou plus).
+
+#### 2. Externalisation des 10 defauts BLOCKED_PATTERN dans submodule
+
+Les 10 defauts historiques de `GateConfig::default()` (destruction
+filesystem root, mkfs, dd if=, fork bomb, reboot/shutdown/halt,
+`/dev/sda`, `chmod -R 777 /`) sont copies dans
+`gate-rules/blocked_patterns.txt` du submodule. Avec ce fichier present
+(meme vide), la cascade s'arrete au niveau fichier -- l'operateur peut
+commenter ou retirer chaque pattern.
+
+Headers explicites dans le fichier rappellent que `check_dangerous_patterns`
+hardcoded reste actif au-dessus (garde-fou ultime).
+
+#### 3. Nouvelle cascade `extra_dangerous_patterns` operateur-extensible
+
+Motivation : `check_dangerous_patterns` (kleos-lib/src/gate/validator.rs)
+couvre les paths Linux (`rm -rf /home`, `/var`, `/etc`, `/usr`, `/opt`,
+`/boot`, mkfs, dd if=, etc.) mais rien de Windows-friendly. Sous Windows,
+`Remove-Item -Recurse C:\Windows\System32`, `format C:`,
+`bcdedit /delete`, `Clear-Disk`, etc. passaient sans gate hardcoded.
+
+Solution additive sans toucher au hardcoded :
+
+- `GateConfig` +2 champs `extra_dangerous_patterns: Vec<String>` +
+  `extra_dangerous_patterns_file: Option<PathBuf>`, defaults `Vec::new()`
+  et None (opt-in).
+- Env loaders `KLEOS_EIDOLON_GATE_EXTRA_DANGEROUS_PATTERNS{,_FILE}`,
+  auto-resolus sous `${KLEOS_DATA_DIR}/gate/extra_dangerous_patterns.txt`.
+- Signature `check_command_with_context` etendue (8 -> 9 params)
+  avec `extra_dangerous_patterns: &[String]`. Bloc insere via `.or_else`
+  entre `check_dangerous_patterns` (hardcoded) et `check_blocked_patterns`
+  (config). Reason etiquettee `"Command matched extra dangerous pattern:"`
+  pour tracabilite.
+- Hard deny : `allowed=false`, `requires_approval=false`, status DB
+  `blocked`. Pas de hand-off TUI -- pour du soft gate operateur, voir
+  `require_approval_patterns.txt`.
+- Caller `routes/gate/mod.rs:check_handler` charge la 3e cascade via
+  `approval_patterns::load(...)`, resolve via credd, puis passe le slice
+  au pipeline.
+
+Le fichier initial `gate-rules/extra_dangerous_patterns.txt` (~40 patterns
+Windows conservatifs) couvre :
+- System directories (`*system32*`, `*syswow64*`, Remove-Item/rd/del
+  sur `C:\Windows`)
+- Volume / disk (`format c:`, `format-volume`, `clear-disk`,
+  `diskpart*clean`, `remove-partition`)
+- Boot (`bcdedit /delete`, `bcdedit /set*safeboot`, `reagentc /disable`)
+- Registry (`reg delete hklm`, `remove-itemproperty*hklm:`)
+- Services + scheduled tasks (`remove-service`, `sc.exe delete`,
+  `schtasks /delete`)
+- Power (`stop-computer`, `shutdown /s`, `shutdown /r /t 0`)
+- WSL / Hyper-V (`wsl --unregister`, `wsl --shutdown`, `hyper-v*remove-vm`)
+- Domain (`gpupdate /force /boot /sync`, `dsadd`, `dsrm`)
+
+#### Fichiers touches (Patch 19c)
+
+| Path | Action | Niveau |
+|---|---|---|
+| `kleos-lib/src/gate/mod.rs` | fn approval_timeout_secs() + signature 9 params + bloc extra dans `.or_else` + 5 tests | chirurgical |
+| `kleos-lib/src/config.rs` | +2 champs `GateConfig`, +2 env loaders, defaults preserves | additif |
+| `kleos-server/src/routes/gate/mod.rs` | caller charge 3e cascade + credd resolve + appel `approval_timeout_secs()` | chirurgical |
+| `gate-rules/blocked_patterns.txt` | NEW (submodule 0201a7a) | doc/config |
+| `gate-rules/extra_dangerous_patterns.txt` | NEW (submodule 0201a7a) | doc/config |
+| `docs/dev-notes/local-patches.md` | cette section | doc |
+
+#### Tests
+
+- Unit : `cargo test -p kleos-lib --features bundled-sqlite gate::tests::patch19c_`
+  -- 5 cas (timeout default, env override, unparseable fallback, extra
+  pattern match avec reason specifique, extra no-match passe a blocked,
+  hardcoded short-circuit sur l'extra).
+- Total 51 tests `gate::` OK Windows.
+
+#### Spec agent-forge
+
+`spec_c33dc173` completed, 3/3 verify steps OK
+(`cargo check kleos-server`, `cargo test gate::tests::patch19c_`,
+`cargo test gate::`).
+
+#### Conditions de retrait
+
+Le point 1 (timeout env var) est candidat PR upstream legitime --
+pattern generique et utile pour tout deploiement. Les points 2 et 3
+restent operateur-specifiques (defaut empty / patterns Windows) et
+peuvent etre absorbe upstream uniquement si Ghost-Frame adopte la notion
+de fichier de cascade par categorie.
+
+### Submodule gate-rules + workflow operateur
+
+Pour faciliter l'edition des fichiers cascade niveau 1 sans SSH directement
+dans le LXC, le repo `VOCSAP/Kleos.gates-rules` est monte en submodule
+`gate-rules/` dans le repo Kleos (pattern Patch 15 pour les prompts).
+
+Cote LXC 121, le contenu du repo est clone *directement* dans le path
+attendu par `gate_data_file()` :
+
+```bash
+# Initial deploy (une seule fois)
+ssh root@192.168.10.21 "git clone https://github.com/VOCSAP/Kleos.gates-rules.git /var/lib/kleos/gate"
+
+# Workflow d'edition
+cd gate-rules
+$EDITOR require_approval_patterns.txt
+git add require_approval_patterns.txt
+git commit -m "tune(gate): <pattern change>"
+git push origin main
+
+# Propagation LXC 121
+ssh root@192.168.10.21 "git -C /var/lib/kleos/gate pull"
+# Le gate prend en compte sous 5s sans restart kleos-server (cache TTL).
+
+# Bump pointer cote main repo (optionnel, pour tracer la version active)
+cd <kleos-root>
+git add gate-rules
+git commit -m "chore: bump gate-rules to <hash>"
+```
+
+Le clone et le submodule pointent vers le meme repo `main` -- aucune
+divergence possible tant qu'on commit toujours via le submodule local.
+
+---
+
+## Patch 20 -- supervisor schema repair + append-only manifests + long-poll proper + rate-limit per-key + clients Retry-After (2026-05-22)
+
+### Symptome
+
+`engram-approval-tui` sur LXC 121 affiche en continu `ERROR: HTTP 429 Too Many
+Requests` alors que la liste `Pending Approvals` est vide et qu'aucune
+operation gate n'est en cours. Les logs `kleos-server` montrent :
+
+```
+ERROR ... path=/supervisor/pending ... kleos_server::error:
+Database error: no such column: claimed_at
+```
+
+repete a chaque poll long-poll (~60s) du hook claude-code qui interroge
+`/supervisor/pending`.
+
+### Cause racine -- violation de la regle append-only
+
+`TENANT_MIGRATIONS` (`kleos-lib/src/db/tenant_migrations.rs:27-280`) est
+declaree append-only ("Never renumber, never edit a past entry") mais la
+position v48 a ete reaffectee au merge VOCSAP <- upstream Ghost-Frame :
+
+1. Avant le 2026-05-07, le binaire en prod (fork VOCSAP) avait
+   `TENANT_MIGRATIONS[v48] = memories_community_id`.
+2. Le 2026-05-07 07:44:40 UTC, les tenants `2` et `handoffs` appliquent
+   correctement cette v48 (log explicite :
+   `applying tenant migration 48 (memories_community_id)`), `INSERT INTO
+   schema_migrations VALUES (48)` est committed.
+3. Au merge upstream du commit `d71342e` (2026-05-05) puis `a0880ee`
+   (2026-05-13), la position v48 a ete reaffectee a
+   `supervisor_injections_fix_schema` et l'ancienne `memories_community_id`
+   deplacee en v51.
+4. Sur tous les tenants existants depuis 2026-05-07, le runner
+   `run_tenant_migrations` voit `current_version >= 48` -> skip la nouvelle
+   v48 -> les ALTERs sur `supervisor_injections` (ajout `rule_id`,
+   `claimed_at`, reconstruction de l'index partiel) ne s'executent jamais.
+   La table reste en etat v46.
+5. L'endpoint `/supervisor/pending` (`kleos-server/src/routes/supervisor/
+   mod.rs:85-92`) execute `UPDATE supervisor_injections SET claimed_at =
+   ... WHERE claimed_at IS NULL RETURNING ...` -> SQL fail
+   `no such column: claimed_at` -> 500 a chaque poll.
+6. Le polling agressif (et le bug TUI sur Retry-After, cf. plus bas)
+   saturent le bucket `rate_limits` keye sur `user:2`, declenchant le 429
+   visible cote operateur. Le 429 finit par cascader sur toutes les
+   requetes du meme user_id (kleos-cli, hooks, TUI). Symptome final :
+   apparente saturation tous endpoints alors que la cause profonde est
+   localisee a `/supervisor/pending`.
+
+Bug secondaire decouvert pendant le diagnostic : `engram-approval-tui`
+(`kleos-approval-tui/src/main.rs:94-130`) ignore le header `Retry-After`
+sur les reponses 429. Il retape immediatement, ce qui maintient le bucket
+de rate-limit du serveur plein indefiniment. Verifie via `SELECT * FROM
+rate_limits WHERE key = 'user:2'` -> count=18, fenetre en glissement
+continu.
+
+### Reparation manuelle prod 2026-05-22
+
+DB tenants patchees a la main via sqlcipher (serveur stoppe) :
+
+```sql
+PRAGMA key = "x'<KLEOS_DB_KEY>'";
+ALTER TABLE supervisor_injections ADD COLUMN rule_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE supervisor_injections ADD COLUMN claimed_at TEXT;
+DROP INDEX IF EXISTS idx_supervisor_injections_pending;
+CREATE INDEX idx_supervisor_injections_pending
+    ON supervisor_injections(user_id, session_id)
+    WHERE claimed_at IS NULL;
+```
+
+Applique sur `/var/lib/kleos/tenants/2/kleos.db` et
+`/var/lib/kleos/tenants/handoffs/kleos.db` (seuls tenants actifs constates
+via `find /var/lib/kleos -maxdepth 3 -name 'kleos.db'`).
+
+Pour debloquer la session de diagnostic (TUI client buggy maintenait le
+429 in-flight), purge ponctuelle du bucket :
+
+```sql
+DELETE FROM rate_limits WHERE key IN ('user:2','ip:192.168.10.100');
+```
+
+Test post-fix : `GET /supervisor/pending?session_id=...` retourne
+`{"claimed":0,"injections":[],"session_id":"..."}` HTTP 200.
+
+### Implementation Patch 20 (deployee)
+
+Le patch part 1 (commit `9a7a0f1`) a livre :
+
+- Migration tenant v55 `supervisor_injections_repair` idempotente via
+  `table_has_column` guards (re-applique `ALTER TABLE ADD COLUMN rule_id`,
+  `ADD COLUMN claimed_at`, et reconstruit le partial index avec
+  `WHERE claimed_at IS NULL`). NO-OP sur tenants deja au schema
+  post-Patch 20.
+- Fichiers manifests append-only :
+  - `kleos-lib/src/db/tenant_migrations.manifest` (55 entrees, derniere
+    `55: supervisor_injections_repair`).
+  - `kleos-lib/src/db/migrations.manifest` (63 entrees, derniere
+    `63: handoff_atoms`).
+- Tests CI append-only :
+  `tenant_migrations::tests::tenant_migrations_obey_append_only_manifest`
+  et `migrations::tests::migrations_obey_append_only_manifest` qui
+  comparent byte-par-byte chaque entree (version, description) avec son
+  manifest et explosent au CI sur toute mutation d'une entree publiee.
+  Verts : 96 tenant_migrations + 9 migrations.
+
+Le patch part 2 livre :
+
+- **Long-poll proper sur `/supervisor/pending`** : nouveau champ
+  `AppState.supervisor_notifiers: Arc<RwLock<HashMap<i64, watch::Sender<()>>>>`
+  lazy par tenant. `pending_handler` boucle (UPDATE-RETURNING immediat ->
+  si vide, `tokio::time::timeout(deadline, rx.changed())` sur le
+  `watch::Receiver` du user -> retry). `inject_handler` signale le user
+  apres l'INSERT. Helper `supervisor_longpoll_timeout()` lit
+  `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS` (defaut 30s). Scope
+  per-tenant : signal pour user A ne reveille pas les long-polls de
+  user B. Memoire ~64 octets par tenant actif, pas de cleanup necessaire
+  au depart.
+- **Rate-limit middleware key par api_key** (Design C, fix semantique
+  de `ApiKey.rate_limit` existant) :
+  `kleos-server/src/middleware/rate_limit.rs:163` passe de
+  `format!("user:{}", user_id)` a `format!("key:{}", ctx.key.id)`.
+  Aucune migration de donnees (champ rate_limit deja per-key dans
+  `api_keys`).
+- **Client TUI** (`kleos-approval-tui/src/main.rs`) :
+  - Helpers `http_longpoll_timeout()` (lit
+    `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`, defaut 60s) et
+    `parse_retry_after()` (lit le header, fallback 60s).
+  - `App` recoit un champ `last_429_until: Option<Instant>`.
+  - `fetch_pending()` et `decide()` : si `last_429_until` est actif,
+    return immediat avec countdown affiche, sinon hit serveur ;
+    sur 429 received, calcul `last_429_until = now + parse_retry_after`,
+    affiche backoff. L'UI reste responsive (le sleep ne bloque pas la
+    boucle ratatui).
+  - `reqwest::Client` instancie avec `.timeout(http_longpoll_timeout())`
+    pour exploiter le long-poll serveur.
+- **Client `kleos-cli`** (`kleos-cli/src/hook.rs`) :
+  - Helpers `http_longpoll_timeout()`, `supervisor_in_backoff()`,
+    `supervisor_record_backoff()` (cache file
+    `$XDG_CACHE_HOME/kleos/supervisor-backoff-until.unix` ou fallback
+    `$HOME/.cache`).
+  - `handle_user_prompt` : skip le drain si backoff actif ; sur 429
+    detecte via le message d'erreur du client crate
+    (`get_with_timeout` expose `String`), `supervisor_record_backoff(60)`
+    et fail-open.
+- **Hooks bash** (`hooks/full/lib-eidolon.sh`) :
+  - `_EIDOLON_DEFAULT_TIMEOUT` lit `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`
+    (defaut 60s).
+  - Cache file `$XDG_CACHE_HOME/kleos/eidolon-backoff-until.unix`.
+  - Helpers `_eidolon_in_backoff()` et `_eidolon_record_backoff()`.
+  - `eidolon_call()` : skip si backoff, sinon capture le code HTTP
+    via `-w "%{http_code}"` et le header via `-D <tempfile>`. Sur 429,
+    parse `Retry-After:` et record backoff. Preserve la semantique
+    `-sf` historique (return 1 + body vide sur non-2xx) pour fail-open
+    des hooks consommateurs.
+
+### Convention defaults env vars
+
+- `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS` (server) -- defaut 30s.
+- `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` (clients) -- defaut 60s.
+
+Doc utilisateur : voir le `CLAUDE.md` projet section "Convention env vars"
+et `wiki/Configuration.md` (sous-section "Long-poll timeouts (Patch 20)").
+
+Operateur 2026-05-22 a configure server=30 (LXC 121
+`/etc/kleos/kleos.env`) et client=30 (Windows env). Setup serre mais
+fonctionnel ; en cas de timeout reseau cote client, monter
+`KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` a 60 ou plus sur le poste Windows.
+
+### Patch 20b (2026-05-22) -- bug `key:0` et architecture TUI non-bloquante
+
+Deux points decouverts immediatement apres le deploy Patch 20 :
+
+1. **Bug Design C `key:0`** : les helpers `open_access_context()` et
+   `synthetic_key_for_identity_with_scopes()` (`kleos-server/src/middleware/auth.rs:80,109`)
+   stampent tous deux `ApiKey.id = 0` (pas de row backing). Le keying
+   `format!("key:{}", id)` collapsait alors **toutes** les requetes
+   synthetiques (open access + chaque PIV identity) dans le meme bucket
+   `key:0`, pire que l'ancien `user:{user_id}` qui isolait au moins par
+   tenant.
+
+   Fix : dans `rate_limit_middleware` (`middleware/rate_limit.rs:172`), si
+   `ctx.key.id == 0`, fallback sur `format!("synth:user:{}", ctx.user_id)`.
+   La branche `key:{id}` regulier (cles d'`api_keys`) est inchangee.
+
+2. **TUI bloque pendant le long-poll** : la boucle `fetch_pending().await`
+   bloquait pendant 30s (server long-poll timeout), rendant la TUI
+   non-reactive aux touches. Pour un workflow d'approbation a 120s, ca
+   ne va pas.
+
+   Refactor `kleos-approval-tui/src/main.rs` : `fetch_pending` et
+   `decide` deviennent des `tokio::task::JoinHandle<FetchOutcome>` /
+   `JoinHandle<DecideOutcome>` lances en arriere-plan. Champs `App.fetch_handle`
+   et `App.decide_handle`. Methode `App::poll_handles()` (non-bloquante,
+   `JoinHandle::is_finished` + `await` immediat si fini) appelee a chaque
+   tick. Methode `App::try_start_fetch()` (non-bloquante) re-arme un
+   fetch des qu'aucun n'est en vol et que la fenetre 429 est expiree.
+   La boucle principale `event::poll(tick)` passe d'un tick 1s a 100ms
+   pour rester reactive (l'argument CLI `--poll-ms` reste mais la
+   semantique change : 100ms = latence max sur les keypresses, pas
+   periode de polling reseau).
+
+Tests : `cargo check -p kleos-server` et `-p kleos-approval-tui`
+restent verts. agent-forge `hyp_d48abd7a` cover.
+
+Reste a deployer : rebuild WSL kleos-server, scp + chmod 755 + restart
+LXC 121 ; rebuild Windows MSVC kleos-approval-tui, copy vers
+`%USERPROFILE%\.cargo\bin\engram-approval-tui.exe`.
+
+### Patch 20c (2026-05-22) -- long-poll proper sur `/approvals/pending`
+
+Symptome post-deploy Patch 20b : la TUI relancee voit immediatement
+"Rate-limited by server" malgre le refactor non-bloquant et le cooldown
+500ms. Verification table `rate_limits` : `ip:192.168.10.100 count=28`
+en moins d'une minute, depasse la limite preauth IP de 20/min.
+
+Cause racine : **Patch 20 a long-polle `/supervisor/pending` mais pas
+`/approvals/pending`**. Le handler `list_pending_handler` de
+`kleos-server/src/routes/approvals/mod.rs` etait reste tres simple :
+expire_stale + list_pending + return. Avec une queue vide il retournait
+en < 100ms. La TUI, qui poll cet endpoint (pas /supervisor/pending),
+enchainait alors les fetches au rythme du cooldown 500ms, soit
+~120 hits/min, blowing past le pre-auth IP 20/min.
+
+Fix : appliquer le meme pattern long-poll que `/supervisor/pending`,
+en reutilisant **le watch::Sender existant `state.approval_notify`**
+(deja signale par `create_handler` et `decide_handler`). Pas besoin
+de creer un nouveau notifier per-tenant : le notify est global mais le
+handler re-query la DB filtree par `auth.user_id` a chaque wake-up,
+donc une notif cross-tenant ne fait qu'un round-trip vide -- moins
+couteux qu'un busy-poll cote client.
+
+Nouvelle env var `KLEOS_APPROVALS_LONGPOLL_TIMEOUT_SECS` (defaut 30),
+miroir de `KLEOS_SUPERVISOR_LONGPOLL_TIMEOUT_SECS`. Le meme
+`KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS` cote client couvre les deux
+endpoints avec la marge `client > server`.
+
+Aucun changement client. La TUI Patch 20b fonctionne tel quel avec
+Patch 20c : la connexion HTTP reste ouverte jusqu'a 30s, fetch
+suivant cooldown 500ms + retour long-poll, donc ~2 fetches/min en
+steady state au lieu de ~120. agent-forge hyp_4b2e8103.
+
+### Lecons
+
+> **OBSOLETE depuis Patch 41 (2026-06-02)** : la methode "ajouter nos migrations
+> en queue de l'array numerote + manifest append-only" decrite ici a ete
+> **abandonnee**. Les ajouts de schema VOCSAP ne passent plus par
+> `MIGRATIONS`/`TENANT_MIGRATIONS` ni par un manifest. Ils vivent dans le canal
+> overlay `kleos-lib/src/db/vocsap/mod.rs` (cf. section Patch 41). Les manifests
+> et leurs tests append-only ont ete supprimes. La lecon "verifier au merge"
+> ci-dessous reste valable pour les entrees **upstream** ; la partie "ajouter nos
+> migrations en queue" est remplacee par "ajouter un overlay VOCSAP".
+
+- **Verifier `TENANT_MIGRATIONS` au merge upstream**. Tout commit upstream
+  qui insere ou renomme une entree dans `TENANT_MIGRATIONS` ou `MIGRATIONS`
+  doit etre verifie avant absorption. (Avant Patch 41 : si position deja
+  appliquee en prod, ajouter en queue version >= max+1. Depuis Patch 41 : VOCSAP
+  n'ajoute plus jamais dans ces arrays, donc seules les entrees upstream y
+  figurent et il n'y a plus de collision de slot a craindre cote VOCSAP.)
+- **Le statut `schema_migrations` n'est pas une preuve d'application**.
+  La ligne `(version, applied_at)` est INSERT separe (auto-commit SQLite).
+  Si la migration body est devenue idempotent / no-op apres coup, la
+  ligne reste mais le schema est en derive.
+- **Le 429 cote operateur est souvent la consequence, pas la cause**.
+  Diagnostic systematique : verifier `/var/log/kleos-server.log` pour les
+  ERROR repetitives sur un meme endpoint avant de blamer le rate-limit.
+
+---
+
+## Patch 21 -- bridge bidirectionnel `gate_requests` <-> `approvals` (2026-05-22)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`, `responder_agent`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+### Symptome
+
+Le pipeline `require_approval_patterns` du Patch 19b posait `gate_requests.status='pending_approval'` + insert dans le HashMap in-memory `state.pending_approvals` + notify `approval_notify`, mais **n'ecrivait rien dans la table `approvals`**. Or la TUI `engram-approval-tui` consomme `GET /approvals/pending` qui fait `SELECT FROM approvals WHERE status='pending'`. Resultat : tout match de pattern produisait un `gate_requests` invisible cote operateur, le caller `/gate/check` restait bloque 600s puis recevait `denied -- approval timed out or rejected`. Aucun consommateur alternatif des `gate_requests pending_approval` n'existait dans le repo (verifie via inspection live : TUI poll uniquement `/approvals/pending`, `eidolon-supervisor` push-only, GUI Svelte n'expose pas le flow).
+
+### Approche
+
+Niveau **chirurgical + additif** (cf. table de delta `rust-upstream-fork.md`) : ajouter une colonne nullable `gate_id INTEGER` a `approvals` via une nouvelle migration v56/v64 idempotente (guard `table_has_column`), faire ecrire le bloc 2bis du Patch 19b dans `approvals` via un helper `create_approval_with_gate`, et faire relayer le `decide_handler` cote `/approvals/{id}/decide` vers `state.pending_approvals.tx.send(approved)` + `respond_to_gate` quand l'approval a un `gate_id` non null.
+
+Le helper `read_gate_id_for_approval` est tolerant aux deploiements pre-migration (retourne `Ok(None)` si la colonne n'existe pas), ce qui evite une fenêtre de panne entre boot et premiere migration.
+
+Le filtre `respond_to_gate` et `mark_gate_timed_out` est elargi de `status='pending'` a `status IN ('pending', 'pending_approval')` pour permettre la transition terminale des gates Patch 19b (sans ca, les rows restaient en `pending_approval` apres timeout).
+
+### Fichiers touches (delta)
+
+- `kleos-lib/src/db/tenant_migrations.rs` -- entry `TenantMigration v56` + fn `apply_schema_v56_approvals_gate_id` avec guard `table_has_column`.
+- `kleos-lib/src/db/tenant_migrations.manifest` -- append `56: approvals_gate_id`.
+- `kleos-lib/src/db/migrations.rs` -- entry `Migration v64` + fn `run_migration_approvals_gate_id` + constant `MIGRATION_APPROVALS_GATE_ID` + bloc dispatch dans `apply_pending_migrations`.
+- `kleos-lib/src/db/migrations.manifest` -- append `64: approvals_gate_id`.
+- `kleos-lib/src/approvals/types.rs` -- champ `pub gate_id: Option<i64>` sur `Approval` (skip_serializing_if=None pour preserver le wire format).
+- `kleos-lib/src/approvals/mod.rs` -- nouvelle fn `create_approval_with_gate`, refactor de `create_approval` vers helper interne `create_approval_inner`, INSERT etendu avec fallback "no such column" (defense en profondeur), fn `read_gate_id_for_approval`, mise a jour `row_to_approval` pour initialiser `gate_id: None`.
+- `kleos-lib/src/gate/mod.rs` -- elargir filtre `status` dans `respond_to_gate` et `mark_gate_timed_out` a `IN ('pending', 'pending_approval')`.
+- `kleos-server/src/routes/gate/mod.rs` -- bloc 2bis appelle `create_approval_with_gate` apres notify, log warn (non bloquant) si echec.
+- `kleos-server/src/routes/approvals/mod.rs` -- import `read_gate_id_for_approval`, `respond_to_gate`, `ApprovalDecision`. `decide_handler` lit gate_id avant decide, puis si non null : appelle `respond_to_gate` (DB) + `state.pending_approvals.tx.send(approved)` (wake-up).
+
+### Tests
+
+- `cargo test -p kleos-lib --features bundled-sqlite --lib`: 110 passed, 1 ignored (test_tenant_isolation existant), 0 failed. Inclut `tenant_migrations_obey_append_only_manifest`, `migrations_obey_append_only_manifest`, `every_static_migration_is_dispatched`.
+- `cargo check -p kleos-server`: 0 erreurs, 10 warnings preexistants.
+- Build release WSL + deploy LXC 121 + test E2E : a faire par l'operateur (build serveur jamais lance depuis Claude, cf. memoire Kleos #3023).
+
+### Test E2E attendu post-deploy
+
+```bash
+# Terminal A : TUI sur poste operateur
+engram-approval-tui
+
+# Terminal B : caller bloquant qui matche un pattern
+curl -sf -m 660 -H "Authorization: Bearer $KEY" http://192.168.10.21:4200/gate/check \
+  -d '{"command":"systemctl status fake","agent":"test","skip_approval":false,"tool_name":"Bash"}'
+
+# Attendu : entree apparait dans la TUI sous <500ms (long-poll Patch 20c reveille).
+# Appuyer 'a' : caller debloque sous ~200ms avec {"allowed":true, "gate_id":N, ...}
+```
+
+### Leviers de desactivation (hot, sans rebuild)
+
+1. **Vider le fichier de patterns** : `truncate -s 0 /var/lib/kleos/gate/require_approval_patterns.txt`. Cache TTL 5s. Plus aucun match -> bloc 2bis jamais traverse.
+2. **Raccourcir le timeout** : `KLEOS_APPROVAL_TIMEOUT_SECS=5` dans `/etc/kleos/kleos.env`, restart kleos-server. Caller debloque en 5s (denied).
+3. **Ne pas demarrer la TUI** : audit trail en DB, timeout naturel. Comportement identique a aujourd'hui.
+
+### Patch 21.1 (2026-05-22) -- restriction du bridge aux pattern matches
+
+**Symptome post-deploy Patch 21** : chaque commande Bash via le hook `kleos-sh` PreToolUse de Claude Code declenche le bloc 2bis (tool_name=Bash est dans `TOOLS_REQUIRING_APPROVAL = [Bash, Write, Edit, WebFetch, WebSearch]`), donc Patch 21 INSERT dans `approvals` pour toutes mes Bash. La TUI affichait `Pending: 1` en boucle pour des commandes innocentes (ex: `ssh root@... grep ...`). Le `respond_to_gate` declenche par le decide TUI echouait Conflict 409 ("gate request 545 is already allowed") parce que le path normal de `check_command_with_context:281` pose status=`allowed`, pas `pending_approval`.
+
+**Approche** : un seul `if pattern_triggered_approval { ... }` wrapper autour de l'appel `create_approval_with_gate`. Niveau additif pur (~5 lignes), conservateur du comportement upstream pour `TOOLS_REQUIRING_APPROVAL` (HashMap + notify + wait timeout 600s silencieux, jamais visible TUI -- exactement le comportement pre-Patch 21). Seules les commandes matchant un `require_approval_patterns` explicite cree une row dans `approvals` -> TUI visible -> decide debloque correctement.
+
+**Fichiers touches** : `kleos-server/src/routes/gate/mod.rs` (bloc 2bis lignes ~261-310 sous Patch 21).
+
+agent-forge hypothesis: `hyp_aa454644`.
+
+**Lecon** : Patch 21 ne contenait pas de regression de son scope, mais exposait un comportement upstream pre-existant. Cross-call-site verification (cf. `.claude/rules/kleos-patching-discipline.md`) doit aussi inclure les conditions de declenchement amont, pas juste les call sites du symbole touche. Le bloc 2bis avait deux entrees (TOOLS_REQUIRING_APPROVAL OR pattern_triggered_approval), Patch 21 a uniforme le traitement sans distinguer -- Patch 21.1 corrige.
+
+### Conditions de retrait
+
+- **PR upstream candidate** : le decouplage des bus est anterieur a Patch 19b. Toute version upstream qui adopte le bridge similaire ou refactore le pipeline gate vers une file unique permet de drop Patch 21.
+- **Alternative possible** : refactor TUI sur `state.pending_approvals` via nouvelle route `/supervisor/inflight` (Option 3 du TODO), abandonnerait Patch 21. Pas envisage actuellement (perte audit trail au restart).
+
+---
+
+## Patch 23 -- cooldown adaptatif TUI sur le re-fetch /approvals/pending (2026-05-22)
+
+### Symptome
+
+Live test E2E Patch 21.1 sur LXC 121 tenant 2 : un seul approval pending matchant `systemctl *` produit un 429 HTTP cote TUI en quelques secondes. Wireshark capture **17 GET /approvals/pending** depuis le poste operateur 192.168.10.100 dans une fenetre de test (60s), pour un seul approval en attente. Le bucket `preauth_rate_limit_middleware` IP (hardcoded 20/min, cf. `kleos-server/src/middleware/rate_limit.rs:15`) sature -> 429 -> impossible d'approuver via TUI -> deadlock UX.
+
+### Cause racine
+
+Le serveur Patch 20c retourne **immediatement** quand `list_pending` n'est pas vide (correct par design : si une approval existe, le client doit la voir maintenant, pas attendre 30s). Cote TUI Patch 20b, le `MIN_REFETCH_INTERVAL = 500ms` etait calibre pour le scenario cascade (erreur reseau qui retourne instantanement, cf. rule `~/.claude/rules/rust-async-tokio.md` section "Cooldown anti-cascade"), pas pour le scenario steady-state ou une approval reste affichee 10-30s en attente de decision operateur. Resultat : 500ms cooldown x ~120 = 120 calls/min en pire cas (en pratique ~60 a cause de la latence reseau).
+
+C'est une dette UX exposee par Patch 21.1 (le bridge a rendu visible le polling agressif qui existait deja en local-state).
+
+### Approche
+
+Cooldown adaptatif selon l'etat de la queue cote client :
+
+- **Queue vide** (`self.approvals.is_empty()`) -> cooldown 500ms (`KLEOS_APPROVAL_TUI_REFETCH_BUSY_MS`, default `DEFAULT_REFETCH_BUSY_MS = 500`). Inchange vs Patch 20b. Le long-poll cote serveur tient 30s en steady state, le 500ms protege uniquement contre les erreurs instantanees (DNS fail, connection refused).
+- **Queue non-vide** (`count > 0`) -> cooldown 5s (`KLEOS_APPROVAL_TUI_REFETCH_PENDING_MS`, default `DEFAULT_REFETCH_PENDING_MS = 5000`). Calibre sur le temps de reflexion typique operateur 10-30s. Reduit la charge d'un facteur 10 (~4-6 calls pour un decide cycle 30s au lieu de ~60).
+- **Sur action operateur reussie** (`DecideOutcome::Ok`) : `last_fetch_completed_at = None` + `fetch_handle.abort()` pour bypass le cooldown 5s et avoir un refetch immediat post-decide -> UI reactive.
+
+Niveau **chirurgical** (~30 lignes ajoutees), additif sur kleos-approval-tui uniquement, candidat PR upstream.
+
+### Fichiers touches
+
+- `kleos-approval-tui/src/main.rs` : remplace la constante `MIN_REFETCH_INTERVAL` par deux constantes `DEFAULT_REFETCH_BUSY_MS` + `DEFAULT_REFETCH_PENDING_MS`, ajoute helpers `refetch_busy_interval()` / `refetch_pending_interval()` qui lisent les env vars, branche le cooldown adaptatif dans `try_start_fetch`, bypass dans `apply_decide_outcome` (`DecideOutcome::Ok`).
+
+### Tests
+
+- `cargo check -p kleos-approval-tui` : 0 erreurs, 10 warnings preexistants.
+- Build operateur : `cargo build --release -p kleos-approval-tui` (Windows MSVC, pas WSL Linux) puis copie du binaire `engram-approval-tui.exe` dans `%USERPROFILE%\.cargo\bin\`.
+
+### Conditions de retrait
+
+- **Patch 24 SSE** (planifie) : remplacement complet du polling par Server-Sent Events. Zero polling -> Patch 23 deviendrait obsolete. Voir `docs/dev-notes/sse-vs-longpoll-decision-todo.md` pour le design et la reflexion architecturale qui motive cette refonte.
+- Si upstream Ghost-Frame adopte SSE ou un autre mecanisme push, drop Patch 23 + Patch 24.
+
+### Leviers de tuning sans rebuild
+
+Sur le poste operateur, ajuster en live via env vars avant de relancer la TUI :
+
+```
+KLEOS_APPROVAL_TUI_REFETCH_BUSY_MS=500     # default, queue vide
+KLEOS_APPROVAL_TUI_REFETCH_PENDING_MS=5000 # default, queue non vide
+```
+
+Pour un poste partage entre plusieurs sessions ou pour relacher davantage la charge serveur, monter `_PENDING_MS` a 10000 (10s). Le delta UX est negligeable (5s de retard a l'apparition d'une nouvelle approval pendant qu'on en reflechit a une autre).
+
+agent-forge hypothesis : `hyp_567c06dd`.
+
+### Lecons
+
+- **Decouplage de bus producers/consumers** : avant d'ajouter un producer sur un nouveau statut/etat, mapper tous les consumers downstream (TUI, supervisor, GUI, autre client) via grep negatif `INSERT INTO <table-consumer>` depuis les sites producers. Cf. Kleos memoire #3019.
+- **`status = 'pending'` filter trop strict** : Patch 19b a introduit `'pending_approval'` sans elargir les filtres existants dans `respond_to_gate` et `mark_gate_timed_out`. Pattern general : quand on ajoute un nouveau status terminal ou intermediaire, grep tous les `WHERE status =` du domaine pour aligner.
+- **Helper "no such column" fallback** : pour les fonctions qui consomment une colonne ajoutee par une migration future, retourner `Ok(None)` plutot que crasher. Permet aux services de boot sans attendre le runner de migration.
+
+agent-forge spec_id : `spec_0f75e1e0`.
+
+---
+
+## Patch 25 -- regex matcher + per-cascade whitelist + subcommand splitting shell-aware (2026-05-22)
+
+**Ajout 2026-09-29 :** les deux traces de classification de `compile_patterns`
+(`loaded as glob-lite` et `regex-classified but failed compile, fallback
+glob-lite`) passent de `info!` a `debug!`. Elles etaient reemises pour chaque
+pattern a chaque compilation des jeux de patterns et dominaient
+`/var/log/kleos-server.log` (576 Mo par jour). Les `warn!` des patterns
+reellement ignores restent. Pour les revoir :
+`RUST_LOG=kleos::gate::patch25=debug`. Carte roadmap `97a99007`.
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE, unionne avec le guard anti self-approval upstream** (`kleos-lib/src/gate/mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+### Symptome motivateur
+
+Memoire Kleos #3020 : le matcher gate Patch 19b utilisait un `contains` case-insensitive avec wildcard `*` optionnel. Consequence : `kleos-cli store "...mentions git push..."` matchait le pattern `git push` de `require_approval_patterns.txt` parce que la chaine litterale etait dans la cmdline visible par le hook. Resultat operateur : approval pending creee pour un simple store de memoire, friction UI inutile.
+
+### Approche
+
+3 changements ordonnes par dependance logique, niveau **chirurgical + additif pur** :
+
+1. **Matcher regex-based** (`kleos-lib/src/gate/validator.rs`) -- nouvelle struct `CompiledPatternSet { set: RegexSet, sources: Vec<String> }` qui wrap un `regex::RegexSet` avec une heuristique de detection au load :
+   - Pattern avec metachar regex (`^`, `$`, `[`, `(`, `\`, `+`, `?`, `{`, `|`, `.`) -> regex pure.
+   - Sinon -> glob-lite (literals + `*` wildcard), auto-converti en regex anchored `^pattern$` avec `*` -> `.*`.
+   - Prefixe `(?i)` ajoute automatiquement pour preserver le case-insensitive de pre-Patch 25 (sauf si pattern commence par `(?` -- operateur peut override).
+   - Helper `check_compiled(command, &CompiledPatternSet) -> Option<String>` retourne la source matchee (pour le reason logging).
+   - Regex invalide -> log warn + skip (pas de crash).
+   - Empty set -> retourne `None` toujours -> aucune exemption (semantique vide).
+2. **Whitelist par cascade** (`kleos-lib/src/gate/mod.rs`) -- nouvelle fn publique `check_command_with_whitelist` qui etend `check_command_with_context` avec 2 params `blocked_whitelist_patterns: &[String]` et `require_approval_whitelist_patterns: &[String]`. Logique : un pattern whitelist matche sur une sous-commande -> cette sous-commande est EXEMPTE de SA cascade. `check_dangerous_patterns` hardcoded **ET** `extra_dangerous_patterns` restent **non-exemptables** (decision operateur 2026-05-22 : extra_dangerous est surchargeable par AJOUT uniquement, pas par EXCLUSION).
+3. **Subcommand splitter shell-aware** (`kleos-lib/src/gate/validator.rs::split_into_subcommands`) -- splitte la cmdline en sous-commandes via shell connectors (`&&`, `||`, `;`, `|`, `&` suffix, backticks, `$()`, `<()`, `>()`) en respectant les quotes POSIX (via `shell-words` crate pour validation, walker char-by-char pour la position-aware split). Heredocs (`<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`) sont pre-scannees et leur body est exclus du splitter (data, pas commande). Backticks, `$()`, `<()`, `>()` evalues recursivement sur leur contenu interne (capped a depth 5, log warn si depasse). Tokenize error policy lue depuis `KLEOS_EIDOLON_GATE_ON_TOKENIZE_ERROR` (defaut `deny` -> retourne `blocked` avec raison "cmdline malformed").
+
+### Niveau de delta upstream
+
+- **`kleos-lib/src/gate/validator.rs`** : additif pur (300+ lignes en bas du fichier, zero touche aux fonctions existantes `pattern_matches`, `check_blocked_patterns`, `check_dangerous_patterns`).
+- **`kleos-lib/src/gate/mod.rs`** : `check_command_with_context` (signature inchangee) delegue maintenant a `check_command_with_context_inner` avec whitelists vides. Nouvelle fn publique `check_command_with_whitelist` ajoutee. Le caller upstream ne casse pas, le nouveau caller (kleos-server) appelle `_with_whitelist`. Backward compat 100% sauf rupture semantique des patterns glob-lite (cf. ci-dessous).
+- **`kleos-lib/src/config.rs`** : 4 nouveaux fields sur `GateConfig` (mirror de Patch 19b) + 4 env loaders.
+- **`kleos-server/src/routes/gate/mod.rs`** : 2 nouveaux blocs de chargement whitelist + 2 nouveaux blocs de credd-resolve + appel a `check_command_with_whitelist` au lieu de `check_command_with_context`.
+- **`gate-rules/`** : 2 nouveaux fichiers `blocked_whitelist.txt` + `require_approval_whitelist.txt` (vides + header explicatif). Pas de `extra_dangerous_whitelist.txt` (cascade non-exemptable).
+
+### Rupture semantique documentee
+
+La conversion glob-lite produit `^pattern$` (anchored) au lieu du `contains` pre-Patch 25. Patterns sans metachar et sans `*` deviennent strict-match. **Migration patterns existants** :
+
+| Avant Patch 25 (contains) | Apres Patch 25 (anchored) | Pour preserver contains |
+|---|---|---|
+| `apt install` | `^apt install$` | `apt install*` ou `*apt install*` |
+| `git push` | `^git push$` | `git push*` ou `*git push*` |
+| `systemctl *` | `^systemctl .*$` | inchange (deja `*` present) |
+
+L'operateur doit auditer `/var/lib/kleos/gate/{blocked,require_approval,extra_dangerous}_patterns.txt` apres deploy et migrer les patterns sans `*` qui devraient rester en contains semantic. Logging INFO automatique au load pour chaque pattern glob-lite suggere la migration.
+
+### Fichiers touches
+
+- `Cargo.toml` (workspace root) : `shell-words = "1.1"` ajoute dans `[workspace.dependencies]`.
+- `kleos-lib/Cargo.toml` : `shell-words = { workspace = true }` ajoute.
+- `kleos-lib/src/gate/validator.rs` : bloc Patch 25 (~300 lignes additives) avec `CompiledPatternSet`, `compile_patterns`, `check_compiled`, `is_obvious_regex`, `glob_lite_to_regex`, `TokenizeErrorPolicy`, `SplitError`, `split_into_subcommands`, `tokenize_error_policy`, helpers heredoc + substitution.
+- `kleos-lib/src/gate/mod.rs` : `check_command_with_context` delegue, `check_command_with_whitelist` ajoute, `check_command_with_context_inner` privee avec cascade Patch 25 complete (split + worst-result-wins aggregation).
+- `kleos-lib/src/config.rs` : 4 fields ajoutes a `GateConfig` + 4 env loaders.
+- `kleos-server/src/routes/gate/mod.rs` : 2 whitelist loaders + 2 credd-resolve blocs + appel `check_command_with_whitelist`.
+- `gate-rules/blocked_whitelist.txt` + `gate-rules/require_approval_whitelist.txt` : creation initiale (header + exemples commentes).
+- `CLAUDE.md` : doc des nouvelles env vars (Patch 25, NEW).
+
+### Env vars
+
+- `KLEOS_EIDOLON_GATE_BLOCKED_WHITELIST_PATTERNS` (CSV) + `_FILE` (path) : whitelist cascade blocked.
+- `KLEOS_EIDOLON_GATE_REQUIRE_APPROVAL_WHITELIST_PATTERNS` (CSV) + `_FILE` (path) : whitelist cascade require_approval.
+- `KLEOS_EIDOLON_GATE_ON_TOKENIZE_ERROR` (`allow` | `deny`, default `deny`) : policy quand shell-words tokenize echoue.
+
+### Tests
+
+25 nouveaux tests unitaires + integration ajoutes dans `kleos-lib/src/gate/validator.rs` et `kleos-lib/src/gate/mod.rs` couvrant :
+
+- Detection heuristique format regex/glob-lite + conversion `^pattern$` + `(?i)` case-insensitive.
+- Subcommand splitter : connectors `&&`/`||`/`;`/`|`/`&`, quotes simples/doubles, escape, backticks, `$()`, `<()`, `>()`, heredoc body skip, depth cap recursion.
+- Tokenize error : policy Allow vs Deny.
+- Whitelist : exemption uniquement sur sa cascade, non-overridable `check_dangerous_patterns` et `extra_dangerous_patterns`.
+- Cascade integration : `kleos-cli store "git push" && git push` -> requires approval (1 subcommand whitelisted, 1 non).
+
+### Conditions de retrait
+
+- Upstream Ghost-Frame absorbe la generalisation regex matcher + whitelist + splitter (candidat PR upstream legitime).
+- Ou Patch 24 SSE (planifie) refond le pipeline approval -> Patch 25 peut etre simplifie (les whitelist + splitter restent utiles, mais le subcommand parsing pourrait migrer cote client TUI).
+
+### Lecons
+
+- **Backward compat partielle suffit si rupture documentee** : la rupture glob-lite anchored vs contains casse 1 test sur 51, l'operateur accepte le trade-off parce qu'il elimine le bug `kleos-cli store "git push"`. Migration via `*pattern*` est mecanique.
+- **`(?i)` prefixe par defaut > to_lowercase upstream** : preserve la perf (1 prefixe sur la regex compilee une fois) ET permet l'override `(?-i)` au cas par cas.
+- **shell-words pour validation, walker custom pour split** : `shell-words::split` ne preserve pas les positions originales necessaires au split + reconstruction. Pattern : utiliser `shell-words::split` pour DETECTER un tokenize valide, puis walker char-by-char pour le split position-aware.
+- **Non-overridable par decision operateur, pas par technique** : `extra_dangerous_patterns` aurait pu accepter une whitelist techniquement, mais l'operateur a explicitement decide que la cascade est additive uniquement. Documenter cette decision dans le patch + dans CLAUDE.md.
+
+agent-forge spec_id : `spec_aa233554`, hypothesis : `hyp_e1d4c948`.
+
+### Note merge d905d4e7 (1.8.0) -- config.rs deplace vers le crate kleos-config
+
+Depuis le merge `d905d4e7` (release 1.8.0), upstream a deplace `config.rs` de
+`kleos-lib/src/config.rs` vers le nouveau crate `kleos-config/src/config.rs`.
+Les patches gate VOCSAP (19b / 19c / 25) ont suivi le move et y resident
+desormais (`kleos-config/src/config.rs`: `GateConfig`, `blocked_patterns`,
+`require_approval_patterns`, `extra_dangerous_patterns`, `gate_data_file`,
+helper de cascade operator-first). Le consommateur `kleos-lib/src/gate/*`
+reste cable cross-crate via la re-export `pub use kleos_config::config;`
+(`kleos-lib/src/lib.rs`), donc `use crate::config::Config;` continue de
+resoudre sans changement de code cote gate. Tout futur patch config gate cible
+`kleos-config`, plus `kleos-lib`.
+
+---
+
+## Patch 26 -- WARN tracing sur reject 429 (preauth + per-key) (2026-05-23)
+
+### Symptome
+
+Operateur observe un HTTP 429 cote TUI `engram-approval-tui` apres deploy
+Patch 25, sans qu'aucune trace WARN/ERROR n'apparaisse dans
+`/var/log/kleos-server.log`. La fonction `too_many_requests()` dans
+`kleos-server/src/middleware/rate_limit.rs` retourne le 429 silencieusement :
+les deux bras `Ok(false)` (preauth IP a `PREAUTH_IP_LIMIT = 20/min` hardcoded,
+et per-key avec keying `key:N` ou `synth:user:N` apres fallback Patch 20b)
+emettent directement la reponse sans tracing. Seul le bras `Err(e)` log via
+`tracing::error!`. Impossible de discriminer preauth IP saturation vs per-key
+saturation sans dechiffrer la table `rate_limits` (qui requiert le
+`cipher_compatibility` specifique au bundle WSL et qui mismatch souvent avec
+le binaire `sqlcipher` du host LXC).
+
+### Approche
+
+Niveau **chirurgical** (~12 lignes ajoutees, 2 lignes touchees) : ajouter
+un `tracing::warn!(bucket, limit, path[, cost])` dans chacun des deux bras
+`Ok(false)`. Le champ `bucket = %key` est la donnee discriminante : `ip:X`
+revele preauth IP, `key:N` revele per-key vrai bearer, `synth:user:N` revele
+AuthContext synthetique (open access ou PIV).
+
+Pas d'env var, pas de changement comportemental, pas de nouveau bind. Le
+verbose-level de tracing reste pilote par `RUST_LOG` upstream (les WARN
+sont emis par defaut). Choix justifie : on accepte le bruit potentiel sous
+attaque DDoS volontaire (le serveur loguera chaque IP rejetee), qui reste
+borne par `PREAUTH_IP_LIMIT * 60 * connections_uniques` lignes/heure --
+acceptable vu le caractere transient des attaques pre-auth.
+
+### Fichiers touches
+
+- `kleos-server/src/middleware/rate_limit.rs` :
+  - `preauth_rate_limit_middleware` bras `Ok(false)` (l.110-122) : ajout
+    bloc `tracing::warn!` avec `bucket`, `limit = PREAUTH_IP_LIMIT`,
+    `path`.
+  - `rate_limit_middleware` bras `Ok(false)` (l.192-214) : ajout bloc
+    `tracing::warn!` avec `bucket`, `limit`, `cost`, `path`.
+
+### Validation
+
+Post-deploy : declencher un 429 connu (boucle `kleos-cli search` rapide ou
+TUI en pending soutenu) et grep le log :
+
+```bash
+ssh root@192.168.10.21 "tail -F /var/log/kleos-server.log | grep -E 'reject \(429\)'"
+```
+
+Verification attendue : ligne WARN avec `bucket=ip:192.168.10.X` (preauth
+IP saturated), OU `bucket=key:2` (per-key bearer principal saturated), OU
+`bucket=synth:user:N` (PIV/open-access synthetic). Permet de cibler le bon
+levier de fix (env var preauth, dedicated bearer, ou isolation synthetic).
+
+### Niveau delta
+
+**Chirurgical** (additif pur dans deux bras existants, zero refactor, zero
+changement de signature). Le hardcode `PREAUTH_IP_LIMIT` n'est pas touche
+-- une eventuelle config env var `KLEOS_PREAUTH_IP_LIMIT` serait un Patch
+distinct.
+
+### Conditions de retrait
+
+Upstream Ghost-Frame absorbe l'observabilite (PR candidat naturel,
+generaliste, sans dette de retro-compat). Sinon le patch reste leger
+indefiniment.
+
+agent-forge hypothesis : `hyp_9e17cf63`.
+
+---
+
+## Patch 27 -- kleos-sh extension Write/Edit/MultiEdit pseudo-command (2026-05-23)
+
+### Symptome
+
+Le matcher PreToolUse de `~/.claude/settings.json:273` declare
+`Bash|Write|Edit|MultiEdit` pour le hook `kleos-sh.exe --claude-hook
+--agent claude-code`. Or `parse_claude_hook_stdin()` dans
+`kleos-sh/src/main.rs` n'extrait que `tool_input.command`. Les payloads
+Write (`{file_path, content}`), Edit (`{file_path, old_string,
+new_string}`) et MultiEdit (`{file_path, edits}`) n'ont pas de champ
+`command` -- la fonction retourne `None`, le main exit `0` sans emit de
+JSON sur stdout, et Claude Code interprete comme un allow silencieux.
+**Resultat : toutes les ecritures et editions de fichier natives Claude
+echappent integralement au gate Kleos** (patterns, brain check, audit
+log, bridge approvals Patch 21).
+
+### Approche
+
+Niveau **chirurgical** (~50 lignes ajoutees, 1 fonction touchee, 0
+refactor). Extraction de la logique de selection dans un helper pur
+`extract_command_for_tool(&Value, Option<&str>) -> Option<String>` pour
+permettre le test unitaire sans subprocess + stdin pipe.
+
+Pour Write/Edit/MultiEdit, on synthese une **pseudo-commande**
+`"<verb>:<file_path>"` (verb = lowercase tool_name) et on l'injecte
+dans le champ `command` existant de `GateCheckRequest`. Le serveur
+applique sa cascade Patch 25 (regex auto-detect + whitelist +
+require_approval + dangerous hardcoded) sur cette string. **Zero
+changement cote `kleos-server` / `kleos-lib`** : la cascade traite
+`write:/etc/foo.env` comme n'importe quelle commande matchable par
+regex.
+
+Cote `gate-rules/` submodule, ajout de patterns dedies dans les fichiers
+existants (pas de nouveau fichier) :
+
+- `blocked_patterns.txt` : `^(?:write|edit|multiedit):.*\.env$`,
+  `.ssh`, `.pem`, `.key`, `credentials.*\.(json|yaml|yml|toml)$`.
+- `require_approval_patterns.txt` : `\.claude/settings\.json`,
+  `\.claude/hooks/`, `gate-rules/.*\.txt`, `/etc/*`.
+
+Hot-tunable via cache TTL 5s, identique au flow Patch 19b.
+
+### Fichiers touches
+
+- `kleos-sh/src/main.rs` :
+  - `parse_claude_hook_stdin` : appel a `extract_command_for_tool`
+    (vs in-line inline `.get("command")` upstream).
+  - Nouveau helper `extract_command_for_tool` (~30 lignes, match sur
+    `tool_name` avec bras Bash / Write / Edit / MultiEdit / `_`).
+  - 6 nouveaux tests unitaires `patch27_extract_*` (Bash regression,
+    Write/Edit/MultiEdit pseudo-command, unknown tool returns None,
+    missing required field returns None). Total kleos-sh : 4 -> 10
+    tests, tous passent (`cargo test -p kleos-sh`).
+- `gate-rules/blocked_patterns.txt` : section Patch 27 (~10 lignes
+  pattern + commentaires).
+- `gate-rules/require_approval_patterns.txt` : section Patch 27
+  (~8 lignes pattern + commentaires).
+- `CLAUDE.md` racine : ajout Patch 27 dans la liste active.
+
+### Validation locale
+
+```
+cargo test -p kleos-sh
+# test result: ok. 10 passed; 0 failed; 0 ignored
+```
+
+### Validation post-deploy attendue
+
+1. Rebuild `kleos-sh.exe` (Windows MSVC, build local poste operateur).
+2. Replace `~/.cargo/bin/kleos-sh.exe` cote poste.
+3. Push submodule `gate-rules/` (commit + push origin main) puis
+   `git -C /var/lib/kleos/gate pull` cote LXC 121.
+4. Test E2E :
+   - Tool Write `/tmp/test.env` -> doit recevoir `permissionDecision:
+     "deny"` (matche `^(?:write|edit|multiedit):.*\.env$`).
+   - Tool Write `/tmp/safe.txt` -> doit passer (pas de pattern matche).
+   - Tool Edit `~/.claude/settings.json` -> doit creer une approval
+     dans la TUI engram-approval-tui (bridge Patch 21 + 21.1).
+5. Bash inchange (regression-check) : `cat /tmp/safe.txt` passe, `rm
+   -rf /` toujours bloque par hardcoded dangerous.
+
+### Niveau delta
+
+**Chirurgical** (additif pur sur la branche du match, helper testable
+extrait). Zero changement cote `kleos-server` / `kleos-lib`. Zero env
+var nouvelle. Zero migration DB.
+
+### Limites assumees
+
+1. Pas de matching contenu (content_preview). Un Edit qui injecte
+   `password=foobar` ne matche pas un pattern `(?i)password`. A scoper
+   dans un Patch ulterieur avec ajout d'un champ `content_preview` au
+   payload + nouveau fichier `content_patterns.txt`.
+2. MultiEdit perd la granularite des edits individuels. Acceptable :
+   on cible le file_path global, l'operateur peut whitelister par
+   fichier.
+3. Edge case : fichier dont le nom commence litteralement par `write:`
+   ou `edit:` -- improbable, mais documente ici.
+
+### Conditions de retrait
+
+Candidat PR upstream Ghost-Frame (generaliste, sans dette retro-compat
+puisque la rebranche Bash est byte-identical au comportement
+pre-Patch 27). Le titre PR suggere : "feat(kleos-sh): gate Write/Edit/
+MultiEdit via pseudo-command".
+
+agent-forge spec_id : `spec_b6d93363`.
+
+---
+
+## Patch 28 -- KLEOS_PREAUTH_IP_LIMIT + KLEOS_PREAUTH_IP_TRUSTED_FILE (2026-05-23)
+
+### Symptome
+
+Patch 26 (deploye LXC 121 2026-05-23 19:35 UTC) a confirme par WARN tracing
+que le HTTP 429 cote operateur poste `192.168.10.100` vient du **preauth IP
+rate-limit hardcoded a 20/min** (`kleos-server/src/middleware/rate_limit.rs:15
+PREAUTH_IP_LIMIT`). Tally observe immediatement post-deploy (200 dernieres
+lignes du log serveur) :
+
+| Path | Rejects | Source dominante |
+|---|---|---|
+| `/batch` | 90 | `kleos-sidecar` batch_flush |
+| `/search` | 2 | `kleos-cli` |
+| `/recall` | 2 | `kleos-cli` |
+| `/supervisor/pending`, `/store`, `/gate/check`, `/broca/actions`, `/axon/publish`, `/approvals/pending` | 1 chacun | TUI / hooks |
+
+91% des rejects sont alimentes par le sidecar `batch_flush`. Le poste dev
+heberge 5+ clients partageant l'IP source (sidecar, TUI, `kleos-cli`,
+`kleos-mcp`, hooks Claude Code), ce qui sature naturellement le cap 20/min
+en quelques secondes (3 sessions sidecar x 0.5 POST/s = 1.5 req/s = 90/min
+steady state, plus retry exp 3x = jusqu'a 270/min en burst).
+
+Le fix structurel cote sidecar (respect `Retry-After` + coalescing + backoff
+exponentiel) est le perimeter du peer `kleos-9` (Patch 29 candidat, planifie
+dans `docs/dev-notes/sidecar-batch-flush-todo.md`). Patch 28 traite la
+moitie serveur : rendre le cap preauth configurable et autoriser une
+whitelist d'IPs trusted pour les postes operateur connus.
+
+### Approche
+
+Niveau **chirurgical** (~50 lignes additives), pattern miroir des Patch
+existants :
+
+- **Cap configurable** -- pattern Patch 16b (`KLEOS_CONTEXT_TIMEOUT_SECS`) :
+  `const DEFAULT_PREAUTH_IP_LIMIT: i64 = 20` (renomme, signal visuel "default
+  upstream") + `fn preauth_ip_limit() -> i64` lisant `KLEOS_PREAUTH_IP_LIMIT`
+  avec fallback sur le default. Valeurs `<= 0` ou parse-fail fallback
+  silencieux (un typo ne peut pas accidentellement desactiver le rate-limit).
+- **Trusted IP whitelist par fichier** -- pattern Patch 19b (cascade
+  fichier > defaut) : `fn preauth_ip_trusted_file()` resout
+  `KLEOS_PREAUTH_IP_TRUSTED_FILE` (override) ou
+  `${KLEOS_DATA_DIR}/preauth_ip_trusted.txt` (defaut). `fn
+  preauth_ip_trusted_set()` reuse le helper Patch 19b
+  `kleos_lib::gate::approval_patterns::load(file, env, defaults)` qui gere
+  le cache TTL 5s, parse `#` comments et lignes blanches. On passe `env =
+  None` (decision operateur 2026-05-23 : fichier plus maintenable qu'env
+  var CSV).
+- **Bypass dans `preauth_rate_limit_middleware`** : apres `client_ip_key`,
+  strip le prefix `ip:` et test contre `preauth_ip_trusted_set()`. Si
+  match, `return next.run(request).await` immediat (zero DB hit, zero
+  rate-limit increment). Sinon, appel `preauth_ip_limit()` au lieu de la
+  const. WARN log Patch 26 met a jour son champ `limit` pour refleter la
+  valeur dynamique.
+
+### Fichiers touches
+
+- `kleos-server/src/middleware/rate_limit.rs` :
+  - `use std::collections::HashSet` + `use std::path::PathBuf` +
+    `use kleos_lib::gate::approval_patterns` (3 nouveaux imports).
+  - `const PREAUTH_IP_LIMIT` -> `const DEFAULT_PREAUTH_IP_LIMIT`.
+  - 3 fns helpers : `preauth_ip_limit`, `preauth_ip_trusted_file`,
+    `preauth_ip_trusted_set` (~30 lignes documentees).
+  - `preauth_rate_limit_middleware` : bypass + `let limit = preauth_ip_limit()`
+    + WARN log dynamique (3 lignes additives + 1 ligne modifiee).
+- `CLAUDE.md` : 2 nouveaux env vars ajoutes section "Convention env vars",
+  1 entree dans la liste Patches actifs.
+- `docs/dev-notes/local-patches.md` : cette section.
+
+### Tests
+
+- `cargo check -p kleos-server -p kleos-lib --features kleos-lib/bundled-sqlite` :
+  0 errors, 10 warnings (pre-existants `cred::bootstrap` ECDH/PIV fns inutilises
+  sur cible Windows, identique pre-Patch 28).
+- Pas de test unitaire nouveau cote Patch 28 : le helper `approval_patterns::load`
+  est deja teste (12 tests Patch 19b). Les fns helpers Patch 28 sont des
+  thin wrappers env-vars + path-resolution suffisamment evidents pour ne pas
+  necessiter de test dedie.
+- Tests fonctionnels post-deploy LXC 121 :
+  1. Env vars unset + fichier absent : comportement upstream identique
+     (cap 20/min, WARN reject visible sur burst).
+  2. `KLEOS_PREAUTH_IP_LIMIT=500` (via `/etc/kleos/kleos.env` puis
+     `systemctl restart kleos-server`) : WARN reject affiche `limit=500` ;
+     sidecar sature plus rare.
+  3. Creation `${KLEOS_DATA_DIR}/preauth_ip_trusted.txt` avec
+     `192.168.10.100` : zero WARN reject pour ce poste, peu importe la
+     charge. Cache 5s.
+
+### Niveau delta
+
+**Additif pur** (zero modification de signature, zero impact comportemental
+quand les 2 leviers ne sont pas actives, default identique upstream). Le
+renommage `PREAUTH_IP_LIMIT` -> `DEFAULT_PREAUTH_IP_LIMIT` est purement
+cosmetique (la const n'est utilisee qu'a un seul endroit, le middleware).
+Reuse du helper `approval_patterns::load` Patch 19b limite la duplication.
+
+### Conditions de retrait
+
+Candidat **PR upstream Ghost-Frame**. Le besoin "preauth IP configurable +
+whitelist trusted" est generaliste (n'importe quel deploiement multi-client
+sur une meme IP en a besoin). Si upstream absorbe, le patch s'efface du
+fork sans dette. Le helper reuse `kleos_lib::gate::approval_patterns::load`
+est specifique au fork (Patch 19b non-upstream pour l'instant), donc en
+cas de PR il faudrait soit porter Patch 19b en parallele, soit dupliquer
+la logique cache inline.
+
+### Hors scope (Patch 29 candidat, perimeter kleos-9)
+
+- Respect `Retry-After` cote sidecar `flush_pending` (miroir Patch 20/20c TUI).
+- Coalescing des sessions cote sidecar (1 POST `/batch` pour N sessions).
+- Backoff exponentiel sur 429.
+
+Documente dans `docs/dev-notes/sidecar-batch-flush-todo.md` (a creer par
+kleos-9).
+
+agent-forge spec_id : `spec_2764b269`.
+
+---
+
+## Patch 30 -- overlay prompt sidecar gate (id `sidecar/gate/system`) (2026-05-23)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, code hote disparu.** `kleos-sidecar/src/gate.rs` supprime upstream (#217, commit `e5526e80`) -- le site que cet overlay de prompt ciblait n'existe plus. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+### Symptome
+
+`kleos-sidecar/src/gate.rs:6-22` definit `GATE_SYSTEM_PROMPT` comme une `const &str` hardcoded. Le gate LLM watcher consomme ce prompt pour classer chaque tour assistant de Claude Code en `store|skip`. Le prompt actuel produit beaucoup de faux positifs (FP) :
+
+- Investigation en cours sans conclusion -> `store: true`, importance 7 (devrait etre skip).
+- Restate d'instruction operateur -> `store: true` (pollution Kleos).
+- Note self-referentielle sur la session courante -> `store: true`.
+
+Simulation Ollama direct (qwen3:8b-ctx16k, reasoning off) sur 8 samples annotes (3 STORE + 5 SKIP) :
+
+| Variante | Precision | Recall | F1 |
+|---|---|---|---|
+| `v0_original` (prompt hardcoded actuel) | 0.60 | 1.00 | 0.75 |
+| `v4_combined` (strict + scale + few-shot) | **1.00** | **1.00** | **1.00** |
+
+v0 cree 2 FP sur 5 SKIP (40% de pollution). v4 cree 0 FP. Le prompt source du sidecar est l'unique levier qui mitige la pollution Kleos a la source -- les autres patches (consolidation, dedup, importance ranking) sont aval.
+
+### Approche
+
+Etendre le systeme overlay Patch 15 (`kleos-lib/src/llm/prompts.rs::load_prompt`) au sidecar **sans modifier la const hardcoded**. La const reste l'embedded default, le file overlay le surcharge quand present. Pattern strictement identique a celui des prompts `broca/*` et `growth/*` deja overlays.
+
+Implementation dans `kleos-sidecar/src/gate.rs::evaluate_single` :
+
+```rust
+// Avant (hardcoded direct) :
+let response = self.llm.call(GATE_SYSTEM_PROMPT, &truncated, Some(opts)).await...;
+
+// Apres (overlay-aware) :
+let system_prompt = prompts::load_prompt("sidecar/gate/system", GATE_SYSTEM_PROMPT);
+let response = self.llm.call(&system_prompt, &truncated, Some(opts)).await...;
+```
+
+Cascade :
+1. `prompts-overrides/sidecar/gate/system.txt` (deploye par operateur cote LXC 121 sous `${KLEOS_DATA_DIR}/prompts/sidecar/gate/system.txt` ou cote poste Windows sidecar via `${KLEOS_DATA_DIR}/prompts/`).
+2. Fallback `GATE_SYSTEM_PROMPT` const embedded (zero comportement change).
+
+Cache TTL 5s (`kleos_lib::llm::prompts::TTL_SECS`) -- hot-tune sans restart sidecar.
+
+### Niveau delta upstream
+
+**Additif pur** (~5 lignes, voir table dans CLAUDE.md "Politique d'ecart avec upstream") : 1 import + 1 ligne `load_prompt` + change de `GATE_SYSTEM_PROMPT` -> `&system_prompt` dans le call. La const reste verbatim upstream-alignee.
+
+### Fichiers touches
+
+- `kleos-sidecar/src/gate.rs` -- `use kleos_lib::llm::prompts;` + 2 lignes dans `evaluate_single` (load + use). La const `GATE_SYSTEM_PROMPT` est preservee verbatim.
+- `prompts-overrides/sidecar/gate/system.txt` -- nouveau override (v4_combined initial, voir fichier).
+- `CLAUDE.md` (gitignore repo) -- ajout `sidecar/gate/system` au catalog overlay.
+
+### Tests
+
+- `cargo check -p kleos-sidecar` : OK (0 errors, 10 warnings pre-existants).
+- `cargo test -p kleos-sidecar --lib gate` : 0 passed / 16 filtered (le sidecar n'a pas de tests unit nommes "gate" mais le code compile et les tests filterables restent fonctionnels).
+- E2E manuel : restart sidecar, observer dans `kleos-sidecar.out.log` les verdicts `flushing batch through LLM gate ... stored=N skipped=M` pendant 30 min d'usage Claude Code reel. Verifier que les false-positive samples connus (in-progress note, instruction restate, ephemeral status) sont `skipped`.
+
+### Conditions de retrait
+
+Le Patch 15 (parent) est candidat PR upstream. Si upstream absorbe Patch 15 + Patch 16, ce Patch 30 devient un simple ajout au catalog overlay sidecar/gate -- toujours utile. Si upstream ajoute son propre systeme d'overlay du gate sidecar, ce patch s'aligne sur l'API upstream et le const hardcoded reste accessible comme default. Pas de retrait standalone prevu.
+
+### Validation empirique
+
+Methodologie : Ollama direct `192.168.10.16:11434` (zero LXC 121 traffic, evite le rate-limit cascade observe pendant Patch 26+28). Script `/c/Users/Olivier/.claude/tmp/gate_sim.py` (hors-repo) implemente 5 variantes (`v0_original, v1_strict, v2_scale, v3_fewshot, v4_combined`) + scoring precision/rappel/F1 + comparaison per-sample. 8 samples annotes manuellement dans `/c/Users/Olivier/.claude/tmp/samples.json` (3 STORE + 5 SKIP). v4_combined gagne avec score parfait, latence moyenne 4.80s/call vs 3.57s baseline (+35%, sous le timeout 15s du gate).
+
+Biais reconnu : les 8 samples sont construits par l'agent (3 extraits jsonl + 5 synthetiques). Robustesse a renforcer par extension a 20-30 samples piochees aleatoirement dans plusieurs .jsonl recents + annotation par l'operateur. **Le patch d'infrastructure ne depend pas du contenu specifique de l'override** -- l'operateur peut iterer le prompt sans rebuild grace au cache TTL 5s.
+
+---
+
+## Patch 31 -- overlay prompt sidecar compress (id `sidecar/compress/system`) (2026-05-24)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, code hote disparu.** La route compress de `kleos-sidecar` a ete supprimee upstream (#217, commit `e5526e80`) avec la refonte en moteur de code-context deterministe. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+### Symptome
+
+`kleos-sidecar/src/routes.rs:551-560` definit `COMPRESS_SYSTEM_PROMPT` comme une `const &str` hardcoded, consommee par le handler `/compress` (`routes.rs:562`). Ce handler resume un `tool_output` volumineux via Ollama avant stockage memoire. Le prompt n'est appele par AUCUN client actuel (`/compress` est dormant -- mnemonic-observe.sh appelle `/observe` direct, le watcher gate appelle `/store` direct). Mais le mecanisme overlay devrait couvrir TOUS les prompts hardcoded du sidecar, pas seulement le gate, pour preserver le principe "tout prompt hardcoded a un overlay overlayable" introduit par Patch 30.
+
+### Approche
+
+Etendre le systeme overlay Patch 15 (`kleos-lib/src/llm/prompts.rs::load_prompt`) au compress handler, **sans modifier la const hardcoded**. Meme pattern que Patch 30 (gate). La const reste l'embedded default, le file overlay le surcharge quand present.
+
+Implementation dans `kleos-sidecar/src/routes.rs::compress` :
+
+```rust
+// Avant (hardcoded direct) :
+match llm.call(COMPRESS_SYSTEM_PROMPT, &user_prompt, Some(opts)).await { ... }
+
+// Apres (overlay-aware) :
+let system_prompt = prompts::load_prompt("sidecar/compress/system", COMPRESS_SYSTEM_PROMPT);
+match llm.call(&system_prompt, &user_prompt, Some(opts)).await { ... }
+```
+
+Cascade et cache identiques a Patch 30 (TTL 5s, fallback embedded, zero I/O si overlay absent).
+
+### Niveau delta upstream
+
+**Additif pur** (~5 lignes) : 1 import etendu (`prompts` ajoute a la liste) + 4 lignes (commentaire + load_prompt + change de la reference dans le `call`). La const `COMPRESS_SYSTEM_PROMPT` est preservee verbatim.
+
+### Fichiers touches
+
+- `kleos-sidecar/src/routes.rs` -- import `prompts` + 4 lignes dans le handler `compress`. La const reste verbatim upstream.
+- `prompts-overrides/sidecar/compress/system.txt` -- nouveau override INITIAL verbatim copy du hardcoded (zero changement comportemental). Permet d'iterer le prompt sans rebuild quand `/compress` sera grefe dans un caller (hook PostToolUse, mnemonic-observe.sh extension, ou autre).
+
+### Tests
+
+- `cargo check -p kleos-sidecar` : OK (0 errors, 10 warnings pre-existants).
+- E2E : `/compress` n'a aucun caller actuel donc pas d'observation runtime possible. La presence du file override + load_prompt resolu correctement au boot (`KLEOS_DATA_DIR=~/.kleos/prompts/sidecar/compress/system.txt` existe) est verifiable via le meme mecanisme que Patch 30 (md5sum du file et lecture via Ollama direct).
+
+### Conditions de retrait
+
+Identique a Patch 30. Si upstream Ghost-Frame absorbe Patch 15 + Patch 16, ce Patch 31 devient un simple ajout au catalog overlay sidecar/compress -- toujours utile. Pas de retrait standalone prevu.
+
+### Pourquoi preventif (zero caller actuel)
+
+- **Coherence** : Patch 30 a fait le travail pour le gate, le meme principe doit couvrir tous les prompts hardcoded du sidecar.
+- **Future-ready** : si on decide demain de greffer `/compress` dans `mnemonic-observe.sh` (gain : economie de contexte stocke), le mecanisme overlay sera deja en place. Pas de patch a retro-fitter en urgence.
+- **Cout marginal** : ~5 lignes Rust + 1 file override verbatim. Negligeable.
+
+---
+
+## Patch 32 -- agent-forge gain `help` et `schema` sous-commandes (2026-05-24)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ETENDU.** `#[derive(..., JsonSchema)]` pose sur les nouveaux types upstream `ImplementationTask` (`agent-forge/src/spec_types.rs:10`) et `TestProperty` (`agent-forge/src/spec_types.rs:19`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+### Symptome
+
+`agent-forge` est un CLI a 26 sous-commandes (spec-task, log-hypothesis,
+verify, etc.) avec des schemas d'input JSON precis (champs requis, enums
+stricts, contraintes "minimum 2 acceptance_criteria", "minimum 3 edge_cases",
+"task_type ne tolere pas 'fix' -- attend 'bugfix'"). Aucun mecanisme cote CLI
+ne renseigne l'agent IA sur ces contraintes : `agent-forge --help` (clap
+auto-genere) ne montre que les **flags** Rust (--input, --output, --db), pas
+le **body JSON** attendu. L'agent decouvre les champs par essais successifs :
+"Missing required field: task_description" -> ajout -> "Missing required
+field: task_type" -> ajout -> "Invalid value: task_type must be one of..." ->
+... -> "Minimum 3 edge cases required" -> 5 iterations pour un seul appel.
+
+La rule globale `~/.claude/rules/agent-forge.md` capture les pieges les plus
+frequents mais c'est de la doc tribale -- elle peut diverger du code et
+n'est pas accessible en session sans lecture explicite par l'agent.
+
+### Approche
+
+Niveau **additif pur** (zero changement comportemental sur les 26
+sous-commandes existantes). Patch livre **deux surfaces complementaires** :
+
+- `agent-forge help [<subcommand>]` (humain, texte) -- overview + workflow
+  + cheatsheet des 26 sous-commandes, ou schema d'input prose pour une
+  sous-commande precise (REQUIRED / OPTIONAL / RETURNS / SIDE EFFECT /
+  EXAMPLE). Hardcode en strings dans `tools/help.rs`.
+- `agent-forge schema --command <subcommand>` (machine, JSON Schema) --
+  derive a la compilation via `schemars` directement sur le struct `*Input`
+  que le dispatch path parse reellement. Garanti aligne sur le code.
+
+Les deux ecrivent sur stdout, n'utilisent pas `--input` / `--output`, ne
+touchent ni la DB ni le reseau (cout zero pour l'agent qui explore).
+
+Pour permettre `help`/`schema` sans `--input/--output`, les deux flags
+deviennent `Option<PathBuf>` au niveau clap, avec validation explicite a
+l'execution pour les 26 autres sous-commandes (helper `require_io`). Clap
+reserve le nom `help` pour sa sous-commande auto-generee : on la desactive
+via `#[command(disable_help_subcommand = true)]` pour liberer le nom (le
+flag `--help` reste fonctionnel).
+
+Le pattern hardcode + derive evite le dilemme "doc qui diverge du code" :
+
+- `help` est lisible humain mais peut etre stale -> agent fait `schema` pour
+  validation exacte en cas d'erreur repetee.
+- `schema` est garanti exact mais moins lisible -> agent prefere `help` en
+  premier contact.
+
+Un test `every_known_subcommand_has_schema` force `help::KNOWN_SUBCOMMANDS`
+et `schema::for_command` a rester synchronises : ajouter une sous-commande
+sans `JsonSchema` derive fait planter le test au CI.
+
+### Fichiers touches
+
+- `agent-forge/src/tools/help.rs` (nouveau, ~440 lignes) : `OVERVIEW`,
+  `per_subcmd()`, `KNOWN_SUBCOMMANDS`, 26 const strings, 3 tests.
+- `agent-forge/src/tools/schema.rs` (nouveau, ~80 lignes) : `for_command()`
+  dispatch via `schema_for!`, 3 tests dont cross-check.
+- `agent-forge/src/tools/mod.rs` : ajout `pub mod help;` et `pub mod schema;`.
+- `agent-forge/src/main.rs` : `Commands::Help { subcommand }` et
+  `Commands::Schema { command }` variants, `--input/--output` deviennent
+  `Option<PathBuf>`, `disable_help_subcommand = true`, helpers `run_help` /
+  `run_schema` / `require_io`, dispatch stdout avant `Database::open`.
+- `agent-forge/Cargo.toml` : `schemars = "0.8"` ajoute.
+- `agent-forge/src/tools/{spec,hypothesis,verify,comments,session,think,approaches,skills,stats,ast/repo_map,ast/search}.rs` :
+  ajout `use schemars::JsonSchema;` + `#[derive(JsonSchema)]` sur chaque
+  struct `*Input` (22 structs totales). Aucun changement de signature ou
+  de comportement.
+- `~/.claude/claude-config/KLEOS.md` (global) : nouvelle section
+  `## 1bis. agent-forge -- structured reasoning workflow` inseree entre
+  `kleos-cli` et `kleos-server`, retire agent-forge de la liste des exclus,
+  liste les 26 sous-commandes par phase, pointe vers `help` (humain) et
+  `schema` (machine). Bandeau staleness etendu pour inclure
+  `agent-forge/src/`.
+- `CLAUDE.md` projet : entree Patch 32 dans la liste des patches actifs.
+
+### Tests
+
+- `cargo build -p agent-forge` : 0 errors, 5 crates compiles (schemars + 4
+  deps transitives), 0 warnings nouveaux.
+- `cargo test -p agent-forge --bins` : 11 passed (5 existants
+  `tools::approaches::tests` + 3 nouveaux `tools::help::tests` + 3 nouveaux
+  `tools::schema::tests`).
+- Smoke tests fonctionnels (sortie verifiee) :
+  - `agent-forge help` -> overview WORKFLOW + DISCOVERY + 26 sous-commandes,
+    exit 0.
+  - `agent-forge help spec-task` -> bloc detaille REQUIRED / OPTIONAL /
+    RETURNS / EXAMPLE, exit 0.
+  - `agent-forge help nonexistent` -> stderr "unknown subcommand" + liste
+    des 26 noms valides, exit 2.
+  - `agent-forge schema --command spec-task` -> JSON Schema Draft-07 valide
+    avec `$schema`, `properties`, `type`. Parseable via `serde_json` (cf.
+    `schema::tests::schema_is_valid_json`).
+  - `agent-forge schema --command nonexistent` -> stderr similaire au help,
+    exit 2.
+- Regression : appel `get-spec` avec body invalide retourne envelope
+  `{"success": false, ..., "message": "Missing required field: spec_id"}`
+  comme pre-Patch 32 (pipeline normal intact).
+- Dogfood : verify multi-step contre `spec_6ed1cff9` -> 2/2 pass, marked
+  completed via `update-spec`.
+
+### Niveau delta
+
+**Additif pur** sur agent-forge (table de la rule
+`~/.claude/rules/rust-upstream-fork.md` -- niveau "additif pur" : nouveau
+module, nouvelle fn publique appelee depuis un site upstream non touche).
+Cout de rebase upstream estimé tres faible :
+
+- `tools/help.rs` et `tools/schema.rs` sont 100% nouveaux.
+- `tools/mod.rs` : 2 lignes ajoutees (`pub mod help;`, `pub mod schema;`),
+  zero ligne supprimee.
+- 11 fichiers `tools/*.rs` modifies : seulement +1 line par struct (`use
+  schemars::JsonSchema;` + ajout au derive `(Deserialize, JsonSchema)`).
+  Conflit potentiel uniquement si upstream change la signature d'un struct
+  `*Input` -- resolution triviale (preserver le `JsonSchema` dans le
+  derive).
+- `main.rs` : modifications plus substantielles (variants Help/Schema +
+  helpers + flags Option<PathBuf>), mais le code upstream restera
+  reconnaissable. Conflit potentiel uniquement si upstream refactor le
+  dispatch ou la structure Cli.
+- `Cargo.toml` : 1 ligne ajoutee.
+
+### Conditions de retrait
+
+Trois scenarios :
+
+1. **Upstream Ghost-Frame absorbe ce patch via PR** : Patch 32 retire de la
+   liste locale, code reste tel quel.
+2. **Upstream livre un mecanisme equivalent different** (ex: doc embedded
+   different, schema autodecouverte via API serveur) : adapter le code local
+   pour s'aligner sur l'API upstream, supprimer le code redondant. Hardcode
+   help.rs peut survivre comme catalog supplementaire.
+3. **Decision de retrait standalone** : retirer `tools/help.rs`,
+   `tools/schema.rs`, le module declaration, les 2 variants, les
+   `JsonSchema` derives, et la dep `schemars`. Toutes les modifications sont
+   localisables via `git grep "JsonSchema\|tools::help\|tools::schema"` --
+   environ 30 sites a retirer.
+
+agent-forge spec_id : `spec_6ed1cff9` (dogfood, cree et cloture via Patch
+32 lui-meme).
+
+---
+
+## Patch 33 -- Spaces complete integration (2026-05-25)
+
+### Symptome
+
+Le concept `spaces` existait dans Kleos depuis Ghost-Frame mais a moitie cable :
+table `spaces`, colonnes `space_id` indexees sur `memories` et `entities`,
+endpoints `/spaces` (POST / GET / DELETE), space `default` auto-cree a la
+creation user (`auth_keys/mod.rs:278`). MAIS aucun client ne l'utilisait
+jamais.
+
+Sur prod LXC 121 :
+
+- 1 seul space existe (`default` id=2)
+- ~3500 memoires existantes en `space_id = NULL` (legacy)
+- `conversations` n'avait meme pas la colonne `space_id`
+- Aucun endpoint de lecture n'exposait `?space=X`
+- kleos-cli / kleos-mcp / hooks ne propageaient pas le space
+- Pipeline intelligence (dreamer + sweeps) ignorait totalement le space :
+  duplicates / consolidation cross-projet possibles silencieusement
+
+Risque operationnel : lors de l'introduction des `conversations` (skills
+`kleos-session-save/load` prevus), le melange cross-projet etait
+inevitable (bug similaire a #3028 sur growth).
+
+### Approche
+
+Convention centrale : apres Patch 33, `space_id` est **toujours NOT NULL**
+sur tout nouveau write. Le space `default` auto-cree EST la representation
+canonique du "cross-projet / non-scope". Les ~3500 memoires legacy NULL
+restent visibles en lecture inclusive via une clause additionnelle
+transitoire `OR space_id IS NULL`. Naturellement isolees des sweeps par
+paire (NULL != NULL en SQL).
+
+Niveau de delta upstream : **additif majoritairement**, avec un patch
+chirurgical sur 2 SQL existants (filtres list + post-filter search).
+
+Pieces livrees :
+
+1. **Migration tenant v57** -- ajoute `conversations.space_id` (nullable,
+   idempotent, manifest append-only).
+2. **Helpers `kleos_lib::space`** (nouveau module) -- `normalize_space_name`,
+   `default_space_id` (cache HashMap process), `resolve_or_create_space`,
+   `space_belongs_to_user`, `normalize_space_input` (write convention :
+   absent / 0 / alias -> default ; id valide -> N ; id invalide -> 400 ;
+   name -> resolve_or_create), `resolve_space_filter` (read convention :
+   None preserve "no filter" upstream).
+3. **Lib types** -- `StoreRequest`, `SearchRequest`, `ListOptions` gagnent
+   `pub space: Option<String>` (wire-only) ; `SearchRequest` et
+   `ListOptions` gagnent `pub include_unscoped: Option<bool>`.
+4. **Handlers memory** -- `store_memory` appelle `normalize_space_input`
+   avant `memory::store`. `search_memories`, `explain_search`, `recall`,
+   `list_memories` appellent `resolve_space_filter` puis transmettent.
+5. **SQL filters lib** -- `memory::list` et `hybrid_search` post-filter
+   etendus : `include_unscoped = Some(true)` declenche `space_id IN (?cur,
+   ?default) OR space_id IS NULL` ; defaut preserve `= ?cur`.
+6. **Anti-leak dreamer** -- `find_duplicates` et
+   `find_consolidation_candidates` gagnent `AND ms.space_id = mt.space_id`
+   (1 ligne chacun). Empeche dedupe + consolidation cross-projet.
+7. **CLI** -- nouveau module `kleos-cli/src/space.rs` (resolve_project_name
+   marker > git > cwd, normalize_space_name, determine_space_for_request,
+   inject_space_into_body). Flags `--space` / `--space-id` / `--no-space`
+   sur Store ; idem + `--include-unscoped` sur Search / Context / List.
+   Subcommand `Space { Resolve, List, Ensure }`.
+8. **Hook bash** -- nouveau `hooks/full/lib-kleos-space.sh`
+   (normalize_space_name, resolve_project_name, ensure_kleos_space_marker,
+   write_kleos_space_to_settings, write_kleos_space_per_sid). Wire dans
+   `session-start-kleos.sh` : marker `.kleos-space` immuable, env
+   `KLEOS_SPACE` exporte, `.claude/settings.json` env.KLEOS_SPACE
+   merge via jq, per-sid file `~/.kleos/sessions/<sid>/space_name`.
+9. **kleos-mcp** -- `dispatch` lit le per-sid file et injecte `space`
+   dans le payload si absent (matche la convention CLI).
+10. **Test parity** -- `tests/space-resolution-parity.sh` boucle 7
+    scenarios temp et compare `bash resolve_project_name` vs
+    `kleos-cli space resolve`. Tout mismatch est un bug.
+
+### Fichiers touches
+
+| Fichier | Niveau delta | Description |
+|---|---|---|
+| `kleos-lib/src/db/tenant_migrations.rs` + `.manifest` | additif | v57 conversations.space_id |
+| `kleos-lib/src/space.rs` | nouveau | helpers convention + cache |
+| `kleos-lib/src/lib.rs` | additif | declaration module |
+| `kleos-lib/src/memory/types.rs` | additif | champs `space`, `include_unscoped` |
+| `kleos-lib/src/memory/mod.rs` | chirurgical | filtre SQL list inclusif |
+| `kleos-lib/src/memory/search.rs` | chirurgical | post-filter hybrid_search inclusif |
+| `kleos-lib/src/{context,sync,intelligence/correction,ingestion/processors/{raw,extract}}` | additif | `space: None` aux StoreRequest existants |
+| `kleos-lib/src/intelligence/duplicates.rs` | chirurgical | `AND ms.space_id = mt.space_id` |
+| `kleos-lib/src/intelligence/consolidation.rs` | chirurgical | idem |
+| `kleos-server/src/routes/memory/{mod,types}.rs` | chirurgical | normalize + resolve + flags |
+| `kleos-server/src/routes/{batch,fsrs,gui,intelligence,onboard,prompts}/mod.rs` | additif | propagate `space: None` aux StoreRequest/SearchRequest existants |
+| `kleos-cli/src/main.rs` | refactor local | flags + dispatch + Space subcommand |
+| `kleos-cli/src/space.rs` | nouveau | resolve_project_name + helpers |
+| `kleos-mcp/src/tools.rs` | additif | auto-inject space per-sid |
+| `hooks/full/lib-kleos-space.sh` | nouveau | helper bash partage |
+| `hooks/full/session-start-kleos.sh` | additif | wire ensure_kleos_space_marker + exports |
+| `tests/space-resolution-parity.sh` | nouveau | test E2E parity |
+
+### Tests
+
+- `cargo test -p kleos-lib --features bundled-sqlite --lib space::` -> 4 tests pass (normalize_strips_accent_and_spaces, normalize_drops_special_chars, aliases_recognized, cache_invalidation_drops_entry).
+- `cargo test -p kleos-lib --features bundled-sqlite --lib db::tenant_migrations::tests` -> 96 tests pass (dont `tenant_migrations_obey_append_only_manifest` + `fresh_db_lands_at_latest`).
+- `bash tests/space-resolution-parity.sh` -> 7/7 cases OK (test parity bash vs Rust).
+- Deploy LXC 121 verification manuelle (cf. plan section Verification).
+
+### Conditions de retrait
+
+Trois scenarios :
+
+1. **Upstream Ghost-Frame absorbe ce patch via PR** : retirer Patch 33 de
+   la liste locale, code reste tel quel. Candidat PR upstream apres
+   validation prod LXC 121 + observation no cross-space leak sur 7 jours.
+2. **Upstream livre un mecanisme equivalent different** (ex: tenant-level
+   namespacing, autre table de partitionnement) : aligner les helpers
+   et SQL filters sur l'API upstream, supprimer le code redondant.
+3. **Decision de retrait standalone** : retirer le module space.rs,
+   defaire les changements de StoreRequest/SearchRequest/ListOptions
+   (regression upstream-compat possible), retirer les flags CLI et les
+   hooks bash. Tous les sites localisables via `git grep
+   "space::normalize_space_input\|space::resolve_space_filter\|KLEOS_SPACE"`.
+
+Sujets hors scope de Patch 33 (chantiers futurs documentes dans le plan
+`C:\Users\Olivier\.claude\plans\1-pour-viter-le-synchronous-tiger.md`) :
+
+- conversations.rs : helpers + handlers (Section 3 partie 2 reportee)
+- growth.rs / list_observations : fix #3028 cross-projet (Section 4
+  partie 2)
+- brain_query : filtre post-ranking optionnel
+- intelligence/contradiction / temporal : refactor structure (fact-based,
+  pas pair-based)
+- causal / feedback / predictive : audit des INSERT derives en production
+- dreamer.rs : boucle externe par space pour growth_reflect 1->N
+- Migration NULL legacy -> default (section 11 du plan)
+
+agent-forge spec_id : `spec_5dae3d18` (parent), `spec_94f9a5c5` (section
+3 endpoints), `spec_228ecf4f` (wiring), `spec_1ae47040` (section 4
+anti-leak).
+
+---
+
+## Patch 33 -- iterations post-deploy (2026-05-25)
+
+Apres le deploy LXC 121 + validation du Patch 33 initial (sections 1, 2,
+3 partie 1, 4 partie 1, 6, 7, 8, 9, 10) + Patch 34 (fix /spaces dual-DB),
+les sections suivantes ont ete completees dans la meme branche
+`local/patch-33-spaces-integration`.
+
+### Patch 33 (5/N) -- Section 3 partie 2 : conversations partitioning
+
+**Commit `6818ab00`**.
+
+`kleos-lib/src/conversations.rs` :
+
+- `Conversation` + `ConversationListItem` exposent `pub space_id:
+  Option<i64>`.
+- `CONVERSATION_COLUMNS` / `CONVERSATION_LIST_COLUMNS` etendus avec
+  `space_id` (index 7 ; `message_count` shifte a 8).
+- `CreateConversationRequest`, `BulkInsertRequest`,
+  `UpsertConversationRequest` gagnent `space_id` + `space` (wire-only).
+- `SearchMessagesRequest` gagne `space_id` + `include_unscoped`.
+- `create_conversation` / `bulk_insert_conversation` INSERT colonne
+  `space_id`. `upsert_conversation` propage les fields sur le path
+  create-fallback.
+- `list_conversations` / `list_conversations_by_agent` / `search_messages`
+  gagnent params space + filter via helper `build_space_filter(col,
+  space_id, include_unscoped, user_id)` (clause inclusive `space_id IN
+  (?cur, ?default) OR space_id IS NULL`, ou strict, ou aucun).
+
+`kleos-server/src/routes/conversations/mod.rs` :
+
+- `create` / `bulk_insert` / `upsert` handlers appellent
+  `kleos_lib::space::normalize_space_input` avant la fn lib.
+- `list` / `search_msgs` handlers appellent `resolve_space_filter` et
+  passent (`Option<i64>`, `Option<bool>`) aux fns lib.
+- `get_one` handler expose `space_id` dans le JSON output.
+
+`kleos-server/src/routes/conversations/types.rs` :
+
+- `ListConversationsParams` gagne `space` + `space_id` +
+  `include_unscoped` (`#[serde(default)]`, back-compat HTTP wire).
+
+### Patch 33 (6/N) -- Section 4 partie 2 : growth partitioning (#3028 fix partiel)
+
+**Commit `b1a4a87...`** (a verifier au prochain push).
+
+`kleos-lib/src/intelligence/growth.rs` :
+
+- `list_observations` signature gagne `space_id: Option<i64>`,
+  `include_unscoped: Option<bool>`, `user_id: i64`. SQL filter optionnel
+  (None preserve upstream).
+- `materialize` lit `source.space_id` et le propage a l'INSERT INTO
+  memories (au lieu de NULL hardcoded).
+- `reflect` INSERT INTO memories propage `req.space_id` (NULL si non
+  fourni = comportement upstream legacy).
+
+`kleos-lib/src/intelligence/types.rs` :
+
+- `GrowthReflectRequest` gagne `pub space_id: Option<i64>`
+  (`#[serde(default)]`).
+
+`kleos-server/src/dreamer.rs` :
+
+- 2 sites de construction `GrowthReflectRequest` (lignes 358 et 651)
+  gagnent `space_id: None` avec TODO marker pour le refactor outer-loop
+  par space (defere).
+
+`kleos-server/src/routes/growth/{mod,types}.rs` :
+
+- `ObservationsQuery` gagne `space` / `space_id` / `include_unscoped`.
+- `observations_handler` resout via `resolve_space_filter` et passe le
+  triplet a `list_observations`.
+
+`kleos-server/src/routes/prompts/mod.rs` :
+
+- Call site `list_observations` adapte a la nouvelle signature.
+
+Bug #3028 resolution partielle : les observations existantes restent
+melangees cross-projet (`space_id = NULL` legacy). Les nouvelles
+observations crees avec `req.space_id` rempli iront dans le bon bucket.
+Le filtre `GET /growth/observations?space=X&include_unscoped=true`
+permet de cibler une projection.
+
+### Items deferes a Patch 35 ou plus tard
+
+| Item | Raison de defer | Reference plan |
+|---|---|---|
+| `dreamer.rs` outer-loop par space pour growth::reflect | Refactor architecture moyennement large (helpers list_user_spaces + recent_memory_contents_for_space + boucle). Necessite test E2E sur dreamer cycle. | Plan section 4 partie 2 pattern alpha |
+| `brain_query` post-ranking filter optionnel | Plan explicite "Brain reste GLOBAL". Sur substrat associatif Hopfield, le partitionnement n'est pas aligne avec la semantique du modele. | Plan section 4 paragraphe Brain |
+| `intelligence/contradiction.rs` + `temporal.rs` filter par space | structure fact-based / pattern-based, pas pair-based direct memoire. Refactor non-trivial. | Plan section 4 partie 1 |
+| `causal/feedback/predictive` derives INSERT space_id heritage | Plan section 4 mentionnait des lignes (315/177/454/418) qui sont en realite des helpers de tests. Audit confirme : pas de derives production a corriger. | Plan section 4 partie 1 |
+| Migration NULL legacy -> default (~3500 memoires) | Chantier dedie avec strategie (UPDATE global vs UPDATE selectif via tags vs DUMP+reinjection). | Plan section 11 |
+| KLEOS.md global section 10 "spaces" | Doc operateur, vit dans `claude-config` separe (pas dans ce repo). | Plan section 10 |
+
+### Patch 33 -- re-cablage merge upstream Ghost-Frame d905d4e7 (release 1.8.0, 2026-06-29)
+
+Merge de `d905d4e7` (20 commits au-dela de `f4e7eb3f`) sur la branche
+`merge/upstream-f4e7eb3f`. Deux nouveaux call sites upstream introduits par
+le merge appellent l'ancienne arite de fonctions dont Patch 33 a etendu la
+signature (ajout `space_id`/`include_unscoped`/`space`). Auto-merge propre au
+texte, casse au `cargo check` uniquement (incoherences cross-region). Fix :
+re-cabler sur la signature VOCSAP-etendue en preservant le comportement
+upstream (None = pas de partitionnement, scoping `user_id` conserve), aligne
+sur la discipline majoritaire des call sites SIS-internes (`prompts/mod.rs:414`).
+
+- `kleos-lib/src/intelligence/growth.rs:621` -- `context_growth()` (nouvelle fn
+  upstream #113 `GET /growth/context`, SIS-style prompt injection) appelait
+  `list_observations(db, user_id, pool_size)` (3 args upstream) ->
+  `list_observations(db, pool_size, None, None, user_id)`. Threader `space_id`
+  jusqu'au handler upstream = niveau refactor, reporte a un patch dedie si
+  partitionnement de `/growth/context` souhaite plus tard.
+- `kleos-lib/src/jobs/community_detection.rs:231` -- test upstream (nouveau
+  fichier #113 `feat(search): retrieval-quality v2`) construit un literal
+  `StoreRequest` sans le champ `space` (Patch 33) -> ajout `space: None`.
+
+Niveau delta : chirurgical (2 lignes). Seul conflit textuel du merge :
+`kleos-mcp/src/tools.rs` (greffe Patch 33 `maybe_inject_space`/
+`read_session_space_name` + doc-comment upstream, additif, cf. table ci-dessus
+entree 7). Verifs lang upstream OK (`MEMORY_COLUMN_COUNT==48`, `lang` en fin de
+`MEMORY_COLUMNS`, `row_to_memory` `lang: row.get(47)?`), `space_id` reste index 31.
+
+### Friction recurrente -- `StoreRequest.space` casse les literaux de test upstream a chaque merge
+
+**Symptome :** Patch 33 (`b64540d2`, 2026-05-25) a ajoute `space:
+Option<String>` a `StoreRequest` (`kleos-lib/src/memory/types.rs:328`), champ
+VOCSAP-local absent d'upstream Ghost-Frame. `StoreRequest` ne derive PAS
+`Default` (seulement `Debug`/`Clone`/`Serialize`/`Deserialize`) ; un `impl
+Default` manuel existe (`types.rs:357`) et inclut `space: None`. Consequence :
+tout test upstream qui construit `StoreRequest { ... }` en literal complet
+(sans `..Default::default()`) casse la compilation avec `E0063 missing field
+`space`` des qu'il est absorbe dans le fork -- erreur de **compilation**, pas
+serde runtime (`#[serde(default)]` sur `space` ne joue qu'a la deserialisation
+JSON, jamais a la construction Rust).
+
+**Deja survenu 3 fois** (2 avant ce fichier, +1 ci-dessus a la ligne 3989) :
+- 2026-06-02, commit `fde2ffc4` "restore user_id isolation + NULL-safe space
+  filters post-3ee0b0bf".
+- 2026-06-29, merge `d905d4e7` -- cf. entree juste au-dessus
+  (`kleos-lib/src/jobs/community_detection.rs:231`).
+- 2026-08-24, post-merge `733a9466` (absorb upstream `7ce95482`, 156
+  commits) : 6 fichiers casses (`entity_extraction.rs`, `l5_channels.rs`,
+  `review_gate_surfaces.rs`, `review_gate_store_pending.rs`,
+  `review_gate_search.rs`, `context_review_gate.rs`), fixes appliques.
+
+**Detection (executable sans contexte prealable) :**
+```
+cargo check -p kleos-lib --tests --features bundled-sqlite
+# chercher "missing field `space`" dans la sortie -> fichier + ligne
+```
+Ou proactif avant meme de compiler :
+```
+grep -n "StoreRequest {" kleos-lib/tests/*.rs
+```
+puis pour chaque site verifier que le bloc contient soit `space:`, soit
+`..Default::default()`. Si aucun des deux -> casse.
+
+**Fix (test-only, zero risque prod) :** ajouter `space: None,` dans le
+literal (convention : juste apres `space_id: None,`). Ne JAMAIS toucher le
+champ ou l'`impl Default` cote production pour ce symptome.
+
+**Options durables discutees (non tranchees, decision operateur) :**
+(i) repatcher a chaque merge -- cout mesure ~10 min diagnostic + N one-liners,
+viable indefiniment ; (ii) adopter `..Default::default()` sur tout NOUVEAU
+test VOCSAP -- reduit notre propre risque de recidive mais ne stoppe pas les
+literaux upstream ; (iii) proposer `space` en PR upstream Ghost-Frame -- seule
+option qui supprime la divergence a la source, incertain qu'upstream le veuille
+(concept VOCSAP multi-tenant), reste ouverte cote operateur.
+
+---
+
+## Patch 33.2 -- space sur /ingest, /context, /prompt/generate + hooks (2026-10-10)
+
+**Symptome sous Patch 33 seul :** trois surfaces violaient le contrat que Patch 33
+s'est fixe (partition souple : lecture scopee = space courant + `default` + NULL,
+ecriture jamais NULL).
+
+- `/ingest`, `/ingest/stream`, `/ingest/upload/complete`, `/import/bulk` codaient
+  `space_id: None` en dur (`routes/ingestion/mod.rs`) : tout document ingere
+  arrivait en NULL, donc visible dans chaque recall scope via la clause inclusive.
+- `/context` (`ContextOptions`) n'avait aucun parametre space.
+- `/prompt/generate` n'avait aucun parametre space ; le commentaire de l'appel
+  growth reportait explicitement le scoping a "un patch ulterieur".
+- Les hooks ne posaient pas le space sur leurs chemins principaux :
+  `session-start-kleos.sh` et `kleos-cli hook session-start` -> `/prompt/generate`,
+  `user-prompt-lean.sh` et `kleos-cli hook user-prompt` -> sidecar `/recall` ->
+  `/search` (le sidecar ne relayait aucun space). Seul le fallback
+  `kleos-cli context` scopait.
+
+**Approche :** meme contrat que `/search` (Patch 33 + 49), applique aux trois routes.
+
+- *Ecriture* (`/ingest` et cousins) : `normalize_space_input` (absent -> `default`,
+  jamais NULL ; `space_id` d'un autre user -> 400).
+- *Lecture* (`/context`, `/prompt/generate`) : `resolve_space_filter` (absent ->
+  aucun filtre, comportement upstream) ; `include_unscoped` absent -> `true`.
+- Nouveaux helpers dans le module VOCSAP `kleos_lib::space` : `SpaceScope`
+  (semantique stricte / inclusive identique au post-filtre de `hybrid_search`),
+  `memory_space_ids`, `retain_in_scope` (fail-closed si la lecture des space_id
+  echoue).
+- `/context` : couche semantique via `SearchRequest.space_id/include_unscoped` ;
+  statiques et recentes filtrees sur `Memory.space_id` (recentes : sur-fetch 50
+  puis 5 premieres dans le scope) ; liees filtrees par `retain_in_scope`. Les
+  couches evolution / episodes / structured_facts derivent des blocs deja
+  scopes. `current_state`, `preferences`, `working_memory` ne sont pas des
+  memoires et ne sont pas scopees.
+- `/prompt/generate` : sections memoires et personnalite via `SearchRequest`,
+  growth via `list_observations` (signature Patch 33 existante), brain par
+  `retain_in_scope` sur les 3 requetes Hopfield (substrat global, Patch 36).
+- Sidecar `/recall` : accepte `space`, `space_id`, `include_unscoped` et les
+  relaie a `/search` ; absents -> rien n'est ajoute.
+- Hooks : `session-start-kleos.sh` ajoute `KLEOS_SPACE` au corps de
+  `/prompt/generate` ; `user-prompt-lean.sh` resout le space (`$KLEOS_SPACE`
+  puis marker / racine git, lecture seule) et l'envoie au sidecar ;
+  `kleos-cli hook` fait de meme (`hook_space`) pour `/prompt/generate` et
+  `/recall`. `kleos-cli ingest` gagne `--space`, `--space-id`, `--no-space`.
+- Schemas MCP (`kleos-client/src/routes.rs`) : `space`, `space_id`
+  (+ `include_unscoped` en lecture) declares sur `prompts.generate`,
+  `ingestion.text`, `ingestion.bulk`, `ingestion.upload_complete`,
+  `context.build`. L'injection automatique du space de session par
+  `kleos-mcp` (Patch 33) couvre donc ces outils sans modification.
+
+**Pourquoi pas le niveau inferieur :** aucun canal overlay ne porte un filtre de
+requete ; le scoping doit etre applique la ou les memoires sont lues. Les helpers
+vont dans `kleos_lib::space` (module VOCSAP, zero delta upstream) ; les sites
+upstream ne recoivent que des appels de quelques lignes.
+
+**Fichiers :**
+
+| Fichier | Nature |
+|---|---|
+| `kleos-lib/src/space.rs` | additif (module VOCSAP) |
+| `kleos-lib/src/context/types.rs` | 3 champs `ContextOptions` (upstream) |
+| `kleos-lib/src/context/mod.rs` | resolution du scope + 4 points de filtre (upstream, chirurgical) |
+| `kleos-server/src/routes/ingestion/{mod,types}.rs` | 4 resolutions + 2 champs x3 structs (upstream) |
+| `kleos-server/src/routes/prompts/{mod,types}.rs` | resolution + 4 sections (upstream ; remplace le commentaire Patch 33 "follow-up") |
+| `kleos-client/src/routes.rs` | 5 schemas JSON (upstream) |
+| `kleos-sidecar/src/routes.rs` | 3 champs `RecallBody` + relai (upstream) |
+| `kleos-cli/src/hook.rs`, `kleos-cli/src/main.rs` | `hook_space` + flags `ingest` + textes d'aide (upstream) |
+| `docs/KLEOS_OPERATIONS_MANUAL.md` | sections `context`, `ingest`, `hook session-start`, `hook user-prompt` (upstream, doc) |
+| `hooks/full/session-start-kleos.sh`, `hooks/full/user-prompt-lean.sh` | VOCSAP |
+
+**Tests :**
+
+- `kleos-lib` `space::tests` : `scope_allows_strict_and_inclusive`,
+  `search_filter_maps_scope`, `retain_in_scope_filters_by_memory_space`.
+- `kleos-server/tests/spaces_ingest_context_prompt.rs` (nouveau) : ingest dans le
+  space demande ; ingest sans space -> `default` (pas NULL) ; `space_id` etranger
+  -> 400 ; `/context` et `/prompt/generate` scopes strict sans fuite, et sans
+  space les deux projets restent visibles.
+- `kleos-sidecar/tests/recall_space.rs` (nouveau) : relai du space a `/search`,
+  rien d'ajoute quand le space est absent ou vide.
+- `kleos-cli` `hook::tests::test_hook_space_reads_marker_from_hook_cwd`.
+
+**Hors perimetre (restent en NULL) :** `/import/json`, `/import/mem0`,
+`/import/supermemory` font des INSERT bruts sans `space_id` ; a traiter si ces
+imports servent encore.
+
+**Conditions de retrait :** si upstream ajoute un scoping par space sur ces routes,
+reprendre leur version et retirer les sites marques "Patch 33.2" ; les helpers de
+`kleos_lib::space` restent utilisables par Patch 33/36.
+
+---
+
+## Patch 34 -- fix /spaces dual-DB bug (2026-05-25)
+
+### Symptome
+
+Decouvert lors de la validation de Patch 33 (memoire Kleos #4222). Sur LXC
+121 post-deploy Patch 33 :
+
+- POST /memory avec `"space": "kleos"` -> normalize_space_input cree la
+  row spaces dans le **tenant DB** (`tenants/2/kleos.db`), correct.
+- GET /spaces -> retourne uniquement `id=2 name=default` (la row creee
+  par `auth_keys/mod.rs:278` au INSERT INTO users).
+- sqlcipher de `tenants/2/kleos.db` confirme : 4 spaces presentes
+  (`claude-config`, `kleos`, `default`, `smoke-test-bravo`), invisibles
+  via l'API.
+
+Cause racine : les 3 handlers `create_space` (l. 355), `list_spaces`
+(l. 393), `delete_space` (l. 437) dans `routes/auth_keys/mod.rs`
+utilisent l'extractor `State<AppState>` puis `state.db.write(...)` /
+`state.db.read(...)`. Mais `state.db` est le **main monolith DB**
+(reserve aux tables system-scoped : users, api_keys, audit_log, agents,
+app_state). La table `spaces` vit dans le **tenant schema**
+(`schema_v44_parity.sql:89-97`), accessible via `ResolvedDb`.
+
+Bug pre-existant upstream Ghost-Frame, rendu visible par Patch 33 quand
+les memory handlers ont commence a creer des spaces dans le tenant DB
+via `normalize_space_input`.
+
+### Approche
+
+Fix chirurgical : les 3 handlers prennent `ResolvedDb(db): ResolvedDb`
+au lieu de `State(state): State<AppState>`, et `state.db` devient `db`
+dans les bodies. Niveau **chirurgical** (3 handlers, ~6 lignes
+substitutives + 3 commentaires).
+
+Ne touche pas :
+
+- L'auto-creation du space `default` au INSERT INTO users
+  (`auth_keys/mod.rs:278`) reste sur `state.db`. C'est un no-op
+  effectif post-Patch 33 puisque `kleos_lib::space::default_space_id`
+  cree a la demande cote tenant si manquant (INSERT OR IGNORE), donc
+  la row main DB orpheline ne bloque rien.
+- Le routeur `Router::new().route("/spaces", ...)` reste identique
+  (l'extractor est resolu via le type, pas via le mounting).
+- Aucune migration de donnees : les spaces orphelines deja creees
+  dans le main DB pre-Patch 34 (typiquement `default id=2`) restent
+  inertes, pas consultees par le code post-fix.
+
+### Fichiers touches
+
+| Fichier | Niveau delta | Description |
+|---|---|---|
+| `kleos-server/src/routes/auth_keys/mod.rs` | chirurgical | 3 handlers + 1 import. State<AppState> -> ResolvedDb. state.db -> db. |
+
+### Tests
+
+Build cote operateur via WSL. Verification E2E manuelle post-deploy :
+
+```bash
+# Avant : GET /spaces ne montre que id=2 default
+curl -sf http://192.168.10.21:4200/spaces -H "Authorization: Bearer $KLEOS_API_KEY"
+# Apres deploy Patch 34, doit montrer claude-config + kleos + default + smoke-test-bravo + foo
+curl -sf -X POST http://192.168.10.21:4200/spaces \
+  -H "Authorization: Bearer $KLEOS_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"foo"}'
+curl -sf http://192.168.10.21:4200/spaces -H "Authorization: Bearer $KLEOS_API_KEY"
+```
+
+### Conditions de retrait
+
+1. **Upstream Ghost-Frame absorbe ce patch via PR** : retirer Patch 34
+   de la liste locale, code reste tel quel. Candidat PR upstream
+   immediat (bug objectif, fix minimal, zero impact comportemental
+   negatif).
+2. **Upstream choisit une autre approche** (ex: deplacer la table
+   spaces vers le main DB, garder les handlers cote state.db) : aligner
+   le code local sur l'API upstream apres analyse.
+
+Cleanup optionnel post-deploy : la row `default id=2` dans le main DB
+(creee par `auth_keys/mod.rs:278` au INSERT INTO users) devient
+orpheline. Pas de cleanup automatique dans ce patch ; un script ops
+manuel peut faire :
+
+```sql
+DELETE FROM spaces WHERE user_id = 1 AND name = 'default';
+```
+
+Apres confirmation qu'aucun code legacy ne lit cette row directement
+(grep sur `FROM spaces WHERE ... AND name = 'default'` cote main DB :
+aucun hit hors auto-creation l. 278).
+
+agent-forge spec_id : `spec_e46b8918` + `hyp_5ed03a1e`.
+
+---
+
+## Patch 35 -- dreamer.rs growth::reflect outer loop par space (2026-05-26)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE.** Unionne avec l'appel upstream `existing_growth_context()` (nouvelle fonction dans `kleos-server/src/dreamer.rs` qui feed `existing_growth` a `GrowthReflectRequest` via `growth::list_observations`) et le predicat SQL review-gate ; le commentaire inline "Patch 35 -- iterate per space to fix Kleos #3028" est conserve dans `run_cycle`. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Symptome** -- Patch 33 6/N a etendu `GrowthReflectRequest.space_id` et
+l'INSERT `growth_observations` cote `kleos-lib`, mais les deux call sites
+dans `kleos-server/src/dreamer.rs` (`run_cycle` lignes 339-390 et
+`run_cycle_tenants` lignes 645-670) passaient encore `space_id: None`
+hardcode avec un TODO Patch 33 explicite. Resultat : les observations
+growth generees par le scheduler dreamer pour un user ayant plusieurs
+spaces actifs sont produites a partir d'un contexte mixte (faits issus
+de N projets melanges) et persistees avec `space_id = NULL`. Bug Kleos
+#3028 reste donc partiellement ouvert apres Patch 33 -- les nouveaux
+faits stores via `/memory` sont bien partitionnes, mais le pipeline
+intelligence background continue de pomper du cross-projet.
+
+**Approche (niveau additif/chirurgical)** -- deux helpers prives ajoutes
+en fin du module dreamer :
+
+- `list_user_spaces(db, user_id) -> Result<Vec<Option<i64>>, EngError>`
+  : `SELECT DISTINCT space_id FROM memories WHERE user_id = ?1 AND
+  is_forgotten = 0 ORDER BY space_id NULLS LAST`. Le bucket legacy
+  `NULL` apparait sous forme `None` dans la liste, traite comme un
+  space distinct (pas de fusion accidentelle).
+- `recent_memory_contents_for_space(db, user_id, space_id, limit)` :
+  variant scoped de `recent_memory_contents`. La SQL est branchee :
+  `space_id = ?2` pour `Some(id)`, `space_id IS NULL` pour `None`. Le
+  helper original (qui ignorait `user_id` -- `_user_id` souligne par
+  Patch 33 6/N) est supprime, plus aucun call site ne le consomme.
+
+Les boucles growth deviennent :
+
+```rust
+for user_id in &users {
+    let spaces = list_user_spaces(db, *user_id).await?; // 1 SELECT par user
+    for space_id_opt in &spaces {
+        let roll: f64 = rand::random();
+        if roll >= GROWTH_REFLECT_CHANCE { continue; } // throttle par paire
+        let ctx = recent_memory_contents_for_space(db, *user_id, *space_id_opt, GROWTH_CONTEXT_SIZE).await?;
+        if ctx.is_empty() { continue; }
+        // merge avec build_dream_context (reste global, brain Hopfield par design)
+        let req = GrowthReflectRequest {
+            service: "dreamer".to_string(),
+            context: merged_ctx,
+            existing_growth: None,
+            prompt_override: None,
+            space_id: *space_id_opt,
+        };
+        growth::reflect(db, &req, *user_id).await?;
+    }
+}
+```
+
+`build_dream_context` reste calcule une fois par user (le brain
+Hopfield est un substrat global par design, cf. plan section 4
+paragraphe Brain). Le throttle `GROWTH_REFLECT_CHANCE = 0.2` est
+applique par paire `(user, space)`, preservant le profil de charge :
+avec N=5 spaces par user, environ 1 reflect par tick par user en
+moyenne (loi binomiale).
+
+**Fichiers touches** -- `kleos-server/src/dreamer.rs` uniquement
+(2 helpers ajoutes, ancien helper supprime, 2 boucles imbriquees). Zero
+touche cote `kleos-lib` (les signatures Patch 33 6/N suffisent). Niveau
+**additif/chirurgical** (~80 lignes nettes, dont 2 helpers + 2 boucles
+patched + 1 helper retire).
+
+**Tests** -- `cargo check -p kleos-server` : 0 error, 0 warning sur
+dreamer.rs apres cleanup du dead helper. Les tests d'integration
+(`cargo test -p kleos-server`) plantent rustc sur Windows MSVC avec
+`STATUS_STACK_BUFFER_OVERRUN (0xc0000409)` + `datafusion_catalog rlib
+cache obsolete` + `invalid metadata files for kleos_lib/kleos_server`.
+Aucune erreur ne reference `dreamer.rs`. Validation E2E reelle requise
+sur LXC 121 apres build WSL + deploy.
+
+**Conditions de retrait** -- candidat PR upstream apres :
+1. Validation E2E sur LXC 121 (verifier que `/growth/observations`
+   retourne des observations avec `space_id` peuple sur tenant 2 apres
+   un tick dreamer complet).
+2. Decision upstream Ghost-Frame d'absorber le concept spaces (cf.
+   meme conditions que Patches 33/34).
+
+agent-forge spec_id : `spec_3c68317c` + `hyp_e44b4354`.
+
+---
+
+## Patch 35.1 -- fix regression user_id schema mismatch (2026-05-26)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE**, meme site que Patch 35 (`kleos-server/src/dreamer.rs`, boucle per-(user, space) unionnee avec `existing_growth_context()` upstream). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Symptome** -- Apres deploy Patch 35 sur LXC 121 (04:47:54 BRT), les
+logs montrent un warn a chaque tick dreamer :
+`dreamer: failed to enumerate spaces, skipping growth this tick
+user_id=<N> error=database error: no such column: user_id in SELECT
+DISTINCT space_id FROM memories WHERE user_id = ?1 AND is_forgotten = 0
+ORDER BY space_id NULLS LAST`. 3 warns par tick (user 1, user 2 main DB,
+user 2 tenant shard). Pipeline intelligence + brain dream + skill
+evolution continuent normalement, seul le growth reflect est skipped.
+
+**Cause racine** -- le commit `61346ec0 refactor(tenant): Phase 5.1 -
+drop user_id from memory core` (git log dreamer.rs) a supprime la
+colonne `memories.user_id` parce que les tenant shards isolent deja par
+DB. C'est pourquoi le helper original `recent_memory_contents` ecrivait
+`_user_id: i64` souligne (parametre intentionnellement ignore). Patch
+35 avait ajoute `WHERE user_id = ?1` sur `memories` sans verifier la
+discipline cross-call-site.
+
+**Fix (additif/chirurgical, dreamer.rs uniquement)** -- deux ajustements :
+
+- `list_user_spaces` query la table `spaces` (qui garde `user_id`,
+  cf. `kleos-lib/src/space.rs:87`) au lieu de `memories.user_id`.
+  Append systematique de `None` (bucket legacy NULL) pour conserver
+  la traversee du bucket transitoire.
+
+  ```rust
+  SELECT id FROM spaces WHERE user_id = ?1 ORDER BY id
+  // puis spaces.push(None);
+  ```
+
+- `recent_memory_contents_for_space` retire `user_id` du WHERE (les
+  tenant shards isolent deja par DB). Le parametre `_user_id` est
+  conserve souligne pour API symmetry et alignement upstream avec le
+  helper original supprime.
+
+**Fichiers touches** -- `kleos-server/src/dreamer.rs` uniquement
+(2 helpers reecrits, zero changement de signature). Niveau
+**chirurgical**, ~15 lignes nettes.
+
+**Tests** -- `cargo check -p kleos-server` : 0 error, 0 warning sur
+dreamer.rs (0.61s). Verification E2E : observer les prochains ticks
+dreamer apres redeploy, le warn doit disparaitre et `growth_calls`
+doit incrementer dans `DreamerStats.totals`.
+
+**Lecon pour les patches futurs** -- toujours grep cross-call-site
+les symboles touches (colonnes, methodes) avant d'ecrire une clause
+SQL. Le `_user_id` souligne dans l'helper original etait un tell
+direct que la colonne n'existait plus. Discipline rappelee dans la
+rule `.claude/rules/kleos-patching-discipline.md`.
+
+agent-forge : meme `spec_3c68317c` que Patch 35 (continuite du meme
+chantier), nouvelle `hyp_705f30a5`.
+
+---
+
+## Patch 36 -- brain_query post-ranking filter par space (2026-05-26)
+
+**Symptome / motivation** -- Le plan Patch 33 section 4 paragraphe Brain
+prevoit que le brain Hopfield reste un substrat associatif **global**
+(la dream_cycle est par design partagee entre tous les contextes pour
+preserver la dynamique d'attraction), tout en exposant un filtrage
+**optionnel cote query** : un caller qui sait dans quel projet il
+travaille doit pouvoir restreindre les patterns retournes au scope du
+space courant. Patch 33 6/N a livre `space_id` sur `memories` mais
+n'a pas touche `/brain/query`, donc le caller ne pouvait pas filtrer.
+
+**Approche (niveau additif/chirurgical, kleos-server uniquement)** --
+implementer le filtre **apres** ranking Hopfield, cote handler :
+
+1. Wrapper local `BrainQueryRequest` dans
+   `kleos-server/src/routes/brain/types.rs` qui flatten l'upstream
+   `BrainQueryOptions` (back-compat strict des payloads existants) et
+   ajoute trois champs :
+
+   ```rust
+   #[derive(Debug, Deserialize)]
+   pub struct BrainQueryRequest {
+       #[serde(flatten)]
+       pub inner: BrainQueryOptions,
+       #[serde(default)]
+       pub space: Option<String>,
+       #[serde(default)]
+       pub space_id: Option<i64>,
+       #[serde(default = "default_include_unscoped")]
+       pub include_unscoped: bool,
+   }
+   ```
+
+2. `query_handler` (mod.rs) gagne l'extractor `ResolvedDb`, resolve le
+   target via `kleos_lib::space::resolve_space_filter(&db, user_id,
+   space_id, space)`, appelle `brain.query` **inchange** avec
+   `&body.inner`, puis applique le filtre :
+
+   ```rust
+   if let Some(target_id) = target_space {
+       let ids: Vec<i64> = result.activated.iter().map(|m| m.id).collect();
+       if !ids.is_empty() {
+           let space_map = load_memory_space_ids(&db, &ids).await?;
+           let include_unscoped = body.include_unscoped;
+           result.activated.retain(|m| match space_map.get(&m.id) {
+               Some(Some(sid)) => *sid == target_id,
+               Some(None) => include_unscoped,
+               None => false,
+           });
+       }
+   }
+   ```
+
+3. Helper local `load_memory_space_ids(db, &[i64]) -> HashMap<i64,
+   Option<i64>>` fait un seul `SELECT id, space_id FROM memories WHERE
+   id IN (?,?,...)` via `rusqlite::params_from_iter`. Le set est
+   borne par `top_k` brain (typiquement <=50), bien sous la limite
+   SQLite 999 placeholders.
+
+**Comportement** :
+
+| Payload | Resultat |
+|---|---|
+| Aucun `space` / `space_id` | `brain.query` inchange (back-compat strict) |
+| `space="kleos"` + defaut `include_unscoped=true` | `activated` retient ceux dont `space_id = id(kleos) OR space_id IS NULL` |
+| `space="kleos"` + `include_unscoped=false` | `activated` retient strictement `space_id = id(kleos)` |
+| `space_id=N` valide pour le user | meme regle que `space` resolu en N |
+| `space_id=N` qui n'appartient pas au user | 400 `InvalidInput` via `resolve_space_filter` |
+
+Le moteur Hopfield voit toujours le set global (preserve la dynamique
+d'attraction). Le filtre s'applique apres ranking ; `top_k` peut donc
+renvoyer moins de N apres filtre, ce qui est la semantique attendue
+("retourne jusqu'a top_k patterns globalement actives qui sont dans ce
+space").
+
+**Fichiers touches** -- `kleos-server` uniquement :
+- `kleos-server/src/routes/brain/types.rs` : nouveau wrapper
+  `BrainQueryRequest` (~30 lignes).
+- `kleos-server/src/routes/brain/mod.rs` : import update, signature
+  `query_handler` change, post-filter ajoute, helper
+  `load_memory_space_ids` (~70 lignes nettes).
+
+Zero touche cote `kleos-lib` (`BrainQueryOptions`, `BrainMemory`,
+`BrainQueryResult` restent strictement upstream). Niveau **additif**.
+
+**Tests** -- `cargo check -p kleos-server` : 0 error, 0 warning sur les
+fichiers modifies. Verification E2E reportee a build WSL + redeploy
+LXC 121.
+
+**Conditions de retrait** -- candidat PR upstream apres :
+1. Validation E2E sur LXC 121 (smoke test : `POST /brain/query
+   {"query":"...","space":"kleos","include_unscoped":false}` retourne
+   un set strictement scope kleos).
+2. Absorption upstream du concept spaces (meme prerequis que Patches
+   33/34/35).
+
+agent-forge spec_id : `spec_d8ad66d8`.
+
+---
+
+## Patch 37 -- intelligence contradiction + temporal filter par space (2026-05-26)
+
+**Symptome / motivation** -- Le plan Patch 33 section 4 prevoit que
+chaque passe paire du pipeline intelligence applique le filtre
+`a.space_id = b.space_id` pour eviter les fusions cross-space en
+background. Patch 33 partie 1 (commit `588afb78`) a couvert
+`duplicates` et `consolidation`. Restaient `contradiction` (pair
+detection sur structured_facts) et `temporal` (pair fact contradiction
++ pattern recurrence detection). Sans ce filtre, une contradiction
+detectee entre 2 memoires de projets differents serait remontee a tort,
+ou un pattern temporel mergerait des memoires cross-projet.
+
+**Approche (niveau chirurgical + refactor local, kleos-lib uniquement)** :
+
+1. `contradiction.rs::scan_all_contradictions` -- ajouter 3 lignes SQL :
+   ```sql
+   JOIN memories m1 ON m1.id = sf1.memory_id
+   JOIN memories m2 ON m2.id = sf2.memory_id
+     AND m1.space_id = m2.space_id
+   ```
+   NULL legacy isole naturellement (NULL = NULL faux en SQL).
+
+2. `temporal.rs::detect_fact_contradictions` -- consommer le parametre
+   `_memory_id` (precedemment underscored, signature externe stable),
+   ajouter `JOIN memories m_cand ON ... JOIN memories m_new ON m_new.id
+   = ?4 WHERE ... AND m_cand.space_id = m_new.space_id` au candidate
+   query. 4eme placeholder bind sur `memory_id`.
+
+3. `temporal.rs::detect_patterns` -- refactor local :
+   - SQL ajoute `space_id` au SELECT
+   - `HashMap<String, Vec<(i64, i64)>>` devient
+     `HashMap<(Option<i64>, String), Vec<(i64, i64)>>`
+   - Group key change de `category` a `(space_id, category)`
+   - Pattern description inchangee (utilise `category` seul, le scope
+     space etant implicite via memory_ids qui appartiennent au meme
+     bucket)
+
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/contradiction.rs` (~10 lignes ajoutees
+  dont 7 commentaires) -- scan_all_contradictions JOIN clause.
+- `kleos-lib/src/intelligence/temporal.rs` (~30 lignes touchees) --
+  detect_fact_contradictions (JOIN + bind param), detect_patterns
+  (SELECT + HashMap + loop tuple destructuring).
+
+Zero touche cote `kleos-server` (les signatures publiques
+`scan_all_contradictions(db, user_id)`, `detect_fact_contradictions(...,
+memory_id, ...)`, `detect_patterns(db)` restent identiques). Callers
+intelligence/mod.rs et intelligence/scheduler.rs inchanges.
+
+**Comportement** :
+
+| Cas | Resultat |
+|---|---|
+| 2 memoires meme space (kleos id=2 et kleos id=2) | Paire detectee normalement (filtre passe) |
+| 2 memoires spaces differents (kleos et default) | Paire ignoree |
+| 2 memoires NULL legacy | Paire ignoree (NULL = NULL faux), isolation safe-by-default |
+| detect_patterns : N memoires meme category split sur 3 spaces | 3 buckets analyses separement, chacun doit atteindre MIN_SAMPLE_SIZE |
+| detect_fact_contradictions appele avec memory_id inexistant | Subquery m_new retourne 0 ligne, INNER JOIN echoue, 0 candidat (skip silencieux) |
+
+**Tests** -- `cargo check -p kleos-lib --features bundled-sqlite` :
+0 error, 10 warnings (tous pre-existants dans cred/bootstrap.rs).
+`cargo check -p kleos-server` : 0 error, 10 warnings (idem).
+Validation agent-forge `verify` : 2/2 steps passed.
+
+Tests integration kleos-lib non-executes cote Windows MSVC pour ICE
+STATUS_STACK_BUFFER_OVERRUN pre-existant (memoire Kleos #4545,
+independant). Validation E2E LXC 121 reportee a build WSL + redeploy.
+
+**Conditions de retrait** -- candidat PR upstream apres :
+1. Validation E2E sur LXC 121 (smoke : creer 2 memoires meme category
+   dans 2 spaces differents, declencher dreamer scheduler, verifier
+   aucun temporal_pattern ne merge les 2 ; idem pour
+   scan_all_contradictions via 2 structured_facts cross-space).
+2. Absorption upstream du concept spaces (meme prerequis que Patches
+   33/34/35/36).
+
+agent-forge spec_id : `spec_cbf300ff`.
+
+---
+
+## Patch 37.1 -- detect_contradictions(memory) filtre par space (2026-05-27)
+
+**Symptome / motivation** -- Patch 37 (commit `f2d0327b`) a applique le
+filtre par space sur les passes paire offline (`scan_all_contradictions`,
+`detect_fact_contradictions`, `detect_patterns`) mais a oublie la
+fonction `detect_contradictions(memory)` (kleos-lib/src/intelligence/
+contradiction.rs ligne 22), appelee par le pipeline **online** a chaque
+ingestion de memoire. Cette fn compare la new memoire aux
+`structured_facts` pre-existants en filtrant uniquement par
+`subject+predicate`, sans contrainte de space. Resultat : 2 projets
+differents qui partagent un meme triplet subject+predicate (ex: deux
+projets qui declarent `agent-forge expose --help`) auraient produit une
+contradiction false-positive immediatement a l'ingestion.
+
+**Approche (niveau chirurgical, kleos-lib uniquement)** -- Sibling du
+Patch 37 avec le meme pattern que `temporal.rs::detect_fact_contradictions`.
+La fn prend deja `memory: &Memory` en parametre et utilise `memory_id`
+comme placeholder `?3` dans la query candidate. Pas besoin d'ajouter un
+nouveau param : on peut JOIN sur `?3` directement.
+
+Avant :
+```sql
+SELECT sf.id, sf.object, sf.memory_id, sf.confidence
+FROM structured_facts sf
+WHERE sf.subject = ?1 AND sf.predicate = ?2
+  AND sf.memory_id != ?3
+  AND sf.id != ?4
+ORDER BY sf.confidence DESC
+```
+
+Apres :
+```sql
+SELECT sf.id, sf.object, sf.memory_id, sf.confidence
+FROM structured_facts sf
+JOIN memories m_cand ON m_cand.id = sf.memory_id
+JOIN memories m_new ON m_new.id = ?3
+WHERE sf.subject = ?1 AND sf.predicate = ?2
+  AND sf.memory_id != ?3
+  AND sf.id != ?4
+  AND m_cand.space_id = m_new.space_id
+ORDER BY sf.confidence DESC
+```
+
+3 lignes JOIN + 1 clause egalite. Signature `pub async fn
+detect_contradictions(db: &Database, memory: &Memory) -> Result<Vec<
+Contradiction>>` inchangee. Ordre des placeholders inchange.
+
+**Fichiers touches** :
+- `kleos-lib/src/intelligence/contradiction.rs` (~15 lignes ajoutees
+  dont 9 commentaires) -- query candidate dans `detect_contradictions`.
+
+Zero touche cote `kleos-server` ni autres modules kleos-lib. Callers du
+pipeline online (services/memory.rs, intelligence/mod.rs) inchanges.
+
+**Comportement** :
+
+| Cas | Resultat |
+|---|---|
+| New memoire space=kleos, candidate fact memoire space=kleos | Paire detectee normalement |
+| New memoire space=kleos, candidate fact memoire space=default | Paire ignoree (clause egalite faux) |
+| New memoire space=kleos, candidate fact memoire space=NULL legacy | Paire ignoree (NULL != kleos) |
+| New memoire space=NULL legacy, candidate fact memoire space=NULL legacy | Paire ignoree (NULL = NULL false, safe-by-default) |
+| Fact orphelin sans memoire correspondante en DB | INNER JOIN m_cand filtre, fact non considere |
+| memory.id absente de la table memories (cas test inconsistant) | JOIN m_new retourne 0 ligne, 0 candidat, skip silencieux |
+
+**Tests** -- `cargo check -p kleos-lib --features bundled-sqlite` :
+0 error, 10 warnings (tous pre-existants dans cred/bootstrap.rs).
+`cargo check -p kleos-server --features kleos-lib/bundled-sqlite` :
+0 error. Validation agent-forge `verify` : 2/2 steps passed.
+
+Tests integration kleos-lib non-executes cote Windows MSVC (ICE
+STATUS_STACK_BUFFER_OVERRUN pre-existant -- memoire Kleos #4545,
+independant). Validation E2E LXC 121 et smoke FR cross-space contradiction
+reportes au build WSL + redeploy.
+
+**Conditions de retrait** -- candidat PR upstream **avec** Patch 37 (les
+deux constituent une unite logique : filtre par space sur les 4 passes
+contradiction/temporal). Voir aussi conditions Patch 37.
+
+agent-forge spec_id : `spec_9be9c0f3`.
+
+---
+
+## Patch 38 -- i18n core lexicon + 16 sites refactores (2026-05-27)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RESIDU.** `validate_override_repo` et `reload_overrides` ont ete supprimes upstream comme dead code (commit `25ff58a9`) alors que nos routes admin les appellent encore. Restaures dans un module lateral `kleos-lib/src/lexicon/vocsap.rs` (confirme present aux cotes de `cache.rs`, `loader.rs`, `mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Symptome / motivation** -- L'audit `docs/dev-notes/i18n-audit.md` (2026-05-26) a identifie 15 sites Kleos qui hardcodent du vocabulaire anglais (extraction, personality, valence, sentiment, decomposition, hopfield, services/brain, prompts, gate, handoffs). Empiriquement sur LXC 121 : ~2 structured_facts produits pour 2282 memoires, soit un taux <0.1% causé directement par le mismatch entre les regex EN et les memoires majoritairement FR/tech. Le pipeline d'intelligence (contradictions, valence, personality, sentiment) est de facto dead-end fonctionnel hors anglais.
+
+L'operateur a choisi **Option B** : module i18n core lexicon central + couche de normalisation au matching. Plan original dans `~/.claude/plans/je-pr-f-re-b-complet-robust-kazoo.md`.
+
+**Approche** -- Niveau delta `additif + chirurgical multi-sites`, kleos-lib principalement (1 site cote kleos-server). 3 livrables :
+
+1. **Livrable 1** -- Nouveau module `kleos_lib::lexicon` avec API `word_class(lang, class)`, `word_class_alternation`, `supported_languages`, `class_emotion_metadata`. Cascade `KLEOS_LEXICON_REPOSITORY` env > `${KLEOS_DATA_DIR}/lexicon/` > embedded baselines (`kleos-lib/lexicon/{en,fr}.toml`). Cache TTL 5s + Arc<ParsedLexicon> + OnceLock + RwLock (pattern miroir de `kleos_lib::llm::prompts.rs` Patch 15).
+
+2. **Livrable 2.A** -- 12/12 sites Layer A pur consomment `lexicon::word_class` au lieu de constantes Rust : STATE_VERBS, PROHIBITIONS, SCRUB_PATTERNS, articles, INTENSIFIERS, causal+negation, stopwords, EMOTION_KEYWORDS, FILLER_PREFIXES, META_STOPLIST, infer_domain, SENTIMENT_LEXICON.
+
+3. **Livrable 2.A.normalize** -- Couche de normalisation au matching pour absorber accents et morphologie :
+   - Crates ajoutees : `unicode-normalization` 0.1, `rust-stemmers` 1.2 (workspace, pures Rust, ~100 KiB total).
+   - API publique `lexicon::fold_for_matching(s, lang, with_stem)` : lowercase + NFD strip + Snowball stemming optionnel.
+   - API publique `lexicon::fold_word_for_class(word, lang, class)` : consulte le metadata `stem` de la classe.
+   - TOMLs FR re-orthographies avec les accents corrects (~70 mots accentues sur 29 classes).
+   - TOMLs EN re-orthographies avec apostrophes vraies dans contractions (`didn't`, `I'm just`, etc.).
+   - 9 classes mots-grammaire marquees `stem = false` pour eviter over-stemming sur les tokens courts ou techniques (state_verbs, articles, stopwords, first_person_pronoun, negation_marker, 5 intensifier_* tiers, credential_keywords).
+   - 8 / 11 sites L2.A patches utilisent le folding ; 3 sites position-based (clean_subject, hopfield causal, decomposition strip_filler) preservent leur comparaison surface car le folding casserait les indices de position (strip_prefix / starts_with + word indices).
+
+4. **Livrable 2.B partial 3/4** -- Refactor des regex multi-langues en templates parametriques par langue :
+   - extraction.rs 5/12 regex i18n-portables : like_regex_for, dislike_regex_for, favorite_regex_for, location_regex_for, role_regex_for. Les 7 autres (buy, spent, have, exercise, made, earned) sont differables car elles encodent une syntaxe unit/currency EN-only.
+   - personality.rs 7/7 patterns : LIKE_PATTERN, DISLIKE_PATTERN, FAV_PATTERN, DECISION_PATTERN, IDENTITY_PATTERN, VALUE_PATTERN, MOTIVATION_PATTERN.
+   - handoffs/atoms.rs 4/4 patterns : RE_DECISION, RE_CONSTRAINT, RE_TASK, RE_QUESTION (RE_ENTITY_PATH et RE_ENTITY_LABEL restent inchanges, ils encodent du structurel non linguistique).
+   - valence.rs 0/22 EMOTION_PATTERNS differable (chaque pattern porte valence + arousal metadata, decoupage TOML en 22 classes lourd).
+
+**Submodule** -- Nouveau `lexicon-overrides/` mappe vers `VOCSAP/Kleos.lexicon` (private). Pre-loaded avec les TOMLs EN/FR au moment de la creation. README du repo + README principal du repo Kleos documentent le pattern overlay (Patches 15, 19b, 38) sans nommer les repos prives.
+
+**Classes lexicon livrees** (en + fr.toml chacun) :
+- Grammar (stem=false) : verb_like, verb_dislike, verb_buy, state_verbs, articles, stopwords, first_person_pronoun, negation_marker, 5x intensifier_*, credential_keywords, atom_decision_markers, atom_constraint_markers, atom_task_markers, atom_question_markers, decision_verbs, identity_markers, value_markers, motivation_markers, favorite_marker, is_or_are, favorite_category, location_verbs, role_verbs.
+- Semantic (stem=true default) : 17 emotion_* (avec valence + intensity metadata), 5 causal_*, filler_prefixes, meta_stoplist, 7 domain_*, prohibition_marker, 10 sentiment_* (par bucket de score).
+
+Total : 47 classes EN + 47 classes FR.
+
+**Fichiers touches (additifs)** :
+- Cargo.toml workspace deps (+2)
+- kleos-lib/Cargo.toml (+2 deps)
+- kleos-lib/src/lib.rs (+1 pub mod)
+- kleos-lib/src/lexicon/{mod,loader,cache}.rs (nouveau module, ~700 lignes)
+- kleos-lib/lexicon/{en,fr}.toml (embedded baselines, ~250 lignes chaque)
+- docs/dev-notes/{i18n-audit,patch-38-regex-overrides-design,patch-38-remaining-work}.md
+- README.md (section Runtime overlays)
+- lexicon-overrides/ (nouveau submodule)
+- .gitmodules
+
+**Fichiers touches (refactor)** :
+- kleos-lib/src/intelligence/{extraction,temporal,decomposition,sentiment}.rs
+- kleos-lib/src/{personality,prompts}.rs
+- kleos-lib/src/brain/hopfield/recall.rs
+- kleos-lib/src/services/brain.rs
+- kleos-lib/src/handoffs/atoms.rs
+- kleos-server/src/routes/gate/mod.rs
+
+**Commits sur branche `local/patch-38-i18n-core`** :
+- `cb72ed09` feat(i18n): Livrable 1 lexicon core module
+- `9e721a5b` docs(i18n): Kleos.lexicon submodule + overlay pattern
+- `e5932477` docs(i18n): describe overlay intent without naming private repos
+- `22f09d4f` a `5e874aa3` : Livrable 2.A sites 1-11 (12 commits)
+- `6369d5af` Livrable 2.A site 12 sentiment AFINN
+- `039c0083` + `1c3b7587` : normalize fold_for_matching helper + accents FR
+- `0819c066` Livrable 2.B 1/4 extraction
+- `ddb4ec45` Livrable 2.B 2/4 personality
+- `f0b556a5` Livrable 2.B 3/4 atoms
+
+**Verification** : `cargo check -p kleos-lib --features bundled-sqlite` et `cargo check -p kleos-server --features kleos-lib/bundled-sqlite` passent avec 0 erreur a chaque commit (10 warnings pre-existants dans cred/bootstrap.rs, non lies). Tests integration kleos-lib non executes cote Windows MSVC pour bug ICE pre-existant (memoire Kleos #4545, independant). Validation E2E LXC 121 + smoke FR cross-space contradiction reportes apres build WSL + redeploy.
+
+**Conditions de retrait** -- ce patch est intrinsequement local (zero changement de behavior par defaut quand `KLEOS_LEXICON_REPOSITORY` est unset et que `${KLEOS_DATA_DIR}/lexicon/` est absent : le cascade tombe sur les embedded baselines). Candidat PR upstream une fois Livrables 2.B complet (valence + 7 extraction unit-specific) et Livrable 3 (migrations + admin endpoints) livres et valides E2E.
+
+agent-forge spec_ids : `spec_9737ef82` (L1), `spec_477f37f9` (L2.A), `spec_afa9794c` (normalize), `spec_118f0313` (L2.B partial 3/4).
+
+### Patch 38 -- L2.B wildcard-after-stem (2026-05-27)
+
+**Symptome / motivation** -- Smoke E2E 2026-05-27 16:53 BRT a montre que les 37 patterns L2.B (5 extraction + 7 personality + 4 atoms + 21 valence) ne matchent pas les conjugues FR : `j'aime` rate parce que le TOML liste `aimer` et que `word_class_alternation` injecte les words bruts sans passer par `fold_for_matching`. Asymetrie avec L2.A (qui folde les deux cotes de la comparaison). Memoire issue Kleos #5608 trace le diagnostic. `j'adore` matche par coincidence lexicale FR/EN (le TOML EN liste `adore`).
+
+**Approche** -- Niveau delta `additif + chirurgical local` (touche uniquement du code Patch 38 deja local). Solution **1-phase wildcard-after-stem** preferee a la two-phase match parce que la phase 1 stem-source + regex-stem ne distingue pas mieux les false-positifs (`aimable` se stem aussi en `aim`) tout en doublant le cout d'execution. Le risque over-match est explicitement tolere au MVP et mesurable post-deploy.
+
+**Mecanique** :
+
+- Nouveau helper `kleos_lib::lexicon::word_class_alternation_stemmed(lang, class) -> String` qui retourne la concatenation pipe-joined des words stemmes via `fold_for_matching` (respect `stem = false` sur classes grammaticales, multi-word entries gerees par split-stem-rejoin existant).
+- Helper `class_stem_enabled(lang, class)` rendu `pub` pour atoms.rs et valence.rs qui doivent stemmer leurs markers multi-mots tout en preservant la collapse `\s+` (atoms) ou la concatenation pipe-joined (valence).
+- Sites refactores : chaque template regex remplace `(?:{alternation})` par `(?:{alternation_stemmed})\w*` -- le wildcard absorbe les conjugues et accords. Captures `(.+?)` restent sur source raw -> objects extraits preservent accents/casse.
+- valence.rs inclus dans le refactor (cout marginal, bonus FR reel sur accords feminin/pluriel comme `fatiguee`/`fatigues`/`joyeuses`, pas de capture donc 0 risque regression).
+
+**Fichiers touches (refactor local)** :
+- kleos-lib/src/lexicon/mod.rs (+helper + 5 tests + 1 fn `pub`)
+- kleos-lib/src/intelligence/extraction.rs (5 patterns)
+- kleos-lib/src/personality.rs (7 patterns)
+- kleos-lib/src/handoffs/atoms.rs (4 patterns via `build_atom_regex` refactore en `(lang, class)`)
+- kleos-lib/src/intelligence/valence.rs (21 patterns via LazyLock loop)
+- docs/dev-notes/i18n-audit.md (section 7 mise a jour)
+- docs/dev-notes/patch-38-remaining-work.md (section 1 cloturee)
+
+**Verification** : `cargo check -p kleos-lib --features bundled-sqlite --lib` passe a 0 erreur (10 warnings pre-existants cred/bootstrap.rs, non lies). Tests cfg(test) non executables cote Windows MSVC pour dette pre-existante (`StoreRequest space` field manquant dans plusieurs fichiers de test) heritage de Patch 33+, hors scope. Validation tests lexicon prevus via WSL build operateur + smoke E2E FR post-deploy LXC 121.
+
+**Conditions de retrait** -- Comportement par defaut preserve quand TOMLs FR sont vides (pas de match). Quand TOMLs FR sont peuples (aimer, adorer, ...), le `\w*` permet de matcher les conjugues sans dupliquer le TOML. Au prochain rebase upstream, candidat PR upstream unique avec le reste du Patch 38.
+
+agent-forge spec : `spec_01e9984f`.
+
+---
+
+## Patch 39 -- utf-8 safety helpers (2026-05-28)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, absorbe upstream.** Upstream livre `truncate_on_char_boundary` (`validation.rs`) et `floor_char_boundary` (`chunking.rs`). `kleos-lib/src/str_safe.rs` reste present avec un seul appelant restant (`intelligence/growth.rs:384`, verifie via `aidex_query`) -- nettoyage a faire en suivi (cf. "Conditions de retrait" du statut 7ce95482 en tete de fichier).
+
+**Symptome / motivation** -- Audit logs LXC 121 post-deploy Patch 38 L2.B revele 2 panics historiques `thread 'tokio-rt-worker' panicked at ...:74:26: start byte index N is not a char boundary; it is inside 'é'` sur `kleos-lib/src/embeddings/chunking.rs` (5x observe) et 2x sur `kleos-lib/src/memory/scoring.rs:480`. Audit elargi sur les modules consommateurs de user content (intelligence, personality, handoffs, lexicon, embeddings, memory, services, brain) identifie 4 sites qui slicent des `&str` par byte index sans verifier les char boundaries UTF-8. Avec l i18n FR Patch 38 plus actif, la frequence d apparition augmente (contenu FR riche en `é`, `è`, `à`, ainsi qu emojis dans les conversations).
+
+**Approche** -- Niveau delta `additif (helper) + chirurgical sur upstream pur (4 fixes)`. Centralisation du pattern de truncation safe via nouveau module `kleos_lib::str_safe` (miroir factorise de la defense explicite deja en place dans `services/broca.rs:1309-1314`).
+
+**Sites identifies par l audit (verification cross-call-site)** :
+
+| Site | Pattern | Statut | Fix |
+|---|---|---|---|
+| `embeddings/chunking.rs:74,86,101` | `&text[start..end]` | BUG panic 5x prod | Floor `start` apres increment + floor `actual_end` defensif |
+| `memory/scoring.rs:480` | `&rest[..10]` | BUG panic 2x prod | `rest.get(..10)` qui skip None proprement |
+| `intelligence/growth.rs:360` | `&existing[..4000]` | BUG latent | `str_safe::truncate_at_char(existing, 4000)` |
+| `services/brain.rs:1533` | `&claim[..80]` | BUG latent | `str_safe::truncate_at_char(claim, 80)` |
+
+Sites verifies SAFE (audit complete) : `brain/reasoning.rs:71` (`char_indices().nth(max_len)`), `memory/scoring.rs:555` (find-based), `intelligence/llm.rs:141` (find/rfind-based), `services/loom.rs:299,1921`, `services/broca.rs:1188,1315` (defense explicite).
+
+**Helper** :
+
+```rust
+pub fn truncate_at_char(s: &str, max_bytes: usize) -> &str
+```
+
+Retourne le plus grand prefixe de `s` qui (a) fait au plus `max_bytes` bytes (b) se termine sur une char boundary. Cas degeneres : `max_bytes >= s.len()` -> `s` tel quel (zero cost), `max_bytes == 0` -> `""`, premier char plus grand que cap -> `""`. 7 tests unitaires couvrent ASCII, FR `é`, emoji 4-byte, CJK 3-byte, leading-multibyte-too-large, idempotence sur boundary, len edge cases.
+
+**Fichiers touches (additifs)** :
+- kleos-lib/src/str_safe.rs (nouveau, ~100 lignes avec 7 tests)
+- kleos-lib/src/lib.rs (+1 ligne `pub mod str_safe;`)
+
+**Fichiers touches (chirurgical sur upstream pur)** :
+- kleos-lib/src/embeddings/chunking.rs (+9 lignes : floor `actual_end` + floor `start` apres increment + commentaires)
+- kleos-lib/src/memory/scoring.rs (~5 lignes : `rest.get(..10)` au lieu de `&rest[..10]`)
+- kleos-lib/src/intelligence/growth.rs (~3 lignes : appel `str_safe::truncate_at_char`)
+- kleos-lib/src/services/brain.rs (~3 lignes : appel `str_safe::truncate_at_char`)
+
+**Verification** : `cargo check -p kleos-lib --features bundled-sqlite --lib` passe a 0 erreur (10 warnings pre-existants cred/bootstrap.rs, non lies). Tests `str_safe` non executables cote Windows MSVC pour dette laterale `StoreRequest space` field manquant (Patch 33+ heritage, hors scope). Validation prevue via WSL build + smoke E2E LXC 121.
+
+**Conditions de retrait** -- Les 4 fixes sont des bug-fixes purs (le code panic, le fix evite le panic). Candidat PR upstream legitime apres validation. Le helper `str_safe::truncate_at_char` est additif et reutilisable par tout futur site avec un besoin similaire (etend la convention deja presente dans `broca.rs`).
+
+agent-forge spec : `spec_7dad1d09`.
+
+---
+
+## Patch 38.2 -- extraction.rs 6 unit-specific patterns migrated to per-language
+
+**Branche** : `local/patch-38-i18n-core`
+**Spec agent-forge** : `spec_ada22012`
+**Date** : 2026-05-28
+**Niveau delta upstream** : chirurgical (refactor d'un fichier deja patche Patch 38 L2.B) + additif (12 nouvelles classes lexicon dans le submodule overlay).
+
+**Symptome :** Avant Patch 38.2, six regex de `kleos-lib/src/intelligence/extraction.rs` restaient hardcodes en anglais avec syntaxe unit-specific non i18n-portable :
+- `spent_regex` : `\$([\d,.]+)` USD-only ;
+- `earned_regex` : `\$([\d,.]+)` USD-only ;
+- `exercise_regex` : unites `hours?|minutes?|mins?|miles?|km` EN ;
+- `buy_regex`, `have_regex`, `made_regex` : verbes EN seulement.
+
+Le commentaire upstream lignes 274-283 reconnaissait explicitement la limite et renvoyait a `docs/dev-notes/i18n-audit.md` comme future work. Sur un transcript francais (J'ai depense 50 euros pour les courses, J'ai couru 5 km hier), zero fact extrait.
+
+**Approche :** Reutiliser le pattern Patch 38 L2.B deja en place pour les 5 autres regex (like / dislike / favorite / location / role) :
+1. 6 helpers `_regex_for(lang) -> Option<Regex>` qui lisent les classes lexicon par langue et composent le pattern via `word_class_alternation_stemmed`.
+2. Extension de `LangRegexCache` (struct + `LazyLock` init) avec 6 nouveaux `HashMap<String, Regex>`.
+3. Refactor des 6 sites d'extraction (lignes 449-528 pre-patch) en une boucle `for lang in supported_languages()` avec dedup `HashSet<String> seen_facts` sur cle canonique.
+4. Helper `currency_amount_fragment(lang)` qui choisit prefix (`$50`, convention EN) vs suffix (`50 euros`, convention FR) selon quelle classe lexicon est non-vide pour cette langue.
+5. Helper `currency_label(lang)` qui retourne `"dollars"` / `"euros"` pour le slot `[unit:...]` du fact format.
+6. Suppression des 6 anciennes fn statiques `OnceLock` + import `OnceLock` retire (n'est plus utilise dans extraction.rs).
+
+**Fichiers touches :**
+- `kleos-lib/src/intelligence/extraction.rs` (~250 lignes : +6 helpers + extension `LangRegexCache` + refactor 6 sites d'extraction + 7 tests FR additionnels + suppression 6 anciennes fn statiques + maj commentaire migration)
+- `lexicon-overrides/en.toml` (+12 classes : extract_{buy,spent,have,exercise,made,earned}_verbs + extract_{spent,earned}_preposition + currency_symbols_{prefix,suffix} + time_units + distance_units)
+- `lexicon-overrides/fr.toml` (+12 classes equivalentes en FR avec stems FR conjugues)
+
+**Convention currency** : chaque langue ne renseigne qu'une seule des deux classes `currency_symbols_prefix` ou `currency_symbols_suffix` selon sa norme native. Si une langue renseigne les deux, `currency_amount_fragment` prend prefix d'abord (convention).
+
+**Tests :**
+- Les 2 tests EN existants (`test_buy_regex_captures`, `test_spent_regex_captures`) sont conserves et adaptes pour appeler les nouveaux helpers `_for("en")`.
+- 7 nouveaux tests FR : `test_buy_regex_captures_fr`, `test_spent_regex_captures_fr`, `test_exercise_regex_captures_fr`, `test_earned_regex_captures_fr`, `test_have_regex_captures_fr`, `test_made_regex_captures_fr`, `test_currency_label`.
+- `cargo check -p kleos-lib --features bundled-sqlite` passe a 0 erreur (10 warnings pre-existants).
+- `cargo test -p kleos-lib` bloque sur une dette pre-existante (`StoreRequest missing space` dans 8 sites de test Patch 33+), confirme via `git stash` puis re-test. Non lie au Patch 38.2. Validation tests cibles a faire post-build WSL.
+
+**Verification (apres deploy LXC 121) :** Pre-patch, le test FR `J'ai depense 50 euros pour les courses` produit 0 fact. Post-patch, il produit `{verb: "spent", amount: 50, object: "les courses", unit: "euros"}`. Idem pour les 5 autres patterns.
+
+**Conditions de retrait :** Le pattern lexicon-driven est strictement plus general que l'ancien hardcode EN. Candidat PR upstream legitime : la migration ne casse aucun cas EN (les classes EN populent les memes verbes que l'ancien hardcode), et debloque toutes les autres langues via simple ajout d'un overlay TOML.
+
+agent-forge spec : `spec_ada22012`.
+
+---
+
+## Patch 38.3 -- contradiction.rs filtre is_forgotten (cross-call-site discipline)
+
+**Branche** : `local/patch-38-i18n-core`
+**Spec agent-forge** : `spec_45506d84` / hypothese `hyp_e1b85e24`
+**Date** : 2026-05-29
+**Niveau delta upstream** : chirurgical (4 lignes SQL ajoutees + 2 commentaires), candidat PR upstream.
+
+**Symptome :** Les memoires soft-deleted (`is_forgotten = 1`, posees par `kleos-cli delete` avec `forget_reason = user_deleted`) continuaient de generer des contradictions dans `scan_all_contradictions` et `detect_contradictions`. Observe pendant le smoke E2E du 2026-05-29 : les memoires de test 6771/6772 supprimees (GET `/memory/{id}` -> 404, presentes dans `/memory/trash` avec `is_forgotten = true`) apparaissaient toujours dans le scan.
+
+**Diagnostic (cross-call-site, cf. `.claude/rules/kleos-patching-discipline.md`) :** `contradiction.rs` avait **0** filtre `is_forgotten`, alors que toutes les autres passes intelligence le filtrent : `duplicates.rs:30` (`ms.is_forgotten=0 AND mt.is_forgotten=0`), `temporal.rs` (4 sites), `consolidation.rs` (5), plus `memory/search.rs`, `admin`, `compression`, `context/deps`. La discipline majoritaire revele l'intention upstream ; `contradiction.rs` etait la seule exception, donc le bug.
+
+**Approche :** Ajouter `AND m.is_forgotten = 0` sur les deux cotes des deux requetes JOIN memories, sur le modele `duplicates.rs:30` :
+1. `detect_contradictions` (online) : `AND m_cand.is_forgotten = 0 AND m_new.is_forgotten = 0`.
+2. `scan_all_contradictions` (scan) : `AND m1.is_forgotten = 0 AND m2.is_forgotten = 0`.
+
+**Scope :** `is_forgotten` uniquement. `is_archived` exclu : la discipline est divisee (filtre par `consolidation` mais pas par `duplicates` ni `temporal`), et `duplicates.rs` -- le module le plus analogue a `contradiction.rs` (comparaison de paires) -- ne le filtre pas. Une memoire archivee reste consultable, donc legitime dans la detection.
+
+**Fichiers touches :**
+- `kleos-lib/src/intelligence/contradiction.rs` (2 string literals SQL + 2 commentaires `Patch 38.3`, zero changement de signature).
+
+**Tests :**
+- `cargo check -p kleos-lib --features bundled-sqlite` passe (10 warnings pre-existants sans rapport).
+- Validation E2E deterministe (les memoires forgotten disparaissent du scan) : a faire post-build WSL + deploy LXC 121.
+
+**Conditions de retrait :** Strictement additif, aligne sur la discipline existante. Candidat PR upstream : aucun cas non-forgotten n'est affecte, le filtre ne fait qu'exclure les memoires deja soft-deleted que l'utilisateur a explicitement oubliees.
+
+---
+
+## Patch 41 -- canal schema overlay VOCSAP Post-only (2026-06-02)
+
+**Statut au 2026-08-23 (merge 7ce95482) : MOTIVATION D'ORIGINE MORTE, canal CONSERVE inchange.** Upstream a remplace `MAX(version)` par un applied-set dans le dispatch des migrations (commit `79b4efe5`, PR #206) : le canal overlay n'est plus une protection contre le skip de migration, c'est desormais un canal anti-conflit au sens de la table de delta upstream. `kleos-lib/src/db/vocsap/mod.rs` **inchange** par ce merge. Upstream introduit en parallele `db/schema_manifest.rs` et `db/converge.rs` (fichiers confirmes presents), meme philosophie declarative, manifests vides a ce jour (non re-audite en detail). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+agent-forge spec `spec_3fb428b3`.
+
+### Symptome
+
+Les migrations VOCSAP vivaient dans les arrays numerotes partages avec upstream
+(`MIGRATIONS` monolith, `TENANT_MIGRATIONS` tenant). A chaque merge ou upstream
+reclamait un slot qu'on occupait, on renumerotait nos migrations (incident
+aa6a0bec : tenant v55-59 -> v72-76, monolith v64 -> v84). Sur les deploiements
+vivants, `schema_version`/`schema_migrations` avait deja enregistre l'ancien
+numero sous le sens VOCSAP -> le runner `MAX(version)` skippait silencieusement
+le body upstream occupant desormais ce slot -> colonnes `user_id` jamais ajoutees
+-> crash boot `no such column: user_id` (repare en one-shot par Patch 40
+self-heal). Bug structurel recurrent a chaque merge tant que nos migrations
+partagent la sequence numerotee.
+
+### Approche
+
+Niveau **refactor local** (sortie de la sequence numerotee). Canal overlay
+separe, analogue schema des canaux `prompts-overrides` / `lexicon-overrides` /
+`gate-rules` : les ajouts VOCSAP quittent l'array numerote pour un registre
+lateral execute **apres** la chaine upstream, **sans numero de version**, et
+**idempotent** (guard `needs` cote Rust avant DDL, SQLite n'ayant pas
+d'`ADD COLUMN IF NOT EXISTS`). VOCSAP n'occupe plus jamais un slot que Ghost-Frame
+voudra : la classe de bug renumber->skip disparait.
+
+**Post-only** (decision operateur) : le seul usage pre-dispatch etait le
+self-heal Patch 40, supprime ici (one-shot, LXC 121 deja healed, seul
+deploiement vivant). Une phase `Pre` pourra etre rajoutee additivement si un
+prerequis legitime apparait.
+
+**Garde-fou repense** : le manifest byte-identique + les tests
+`migrations_obey_append_only_manifest` / `tenant_migrations_obey_append_only_manifest`
+(Patch 20) protegeaient contre le renumber VOCSAP -- mode de defaillance qui ne
+peut plus venir de nous une fois VOCSAP hors sequence. Supprimes (avec les 2
+fichiers `.manifest`). `every_static_migration_is_dispatched` (invariant pur
+upstream) conserve.
+
+### Fichiers touches
+
+- `kleos-lib/src/db/vocsap/mod.rs` (NOUVEAU) : `VocsapOverlay` (monolith),
+  `VocsapTenantOverlay` (tenant, `apply` recoit `owner` pour backfill futur),
+  helpers `table_has_column` / `index_exists` / `table_exists`, statics
+  `VOCSAP_MONOLITH_OVERLAYS` (1 entree) + `VOCSAP_TENANT_OVERLAYS` (5 entrees),
+  `apply_monolith_overlays` / `apply_tenant_overlays`, 5 tests.
+- `kleos-lib/src/db/mod.rs` : `mod vocsap;`.
+- `kleos-lib/src/db/migrations.rs` : retrait entree array v84 + const
+  `MIGRATION_APPROVALS_GATE_ID` + dispatch + body `run_migration_approvals_gate_id`
+  + hook self-heal Patch 40 + test append-only + 2 tests self-heal + helper
+  `structured_facts_has_user_id` ; ajout `apply_monolith_overlays(conn)?` en fin
+  de `run_migrations`.
+- `kleos-lib/src/db/tenant_migrations.rs` : retrait 5 entrees array v72-76 + 5
+  bodies `apply_schema_v55..v59_*` + hook self-heal Patch 40 + test append-only +
+  test self-heal ; ajout `apply_tenant_overlays(conn, owner_user_id)?` en fin de
+  `run_tenant_migrations`.
+- `kleos-lib/src/db/{migrations,tenant_migrations}.manifest` : SUPPRIMES.
+- `docs/dev-notes/vocsap-schema-overlay-channel.md` : design + carto (gitignored).
+
+Les 6 overlays portent les bodies idempotents existants : monolith
+`approvals_gate_id` ; tenant `supervisor_injections_repair`, `approvals_gate_id`,
+`conversations_space_id`, `structured_facts_unique_index` (dedup + unique index),
+`structured_facts_extraction_source`. Aucun n'utilise le backfill owner (colonnes
+nullable ou DEFAULT).
+
+### Etape ops au deploy (hors code)
+
+Sur LXC 121, avant de demarrer le binaire Patch 41 : backup des 3 fichiers
+sqlcipher (`.db` + `-wal` + `-shm`) du monolith ET de chaque shard tenant, puis
+`DELETE` chirurgical des lignes de version desormais orphelines pour que le
+compteur retombe au max upstream et que les overlays detectent les colonnes deja
+presentes (no-op) :
+- monolith : `DELETE FROM schema_version WHERE version = 84;`
+- chaque shard tenant : `DELETE FROM schema_migrations WHERE version IN (72,73,74,75,76);`
+Ne PAS toucher aux lignes 55-59 / 64 (slots upstream). Les colonnes/index ne sont
+PAS supprimes : seules les lignes de version le sont.
+
+### Tests
+
+`cargo build -p kleos-lib --features bundled-sqlite` OK. 5 tests `db::vocsap`
+verts (apply puis no-op monolith + tenant, no-op sur schema complet, dedup avant
+unique index, skip backfill si owner None). 137 tests `db::` verts. verify
+agent-forge 2/2.
+
+### Suivi 41a -- guard `table_exists` sur les overlays (merge f4e7eb3f, 2026-06-26)
+
+agent-forge hyp `hyp_9e191295`. Decouvert pendant le merge f4e7eb3f : deux
+nouveaux tests upstream (`tenant_migrations::tests::scratchpad_constraint_reshaped_after_v23`,
+`user_id_absent_from_scratchpad_after_v23`) appellent `run_tenant_migrations_to(conn, None, 23)`
+(migration **partielle** a v23). Or `apply_tenant_overlays` tourne malgre tout en
+fin de runner, et a v23 la table `supervisor_injections` (creee a v46) n'existe
+pas encore.
+
+**Cause racine :** les guards `needs` testaient `!table_has_column(...)` /
+`!index_exists(...)`. Ces helpers retournent `false` sur une table **absente**
+(zero ligne dans `pragma_table_info`) -> `needs = true` -> `apply` tentait un
+`ALTER TABLE` sur une table inexistante -> panic `no such table: supervisor_injections`.
+L'hypothese d'origine du canal Patch 41 (les overlays tournent toujours apres que
+la chaine upstream a tout cree) est fausse sur le chemin migration partielle.
+
+**Fix (niveau additif, dans le canal overlay VOCSAP -- zero delta upstream) :**
+chaque `needs` des 6 overlays (1 monolith + 5 tenant) `AND` desormais
+`table_exists(conn, <table>)` devant son probe colonne/index. `table_exists`
+(qui etait `#[allow(dead_code)]`) devient utilise ; le `#[allow]` est retire et
+les doc-comments de `table_has_column` / `table_exists` corriges. Nouveau test
+`overlays_are_noop_when_target_tables_absent` (connexion sans aucune table -> tous
+les `needs` doivent etre `false`, les deux entry points ne doivent pas erreur).
+Fichier touche : `kleos-lib/src/db/vocsap/mod.rs` uniquement.
+
+**Tests :** premier run Windows `cargo test -p kleos-lib --features bundled-sqlite`
+avec `KLEOS_NET_ALLOW_PRIVATE=1` (present dans l'env operateur) = 1061 passed,
+6 failed cote unittests lib. Piege important : `cargo test` est fail-fast au
+**niveau cible** -- l'echec des unittests lib stoppe le run AVANT que les
+binaires de tests d'integration (`tests/*.rs`) ne soient lances. Le "1061/6"
+ne validait donc QUE les unittests lib, pas l'integration. Run correct = env var
+unset : unittests 1067 passed / 0 failed, puis tous les binaires d'integration
+verts (CARGO_EXIT=0). Les 2 tests overlay v23 + le nouveau test passent.
+
+### Conditions de retrait
+
+Candidat PR upstream incertain : le mecanisme est generique mais la liste
+d'overlays est specifique VOCSAP. Upstream pourrait adopter le pattern de canal
+lateral pour ses propres forks downstream. A retirer seulement si Kleos cesse
+d'etre un fork actif.
+
+### Suivi 41b -- overlay monolith manquant pour `conversations.space_id` (merge f4e7eb3f, 2026-06-26)
+
+agent-forge hyp `hyp_4105d96c`. Decouvert APRES Suivi 41a une fois que le run
+Windows env-unset a enfin execute les tests d'integration (cf. piege fail-fast
+ci-dessus) : `single_db_isolation::conversations_isolated_between_users_single_db`
+echoue avec `table conversations has no column named space_id`. Reproduit aussi
+sur WSL.
+
+**Cause racine :** trou pre-existant de Patch 41 (pas une regression du merge --
+verifie identique a HEAD pre-merge). L'overlay `conversations_space_id` (ALTER
+qui ajoute la colonne, Patch 33, ex tenant v74 / origine v57) n'etait enregistre
+que dans `VOCSAP_TENANT_OVERLAYS`, jamais dans `VOCSAP_MONOLITH_OVERLAYS`. Or
+`Database::connect_memory` (mode monolith single-DB) applique `run_migrations`
+(qui appelle `apply_monolith_overlays` en fin, migrations.rs:500), et
+`create_conversation` (conversations.rs:285) INSERT `space_id` sans condition.
+Resultat : un monolith **frais** (in-memory de test) n'a jamais la colonne. La
+prod LXC 121 n'est PAS affectee : sa DB monolith a ete creee avant Patch 41
+quand `conversations.space_id` etait une migration monolith numerotee (colonne
+legacy presente). Seul le chemin fresh-schema diverge. Le test n'avait jamais
+ete execute en monolith faute du fail-fast Windows + WSL non lance jusque-la.
+
+**Fix (niveau additif, canal overlay VOCSAP -- zero delta upstream) :** ajout
+d'un overlay monolith `conversations_space_id` symetrique a `approvals_gate_id`
+(qui lui existe bien dans les deux registres). Nouvelle fn
+`monolith_conversations_space_id_apply` (meme DDL que la version tenant : `ALTER
+TABLE conversations ADD COLUMN space_id INTEGER` + `CREATE INDEX IF NOT EXISTS
+idx_conv_space`). Guard `needs` = `table_exists(conn, "conversations") AND
+!table_has_column(conn, "conversations", "space_id")` (conforme a la regle
+Suivi 41a). Fixture de test `make_monolith_base` etendue avec une table
+`conversations`, et `monolith_overlays_apply_then_noop` asserte desormais l'ajout
+de `space_id` + `idx_conv_space`. Fichier touche : `kleos-lib/src/db/vocsap/mod.rs`
+uniquement.
+
+**Tests :** Windows `cargo test -p kleos-lib --features bundled-sqlite -j 2 --
+--test-threads=4` (env var unset) : unittests 1067/0, `single_db_isolation`
+20/0 (dont `conversations_isolated_between_users_single_db ... ok`), tous les
+autres binaires d'integration 0 failed, CARGO_EXIT=0. WSL `cargo test -p
+kleos-lib -j 2 -- --test-threads=4` (env var unset) : `single_db_isolation`
+20/0, tous binaires + doctests 0 failed. Les deux plateformes vertes, 4 workers.
+
+### Conditions de retrait (41b)
+
+Identiques a Patch 41 / Suivi 41a : a retirer avec tout le canal overlay si
+Kleos cesse d'etre un fork actif.
+
+---
+
+## Patch 42 -- borne la croissance de l'index vectoriel lancedb (2026-06-03)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE.** Reste sur `vector/lance.rs`, reecrit par upstream (fichier confirme present aux cotes de `vector/mod.rs`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+agent-forge spec `spec_b9023c21`. Commit `ae4c614e`. Decouvert pendant le
+deploy du merge 3ee0b0bf (1.5.0).
+
+### Symptome
+
+lancedb est append-only : chaque ecriture cree une nouvelle version (manifest)
+et un nouveau fragment, jamais compactes ni purges automatiquement. Dans
+`kleos-lib/src/vector/lance.rs`, chaque `insert` fait `table.delete(...)` puis
+`table.add(...)` -> deux versions par embedding ecrit. Aucun appel a
+`table.optimize(...)` n'existait. Resultat : le dossier `_versions/` de chaque
+table croit sans borne. Observe sur LXC 121 (tenant-2) :
+`hnsw/memories.lance` = 7.5G dont `_versions/` = 7.3G de manifests (data reelle
+~116M). Croissance quasi-quadratique car chaque manifest liste tous les
+fragments (cout ~ versions x fragments). Le disque `/` (15G) a sature a 93%.
+
+### Approche
+
+Niveau **additif** (nouveau champ + methode + appels, signatures du trait
+`VectorIndex` inchangees). Deux volets :
+
+- **Permanent** : compteur `writes_since_optimize: AtomicU64` sur `LanceIndex`.
+  `insert` et `insert_many` appellent `maybe_optimize` apres l'add ; tous les
+  `OPTIMIZE_EVERY_N_WRITES` (256) writes, `table.optimize(OptimizeAction::All)`
+  (compact merge les fragments -> manifests rétrécis ; prune drop les versions
+  au-dela de la retention par defaut lancedb, 7j). Best-effort : une erreur est
+  loggee (`warn`) et jamais propagee au chemin d'ecriture.
+- **Cleanup declenchable** : `rebuild_index` lance `optimize(All)` en tete
+  (avant les early returns row-count / index-existence), de sorte que l'admin
+  `/admin/vector/rebuild-index` sert de reclaim de stockage a la demande.
+
+`delete_unverified` reste a son defaut (`false`) : sur en concurrence, un
+transaction en cours n'est jamais corrompue.
+
+### Fichiers touches
+
+- `kleos-lib/src/vector/lance.rs` : import `lancedb::table::OptimizeAction` +
+  `std::sync::atomic::{AtomicU64, Ordering}` ; const `OPTIMIZE_EVERY_N_WRITES` ;
+  champ `writes_since_optimize` + init dans `open_with_table` ; methode
+  `maybe_optimize` ; appels dans `insert` / `insert_many` ; `optimize(All)` en
+  tete de `rebuild_index` ; test `optimize_via_rebuild_preserves_rows_and_search`.
+
+### Tests
+
+9 tests `vector::` verts (dont le nouveau qui valide que compact + prune
+preservent toutes les lignes et la recherche). verify agent-forge 1/1.
+Valide en prod : logs `event="compacting"` + `optimizing indices` au
+`admin vector-rebuild-index`.
+
+### Limites connues
+
+- **Backlog non recupere en live** : `delete_unverified=false` protege tout
+  fichier de moins de 7j, et le backlog 7.5G est majoritairement constitue de
+  versions recentes (writes intensifs dreamer/re-embed). Le `vector-rebuild-index`
+  post-deploy n'a purge que ~20 versions. Le patch **borne la croissance future**
+  mais ne vide pas le backlog d'un coup. Decision operateur (2026-06-03) : laisser
+  le volet 1 purger progressivement (les versions vieillissent au-dela de 7j),
+  disque non urgent (etendu a 25G). Pour un reclaim immediat il faudrait un prune
+  `older_than=0, delete_unverified=true` **kleos-server arrete** (non implemente).
+- **Couverture admin partielle** : `admin_vector_rebuild_index` ne rebuild que
+  `db.vector_index`, pas `db.chunk_vector_index` (4.6G). Le volet 1 (amorti)
+  couvre bien les deux tables ; seul le reclaim on-demand via l'admin etait
+  partiel. **Resolu par Patch 43** (le handler rebuild desormais aussi
+  `chunk_vector_index`).
+
+### Conditions de retrait
+
+Candidat PR upstream : les tables lancedb croissent sans borne sans appel
+explicite a `optimize`. A retirer si upstream ajoute une maintenance Lance
+periodique native.
+
+---
+
+## Patch 43 -- admin vector-rebuild-index couvre chunk_vector_index (2026-06-03)
+
+**Statut au 2026-08-23 (merge 7ce95482) : RE-ACCROCHE.** Realigne sur `vector::MIN_ROWS_FOR_INDEX` -- la constante vit desormais dans `kleos-lib/src/vector/mod.rs:25` et `lance.rs` la re-exporte via `pub use super::{..., MIN_ROWS_FOR_INDEX};` (`lance.rs:21`). Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+agent-forge spec `spec_82266967`. Suite directe du Patch 42 (lacune
+documentee dans ses "Limites connues").
+
+### Symptome
+
+`admin_vector_rebuild_index` (`kleos-server/src/routes/admin/mod.rs`, route
+`POST /admin/vector/rebuild-index`) n'operait que sur `state.db.vector_index`
+(table `memories`). Il ne touchait jamais `state.db.chunk_vector_index` (table
+`CHUNK_TABLE_NAME`, meme `lance_path`, ~4.6G de `_versions/` sur LXC 121).
+Comme `rebuild_index()` declenche `optimize(OptimizeAction::All)` (compact +
+prune des versions >7j, cf. Patch 42), l'index chunk ne beneficiait d'aucun
+reclaim de stockage a la demande -- seul le volet 1 amorti (256 writes) le
+compactait.
+
+### Approche
+
+Niveau **chirurgical / additif** (~18 lignes, zero changement de signature,
+zero touche au trait `VectorIndex`, au struct `Database`, ou au chemin
+memory-index existant). Apres le `vector_index.rebuild_index(replace)` existant
+(qui conserve son `?` upstream), on ajoute un bloc best-effort sur
+`state.db.chunk_vector_index.clone()` : `count()` puis `rebuild_index(replace)`,
+une erreur de l'index chunk etant `warn`-loggee et traitee comme `false` pour
+ne jamais masquer le rebuild memory primaire. La reponse JSON gagne deux cles
+`chunk_rebuilt` (bool) et `chunk_row_count` (usize).
+
+`chunk_vector_index` est peuple uniquement sur la DB monolithe (`Database::open`)
+-- les DB tenant (`open_tenant`) le laissent a `None`, auquel cas le handler se
+comporte comme avant plus `chunk_rebuilt=false`/`chunk_row_count=0` (skip
+gracieux, pas de panic).
+
+### Fichiers touches
+
+- `kleos-server/src/routes/admin/mod.rs` : bloc additif dans
+  `admin_vector_rebuild_index` + 2 cles dans la reponse JSON.
+- `docs/dev-notes/local-patches.md` : cette section + maj de la limite Patch 42.
+
+### Tests
+
+`cargo check -p kleos-server --features kleos-lib/bundled-sqlite` vert (Windows
+natif). verify agent-forge 1/1. Pas de nouveau test unitaire : le code appelle
+la meme methode `rebuild_index` deja couverte par les tests `vector::` du
+Patch 42 (l'index chunk est un `LanceIndex` identique, table differente). Build
+release Linux + deploy LXC 121 a faire (operateur WSL).
+
+### Conditions de retrait
+
+Candidat PR upstream avec Patch 42 (meme zone). A retirer si upstream rend la
+maintenance Lance native et couvre les deux tables.
+
+---
+
+## Patch 44 -- kleos-fs (ke/kr/kw) compilable sur Windows (2026-06-03)
+
+agent-forge spec `spec_0ce9b6b6`. Decouvert en rebuildant le set de binaires
+Windows (kleos-fs ne compilait plus depuis le durcissement secure-write
+upstream).
+
+### Symptome
+
+`kleos-fs` (bins `ke`/`kr`/`kw`, qui partagent `src/main.rs` via
+`app::run(...)`) ne compile plus sur Windows MSVC. 4 erreurs (E0433/E0425/
+E0599/E0282), toutes issues d'un unique bloc Unix-only dans le secure-write
+(`kw`) : `std::os::unix::fs::OpenOptionsExt::custom_flags(libc::O_NOFOLLOW)`,
+ajoute upstream pour empecher un TOCTOU symlink-swap entre
+`canonicalize_within_roots` et le write. `O_NOFOLLOW`, le trait `OpenOptionsExt`
+Unix et `std::os::unix` n'existent pas sur Windows. Des versions anterieures de
+ke/kr/kw (pre-durcissement) etaient deja deployees sur le poste Windows.
+
+### Approche
+
+Niveau **chirurgical / additif** (cfg-gate, code 100% upstream-pur jusque-la).
+Le bloc `let open_result = { ... }` devient deux bindings cfg-gated du meme type
+`std::io::Result<File>` :
+
+- `#[cfg(unix)]` : **strictement inchange** (O_NOFOLLOW preserve, zero delta
+  semantique Linux).
+- `#[cfg(not(unix))]` : refuse d'ecrire a travers un symlink existant
+  (`symlink_metadata` -> si `is_symlink`, `eprintln!` + `return ExitCode::from(2)`)
+  puis open normal (`write`+`create`+`truncate`). Parite TOCTOU best-effort
+  (Windows n'a pas d'`O_NOFOLLOW`, race residuelle mineure entre le check et le
+  open, documentee).
+
+`libc` reste dependance (usage confine au bras `cfg(unix)`).
+
+### Fichiers touches
+
+- `kleos-fs/src/main.rs` : le bloc `open_result` du write (kw) cfg-gate.
+- `docs/dev-notes/local-patches.md` : cette section + maj table binaires.
+
+### Tests
+
+`cargo build --release -p kleos-fs` sur Windows MSVC (produit `ke`/`kr`/`kw`).
+Chemin `cfg(unix)` inchange -> zero regression Linux. verify agent-forge.
+
+### Conditions de retrait
+
+Candidat PR upstream (rend kleos-fs portable Windows sans toucher le
+comportement Unix). A retirer si upstream porte lui-meme le secure-write sur
+Windows.
+
+---
+
+## Patch 45 -- fiabilite boucle eidolon-supervisor (`?wait=0` + `/inbox`->`/store`) (2026-06-03)
+
+agent-forge spec `spec_1d0f608f` + hyp `hyp_33aaec75`. Deux bugs confirmes E2E
+sur la boucle supervisor->drain-hook (binaires Windows fraichement rebuilds).
+
+### Symptome
+
+**Bug A (latence + bruit)** : le drain hook PreToolUse
+`~/.claude/hooks/eidolon-supervisor-drain-pending.sh` appelle
+`GET /supervisor/pending` avec `curl --max-time 3`, mais l'endpoint **long-poll**
+~30s quand la queue est vide (Patch 20). Resultat : `curl rc=28` (timeout)
+systematique sur queue vide -> **+3s de latence sur chaque tool call** + spam
+`no response from /supervisor/pending` dans `supervisor-drain.log`. Le message du
+hook ("server unreachable or auth failed") est trompeur (c'est un timeout
+long-poll ; URL + auth OK). Regression : drain hook cree 2026-05-21, Patch 20 a
+rendu `/supervisor/pending` long-poll le 2026-05-22 sans adapter le hook.
+
+**Bug B (`/inbox` 405)** : `eidolon-supervisor/src/alert.rs::send_inbox` fait
+`POST {kleos_url}/inbox`, mais `/inbox` est **GET-only** (c'est l'inbox
+d'approbations : `GET /inbox`, `POST /inbox/{id}/{approve,reject,edit}`,
+`/inbox/bulk`). Le POST renvoyait `405 Method Not Allowed`. Le daemon veut creer
+une **memoire** `category=alert` (payload `{content,category,importance,tags,source}`)
+-> cible canonique `POST /store` (`post(store_memory)`).
+
+### Approche
+
+Niveau **chirurgical / additif**, code upstream-pur des deux cotes.
+
+- **A.** `PendingQuery` (`supervisor/types.rs`) gagne `#[serde(default)] pub wait:
+  Option<u64>`. Dans `pending_handler` (`supervisor/mod.rs`), la `deadline` est
+  calculee selon `q.wait` : `Some(0)` -> `Duration::ZERO` (1 claim immediat puis
+  retour, pas de long-poll), `Some(n)` -> `n` secs, `None` -> `supervisor_longpoll_timeout()`
+  (comportement upstream strictement preserve quand `wait` absent). La boucle
+  existante gere `ZERO` nativement (apres le claim, `now >= deadline` -> retour
+  vide immediat). Le drain hook passe `&wait=0`. Forward-compatible : un serveur
+  non-patche ignore le param inconnu (serde), donc le hook peut etre deploye
+  avant le serveur sans regression.
+- **B.** `send_inbox` change l'URL `/inbox` -> `/store` (1 ligne, payload
+  inchange, deja conforme a `store_memory`). `axon` (`/axon/publish`) et `inject`
+  (`/supervisor/inject`) etaient deja OK.
+
+### Fichiers touches
+
+- `kleos-server/src/routes/supervisor/types.rs` : champ `wait`.
+- `kleos-server/src/routes/supervisor/mod.rs` : calcul `deadline` selon `wait`.
+- `eidolon-supervisor/src/alert.rs` : `send_inbox` URL `/inbox` -> `/store`.
+- `hooks/full/lib-eidolon.sh` (+ copie `~/.claude/hooks/lib-eidolon.sh`) : **Bug C**
+  `curl -o /dev/stdout` -> `-o -` (cf. ci-dessous).
+- `~/.claude/hooks/eidolon-supervisor-drain-pending.sh` (hors repo) : `&wait=0`.
+- `docs/dev-notes/local-patches.md` + `CLAUDE.md`.
+
+### Bug C (decouvert au deploy 2026-06-03)
+
+Au deploy de A, le drain hook continuait a logger "no response" alors que le
+serveur honorait `?wait=0` (retour 0s confirme manuellement). Cause : `eidolon_call`
+dans `lib-eidolon.sh` utilisait `curl -o /dev/stdout`, qui **echoue avec
+mingw64/bin/curl 8.17 (Schannel) sur Windows** -> `rc=23 CURLE_WRITE_ERROR`, body
+jamais capture. `-o -` fonctionne (`rc=0`). Le bug touchait **tout hook** utilisant
+`eidolon_call` sur Windows ; il etait masque jusque-la par le timeout long-poll
+(`rc=28`). Fix : `-o /dev/stdout` -> `-o -` ligne 116. Verifie : apres fix,
+`eidolon_call GET /supervisor/pending?...&wait=0` retourne `rc=0` en 0s avec body
+`{claimed:0,injections:[]}`.
+
+### Tests
+
+`cargo check -p kleos-server -p eidolon-supervisor --features kleos-lib/bundled-sqlite`
+vert (Windows). verify agent-forge 1/1. E2E pre-fix (2026-06-03) avait confirme :
+producteur detecte + `/supervisor/inject` OK + `/supervisor/pending` retour
+immediat sur inject present (single-use claim) ; seuls restaient le timeout
+queue-vide (A) et le 405 inbox (B). Validation post-deploy a faire : `?wait=0`
+retour immediat + plus de "no response" dans le drain log + alerte memoire
+`category=alert` creee.
+
+### Deploiement
+
+- kleos-server (A) : rebuild release WSL + redeploy LXC 121 (procedure standard).
+- eidolon-supervisor (B) : rebuild natif Windows + copie vers `~/.cargo/bin`.
+- drain hook (A) : deja edite localement (aucun build).
+
+### Conditions de retrait
+
+Candidat PR upstream (les deux sont des bugs upstream : long-poll incompatible
+avec un consommateur fast-path, et POST sur une route GET-only). A retirer si
+upstream ajoute un mode immediat a `/supervisor/pending` et corrige la cible de
+`send_inbox`.
+
+---
+
+## Patch 46 -- eidolon-supervisor scope des regles par tool_name (Levier A) (2026-06-03)
+
+agent-forge spec `spec_3f71e127`. Reduction des faux-positifs du matcher.
+
+### Symptome
+
+`rule_match::check` applique le regex de chaque regle `RuleMatch` sur
+`extract_check_text(entry)` pour **toute** entree `tool_use`, quel que soit le
+tool. Donc un `mcp__kleos__memory_store` (ou `Write`) dont le `content` *parle*
+de "reboot" / "git push --force" declenche `no-reboot` / `no-force-push`
+(faux-positif dominant : on bloque parce qu'on *mentionne* la commande, pas
+parce qu'on l'execute). Le filtre `is_tool` de `watch.rs` limite deja au
+`tool_use` mais pas au bon **type** de tool.
+
+### Approche
+
+Niveau **additif**, upstream-pur. `Rule` gagne `#[serde(default)] pub tools:
+Vec<String>` (vide = tous les tools = backward-compat avec les `supervisor.json`
+existants). `rule_match::check` extrait `tool_name` de l'entree et skippe une
+regle si `!rule.tools.is_empty() && !rule.tools.contains(tool_name)`.
+`default_rules()` scope `no-force-push` et `no-reboot` a `["Bash"]`,
+`em-dash-usage` a `["Write","Edit","MultiEdit"]` ; `retry-loop` (`RetryLoop`,
+chemin `retry_tracker`) reste a `[]`.
+
+### Fichiers touches
+
+- `eidolon-supervisor/src/checks/mod.rs` : champ `tools` + scope des
+  `default_rules()`.
+- `eidolon-supervisor/src/checks/rule_match.rs` : extraction `tool_name` +
+  filtre + 3 tests.
+- `docs/dev-notes/local-patches.md` + `CLAUDE.md`.
+
+### Tests
+
+`cargo test -p eidolon-supervisor` : 4 verts (3 nouveaux -- faux-positif non-Bash
+filtre, vrai Bash fire, `tools` vide = tous). verify agent-forge 1/1.
+
+### Limites (Levier B, hors scope)
+
+Un **vrai** Bash qui *mentionne* sans invoquer (`grep reboot`, `echo "git push
+--force"`) fire encore. Couvert par un Levier B futur : whitelist/exception
+cascade (replique lean du loader gate `approval_patterns.rs`, sans importer
+kleos-lib qui gonflerait le daemon), ou regex ancre (`^\s*reboot`, apres
+connecteur).
+
+### Conditions de retrait
+
+Candidat PR upstream (reduit les faux-positifs sans changer le comportement par
+defaut quand `tools` est absent).
+
+---
+
+## Patch 47 -- kleos-mcp scope les tools/call headless via `KLEOS_SPACE` (2026-06-05)
+
+Decouvert pendant l'integration OpenClaw (LXC 126) -> Kleos (LXC 121). Contexte
+complet : projet Local-Firewall, `config/openclaw/07-kleos-integration-unified.md`
+section 14. Memoires Kleos #8058 (cause racine), #8060 (patch).
+
+### Symptome
+
+Un agent headless (OpenClaw) ecrit dans Kleos via `kleos-mcp --transport stdio`.
+On veut scoper ses ecritures dans un space dedie (`openclaw`). Le canal **CLI**
+(`kleos-cli`) lit deja `$KLEOS_SPACE` (Patch 33) et scope correctement. Mais
+**tous les `memory_store` via MCP tombaient dans le space `default`**, quelle que
+soit la config.
+
+Cause racine (confirmee par lecture du code, pas supposee) : dans cette branche,
+`kleos-mcp` est un **proxy mince**. Le transport stdio (`transport/stdio.rs`)
+appelle `handle_jsonrpc` (`lib.rs`) qui fait simplement
+`app.client.post_mcp(&req)` -- il forwarde le JSON-RPC **entier** vers
+`POST /mcp` du serveur, **sans rien injecter**. Cote serveur
+(`kleos-server/src/routes/mcp/mod.rs`), le space applique a un `memory_store` =
+le champ `space`/`space_id` present dans les **arguments du tool**, sinon
+`default`. Comme le proxy ne reinjecte aucun space, les ecritures MCP ne portent
+jamais de scope.
+
+> **PIEGE de diagnostic (a retenir)** : la fonction `maybe_inject_space` dans
+> `kleos-mcp/src/tools.rs` (et toute la fonction `dispatch()` qui l'appelle) est
+> du **CODE MORT** dans cette branche -- `dispatch` n'a **aucun call site**
+> (`grep -rn "dispatch("` ne trouve que sa definition). Le transport reel passe
+> par `handle_jsonrpc`, pas par `dispatch`. Toute tentative de scoper le MCP via
+> le mecanisme `CLAUDE_SESSION_ID` + `$HOME/.kleos/sessions/<sid>/space_name` de
+> `read_session_space_name` (lu par `maybe_inject_space`) est **sans effet**.
+> Verifier les **call sites** d'une fonction avant de supposer qu'un code present
+> est actif (cf. heuristique grep cross-call-site du CLAUDE.md global).
+
+### Intention
+
+Aligner `kleos-mcp` sur `kleos-cli` : un agent headless doit pouvoir scoper ses
+ecritures via la **meme** variable `$KLEOS_SPACE`, sans dependre d'un fichier de
+session Claude Code (que l'agent n'a pas). Le scope reste **opt-in** (no-op si
+`KLEOS_SPACE` absent) et **override-able** (un appelant qui specifie deja un
+`space` gagne).
+
+### Approche
+
+Niveau **additif**, ~25 lignes, zero changement de signature, zero touche au
+serveur, au client, ni au transport. Dans `kleos-mcp/src/lib.rs` :
+
+- `handle_jsonrpc` gagne une ligne : `let req = inject_space_for_tool_calls(req);`
+  avant `app.client.post_mcp(&req)`.
+- `inject_space_for_tool_calls(req)` : lit `std::env::var("KLEOS_SPACE")`,
+  delegue au coeur pur `inject_space(req, &space)`. No-op si `KLEOS_SPACE`
+  absent/vide.
+- `inject_space(req, space)` (pur, env-free, testable) : no-op si
+  `method != "tools/call"` ou si `params.arguments` n'est pas un objet ou si
+  `space`/`space_id` est deja present ; sinon insere
+  `arguments.space = <KLEOS_SPACE>`. Le serveur resout ce nom via
+  `normalize_space_input`.
+
+Cote consommateur (OpenClaw, hors fork) : `KLEOS_SPACE=openclaw` est pose dans
+l'env du serveur MCP (compose + bloc `env` de `mcp.servers.kleos`). Le faux
+workaround `CLAUDE_SESSION_ID`/`space_name` a ete retire du repo Local-Firewall.
+
+### Fichiers touches
+
+- `kleos-mcp/src/lib.rs` : `handle_jsonrpc` (+1 ligne) ; fonctions
+  `inject_space_for_tool_calls` + `inject_space` ; module `#[cfg(test)] mod tests`
+  (5 tests).
+- `docs/dev-notes/local-patches.md` : cette section.
+
+### Tests
+
+`cargo test -p kleos-mcp` : 5 tests `inject_space` (injection sur `tools/call`
+sans space ; preservation d'un `space` explicite ; preservation d'un `space_id`
+explicite ; ignore `tools/list` ; ignore `arguments` non-objet). Build release
+Windows + Linux (WSL) vert. Validation E2E (2026-06-05, LXC 126) : un
+`tools/call memory_store` **sans** champ `space`, env `KLEOS_SPACE=openclaw`,
+atterrit en space `openclaw` (id 30) ; sans le patch, en `default` (id 3).
+
+> Marqueur de presence du patch dans un binaire compile :
+> `strings <kleos-mcp> | grep -c KLEOS_SPACE` -> `0` avant patch, `>0` apres.
+
+### Reproduction en cas de merge upstream (Ghost-Frame/Kleos)
+
+Le patch vit dans `lib.rs`, **separe** du code mort `tools.rs::dispatch` /
+`maybe_inject_space`. Au merge upstream :
+
+1. Si upstream **recable** `dispatch` (et donc `maybe_inject_space`) dans le
+   transport stdio : ce Patch 47 devient potentiellement **redondant**. Verifier
+   alors si `maybe_inject_space` couvre le cas headless `$KLEOS_SPACE` (il lit
+   `CLAUDE_SESSION_ID`+fichier, PAS `KLEOS_SPACE`) ; si non, conserver Patch 47
+   ou porter la lecture `KLEOS_SPACE` dans la voie upstream.
+2. Si upstream garde `handle_jsonrpc` en proxy mince : re-appliquer tel quel
+   (la fonction `inject_space_for_tool_calls` + l'appel dans `handle_jsonrpc`).
+3. Si upstream introduit un **header** de scope sur `POST /mcp`
+   (`X-Kleos-Space` ou equivalent) : preferer ce mecanisme (le faire emettre par
+   `kleos-client::post_mcp` depuis `KLEOS_SPACE`) et retirer Patch 47.
+
+### Conditions de retrait
+
+Candidat PR upstream (un agent headless devrait scoper son MCP comme le CLI le
+fait deja via `$KLEOS_SPACE`). A retirer si upstream cable un mecanisme de scope
+MCP equivalent (recablage `dispatch`, header serveur, ou lecture `KLEOS_SPACE`
+dans la voie nominale).
+
+Extension : Patch 68 (meme regle pour chaque element d'un batch JSON-RPC).
+
+---
+
+## Patch 48 -- timeout reranker HTTP/TEI surchargeable par env var (2026-06-29)
+
+**Statut au 2026-08-23 (merge 7ce95482) : ABANDONNE, absorbe via notre propre PR #134 (upstream `6886a6c9`).** Vit desormais dans `kleos-lib/src/reranker/mod.rs`, plus dans `http.rs`. Voir "Statut apres merge upstream 7ce95482" en tete de fichier.
+
+**Symptome :** Le timeout de requete du reranker HTTP/TEI etait code en dur a
+10s dans `HttpReranker::new_with_db` (`kleos-lib/src/reranker/mod.rs`,
+`.timeout(Duration::from_secs(10))`). Sur un reranker TEI distant lent (CPU,
+gros batch), 10s peut etre insuffisant ; aucun moyen de l'ajuster sans rebuild.
+
+**Approche (niveau chirurgical, candidat PR upstream propre) :** Lire
+`KLEOS_RERANKER_TIMEOUT_SECS` (legacy `ENGRAM_RERANKER_TIMEOUT_SECS`) via
+`crate::kleos_env`, parser un `u64`, clamp `[1, 300]`, defaut `10` si absent ou
+invalide (warn sur invalide, miroir de `RERANKER_TOP_K` dans `config.rs`).
+Helper pur `resolve_reranker_timeout_secs(Option<String>) -> u64` (testable sans
+race env) + consts `DEFAULT/MIN/MAX_RERANKER_TIMEOUT_SECS`. `connect_timeout(5s)`
+de `safe_client_builder` non touche. `timeout_secs` ajoute au tracing
+"HTTP reranker configured" et au doc-comment `from_env`. **Defaut 10s preserve =
+byte-identique au comportement upstream quand la var est absente.**
+
+**Workflow PR isole :** patch cree d'abord dans un worktree base sur
+`upstream/main` pur (branche `pr/reranker-timeout-env`, 1 commit `e7f2544a`,
+diff 100% upstream-pur, zero patch VOCSAP) puis cherry-pick sur
+`merge/upstream-f4e7eb3f` (commit `82746960`). Le diff ne touche que
+`kleos-lib/src/reranker/mod.rs` (upstream-pur cote VOCSAP, aucun conflit).
+
+**Fichiers touches :** `kleos-lib/src/reranker/mod.rs` (additif/chirurgical,
++63/-1). Niveau delta : chirurgical.
+
+**Tests :** `cargo check` + `cargo test -p kleos-lib --features bundled-sqlite
+--lib reranker` verts (7 tests : 3 fallback + 4 nouveaux timeout : unset->10,
+30->30, invalide->10, clamp 0->1 et 500->300). agent-forge `spec_2be63a2b`,
+verify 2/2.
+
+**Conditions de retrait :** candidat PR upstream Ghost-Frame (env-overridable
+timeout, behavior-neutral). A retirer du fork si upstream merge la PR.
+
+---
+
+## Patch 49 -- `include_unscoped` inoperant sur /search, /recall, /list et cousins (2026-08-24)
+
+**Symptome :** Patch 33 documente `include_unscoped` comme inclusif par
+defaut cote serveur (espace nomme + espace `default` de l'utilisateur +
+lignes legacy `space_id IS NULL`), desactivable via `include_unscoped:
+false`. En pratique le flag etait un no-op : une recherche scopee sur un
+space nomme n'incluait ni `default` ni les lignes NULL, avec ou sans le flag.
+Consequence operationnelle : toute memoire stockee avec `--no-space` devenait
+invisible au rappel automatique des hooks Claude Code, silencieusement.
+
+Trois causes racines independantes, plus une duplication de la logique de
+filtre sur 4 endpoints :
+
+**Cause 1 -- defaut serveur en contradiction avec la doc du CLI.** Les
+structs HTTP-facing (`SearchBody`, `RecallBody`, `ListQuery` dans
+`kleos-server/src/routes/memory/types.rs`, et leurs equivalents sur
+`/growth/observations`, `/conversations`, `/messages/search`) declaraient
+`#[serde(default)]` sur `include_unscoped: Option<bool>`. Un champ absent du
+payload deserialise alors en `None`, que `kleos-lib` traite comme strict.
+Seul `kleos-server/src/routes/brain/types.rs` respectait le contrat
+documente via un `#[serde(default = "default_include_unscoped")]` retournant
+`Some(true)`.
+
+**Cause 2 -- cle de cache incomplete (bug en code upstream pur).** Le cache
+de resultats de recherche (`SEARCH_CACHE`, TTL 15s, `kleos-lib/src/memory/
+search.rs`) hashe `space_id` mais pas `include_unscoped`
+(`hash_search_params`, ~ligne 83-103). Deux requetes qui ne different QUE par
+ce flag partagent donc la meme entree de cache pendant la fenetre de 15s :
+un appel `include_unscoped=true` suivi d'un appel strict recoit en retour les
+resultats inclusifs mis en cache par le premier (fuite inter-space, l'inverse
+exact de l'intention anti-leak de Patch 33/37), et inversement un appel
+`include_unscoped=true` suivant un appel strict recent semble ne rien faire.
+Confirme par mesure d'inversion d'ordre (requete froide flag-ON d'abord :
+le flag fonctionne ; l'appel strict qui suit dans les 15s recoit alors les
+lignes du space `default`).
+
+**IMPORTANT pour un futur mergeur :** `hash_search_params` est du code
+upstream pur (aucun commentaire `Patch NN`, aucune trace VOCSAP dans son
+historique). Un rebase upstream qui reecrit cette fonction peut donc
+reintroduire l'omission silencieusement, sans qu'aucun de nos tests locaux
+ne le detecte a la review du diff -- seul un test qui exerce explicitement
+`include_unscoped` sur deux requetes consecutives dans la fenetre de TTL le
+detecterait.
+
+**Cause 3 -- les tiers `/recall` "static" et "important" n'avaient AUCUN mode
+inclusif.** `memory::list_static` et `memory::list_important`
+(`kleos-lib/src/memory/mod.rs`) codaient en dur `AND space_id = ?N` avec pour
+seule alternative `space_id IS NULL` cote appelant (aucun filtre du tout, pas
+un mode inclusif). Mesure : le tier "important" scope retournait des lignes
+`importance=8` alors que la sentinelle `importance=9` etait absente ; le tri
+`ORDER BY importance DESC, id DESC LIMIT 10` exclut cette hypothese de
+troncature (une ligne imp=9 ne peut pas etre evincee par des imp=8), donc
+c'est bien le predicat d'espace qui l'excluait. Meme mesure sur le tier
+static : zero ligne static dans une reponse scopee alors que la meme memoire
+remonte via `context --no-space`.
+
+**Duplication (4 copies independantes de la meme logique) :**
+
+| Copie | Fichier | Sert |
+|---|---|---|
+| 1 | `kleos-lib/src/memory/mod.rs::list` (+ Cause 3 : `list_static`/`list_important`) | GET /list, POST /recall (tiers static/important/recent) |
+| 2 | `kleos-lib/src/intelligence/growth.rs::list_observations` | GET /growth/observations |
+| 3 | `kleos-lib/src/conversations.rs::build_space_filter` | GET /conversations, POST /messages/search |
+| 4 | `kleos-server/src/routes/brain/types.rs` + `brain/mod.rs` (post-filtre, Patch 36) | POST /brain/query (deja conforme au contrat de DEFAUT documente -- mais PAS semantiquement identique aux 3 autres copies, cf. correction ci-dessous) |
+
+**Correction (review post-implementation) : la copie 4 n'est PAS semantiquement
+alignee sur les copies 1-3.** `brain/mod.rs:129-134` (`load_memory_space_ids` +
+`retain`) traite `include_unscoped=true` comme "space courant OU lignes
+`space_id IS NULL`" -- il ne matche PAS le bucket `default` de l'utilisateur :
+```rust
+result.activated.retain(|m| match space_map.get(&m.id) {
+    Some(Some(sid)) => *sid == target_id,   // space courant uniquement
+    Some(None) => include_unscoped,         // legacy NULL
+    None => false,
+});
+```
+contre le predicat a 3 clauses (`space_id = ? OR space_id = default OR
+space_id IS NULL`) des copies 1-3. C'est une divergence **preexistante de
+Patch 36** (2026-05-26), non introduite par Patch 49 -- Patch 49 n'a touche
+que le defaut serde de `BrainQueryRequest::include_unscoped` (deja correct
+avant ce patch), pas la logique de retain elle-meme. Notee ici comme
+**connue et explicitement hors perimetre de Patch 49** ; a traiter dans un
+patch dedie si l'alignement des 4 copies devient un objectif.
+
+Angle mort supplementaire : `kleos-mcp/src/tools.rs` (~ligne 174-228) injecte
+le `space` resolu dans les payloads MCP mais jamais `include_unscoped` -- tous
+les outils MCP heritent donc du defaut serveur et basculent avec lui (ce
+patch les corrige sans toucher `kleos-mcp`).
+
+**Approche :**
+
+- **Lot A (chirurgical, upstream pur) :** `hash_search_params` hashe
+  desormais `req.include_unscoped` a cote de `req.space_id`. Corrige la
+  Cause 2. Niveau delta : chirurgical (1 ligne + commentaire), mais dans du
+  code upstream -- cf. l'avertissement ci-dessus pour le prochain rebase.
+- **Lot B (chirurgical, frontiere HTTP uniquement) :** `SearchBody`,
+  `RecallBody`, `ListQuery` passent a `#[serde(default =
+  "default_include_unscoped")]` (helper local retournant `Some(true)`),
+  copiant exactement le pattern deja conforme de `brain/types.rs`. Corrige
+  la Cause 1 pour /search, /recall, /list. `kleos-lib/src/memory/
+  search.rs:1550` (`unwrap_or(false)`) et la construction de `SearchRequest`
+  dans `faceted_search` (`include_unscoped: None`, deliberement) restent
+  INCHANGES : le defaut documente est un contrat d'API a la frontiere HTTP,
+  pas un contrat de bibliotheque, et `faceted_search` est un appelant interne
+  qui doit rester strict.
+- **Lot C (chirurgical, meme pattern x3) :** meme traitement sur
+  `ObservationsQuery` (`growth/types.rs`), `ListConversationsParams`
+  (`conversations/types.rs`), et `SearchMessagesRequest`
+  (`kleos-lib/src/conversations.rs` -- ce struct vit dans kleos-lib mais est
+  deserialise directement comme corps JSON de `POST /messages/search`, donc
+  il EST la frontiere HTTP pour cette route malgre son emplacement). Aucune
+  des 3 copies n'a de cache propre (verifie : aucune occurrence de
+  `cache`/`Cache`/`CACHE` dans `growth.rs` ni `conversations.rs`), donc la
+  Cause 2 ne s'y reproduit pas.
+- **Lot D (refactor local, JUSTIFIE) :** `list_static` et `list_important`
+  gagnent un parametre `include_unscoped: Option<bool>`, avec un helper prive
+  `inclusive_space_clause(idx)` qui factorise le predicat a 3 clauses
+  (`space_id = ? OR space_id = (SELECT ... 'default' ...) OR space_id IS
+  NULL`) deja utilise par `list`, pour ne pas l'ecrire une 3e fois dans ce
+  fichier. C'est le lot au plus gros delta upstream des quatre (changement
+  de signature sur des fonctions upstream pures, blame `7fdaed8d8`
+  Ghost-Frame 2026-06-25 ; seuls les commentaires "Patch 33" et l'argument
+  `resolved_space_id` cote appelant sont VOCSAP). Option ecartee : corriger
+  uniquement au call site (construire le set de resultats inclusif en 2
+  appels, ou tester `space_id IS NULL` en plus, sans toucher la signature) --
+  niveau "additif" moins cher, mais **incomplete par construction** : aucune
+  valeur de `space_id` ne peut selectionner `space_id IS NULL`, donc un fix
+  cote appelant ne peut pas rattraper les lignes legacy sans dupliquer
+  entierement la requete SQL au call site (ce qui recreerait une 5e copie de
+  la logique de filtre plutot que d'en reduire le nombre). Le refactor de
+  signature a ete prefere pour rester coherent avec la demande explicite de
+  l'operateur de "tout corriger en une passe" et pour eviter d'ajouter une
+  5e duplication.
+
+**Fichiers touches :**
+- `kleos-lib/src/memory/search.rs` (Lot A, chirurgical)
+- `kleos-server/src/routes/memory/types.rs` (Lot B, chirurgical, + 2 tests
+  `#[cfg(test)]` verifiant le comportement serde absent/false/true)
+- `kleos-server/src/routes/growth/types.rs`,
+  `kleos-server/src/routes/conversations/types.rs`,
+  `kleos-lib/src/conversations.rs` (Lot C, chirurgical x3)
+- `kleos-lib/src/memory/mod.rs` (Lot D, refactor local : `list_static`,
+  `list_important`, nouveau helper prive `inclusive_space_clause`)
+- `kleos-server/src/routes/memory/mod.rs` (Lot D, call sites recall handler
+  lignes ~721 et ~769, passe `body.include_unscoped`)
+- `kleos-lib/tests/recall_tiers.rs` (Lot D, 3 call sites mis a jour pour
+  compiler avec la nouvelle signature ; assertions inchangees)
+- Niveau delta global : chirurgical (Lots A/B/C) + refactor local (Lot D),
+  documente comme l'exige `CLAUDE.md` pour tout ce qui depasse le
+  chirurgical.
+
+**Tests :** `cargo check -p kleos-lib --features bundled-sqlite` et `cargo
+check -p kleos-server` verts (warnings preexistants non lies au patch
+uniquement). `cargo test -p kleos-server --lib routes::memory::types::` : 2/2
+verts, prouve empiriquement le contrat serde absent -> `Some(true)`, false
+explicite -> `Some(false)` (acceptance criterion mesure, pas suppose). Tests
+d'assertion complets sur les 4 lots delegues au test-engineer en aval de ce
+patch (cf. protocole de session).
+
+### Task 2 -- trou de contrat `include_unscoped: null` (review post-implementation)
+
+**Symptome :** `#[serde(default = "default_include_unscoped")]` ne joue QUE
+quand la CLE est absente du JSON. Un payload avec la cle presente et une
+valeur `null` explicite (`{"include_unscoped": null}`) traverse le chemin de
+deserialisation normal et retombe sur `None`, que `kleos-lib` traite comme
+strict -- meme classe de panne que la Cause 1 du corps de ce patch, atteinte
+par un chemin different. Aucun client de ce repo n'envoie ce payload (verifie
+: les 4 sites `kleos-cli` omettent la cle plutot que de la poser a `null`),
+mais un client externe faisant `json.dumps({"include_unscoped": None})`
+retomberait silencieusement en strict.
+
+**Approche ecartee :** normaliser `body.include_unscoped.or(Some(true))` a
+chaque handler HTTP juste avant usage. Rejetee car elle ne peut PAS faire
+passer le test cible `search_body_include_unscoped_explicit_null_key_
+should_be_inclusive` (kleos-10, `memory/types.rs`), qui deserialise
+`SearchBody` directement depuis un JSON brut (`serde_json::from_str`), sans
+passer par aucun handler. Un fix cote handler laisse le champ de la struct
+lui-meme incorrect ; seul un fix a la deserialisation ferme le trou pour de
+vrai, y compris pour tout futur appelant qui lirait le champ sans passer par
+un handler existant.
+
+**Approche retenue (chirurgical, frontiere HTTP) :** un
+`deserialize_with = "deserialize_include_unscoped"` local par fichier,
+combine avec le `default = "default_include_unscoped"` deja en place :
+```rust
+fn deserialize_include_unscoped<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.or(Some(true)))
+}
+```
+`default` s'applique quand la cle est absente ; `deserialize_with` s'applique
+quand la cle est presente (y compris `null`) -- les deux se combinent
+normalement en serde. Applique aux **6 structs frontiere** (symetrie
+demandee explicitement, pour ne pas repeter l'erreur du matin ou seule une
+partie des copies etait alignee) :
+- `SearchBody`, `RecallBody`, `ListQuery` (`kleos-server/src/routes/memory/
+  types.rs`)
+- `ObservationsQuery` (`kleos-server/src/routes/growth/types.rs`)
+- `ListConversationsParams` (`kleos-server/src/routes/conversations/
+  types.rs`)
+- `SearchMessagesRequest` (`kleos-lib/src/conversations.rs`)
+
+Sur les 6, seuls `SearchBody`/`RecallBody`/`SearchMessagesRequest` (corps
+JSON POST) exposent reellement le cas `null` a un client ; `ListQuery`,
+`ObservationsQuery`, `ListConversationsParams` sont extraits via
+`axum::extract::Query` (chaine de requete, aucun litteral `null` possible).
+Applique quand meme sur ces 3 pour un contrat identique et verifiable sur
+les 6 structs, pas seulement sur celles ou le bug est atteignable en
+pratique.
+
+**Fichiers touches (Task 2) :**
+- `kleos-server/src/routes/memory/types.rs` (helper +
+  `deserialize_with` sur 3 structs)
+- `kleos-server/src/routes/growth/types.rs` (helper +
+  `deserialize_with` sur 1 struct)
+- `kleos-server/src/routes/conversations/types.rs` (helper +
+  `deserialize_with` sur 1 struct)
+- `kleos-lib/src/conversations.rs` (helper + `deserialize_with` sur 1
+  struct)
+- Niveau delta : chirurgical (attribut serde + petit helper par fichier,
+  meme discipline que Lots B/C).
+
+**Tests (Task 2) :** passe cargo centralisee couvrant Patch 49 + les tests
+de kleos-10 + le fix kleos-11 (StoreRequest.space, sans rapport avec Patch
+49) en une seule fois :
+- `cargo check -p kleos-lib --features bundled-sqlite --tests` -- vert
+  (valide aussi le fix kleos-11 sur les 6 fichiers casses par
+  `StoreRequest missing field 'space'`, cf. section Patch 33 "Friction
+  recurrente").
+- `cargo check -p kleos-server` -- vert.
+- `cargo test -p kleos-lib --features bundled-sqlite --test recall_tiers`
+  -- 3/3 vert.
+- `cargo test -p kleos-server --lib routes::` -- 100/100 vert (etait 99
+  passed / 1 failed avant ce fix ; le seul test rouge,
+  `search_body_include_unscoped_explicit_null_key_should_be_inclusive`,
+  passe desormais).
+- `cargo test -p kleos-lib --features bundled-sqlite --lib
+  memory::search::tests::cache_key_distinguishes_include_unscoped_both_
+  directions` -- vert (test de cache de kleos-10 pour la Cause 2 / Lot A).
+
+**Limite connue, hors perimetre de Patch 49 -- un second trou dans la meme cle
+de cache reste ouvert.** `hash_search_params` ne hashe pas non plus
+`req.embedding` (zero occurrence de `req.embedding.hash` dans
+`kleos-lib/src/memory/search.rs`). Deux requetes avec la meme `query` texte
+et les memes filtres mais des embeddings differents peuvent donc encore
+collider sur la meme entree de cache pendant la fenetre de 15s. Non
+atteignable par un client HTTP normal (`SearchBody` n'expose pas de champ
+`embedding` a saisir), mais atteignable par un appelant interne
+(`faceted_search`, `search.rs` ~ligne 1946, qui construit un `SearchRequest`
+avec un embedding calcule) et lors d'un swap d'embedder a chaud. Detail pour
+la review : le commentaire upstream `search.rs:834-838` ("Done before
+hashing so the cache key is stable") montre que l'auteur upstream CROYAIT que
+l'embedding participait a la cle -- il n'y participe pas, ni avant ni apres
+ce commentaire. Meme classe de bug que Lot A (cle de cache incomplete, code
+upstream pur), deliberement NON corrige ici pour ne pas elargir le diff de
+Patch 49 ; a traiter dans un patch dedie si mesure comme reellement
+atteignable en pratique.
+
+**Conditions de retrait :** Lot A et B/C sont candidats PR upstream propres
+(Lot A corrige un bug upstream ; Lot B/C alignent un comportement deja
+documente par le CLI). Lot D reste local tant que la fonctionnalite
+`spaces` (Patch 33) elle-meme n'est pas remontee upstream ; a retirer en
+meme temps que Patch 33 si un jour absorbe.
+
+---
+
+## Binaires compilés pour chaque plateforme
+
+| Binaire | Windows (MSVC) | Linux musl (WSL) |
+|---|---|---|
+| kleos-server | non (Linux uniquement) | oui |
+| kleos-cli | non (Linux uniquement) | oui |
+| kleos-mcp | non (Linux uniquement) | oui |
+| kleos-sh | oui | non |
+| agent-forge | oui | non |
+| kleos-sidecar | oui | non |
+| kleos-cred (cred + derive-db-key) | oui | non |
+
+---
+
+## Patch 50 -- `agent-forge` n'ecrivait jamais son enveloppe sur stdout (2026-08-25)
+
+**Symptome :** un agent respecte le protocole, appelle
+`agent-forge --name <slug> log-hypothesis`, la commande reussit et pose bien
+un `hyp_xxxxxxxx` dans `<slug>.out.json`. Le hook PreToolUse
+`enforce-agent-forge.sh` le bloque pourtant a sa premiere edition de fichier
+code, comme s'il n'avait rien declare.
+
+Cause racine mesuree le 2026-08-25 : le binaire n'a **jamais** imprime son
+enveloppe `Output`. Le seul `println!` de `main.rs` sert la sous-commande
+`schema` ; la terminaison passait uniquement par `write_output` vers le
+fichier. Verifie sur les deux formes d'appel, `--name` comme
+`--input`/`--output` explicites : 0 octet sur stdout, 0 sur stderr, et
+`exit 0` meme quand `success` vaut `false`.
+
+Le hook PostToolUse `~/.claude/hooks/track-agent-forge.sh`, durci le
+2026-08-24, exige depuis lors un identifiant `spec_<hex>` / `hyp_<hex>` dans
+`tool_response` **en plus** du match sur la commande Bash (garde
+`forge_saw_hyp_id` ligne 108, branche `log-hypothesis` lignes 133-140). Ce
+durcissement etait legitime : avant lui, `kleos-cli store "... log-outcome
+..."` purgeait le marqueur sur simple mention et `echo "agent-forge
+spec-task"` l'armait. Mais il a ete ecrit contre un binaire sans contrat
+stdout. Des ce jour-la, tout appel non suivi d'un `cat <slug>.out.json`
+laissait `tool_response` vide, le hook loguait `Ignored: ... state
+unchanged`, aucun `agent-forge-active.<session_id>` n'etait pose et
+`enforce-agent-forge.sh:111` refusait l'edition suivante. Mesure sur le log
+depuis le 2026-08-24 : `spec-task` 39 armes / 33 ignores, `log-hypothesis`
+32 / 32. Les deux sous-commandes echouaient au meme taux ; l'asymetrie
+apparente venait du chemin d'appel, le skill `agent-forge-spec` prescrivant
+un `&& cat` que la forme `--name` du CLAUDE.md global n'a pas.
+
+**Approche :** faire imprimer l'enveloppe au binaire, plutot que faire lire
+le fichier au hook. Niveau **chirurgical**, dans une zone deja divergente
+ouverte par `f348b263` (flag `--name`, 2026-08-23). Le niveau inferieur,
+canal overlay externe, n'existe pas pour un binaire. L'alternative sans delta
+upstream, faire lire `<slug>.out.json` au hook, a ete rejetee sur trois
+points : le fichier persiste entre les runs, donc un echec suivant un succes
+armerait quand meme le gate sauf a reintroduire un controle de mtime, c'est a
+dire le TTL fragile que le refactor du 2026-08-24 avait justement supprime ;
+`kleos-cli forge` n'ecrit aucun fichier local, la couverture serait partielle ;
+et surtout le hook lirait un fichier que l'agent controle en ecriture, ce qui
+rouvre la classe de bypass que le durcissement fermait. Le troisieme candidat,
+armer sur la seule correspondance de commande, est un revert pur de ce
+durcissement et a ete ecarte pour la meme raison.
+
+**Fichiers touches :** `agent-forge/src/main.rs` (22 lignes ajoutees).
+Nouveau helper `emit_stdout(&Output)`, appele apres `write_output` au site
+terminal de `main()` et au site d'erreur d'ouverture de la DB. Aucune
+signature modifiee, `json_io.rs` intact.
+
+**Tests :** cas d'erreur, 132 octets sur stdout la ou il y en avait 0 ; cas
+de succes, enveloppe complete, octet pour octet identique au fichier hormis
+le saut de ligne final de `println!`. De bout en bout, `agent-forge --name
+af-verify-vocab log-hypothesis` **sans** `cat` final produit desormais le
+verdict `State: log-hypothesis active (CLI), completion gates reset`, la ou
+il produisait `Ignored`. `verify` sur `cargo build --release -p agent-forge`
+passe (1/1). Le contournement `; cat <slug>.out.json` cote appelant n'est
+plus necessaire.
+
+**Limite connue, hors perimetre de ce patch :** les branches sans
+identifiant restent bloquees, pour une cause differente. `forge_saw_success`
+(`track-agent-forge.sh:109-111`) n'accepte que `spec_`/`hyp_` en hexa ou les
+mots `recorded|logged|updated|completed`, alors que `verify` renvoie
+`id: null` et le message `Verification passed (N/M steps)`. Un `verify`
+reussi ne pose donc toujours pas `agent-forge-verified.<session_id>` (4
+armes / 48 ignores sur la meme periode). `challenge-code` et `session-diff`
+partagent cette garde. Le correctif est cote hook, pas cote binaire, et fait
+l'objet d'une carte roadmap dediee.
+
+**Conditions de retrait :** si upstream Ghost-Frame adopte un contrat stdout
+pour `agent-forge` (PR possible, le changement n'a rien de specifique a
+VOCSAP et corrige aussi le `exit 0` sur `success: false`), ce patch et le
+`--name` de `f348b263` fusionnent avec la version amont et disparaissent du
+fork.
+
+---
+
+## Patch 51 -- cache de session PIV corrompu = panne permanente de tout client (2026-09-02)
+
+**Symptome :** tous les clients Kleos d'un poste echouent sur **tous** les
+endpoints, y compris avec une charge minimale :
+
+```
+Error: GET http://192.168.10.21:4200/handoffs/search?q=...&limit=1 failed:
+  builder error -> failed to parse header value
+```
+
+Mesure du 2026-09-02 sur `DESKTOP-7B2CIVN`. Le fichier de cache de session
+`%LOCALAPPDATA%/kleos-session-d069be7b63989d26f2933ccef6eb7ca0` (43 octets,
+date du 2026-09-01 14:46) etait **integralement rempli d'octets 0x00**,
+octet pour octet identique a `head -c 43 /dev/zero`. C'est l'artefact NTFS
+classique d'une ecriture interrompue : la taille finale est committee dans
+les metadonnees, les donnees ne sont jamais flushees, et la relecture rend
+des NUL. Les neuf autres fichiers `kleos-session-*` du poste etaient sains,
+un seul etait corrompu, et ce seul fichier suffisait a mettre tous les
+clients a terre.
+
+Chaine causale, verifiee de bout en bout :
+
+1. `RequestSigner::cached_session` (`kleos-lib/src/auth_piv.rs`) validait le
+   contenu par `tok.trim()` puis `is_empty()`. **`0x00` n'est pas un
+   whitespace Rust**, donc `trim` ne le retire pas et 43 NUL ne sont pas
+   vides : le token corrompu passait le garde.
+2. `Client::apply_auth` (`kleos-client/src/client.rs:60`) le posait en
+   header `X-Kleos-Session`. `reqwest` refuse un `HeaderValue` contenant
+   `0x00`, d'ou l'erreur -- **cote client, avant tout envoi reseau**.
+3. La requete n'atteignant jamais le serveur, il n'y avait **aucun 401**,
+   donc le self-heal `clear_session()` (cable sur 401) ne se declenchait
+   jamais. La panne etait **permanente**.
+4. Le chemin du cache n'est scope que par `identity_hash`, donc **tous les
+   processus de la meme identite sur l'hote** (sessions Claude Code, hooks,
+   MCP, sidecar) lisaient le meme fichier empoisonne. La panne etait
+   **partagee**.
+
+Le diagnostic initial des sessions precedentes attribuait cette erreur au
+label d'agent auto-detecte et prescrivait `KLEOS_AGENT_LABEL=...` en
+contournement. C'est faux : `main.rs` defaute sur `"kleos-cli"` quand la
+variable est absente, et `identity status` confirmait des labels propres
+(`DESKTOP-7B2CIVN` / `kleos-cli` / `none`). Poser la variable "reparait" par
+effet de bord, en changeant l'`identity_hash` donc le fichier de cache lu.
+Les memoires Kleos correspondantes ont ete corrigees (#15847, #15848).
+
+**Approche :** valider a la frontiere du cache plutot qu'a la construction de
+la requete. Niveau **chirurgical** : 4 lignes dans `cached_session`, plus un
+predicat libre `is_header_safe_token` en additif pur. Le niveau inferieur
+(canal overlay, env var) n'existe pas ici -- le garde doit vivre la ou le
+fichier est lu. Le token est une valeur opaque emise par le serveur, donc
+l'alphabet accepte est le plus strict qui couvre encore tout encodage
+plausible : VCHAR ASCII, `0x21..=0x7e`.
+
+Le fichier corrompu est **supprime** au lieu d'etre seulement ignore. C'est
+le point qui compte : sans suppression, chaque processus refait la lecture,
+re-echoue le garde, et paie un re-signing complet a chaque appel. Avec, la
+corruption s'auto-repare au premier appel suivant, exactement comme le fait
+deja `clear_session` sur 401.
+
+**Fichiers touches :** `kleos-lib/src/auth_piv.rs` uniquement.
+`cached_session` (garde + doc-comment expliquant la classe de panne),
+nouveau `fn is_header_safe_token(&str) -> bool`, et trois tests unitaires
+dans le `mod tests` existant. Aucune signature modifiee.
+`kleos-client/src/client.rs` **non touche** : le site qui echouait n'est pas
+celui qu'il faut corriger.
+
+**Tests :** `cargo test -p kleos-lib --features bundled-sqlite --lib
+auth_piv` -> 31 passed / 0 failed, dont les trois nouveaux :
+
+- `header_safe_token_rejects_non_vchar` -- couvre NUL seul, NUL enchasse,
+  newline, espace et non-ASCII ; le cas NUL est celui qui motive le patch.
+- `corrupt_session_cache_is_discarded_and_deleted` -- ecrit 43 octets NUL au
+  chemin de cache reel d'un signer jetable, exige `None` **et** l'absence du
+  fichier ensuite. C'est la reproduction fidele de l'incident.
+- `valid_session_cache_is_returned` -- le chemin rapide protege continue de
+  rendre le token, trim de son newline final.
+
+`agent-forge verify` passe 2/2 (tests + `cargo build -p kleos-lib`).
+Empirique : apres retrait du fichier corrompu, `kleos-cli search` repond
+immediatement et un nouveau cache propre de 43 caracteres alphanumeriques est
+reemis.
+
+**Remede manuel** si un poste presente le symptome avec un binaire
+pre-patch : `rm -f "$LOCALAPPDATA"/kleos-session-*` (Git Bash). Sans effet de
+bord, le token est reemis au premier appel.
+
+**Conditions de retrait :** candidat PR upstream direct. Le bug n'a rien de
+specifique a VOCSAP -- toute plateforme peut rendre un fichier tronque ou
+zero-fill apres une coupure, et le cout de la panne (permanente, partagee
+par hote, avec un message d'erreur qui pointe vers reqwest et non vers le
+cache) est disproportionne face aux quatre lignes de garde. Si Ghost-Frame
+absorbe le correctif, ce patch disparait du fork.
+
+---
+
+## Patch 52 -- un token de session expire produit un 401 jamais rejoue (2026-09-09)
+
+**Symptome :** n'importe quelle commande client echoue par intermittence,
+typiquement un store :
+
+```
+Error: HTTP 401 Unauthorized http://192.168.10.21:4200/store:
+  Authentication required. Provide X-Kleos-Sig header or Bearer token.
+```
+
+Relancer la commande a l'identique, sans rien changer, reussit. Observe
+depuis au moins le 2026-08-26 sur plusieurs sessions d'agent (memoires Kleos
+#15068 et #16387, qui constatent l'intermittence sans la resoudre ; cause
+racine dans #16579). Le message accuse la clef, ce qui a produit deux faux
+diagnostics successifs -- clef absente, puis clef refusee en ecriture -- alors
+que `KLEOS_API_KEY` etait chaque fois presente et valide.
+
+Chaine causale, verifiee de bout en bout :
+
+1. `Client::apply_auth` (`kleos-client/src/client.rs:59`) retourne des que
+   `signer.cached_session()` rend un token : la requete part avec
+   `X-Kleos-Session` **seul**, sans signature PIV ni bearer de secours.
+2. Le serveur garde ses sessions en memoire, avec un TTL glissant de 900 s
+   (`kleos-lib/src/auth_piv.rs:359`). Tout redemarrage de `kleos-server`, et
+   tout creux d'activite plus long que le TTL, rend le token inconnu de lui.
+3. `kleos-server/src/middleware/auth.rs:502` trace l'echec de `verify` en
+   `debug` et **tombe en cascade sans early return**. Aucune autre methode
+   d'auth n'etant presente dans la requete, elle traverse tous les chemins et
+   atteint le fallback `auth.rs:1078`, qui rend le message generique cite plus
+   haut. Le 401 nomme donc la mauvaise cause.
+4. `Client::handle_response` (`client.rs:271`) appelle bien `clear_session()`
+   sur 401, mais ne rejoue pas la requete. Seul `post_mcp` (`client.rs:392`,
+   upstream `2c5fee94`) porte un retry. La premiere commande qui suit
+   l'expiration echoue donc toujours, et c'est le re-lancement manuel de
+   l'operateur qui re-signe.
+
+L'intermittence vient du partage : le cache `kleos-session-<identity_hash>`
+n'est scope que par identite, donc tous les processus de la meme identite sur
+l'hote lisent le meme fichier. Un seul paie le 401, le supprime, et les
+suivants re-signent.
+
+**Approche :** rendre le retry generique au lieu de le laisser au seul
+`post_mcp`. Niveau **chirurgical** : `execute` garde son nom et ses neuf sites
+d'appel, son corps est renomme `execute_once` sans autre changement, et un
+nouveau `execute` de vingt lignes l'encadre. Rediriger les sites d'appel
+plutot que renommer la definition aurait coute neuf lignes de delta au lieu
+d'une, et surtout aurait deplace la zone de conflit sur le corps meme de la
+boucle de failover, que upstream retouche regulierement.
+
+Le niveau inferieur (canal overlay, variable d'environnement) n'existe pas
+ici : il s'agit du comportement d'un client, pas d'un reglage.
+
+Le retry est conditionne a `used_session`. Sans cette condition, une clef
+refusee couterait deux allers-retours au lieu d'un, et un serveur qui rend 401
+sur tout verrait la charge de chaque client doubler.
+
+Le pendant serveur -- rendre le message du fallback specifique quand une
+session a ete presentee et rejetee -- n'est **pas** fait ici : il ameliore le
+diagnostic, pas le comportement, et ouvrirait un site de delta dans un
+middleware upstream tres actif.
+
+**Fichiers touches :** `kleos-client/src/client.rs` uniquement. Une ligne de
+signature modifiee, le wrapper `execute` ajoute, deux tests et un helper de
+stub dans le `mod tests` existant. Aucune signature publique modifiee.
+`post_mcp` conserve son propre retry : redondant desormais, mais le supprimer
+ouvrirait un delta upstream sans rien gagner.
+
+**Tests :** `cargo test -p kleos-client --features kleos-lib/bundled-sqlite
+--lib` -> 24 passed / 0 failed, dont les deux nouveaux :
+
+- `stale_session_token_is_dropped_and_the_request_replayed` -- un stub TCP
+  local repond 401 a toute requete portant `X-Kleos-Session` et 200 sinon ; le
+  test exige la reussite **et** la trace `[true, false]`, donc la preuve que la
+  seconde tentative a lache le token.
+- `rejected_bearer_key_is_not_retried` -- le stub repond 401 a tout ; sans
+  token de session, le client ne doit emettre qu'une seule requete.
+
+Test de mutation, pour prouver que le garde mord : en forcant `used_session` a
+`false`, `stale_session_token_is_dropped_and_the_request_replayed` echoue avec
+`HTTP 401 Unauthorized .../health`, c'est-a-dire exactement le symptome
+d'origine.
+
+Sous Windows la feature `kleos-lib/bundled-sqlite` est obligatoire : sans elle
+le link du binaire de test echoue sur `LNK1181: cannot open input file
+'sqlite3.lib'`.
+
+**Conditions de retrait :** candidat PR upstream direct. Le bug n'a rien de
+specifique a VOCSAP, et upstream a deja pose la moitie du correctif en donnant
+ce retry a `post_mcp` seul (`2c5fee94`). Si Ghost-Frame absorbe la
+generalisation, ce patch disparait du fork.
+
+
+---
+
+## Patch 53 -- Toolbox : catalogue d'outils indexes (partage + emplacements par user) (2026-09-12)
+
+**Symptome :** sous upstream pur, un poste n'a aucun moyen de repondre a
+"a-t-on deja un outil pour X, et ou est-il ?". Le besoin est quotidien dans
+un parc ou les outils sont eparpilles entre depots GitHub, clones locaux,
+skills, plugins, serveurs MCP et pages de doc, sur plusieurs machines. Rien
+dans Kleos ne stocke cette carte.
+
+Le candidat evident, `skill_records` + `skills::search::find_skills`, ne tient
+pas a l'usage, pour trois raisons verifiees dans le code :
+
+1. **La recherche y est lexicale seule.** `find_skills` declare bien un
+   `vector_score` dans son `FindResult` et la table porte deja les colonnes
+   `embedding BLOB` et `embedding_vec_1024 FLOAT32(1024)`
+   (`kleos-lib/src/db/migrations.rs`, corps de la v78), mais le canal est inerte :
+   le commentaire de `kleos-lib/src/skills/search.rs:71` le dit explicitement,
+   "trigram fuzzy + vector cosine are scaffolded but skipped when the supporting
+   tables / embeddings are absent. They become active once Phase 1.5 (trigrams)
+   and Phase 1.6 (embeddings) ship". Une requete en langage naturel
+   ("convertir un PDF scanne en texte cherchable") ne matche donc que si
+   l'utilisateur a devine les mots exacts de la fiche.
+2. **Le `kind` est un enum ferme.** `SkillKind` (`kleos-lib/src/skills/types.rs:16`)
+   vaut `Skill | Agent | Command | Workflow`. Un depot, un binaire CLI, un
+   serveur MCP ou une page de doc n'ont aucune valeur ou se ranger : les
+   accueillir demanderait d'etendre un enum upstream, donc un site de conflit
+   dans un type public reexporte partout.
+3. **Le dreamer reecrit cette table sans qu'on le lui demande.**
+   `kleos-server/src/dreamer.rs` appelle `evolver::fix_skill` (:561),
+   `evolver::capture_skill` (:595) et `evolver::derive_skill` (:628) sur les
+   lignes de `skill_records`. Une fiche d'outil posee la serait tot ou tard
+   passee au LLM et modifiee : exactement ce qu'un catalogue ne doit pas subir.
+
+S'ajoute un manque structurel : `skill_records` n'a pas la separation dont le
+catalogue a besoin -- une fiche **partagee** entre utilisateurs (le texte et son
+embedding, coute cher a produire) et des **emplacements scopes par
+utilisateur** (hote, chemin local, tags). Il n'y a pas non plus de notion
+d'emplacement du tout.
+
+**Approche :** module additif `kleos-lib/src/toolbox/`, tables via le canal
+overlay VOCSAP (Patch 41), routes serveur dans un sous-module neuf, et cinq
+lignes seulement dans des fichiers upstream. Le serveur ne fait que stockage et
+retrieval : aucun clone, aucun fetch d'URL, aucun parcours de dossier cote
+serveur. Toute la digestion (lecture du depot, redaction de la fiche) est cote
+client, dans deux prompts traces sous `docs/toolbox/`.
+
+Deux tables, parce que le partage et l'isolation ne portent pas sur la meme
+chose :
+
+- `toolbox_tools` -- une ligne par cle canonique, agnostique de l'utilisateur :
+  fiche (`name`, `summary`, `body`, `keywords`), `content_hash`, embedding,
+  commit d'indexation. Registre monolith uniquement (elle vit dans `state.db`).
+- `toolbox_locations` -- scopee `user_id` : `host`, `local_path`, `tags`,
+  `notes`. Registree sur **les deux** registres (tenant pour les shards,
+  monolith pour le mode base unique ou `ResolvedDb == state.db`). La jointure
+  entre les deux tables se fait **en Rust, jamais en SQL** : en mode sharde
+  elles sont dans deux fichiers distincts.
+
+La table partagee n'est jamais lue sans le filtre "cles que cet utilisateur
+possede" (`store::list_user_keys`). C'est la seule barriere anti-fuite entre
+utilisateurs, et elle est testee comme telle.
+
+Aucune des deux tables ne porte `space_id`. Le bridge MCP injecte `space` /
+`space_id` dans tous les appels (`kleos-mcp/src/tools.rs`, `maybe_inject_space`) :
+les types de requete sont donc sans `deny_unknown_fields` et ignorent ces
+champs.
+
+**Pourquoi pas le niveau d'en dessous.** Le niveau zero delta est atteint pour
+le schema -- aucune entree dans `MIGRATIONS` / `TENANT_MIGRATIONS`, tout passe
+par `VOCSAP_MONOLITH_OVERLAYS` / `VOCSAP_TENANT_OVERLAYS` -- mais il ne peut pas
+couvrir le reste : un canal overlay pose du DDL, il ne cree ni endpoint HTTP ni
+tool MCP, et une variable d'environnement ne fait pas apparaitre une route. Le
+niveau immediatement inferieur en volume de code aurait ete de **reutiliser
+`skill_records`** : c'est precisement ce que les trois points du symptome
+interdisent. Ecrire dans une table que le dreamer fait reecrire par un LLM, sur
+des colonnes d'embedding que la Phase 1.6 upstream va cabler a sa maniere, avec
+un enum de `kind` qu'il faudrait elargir, revient a echanger deux fichiers neufs
+contre un site de conflit permanent dans le coeur upstream le plus actif. Le
+choix retenu est donc **additif pur** partout ou c'est possible, et
+**chirurgical** (une ligne par fichier) la ou il faut bien se brancher.
+
+**Fichiers touches.**
+
+Lignes dans des fichiers suivis par upstream -- cinq sites, aucun renommage,
+aucun attribut cosmetique :
+
+| Fichier | Delta |
+|---|---|
+| `kleos-lib/src/lib.rs` | +1 ligne : `pub mod toolbox;` (:62, place alphabetique) |
+| `kleos-server/src/routes/mod.rs` | +1 ligne : `pub mod toolbox;` |
+| `kleos-server/src/server.rs` | +1 ligne : `.merge(routes::toolbox::router())`, a cote des autres merges |
+| `kleos-client/src/routes.rs` | entrees `route!` **additives** dans `ROUTES`, bloc `// -- toolbox --` en fin de table : `toolbox.index`, `toolbox.find`, `toolbox.get`, `toolbox.list`, `toolbox.forget`, `toolbox.reindex` |
+| `kleos-mcp/src/tools.rs` | 4 noms ajoutes a `DAILY_TOOL_NAMES` : `toolbox.index`, `toolbox.find`, `toolbox.get`, `toolbox.list` (les deux autres restent hors surface quotidienne) |
+
+Fichiers additifs, aucun conflit possible au rebase :
+
+- `kleos-lib/src/toolbox/mod.rs`, `types.rs`, `key.rs`, `store.rs`, `search.rs`,
+  `embedding.rs`, `tests.rs`.
+- `kleos-lib/src/db/vocsap/toolbox_tools.sql`, `toolbox_locations.sql`.
+- `kleos-server/src/routes/toolbox/mod.rs` (6 routes : `POST` et `GET
+  /toolbox/entries`, `GET` et `DELETE /toolbox/entries/{id}`,
+  `POST /toolbox/find`, `POST /toolbox/reindex`).
+- `docs/toolbox/README.md`, `docs/toolbox/skills/tool-index/SKILL.md`,
+  `docs/toolbox/skills/tool-find/SKILL.md`, `docs/toolbox/agents/toolbox.md`
+  (prompts client en francais, installables dans `~/.claude/skills/` et
+  `~/.claude/agents/`, ou concatenables dans un `AGENTS.md` pour Codex).
+
+`kleos-lib/src/db/vocsap/mod.rs` recoit trois entrees d'overlay
+(`toolbox_tools` monolith, `toolbox_locations` monolith et tenant) et deux
+tests. Ce fichier est **VOCSAP par construction** (canal Patch 41) : l'editer
+est du delta zero vis-a-vis d'upstream.
+
+Deux helpers upstream sont **dupliques** plutot que rendus publics :
+`embedding_to_blob` (`kleos-server/src/routes/memory/mod.rs:320`) et
+`blob_to_embedding` (`memory/vector_sync.rs:81`), f32 little-endian, quatre
+lignes chacun. Elargir leur visibilite aurait coute deux sites de delta dans des
+fichiers upstream tres actifs pour economiser huit lignes. `rrf_score`
+(`kleos-lib/src/memory/scoring.rs:611`) est en revanche deja public et reutilise
+tel quel.
+
+**Cle canonique et ecrasement.** La cle est **toujours recalculee par le
+serveur** depuis les champs bruts (`key.git_remote` > `key.url` >
+`key.local_path`) ; le client n'en envoie jamais. Les formes git convergent :
+`https://`, `git@host:owner/repo.git`, `ssh://`, identifiants integres, `.git`
+final, slash final et casse sont normalises vers `<hote>/<chemin>` en
+minuscules. Le **port** n'est retire que pour un remote `git` (`ssh://host:2222`
+et `https://host` designent le meme depot) ; pour une cle `url` il est conserve,
+`http://nuc-01:3000/x` et `http://nuc-01:9000/x` etant deux services distincts.
+Une cle locale est `local:<hote>:<chemin>`, chemin en casse d'origine et
+**absolu** obligatoire (Unix `/...`, Windows `C:\...` ou `C:/...`, UNC
+`\\hote\partage`) : un chemin relatif n'a pas d'identite hors de la machine qui
+l'envoie, il est refuse en `InvalidInput`.
+La fiche partagee est ecrasee selon "derniere indexation gagnante **si son
+commit est plus recent**" : commit entrant plus recent -> `updated` ; egal ->
+`kept` sauf `force` ; plus ancien -> `kept` ; entrant sans commit face a un
+stocke date -> `kept` sauf `force` ; stocke sans commit -> `updated`. Hash
+identique -> `unchanged`. Dans tous les cas l'emplacement de l'appelant est
+upserte, et un embedding manquant est comble meme sur `kept`.
+
+**Deux comportements fins, tous deux testes.**
+
+1. *Un ecrasement sans embedder ne jette pas le vecteur stocke.* Quand la fiche
+   est remplacee (`updated`) alors que l'appelant n'a pas d'embedding a fournir
+   (serveur sans embedder, ou embed en echec), l'UPDATE fait
+   `embedding = COALESCE(?, embedding)` et met `embedding_model = NULL`. Le
+   vecteur survit -- il decrit un texte legerement perime, ce qui reste
+   infiniment plus utile qu'un `NULL` qui sort la ligne du canal vectoriel sans
+   que personne puisse la recalculer -- et le modele a `NULL` la marque comme a
+   recalculer. C'est exactement ce que `POST /toolbox/reindex` cible :
+   `tools_needing_embedding` selectionne `embedding IS NULL OR embedding_model
+   IS NULL OR embedding_model <> <modele courant>`. Un `missing_only: true`, lui,
+   regarde le vecteur et laisse donc cette ligne tranquille.
+2. *Fiche stockee sans commit, hash identique -> `unchanged`, et
+   `indexed_by_user_id` n'est pas rafraichi.* La regle "stocke sans commit ->
+   last writer wins" ne s'applique que s'il y a quelque chose a ecrire : si le
+   hash entrant et les metadonnees de commit sont identiques a ce qui est
+   stocke, rien n'est ecrit du tout, donc la fiche garde le `indexed_by_user_id`
+   du **premier** indexeur. Le second n'a pas "perdu" : son emplacement, lui,
+   est bien upserte, et c'est la seule chose qui le concerne.
+
+**Scopes : `toolbox.find` est declare `Write`, et c'est subi.** La recherche est
+une lecture, mais c'est un POST, et le middleware d'auth
+(`kleos-server/src/middleware/auth.rs`, `is_read_only_post` :37) n'exempte du
+scope Write que des chemins **codes en dur** (`/search`, `/memories/search`,
+`/recall`, `/skills/search`, ...). `/toolbox/find` n'y figure pas : le declarer
+`Read` dans `kleos-client/src/routes.rs` ne changerait pas ce que le serveur
+impose, cela ferait seulement mentir la table des routes. Consequence assumee :
+**une cle read-only ne peut pas interroger le catalogue**. Condition de levee :
+si le besoin d'une cle de lecture pure apparait, ajouter `"/toolbox/find"` a
+l'allowlist de `is_read_only_post` -- une ligne dans un fichier upstream, donc un
+sixieme site de delta -- et repasser l'entree `route!` en `Read`.
+
+**Variables d'environnement :** les trois premieres sont prefixees
+`KLEOS_TOOLBOX_`, toutes sont optionnelles, aucune n'est obligatoire pour que la
+fonctionnalite marche.
+
+| Variable | Defaut | Effet |
+|---|---|---|
+| `KLEOS_TOOLBOX_MAX_BODY_BYTES` | `262144` | plafond du champ `body` a l'indexation ; au-dela, `400`. `summary` est plafonne a 4 KiB en dur et `keywords` a 64 entrees |
+| `KLEOS_TOOLBOX_RERANK` | non posee (off) | defaut du champ `rerank` de `POST /toolbox/find` (`1` / `true` -> on). Sans effet si `AppState::current_reranker()` est `None` |
+| `KLEOS_TOOLBOX_EMBEDDING_MODEL` | `unknown` | nom de modele enregistre avec l'embedding quand le provider n'expose pas le sien ; sert a `POST /toolbox/reindex` pour reperer les vecteurs d'un autre modele |
+| `KLEOS_EMBEDDING_MODEL` | -- | **pas une variable du toolbox** : c'est celle que lit deja le provider d'embedding compatible OpenAI. Le handler s'en sert comme repli quand `KLEOS_TOOLBOX_EMBEDDING_MODEL` n'est pas posee, avant de retomber sur `"unknown"` (`embedding_model_name()`). La poser suffit donc, sur un serveur a provider distant, pour que le nom stocke soit le vrai nom du modele |
+
+Sans embedder configure, l'indexation reussit quand meme (`"embedded": false`)
+et la recherche retombe sur la FTS5 seule ; `reindex` comble les vecteurs plus
+tard.
+
+**Tests :** `cargo test -p kleos-lib --features bundled-sqlite --lib toolbox`
+-> 44 passed / 0 failed (42 tests du module, plus les deux tests d'overlay que
+le filtre attrape parce que leur nom contient `toolbox`), et
+`--lib db::vocsap` -> 8 passed / 0 failed. Cote serveur,
+`--lib routes::toolbox` -> 8 passed et `--test routes_toolbox` -> 6 passed.
+Les familles qui comptent :
+
+- **Cle** (12 tests, `key.rs`) : https avec `.git`, ssh scp-like, `ssh://`,
+  identifiants `user:token@`, port explicite, casse, slash final, url non-git
+  gardee profonde, local avec et sans hote, et l'erreur "aucun champ fourni".
+- **Politique d'ecrasement** (`tests.rs`) : un test par ligne de la table
+  ci-dessus, `insert_then_same_content_is_unchanged`,
+  `newer_commit_overwrites_the_shared_sheet`,
+  `older_commit_is_kept_even_with_force`,
+  `same_commit_time_needs_force_to_overwrite`,
+  `incoming_without_commit_is_kept_unless_forced`,
+  `stored_without_commit_is_last_writer_wins`,
+  `embedding_is_backfilled_on_a_kept_sheet`,
+  `overwrite_without_an_embedder_keeps_the_vector_and_marks_the_model_stale`
+  (le point 1 ci-dessus, plus la preuve que le reindex retrouve la ligne) et
+  `trailing_whitespace_is_not_new_content` (le hash porte sur les valeurs
+  trimees, celles qui sont reellement stockees).
+- **Listing** : `tools_by_keys_orders_by_name_across_batches` -- 501 cles, soit
+  un lot `IN (...)` de plus que `MAX_IN_PARAMS` : le tri est global, pas par lot,
+  sinon la pagination de `GET /toolbox/entries` decoupe un ordre faux.
+- **Reranking** : `rerank_scores_only_the_candidates_it_submitted` (reranker
+  factice, `top_k` = 2) -- seuls les `top_k` premiers candidats sont soumis et
+  portent un `rerank_score` ; les autres restent a `None` et gardent leur rang de
+  fusion.
+- **Validation serveur** : `commit_time_must_be_plausible` -- un `commit.time`
+  negatif ou a plus de 86400 s dans le futur est un `400`. Sans cette borne, une
+  date absurde (`i64::MAX`) gelerait la fiche partagee pour toujours : la
+  politique garde le commit le plus recent, donc plus rien ne pourrait la
+  remplacer.
+- **Isolation** : `a_user_never_sees_a_tool_they_do_not_own` -- l'utilisateur B
+  ne voit pas l'outil de A **alors que la ligne partagee existe**. C'est le test
+  qui garde la contrainte anti-fuite ; s'il tombe, le catalogue fuit.
+  `delete_locations_forgets_for_one_user_only_and_keeps_the_sheet` couvre le
+  pendant en suppression.
+- **Recherche** : `fts_channel_works_without_any_embedding` (serveur sans
+  embedder), `vector_channel_finds_what_the_words_do_not` (le cas que la FTS ne
+  peut pas attraper), `rrf_puts_a_tool_matched_by_both_channels_first`,
+  `kind_and_tag_filters_narrow_the_result_set`, `limit_is_clamped_and_defaults`.
+- **Overlays** (`db/vocsap/mod.rs`) :
+  `toolbox_overlays_create_then_noop_on_monolith` (apply x2 sur une connexion
+  nue, puis insert + `MATCH` pour prouver que les triggers FTS sont cables) et
+  `toolbox_locations_overlay_creates_then_noop_on_tenant` (verifie en plus que
+  `toolbox_tools` n'apparait **pas** dans un shard : la fiche partagee ne doit
+  jamais y etre dupliquee).
+
+**Conditions de retrait :** deux scenarios.
+
+1. Upstream livre un catalogue d'outils equivalent -- fiche partagee, cle
+   canonique, emplacements par utilisateur, recherche hybride. Le patch
+   disparait alors entierement : retirer les cinq lignes upstream, supprimer le
+   module et le sous-module de routes, retirer les trois entrees d'overlay. Les
+   tables restent en base (SQLite ne les rend pas au `DROP` automatiquement) :
+   un `DROP TABLE toolbox_tools`, `toolbox_tools_fts`, `toolbox_locations` est a
+   faire a la main apres migration des donnees.
+2. La Phase 1.6 upstream cable les embeddings sur `skill_records`, **et**
+   `SkillKind` s'ouvre, **et** une ligne peut etre soustraite a l'evolveur du
+   dreamer. Les trois conditions doivent tenir ensemble ; deux sur trois ne
+   suffisent pas. Dans ce cas une fusion vers `skills` devient discutable, mais
+   elle ne se ferait qu'au prix d'un `space_id` a neutraliser et d'une notion
+   d'emplacement a inventer cote upstream. A reevaluer, pas a presumer.
+
+Le patch n'est pas un candidat PR upstream en l'etat : il repose sur le canal
+overlay VOCSAP et sur l'absence de `space` dans le catalogue, deux choix de
+fork. La partie generique (cle canonique, politique d'ecrasement par date de
+commit) serait extractible si Ghost-Frame s'y interessait.
+
+
+---
+
+## Patch 55 -- `/gate/check` ne retient plus les agents de hook ; `kleos-sh` traduit l'approbation en `ask` (2026-09-29)
+
+**Symptome :** en session Claude Code, chaque appel Bash, Write ou Edit
+coute environ 10 s. Mesure le 2026-09-29 sur le transcript JSONL d'une
+session reelle : 10,1 a 11,7 s par appel (`date -u` : 10,52 s), contre
+0,5 a 0,8 s pour Read et Grep (memoire Kleos #19607, carte roadmap
+`42251a7b`).
+
+Chaine causale :
+
+1. `check_handler` (`kleos-server/src/routes/gate/mod.rs`) entre dans
+   l'attente d'approbation en memoire des que l'outil est dans
+   `TOOLS_REQUIRING_APPROVAL` (Bash, Write, Edit, WebFetch, WebSearch).
+2. `skip_approval` est `#[serde(skip_deserializing)]` (correctif de securite
+   upstream) : un client ne peut pas s'en exempter, et `kleos-sh` ne l'envoie
+   de toute facon pas.
+3. Le Patch 21.1 ne restreint que le pont vers la TUI ; l'attente elle-meme
+   reste active pour tout Bash.
+4. Le hook PreToolUse de Claude Code est tue a son timeout (10 s) et l'outil
+   passe (fail-open). L'attente ne protege donc de rien et coute 10 s par
+   appel ; une approbation voulue (`require_approval_patterns`) est tout aussi
+   inutilisable, puisqu'il faudrait cliquer dans la TUI en moins de 10 s.
+
+**Approche :** la decision de ne pas attendre est prise **cote serveur**, par
+une liste d'agents posee par l'operateur, `KLEOS_GATE_NO_WAIT_AGENTS` (liste
+separee par des virgules, casse et espaces ignores). Pour un agent liste et un
+resultat autorise, le handler rend immediatement le resultat, avec
+`requires_approval` tel que calcule par les patterns. Cote client,
+`kleos-sh --claude-hook` traduit `allowed && requires_approval` en
+`permissionDecision: "ask"` : l'approbation passe par l'invite native de
+Claude Code, qui n'a pas de timeout. Les refus (patterns bloques, dangereux,
+brain, DNS SSH) sont decides avant ce point et restent des refus.
+
+Niveau **additif + chirurgical** : un module neuf (`routes/gate/no_wait.rs`)
+et trois lignes dans le handler, juste avant le bloc d'attente. Le niveau
+inferieur ne suffit pas : aucune variable d'environnement existante ne
+desactive l'attente, et baisser le timeout client
+(`KLEOS_SH_APPROVAL_TIMEOUT_SECS=2`, palliatif pose le 2026-09-29) laisse le
+serveur ouvrir une attente que personne ne traitera.
+
+Pourquoi pas un champ de requete : c'est exactement ce que le
+`skip_deserializing` upstream interdit, a raison. La liste serveur garde la
+decision chez l'operateur.
+
+Contrainte a connaitre : depuis le Patch 75, `kleos-sh` hors `--claude-hook`
+refuse toute commande `require_approval` que le serveur ne marque pas
+`approval_granted: true` (pose seulement apres une approbation humaine pendant
+l'attente). Lister un agent qui utilise `kleos-sh` en mode exec (`-c`) ou
+`--gate-only` est donc sur, a condition que ses postes aient un `kleos-sh` qui
+inclut le Patch 75 ; un `kleos-sh` plus ancien traite `Ask` comme `Allow`.
+
+Les lignes `gate_requests` creees en `pending_approval` pour un agent liste ne
+sont plus resolues par personne ; elles restent en l'etat.
+
+**Fichiers touches :**
+- `kleos-server/src/routes/gate/no_wait.rs` (neuf) et
+  `kleos-server/src/routes/gate/mod.rs` (`mod no_wait;` + early return).
+- `kleos-sh/src/gate.rs` : variante `GateOutcome::Ask`, lecture de
+  `requires_approval` (le `#[allow(dead_code)]` tombe).
+- `kleos-sh/src/main.rs` : `ask` en mode hook, `Allow` sinon.
+
+**Tests :** `no_wait::tests` (liste vide, casse et espaces, agent non liste ou
+vide, pas de correspondance par prefixe) ;
+`build_decision_ask_keeps_reason_and_enrichment` dans `kleos-sh`.
+
+**Deploiement :** poser `KLEOS_GATE_NO_WAIT_AGENTS=claude-code` dans
+`/etc/kleos/kleos.env`, redeployer `kleos-server`, puis installer le nouveau
+`kleos-sh.exe`. Sans la variable, le serveur garde le comportement upstream.
+
+**Conditions de retrait :** upstream offre un moyen, cote serveur, de ne pas
+retenir les requetes d'un hook (ou retire `TOOLS_REQUIRING_APPROVAL` de la
+condition d'attente).
+
+
+---
+
+## Patch 56 -- `kleos-sh` Windows : `reqwest` en processus au lieu de `curl.exe` (2026-09-29)
+
+**Symptome :** chaque `/gate/check` lance un processus `curl.exe` sous
+Windows. Carte roadmap `0e638409`.
+
+**Origine du contournement :** en mai 2026, `reqwest` expirait sur ce poste ;
+l'historique du diagnostic (tentatives 1 a 7 dans l'ancien commentaire de
+`gate.rs`) a fini par attribuer la perte des paquets de retour a une regle
+OPNSense sur les ports source bas, corrigee le 2026-05-12. Les echecs de
+`reqwest` datent d'avant cette correction.
+
+**Approche :** une seule `send_request` pour toutes les plateformes, avec le
+client `reqwest` deja construit par `main.rs` et un timeout par requete lu dans
+`KLEOS_SH_APPROVAL_TIMEOUT_SECS` (12 s par defaut, comme `--max-time` avant).
+
+**Mesures (2026-09-29, poste Windows en Wi-Fi, serveur de production) :**
+- 20 appels sur un payload Read : 20 reponses, aucune erreur.
+- Refus par pattern, 5 appels : `permissionDecision: deny` a chaque fois, donc
+  le serveur est bien atteint (le hook fail-open ne le prouverait pas).
+- Refus, 10 appels : mediane d'environ 80 ms contre environ 170 ms avec
+  `curl.exe`.
+
+**Fichiers touches :** `kleos-sh/src/gate.rs`.
+
+**Conditions de retrait :** candidat PR upstream (le contournement curl n'est
+utile qu'a un poste derriere ce routeur).
+
+
+---
+
+## Patch 57 -- endpoint `POST /hooks/claude/pre-tool-use` pour un hook Claude Code `type: "http"` (2026-09-29)
+
+**Symptome :** le drain du supervisor (`claude-hooks
+eidolon-supervisor-drain-pending`) lance un processus par appel d'outil, pour
+une requete `/supervisor/pending?wait=0` qui coute 1,1 ms au serveur en
+loopback. Mesure client : 20,6 a 21 ms, dont environ 6 ms de processus et le
+reste en allers-retours Wi-Fi sans keep-alive. Carte roadmap `81301429`.
+
+**Approche :** Claude Code sait appeler un hook `type: "http"` (sonde du
+2026-09-29, memoire Kleos #19608 : POST axios en keep-alive, corps identique au
+stdin, en-tete `Authorization` interpole via `allowedEnvVars`, 200 +
+`permissionDecision: deny` bloque, serveur injoignable = l'outil passe). Le
+serveur recoit donc directement l'evenement PreToolUse, reclame les injections
+de la session avec la meme requete que `/supervisor/pending` (meme colonne
+`claimed_at`, donc pas de double livraison), et repond au format hook : 200
+vide si rien, `additionalContext` pour les avertissements, `deny` des qu'une
+injection est `critical`. Rendu identique a celui du hook Rust.
+
+Niveau **additif** : un module de routes neuf, une ligne `pub mod` et une ligne
+`.merge(...)` dans des fichiers upstream.
+
+**Cote client (apres deploiement) :** remplacer l'entree
+`eidolon-supervisor-drain-pending` de `settings.json` par
+`{"type": "http", "url": "http://192.168.10.21:4200/hooks/claude/pre-tool-use",
+"headers": {"Authorization": "Bearer $KLEOS_API_KEY"}, "allowedEnvVars":
+["KLEOS_API_KEY"], "timeout": 3}`.
+
+**Tests :** `claude_hooks::tests` (rien a signaler, avertissements en contexte
+avec echappement, un `critical` en n'importe quelle casse refuse avec toutes les
+lignes).
+
+**Conditions de retrait :** upstream expose son propre point d'entree pour les
+hooks http de Claude Code.
+
+## Patch 58 -- `intelligence::llm::call_llm` injecte `think` + `reasoning_effort` (2026-10-09)
+
+**Symptome sous upstream pur :** sur un endpoint Ollama OpenAI-compat
+(`/v1/chat/completions`) avec `KLEOS_LLM_THINK=0`, les appels de `call_llm`
+(growth `max_tokens` 300, decomposition 512, juge Thymus 1024) reviennent avec
+`content` vide : qwen3 raisonne par defaut et le reasoning consomme tout le
+budget. Mesure de l'etude A/B `kleos-shadow` (586 paires, 2026-10-09, LXC 121) :
+87 % de contenu vide, 12 % de JSON valide, dont 585 appels `growth_reflection`.
+La croissance etait donc quasi inoperante.
+
+**Cause :** `call_llm` serialise une struct typee `OpenAiRequest` sans les champs
+de raisonnement et n'appelait pas `inject_openai_compat_reasoning`. C'etait le
+seul site LLM de `kleos-lib` hors du helper du Patch 14c (broca via
+`call_llm_endpoint`, `LocalModelClient`, Loom, Atoms l'appellent tous). Ollama
+ignore `think` sur l'endpoint OpenAI-compat et ne lit que `reasoning_effort`
+(ollama#14820), d'ou l'injection des deux champs par le helper.
+
+**Approche :** niveau **chirurgical**, 3 lignes : le body est converti en
+`serde_json::Value` puis passe par le helper existant. Niveau d'en dessous
+(canal overlay) impossible : le body est construit en Rust, aucun overlay ne le
+couvre. Niveau d'au-dessus (ajouter les champs a la struct) refuse : il
+dupliquerait la logique `KLEOS_LLM_THINK` hors du helper.
+
+**Fichiers :** `kleos-lib/src/intelligence/llm.rs`, `kleos-lib/src/llm/mod.rs`
+(visibilite du helper), `kleos-ingest/src/summarizer.rs`.
+
+**Tests :** `intelligence::llm::tests::call_llm_injects_reasoning_setting`
+(serveur axum local, verifie `think=false` et `reasoning_effort="none"` dans le
+body recu). Le test existant `test_is_llm_available_default` recoit
+`#[serial_test::serial(llm_env)]` pour ne pas concurrencer le nouveau test sur
+`KLEOS_LLM_URL`.
+
+**Second site, meme cause :** `kleos-ingest/src/summarizer.rs` construisait son
+propre body vers un endpoint Ollama sans injection (resume de session,
+`max_tokens` 300). Les modeles de production acceptent `think`, donc il est
+couvert aussi. Comme il vit dans une autre crate, `inject_openai_compat_reasoning`
+passe de `pub(crate)` a `pub` (un mot dans `kleos-lib/src/llm/mod.rs`) plutot que
+de dupliquer le mapping `think` -> `reasoning_effort`. Le service d'ingest lit
+`KLEOS_LLM_THINK` dans son propre environnement : il faut le poser la ou il
+tourne. Verification : `cargo check -p kleos-ingest` sous WSL (le crate ne
+compile pas sous Windows, `watcher.rs` est Unix-only).
+
+**Conditions de retrait :** upstream applique `think_setting()` dans `call_llm`.
+
+## Patch 59 -- broker Unix `cred` isole pour OpenClaw (2026-10-15)
+
+**Symptome sous upstream pur :** `cred exec` ouvre le coffre local et peut faire
+un fallback HTTP vers le routeur credd historique, tandis que le daemon expose
+un routeur d'administration TCP ou Unix protege par bearer. Un processus
+OpenClaw ayant le coffre monte peut donc lire au-dela des references dont il a
+besoin.
+
+**Approche :** ajouter un routeur broker distinct, avec trois routes HTTP JSON
+v1 sur Unix socket, politique TOML fail-closed et identite `SO_PEERCRED`. Le
+mode broker du client ne connait que `exec` et `list` et utilise uniquement
+`CRED_BROKER_SOCKET`; il ne charge ni DB, ni cle, ni configuration de
+chiffrement, et ne consulte jamais `CREDD_URL`. Le listener historique et son
+routeur restent inchanges. Le broker ouvre le coffre en lecture seule
+(`mode=ro`), sans migration, converge ni rekey.
+
+**Effet sur `cred` Windows :** aucun sans declencheur. Le mode broker ne
+s'active que par `CRED_BROKER_SOCKET` ou `--auth-mode broker`
+(`CRED_AUTH_MODE=broker`) ; sous Windows il echoue toujours (code 78 pour
+`exec`/`list`, 77 sinon) sans ouvrir le coffre. La seule presence de
+`CRED_BROKER_SOCKET` suffit tant qu'aucun mode d'authentification n'est fourni
+(la valeur par defaut clap `yubikey` n'est pas un choix explicite, distinction
+par `ValueSource`) ; un `--auth-mode` ou `CRED_AUTH_MODE` explicite autre que
+`broker` (`keyfile`, `password`, `yubikey`) donne 78. Le binaire `cred` ne gagne
+aucune dependance ; les ajouts `kleos-lib` sont des fonctions nouvelles,
+`connect_encrypted` et `DatabasePools::new` sont inchanges.
+
+**Feature `piv` de `kleos-credd` :** `kleos-lib/piv` (crate `yubikey`, donc
+`pcsc`) faisait lier `libpcsclite.so.1` au binaire Linux, absent de l'image
+cred-broker minimale (image node de base, sans apt). `kleos-credd` porte
+desormais sa propre feature `piv`, active par defaut et transmise a
+`kleos-lib/piv` : les builds existants sont inchanges. La livraison broker
+(`build_linux_artifacts.sh`) construit `kleos-credd` avec
+`--no-default-features`, dans une invocation cargo separee de `cred`, et
+refuse un binaire qui lie `libpcsclite` ; le mode broker n'utilise que la
+keyfile. Sans la feature, `RequestSigner::from_env_or_file` saute le tier
+YubiKey (gating interne a `kleos-lib`), aucune source credd n'est gatee. Le
+script refuse aussi un arbre modifie : construire depuis un worktree propre
+(`git worktree add --detach /tmp/kleos-clean <commit>`).
+Consequence de l'invocation separee : le `cred` livre est construit seul, avec
+`kleos-lib` en `{sqlcipher}`, alors qu'un build commun l'unifiait avec les
+features de `kleos-credd` (`{piv, ml, brain_hopfield}`). Aucun effet
+fonctionnel attendu : `ml` ne gate que les index vectoriels, que `cred`
+n'utilise pas.
+
+**Garde du script de livraison :** il exige un `git status --porcelain` vide
+(fichiers non suivis compris, sous-modules exclus car aucun n'est compile dans
+`cred` ni `kleos-credd`), refuse un `.cargo/config.toml` ou `.cargo/config` a
+la racine du depot (ignore par git, il peut porter `rustflags`, `[patch]`,
+`[env]`), construit avec `--locked` et copie les binaires depuis le
+`target_directory` rapporte par `cargo metadata`, qui suit `CARGO_TARGET_DIR`
+et un `target-dir` de configuration.
+
+**Bornes de connexion du broker :** `broker::MAX_CONNECTIONS` (128) borne les
+connexions ouvertes simultanement. Le slot est pris avant `accept()` : au-dela
+de la borne, une connexion reste dans le backlog du noyau (aucun descripteur
+consomme) et est servie a la fermeture d'une connexion ou au bout du
+`header_read_timeout` de 5 s ; au-dela du backlog noyau, `connect` est refuse
+(client 69). Les 16 resolutions simultanees (503 au-dela) sont inchangees. Une
+erreur `accept()` par manque de ressources (`EMFILE`, `ENFILE`, `ENOBUFS`,
+`ENOMEM`) n'est pas fatale : journalisee (errno seul) au premier echec puis au
+retour a la normale, backoff de 100 ms, nouvelle tentative, les connexions deja
+acceptees restent servies. `ECONNABORTED` (connexion avortee par le client) est
+ignoree sans pause ni journal. Toute autre erreur `accept()` reste fatale. 128 sockets plus les descripteurs propres du daemon
+tiennent sous `nofile=256` ; le compose du sidecar doit viser `nofile >= 1024`.
+
+**Fichiers :** `kleos-credd/src/broker.rs`, `kleos-credd/src/main.rs`,
+`kleos-credd/src/server.rs`, `kleos-credd/src/peercred.rs`,
+`kleos-credd/src/lib.rs`, `kleos-credd/Cargo.toml`, `Cargo.lock`,
+`kleos-cred/src/bin/cred.rs`, `kleos-lib/src/db/mod.rs`
+(`connect_existing_read_only_encrypted`), `kleos-lib/src/db/pool.rs`
+(`new_read_only`), `kleos-credd/tests/*.sh` (dont
+`build_linux_artifacts.sh`), `broker_fake_server.mjs`,
+`kleos-credd/tests/fixtures/broker/`.
+
+**Commits :** `2f18720a` (broker), `19c466c1` (gate SO_PEERCRED), `0d3f6e1b`
+(durcissement livraison, ouverture lecture seule), `88dd5e17`, `c4246c5a`,
+`d3a8d3fb`, `ebba10ff` (wrapper des gates operateur), `fd61acd5` (compilation
+Linux du code `cfg(unix)`), `d9f74946` (feature `piv` opt-out, livraison sans
+`libpcsclite`).
+
+**Tests :** tests unitaires de politique et validation protocolaire dans le
+module broker, plus gates Linux sur faux coffre cred1.8 et UID SO_PEERCRED
+cross-conteneur, executes par l'operateur (`run_operator_gates.sh`, sudo).
+Le code `cfg(unix)` ne compile pas sous Windows : le verifier sous WSL avant
+revue, `wsl --cd /mnt/c/Users/Olivier/workspace/Kleos --
+/home/nemo/.cargo/bin/cargo check --target x86_64-unknown-linux-gnu
+--target-dir /home/nemo/.cache/kleos-target-linux -p kleos-credd -p kleos-cred --all-targets`.
+
+**Conditions de retrait :** upstream fournit une interface broker Unix avec
+politique de references stricte et client sans fallback local ou distant.
+
+---
+
+## Patch 60 -- la dedup ne retire plus une memoire servie au profit d'une copie non servie (2026-10-18)
+
+**Symptome sous upstream pur :** `intelligence::duplicates::deduplicate` est le
+seul ecrivain reel de `is_superseded` (copie du tenant VOCSAP du 2026-10-18 :
+987 liens `supersedes`, aucun autre type). Deux defauts dans sa selection du
+gardien :
+1. `find_duplicates` filtre `is_forgotten` et `is_superseded` mais pas
+   `is_archived`. Or `growth::reflect` insere chaque observation growth avec
+   `is_archived = 1` (brouillon jamais servi, 16 944/16 944 lignes growth
+   archivees). Un brouillon qui paraphrase une vraie memoire peut gagner
+   l'egalite et la retirer : 16 liens ont un gardien growth archive, dont 9
+   retirees encore servables qui n'ont plus aucune copie servie.
+2. A importance egale, la plus ancienne (id bas) est gardee. Les paires
+   mesurees sont des reformulations stockees a quelques secondes d'ecart, la
+   plus recente est la version raffinee : 815/987 liens retirent la plus
+   recente.
+
+**Approche :** patch chirurgical dans `duplicates.rs`, deux points :
+`AND ms.is_archived = 0 AND mt.is_archived = 0` dans `find_duplicates`, et
+inversion de la branche d'egalite (garder l'id le plus haut). Signatures
+inchangees. Extension du meme jour, meme classe de bug (gardien non servi) :
+`find_duplicates` exclut aussi `is_latest = 0` (ancienne version d'une memoire
+editee) et `status = 'pending'` (memoire en attente de revue) des deux cotes.
+Aucun cas sur les donnees du 2026-10-18 (72 gardiens vivants, tous
+`is_latest = 1` et `approved`), le filtre est preventif. La zone portait deja Patch 33 (filtre `space_id`) : on etend un
+site existant, pas de site neuf. Pas de niveau inferieur possible : ni overlay
+ni env var ne porte la requete de selection. Upstream `main` a les deux
+defauts, candidat PR.
+
+**Ecart assume avec la section `contradiction.rs` :** celle-ci avait exclu
+`is_archived` de son filtre au motif qu'une memoire archivee reste legitime
+dans la *detection* d'une paire. La dedup ne fait pas que detecter, elle
+choisit un gardien qui doit rester servi ; une memoire hors du corpus actif
+n'a pas a etre dedupliquee.
+
+**Hors scope :** reparation des liens deja ecrits (16 gardiens archives, 815
+egalites inversees) et invariant "une retiree a toujours un remplacant
+servable" tenu par trigger overlay : Patch 61.
+
+**Fichiers :** `kleos-lib/src/intelligence/duplicates.rs`,
+`kleos-lib/tests/dedup_keeper.rs`.
+
+**Tests :** `kleos-lib/tests/dedup_keeper.rs`, 8 tests pour ce patch (6 rouges
+avant patch, 8 verts apres) : copie archivee ignoree meme d'importance
+superieure, `find_duplicates` et `dry_run` sans membre archive, egalite qui
+garde la plus recente, importance qui prime sur la recence, rejeu sans effet,
+ancienne version et memoire en attente jamais gardiennes.
+`env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --test dedup_keeper`.
+
+**Conditions de retrait :** upstream filtre `is_archived`, `is_latest` et
+`status` dans `find_duplicates` et garde la plus recente a importance egale.
+
+## Patch 61 -- reparation unique des liens `supersedes` et trigger d'archivage du gardien (2026-10-18)
+
+**Symptome sous upstream pur :** les liens ecrits par la dedup avant le
+Patch 60 restent faux, et rien ne maintient l'invariant "une memoire retiree a
+toujours un remplacant servable" apres coup. Copie tenant du 2026-10-18 :
+- 9 retirees servables n'ont plus aucune copie servie : leur seul gardien est
+  un brouillon growth archive ;
+- 51 liens servent la mauvaise version : 46 egalites ou la plus ancienne a
+  ete gardee, 5 paires ou la retiree est depuis devenue plus importante que
+  son gardien ;
+- archiver un gardien plus tard laisse sa retiree masquee pour toujours.
+
+**Regle operateur (2026-10-18) :** archiver un gardien rend ses retirees ;
+l'oublier les laisse masquees. Gardien "qui tient" = `is_archived = 0 OR
+is_forgotten = 1`. Les 5 paires d'importance sont incluses dans la reparation
+sur decision operateur : donnees anciennes et nouvelles suivent la meme regle
+que le Patch 60.
+
+**Approche :** canal overlay de schema (Patch 41), zero delta upstream, sur
+les deux registres (monolith et tenant) :
+1. `supersession_repair`, unique, garde par une ligne de la table marqueur
+   `vocsap_one_shot` et non par l'existence du trigger : une reconstruction de
+   `memories` par upstream supprimerait le trigger et relancerait la
+   reparation sous des importances qui ont change. Dans un seul `SAVEPOINT`
+   (le runner n'ouvre aucune transaction autour des overlays) :
+   - R1 remet `is_superseded = 0` sur toute retiree dont aucun gardien ne
+     tient. Une retiree sans aucun lien n'est pas touchee ;
+   - R2 fige dans une table temporaire les liens dont la retiree gagne selon la
+     regle du Patch 60. Conditions : les deux cotes servis (non archives, non
+     oublies, `is_latest = 1`, pas `pending`), et pas une correction manuelle
+     (ligne `reconsolidations` portant le texte du gardien) ;
+   - suppression defensive du lien direct si le lien inverse existe deja
+     (collision `UNIQUE` au demarrage), puis echange source/cible ;
+   - drapeaux : perdants a 1, gagnants a 0 sauf s'ils restent cible d'un
+     gardien qui tient (chaine) ;
+   - creation du trigger, ecriture du marqueur, `RELEASE`. En cas d'erreur,
+     `ROLLBACK TO` : rien n'est ecrit.
+2. `supersession_archive_trigger` recree le trigger s'il manque (needs =
+   trigger absent).
+
+Trigger `vocsap_supersession_release_on_archive` : `AFTER UPDATE OF is_archived
+ON memories WHEN NEW.is_archived = 1 AND OLD.is_archived = 0 AND
+NEW.is_forgotten = 0`. Il remet `is_superseded = 0` sur les cibles des liens
+partant du gardien archive qui n'ont plus de gardien qui tient. Il ne
+supprime aucun lien, ne fait rien au desarchivage, rien a l'oubli.
+
+**Pourquoi pas le niveau d'en dessous :** aucun. L'overlay est deja le niveau
+zero delta. L'alternative "etat derive a la lecture" (une memoire est retiree
+s'il existe un lien depuis un gardien qui tient) a ete ecartee : decision
+operateur "invariant tenu a l'ecriture", une sous-requete par ligne sur les
+10 surfaces de lecture, et un `/admin/gc` qui supprime un gardien oublie
+ferait reapparaitre sa cible par cascade du lien, contre la regle de l'oubli.
+
+**Piege de plan de requete :** sans `CROSS JOIN`, SQLite construit la liste R2
+en partant des deux scans d'index `is_forgotten` de `memories` (28 987 x
+28 987 lignes) au lieu des 987 liens. Mesure sur la copie tenant : plus de
+5 minutes a 100 % CPU, contre 0,1 s pour toute la reparation avec l'ordre
+force.
+
+**Mesures sur les copies du 2026-10-18 :** tenant : 51 liens inverses,
+0 supprime, 9 retirees servables liberees par R1 (16 au total), 50 gagnants
+servis (1 reste derriere une chaine). Apres : 0 retiree servable sans gardien
+qui tient, 0 candidat R2 restant. Monolith : aucun lien, marqueur et trigger
+poses. Trigger sur la copie tenant : gardien 355 archive, cible 352 servie en
+6 ms, lien conserve.
+
+**Trous acceptes :**
+- un gardien sorti du service par edition (`is_latest = 0`) ou consolidation
+  puis archive plus tard : sa cible reste masquee derriere la nouvelle version ;
+- `/admin/gc` supprime un gardien oublie : sa cible reste masquee, conforme a
+  la regle de l'oubli ;
+- l'inversion R2 photographie les importances du jour de la reparation : rien
+  ne reinverse une paire si elles changent ensuite.
+
+**Fichiers :** `kleos-lib/src/db/vocsap/mod.rs`,
+`kleos-lib/src/db/vocsap/supersession_repair.sql`,
+`kleos-lib/src/db/vocsap/supersession_trigger.sql`,
+`kleos-lib/tests/dedup_keeper.rs`.
+
+**Tests :** unitaires dans `vocsap/mod.rs` (9 nouveaux) : R1 et la regle de
+l'oubli, inversion egalite et importance, aucune inversion avec un cote non
+servi ou une correction, lien inverse preexistant, gagnant tenu par un autre
+gardien, reparation unique et trigger recree, rollback complet sur erreur,
+trigger d'archivage avec ou sans autre gardien, oubli sans effet.
+`env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --lib db::vocsap`.
+Integration sur le vrai schema dans `tests/dedup_keeper.rs` :
+`archiving_the_keeper_serves_the_retired_memory_again`,
+`forgetting_the_keeper_keeps_the_retired_memory_hidden`.
+
+**Conditions de retrait :** upstream maintient lui-meme l'invariant (trigger ou
+lecture derivee) ; la reparation unique, deja appliquee, peut alors sortir du
+registre, le marqueur restant inerte.
+
+## Patch 62 -- une memoire retiree (`is_superseded = 1`) n'atteint plus aucune surface de lecture (2026-10-18)
+
+**Symptome sous upstream pur :** `is_superseded` est ecrit (dedup, correction)
+mais aucune requete de lecture ne le consulte. Une memoire retiree au profit
+d'une reformulation continue d'etre servie partout : resultats de recherche
+hybride, payload `linked` de son gardien (le lien `supersedes` la ramene),
+expansion de graphe, canal des faits, blocs statique, recent et associatif de
+`assemble_context`, `/pack`, `generate_prompt`, `graph_search`, recherche par
+tags, recherche a facettes, tiers statique et important de `/recall`, memoires
+d'episode, rappel predictif, digests, vue graphe, profil de personnalite
+injecte, regles statiques du gate (une regle retiree continuait de garder),
+et la consolidation recopiait une retiree dans une nouvelle memoire servie. Le test
+`kleos-lib/tests/supersession_surfaces.rs` etait rouge sur les 9 surfaces
+d'origine.
+
+**Approche :** patch chirurgical, 45 lignes SQL (41 modifiees, 4 ajoutees) et
+un filtre Rust dans la route `/recall`, aucune signature touchee. Le predicat `is_superseded = 0` (alias `m.` quand la requete en a un)
+est ajoute sur la meme ligne que le predicat de revue upstream
+`status != 'pending'`, aux memes requetes : c'est la discipline que upstream a
+appliquee pour le gate de revue, une memoire non servable sort aux memes
+endroits. Sites :
+- `memory/search.rs` : `hydrate_candidates` (goulot des candidats, redondant
+  avec le suivant : le retirer seul ne fait rougir aucun test, garde comme pour
+  pending), `fetch_memories_batch` (seule source du contenu des resultats,
+  couvre aussi les voisins de graphe et les hits du canal des faits),
+  `fetch_links_batch` (les deux moities de l'UNION), `fetch_version_chains_batch`
+  (payload `version_chain` ; aucun predicat pending upstream, mais une
+  correction peut retirer la racine d'une chaine dont la version suivante est
+  servie), `faceted_db_scan` (mode filtre seul de `/search/faceted`) ;
+- `memory/facts_channel.rs::search_facts_fts` : seul site sans predicat
+  pending (upstream deleguait a `fetch_memories_batch`), mais la fonction est
+  publique et appelee directement ; predicat ajoute apres `m.is_archived = 0` ;
+- `context/deps.rs` : `get_static_memories` (ligne deja portee par Patch 17b),
+  `get_links`, `get_recent_dynamic`, `get_memory_without_embedding`,
+  `get_version_chain` ;
+- `pack.rs` et `prompts.rs` : couches statique et importante (la couche
+  importante ne filtre pas `is_static`, une statique importante y entrerait) ;
+- `graph/search.rs` : `graph_search`, `batch_fetch_memory_nodes`
+  (`/graph/neighborhood`) ; `graph/builder.rs::build_graph_data` (`/graph`) ;
+  `graph/entities.rs::search_entity_memories` ;
+  `graph/communities.rs::get_community_members` ;
+- `memory/mod.rs` : `search_by_tags` (match_all et match_any), `list_static`
+  et `list_important` (3 variantes d'espace chacune, tiers de `/recall`) ;
+- `episodes.rs::get_episode_memories` ; `intelligence/digests.rs` ;
+  `intelligence/growth.rs` (`list_observations`, `match_observations`) ;
+- `intelligence/predictive.rs::predictive_recall` : les trois branches (taches,
+  issues, continuite de session). Les deux dernieres n'ont pas non plus le
+  predicat pending upstream ; seul `is_superseded` est ajoute ici ;
+- `kleos-server/src/routes/search/mod.rs` : `/decay/scores` (3 requetes) ;
+  `kleos-server/src/routes/gate/mod.rs` : regles statiques du guard et
+  enrichissement du modele d'agent ;
+- `personality.rs::synthesize_personality_profile` : le profil cite les
+  200 premiers caracteres des statiques les plus importantes et il est injecte
+  dans chaque `assemble_context` ;
+- `intelligence/consolidation.rs` : lecture des sources de `consolidate` et
+  candidats du sweep (les deux cotes). La consolidation recopie le texte des
+  sources dans une nouvelle memoire servie : une retiree y serait blanchie ;
+- `kleos-server/src/routes/memory/mod.rs`, tier recent de `/recall` : filtre
+  Rust `!m.is_superseded` sur les lignes rendues par `memory::list`, qui reste
+  non filtre (voir plus bas).
+
+Cache de recherche : `hybrid_search` garde ses resultats 15 s par utilisateur,
+invalides seulement par `invalidate_search_cache`, que `memory/mod.rs` appelle a
+chaque ecriture mais que `duplicates::deduplicate` n'appelait pas. Une memoire
+tout juste retiree restait servie jusqu'a 15 s. `deduplicate` invalide
+maintenant le cache quand il a marque au moins une paire (site deja porte par
+Patch 60). L'archivage d'un gardien (trigger du Patch 61) passe par
+`memory::mark_archived`, qui invalide deja.
+
+**Pourquoi pas le niveau d'en dessous :** aucun canal overlay ne porte les
+requetes de lecture. Une vue SQL filtree ou un etat derive a la lecture aurait
+demande de reecrire toutes ces requetes, donc plus de delta pour le meme effet.
+
+**Plan de requete :** mesure sur la copie tenant du 2026-10-18 avec
+`EXPLAIN QUERY PLAN`, avec et sans le predicat, sur la requete d'hydratation
+reelle, le bloc recent et le scan a facettes : meme plan
+(`idx_memories_user_id`, recherche par `rowid` pour l'hydratation), donc
+`idx_memories_search` n'est pas etendu.
+
+**Hors scope, laisse ouvert :**
+- `memory::list` n'est pas filtre : il sert aussi les vues admin et `GET /list`,
+  que la replique kleos-cache lit pour se synchroniser (etape 1g) ; la replique
+  doit voir la ligne et son drapeau pour la retirer de son index local.
+- `fetch_graph_neighbors` ne filtre pas, comme pour le predicat pending : le
+  contenu des voisins est re-lu par `fetch_memories_batch`. Un voisin retire
+  peut encore occuper une place du pool de candidats avant d'etre ecarte.
+- Le texte des anciennes versions dans la phase Evolution (`is_latest = 0`, pas
+  `is_superseded`) releve de l'etape 1d.
+- `intelligence/temporal.rs::time_travel` : montre l'etat a une date passee et
+  omet volontairement `is_latest` ; `is_superseded` est un etat present sans
+  date, le poser effacerait du passe des lignes qui existaient alors.
+- Passes internes qui filtrent pending sans renvoyer le texte d'une memoire a
+  un client : backfills `admin/mod.rs` (faits et entites extraits, les faits
+  sont filtres a la lecture par `search_facts_fts`), `reflections.rs` et
+  `dreamer.rs` (sortie de LLM), `growth.rs::materialize` (ne lit que des
+  observations non archivees, or toutes le sont), `linker.rs` (liens),
+  comptes de `calendar_counts` et `list_all_tags`, `refresh_decay`.
+- Gardien oublie : sa cible reste marquee (regle de l'oubli du Patch 61), donc
+  masquee par ce patch, meme s'il ne reste aucune copie servie. C'est la regle
+  operateur : l'oubli est une suppression volontaire.
+
+**Fichiers :** `kleos-lib/src/memory/{search,facts_channel,mod}.rs`,
+`kleos-lib/src/context/deps.rs`,
+`kleos-lib/src/{pack,prompts,episodes,personality}.rs`,
+`kleos-lib/src/graph/{search,builder,entities,communities}.rs`,
+`kleos-lib/src/intelligence/{duplicates,digests,growth,predictive,consolidation}.rs`,
+`kleos-server/src/routes/{search,gate,memory}/mod.rs`,
+`kleos-lib/tests/supersession_surfaces.rs`.
+
+**Tests :** `kleos-lib/tests/supersession_surfaces.rs`, 18 tests verts sur 19
+(le 19e, versions anterieures dans Evolution, attend 1d). Chacun verifie aussi
+que la memoire est servie a nouveau une fois la marque effacee. Montre rouge,
+une mutation a la fois : sans le predicat de `fetch_memories_batch` seul,
+4 tests echouent (recherche hybride, voisin de graphe, contexte statique et
+recent) ; sans celui de `graph_search` seul, son test echoue. Le test du
+rappel predictif a trouve la branche "continuite de session" non filtree.
+Non couverts par un test de la lib : les routes serveur (`/decay/scores`,
+gate, tier recent de `/recall`, a couvrir au test serveur de la phase 1),
+`hydrate_candidates` (redondant), et les variantes d'espace de `list_static` et
+`list_important`, de `batch_fetch_memory_nodes`, `search_entity_memories`,
+`get_community_members` et des observations growth, qui portent le meme
+predicat sur la meme ligne que pending. Les helpers du test ecrivent la marque en
+SQL brut et invalident le cache comme le fait `deduplicate`.
+`env -u KLEOS_NET_ALLOW_PRIVATE cargo test -p kleos-lib --features bundled-sqlite --test supersession_surfaces`.
+
+**Conditions de retrait :** upstream filtre `is_superseded` sur ses surfaces de
+lecture (meme sites que `status != 'pending'`) et invalide le cache de
+recherche dans `deduplicate`.
+
+## Patch 63 -- la phase Evolution nomme les anciennes versions sans injecter leur texte (2026-10-19)
+
+**Symptome sous upstream pur :** la phase 2.5a d'`assemble_context`
+(`context/mod.rs`) rend chaque version de la chaine d'un hit semantique sous la
+forme `vN (date): texte`. Le texte d'une version remplacee arrive donc dans le
+prompt a cote de la version courante, et l'agent recoit les deux faits sans
+autre indice que le numero de version. Test rouge :
+`assembled_context_does_not_inject_text_of_older_versions`.
+
+**Approche :** patch chirurgical dans la zone upstream pure de la phase 2.5a :
+- la version courante (`is_latest`) est rendue avec son texte, puis chaque
+  version anterieure, de la plus recente a la plus ancienne, par une ligne
+  `replaces #id vN (date)` sans texte. L'en-tete `[Evolution of memory #root]`,
+  les seuils de budget et l'alimentation de `seen_ids` sont inchanges ;
+- une chaine sans version courante apres filtrage (version courante en
+  attente de revue ou retiree) ne produit pas de bloc ;
+- `context/deps.rs::get_version_chain` exclut aussi les versions oubliees et
+  archivees (ligne deja portee par Patch 62) : une version oubliee n'est meme
+  plus nommee, et une chaine reduite a une version ne produit pas de bloc.
+
+**Pourquoi pas le niveau d'en dessous :** le rendu est code en dur dans la
+phase, aucun template ni overlay ne le porte.
+
+**Hors scope :** le payload `version_chain` de `hybrid_search` (route
+`/search` avec `include_links`) porte toujours le texte de toutes les versions
+servables : c'est une vue d'historique demandee explicitement, pas une
+injection de contexte.
+
+**Fichiers :** `kleos-lib/src/context/mod.rs`, `kleos-lib/src/context/deps.rs`,
+`kleos-lib/tests/supersession_surfaces.rs`.
+
+**Tests :** `supersession_surfaces.rs`, 20/20 :
+`assembled_context_does_not_inject_text_of_older_versions` (rouge avant, vert
+apres ; verifie aussi que `replaces #id v1 (` est present) et
+`assembled_context_does_not_name_a_forgotten_older_version`.
+
+**Conditions de retrait :** upstream cesse d'injecter le texte des versions
+non courantes dans la phase Evolution.
+
+## Patch 64 -- le JSON d'une memoire expose `is_superseded` (2026-10-19)
+
+**Symptome sous upstream pur :** `memory_to_json`
+(`kleos-server/src/routes/memory/mod.rs`) emet `is_latest`, `is_archived` et
+`is_forgotten` mais pas `is_superseded`. La replique kleos-cache lit `GET /list`
+(volontairement non filtre, Patch 62) pour construire son index local et ne
+peut donc pas savoir qu'une memoire est retiree : elle la sert par
+`POST /v1/retrieve`, le canal dominant par prompt. Banc du 2026-10-18 : 82 des
+7 704 lignes projetables sont retirees.
+
+**Approche :** patch chirurgical, une cle ajoutee dans `memory_to_json`, aucune
+signature touchee. Toutes les routes qui rendent une memoire par cette
+fonction (`/list`, `/memory/{id}`, mise a jour, etc.) portent desormais le
+drapeau. Cote kleos-cache (depot separe) : `RemoteRecord::is_projectable`
+exclut une ligne retiree ; un champ absent est lu `false` pour continuer a
+synchroniser un serveur anterieur a ce patch. La ligne deja repliquee sort de
+l'index par la reconciliation d'absence existante (deux passes), et y revient
+si la marque est effacee (trigger du Patch 61).
+
+**Pourquoi pas le niveau d'en dessous :** aucun canal overlay ne porte la
+serialisation d'une route ; filtrer `memory::list` cote serveur ferait
+disparaitre la ligne de `/list` sans que la replique sache pourquoi, et
+retirerait aussi la ligne des vues admin.
+
+**Garde de suppression kleos-cache :** `Store::reconcile_absences` refuse toute
+suppression si le nombre de lignes voulues s'ecarte de plus de 200 ou de plus de
+10 % de la passe precedente, et ne met pas la reference a jour en cas de refus.
+Mesure sur le banc : la premiere passe apres le patch retire 82 lignes sur
+7 704 (1,06 %), sous les deux seuils.
+
+**Mesure de bout en bout (banc, 2026-10-19) :** avant, une replique de test
+non patchee indexait les 82 retirees. Banc relance sur un serveur construit
+depuis cette branche : la reparation du Patch 61 ramene le jeu a 71 retirees ;
+la replique patchee les supprime en deux passes (`deleted` 71, garde non
+declenchee, 0 restante) et `POST /v1/retrieve` interroge avec le texte de 10
+retirees n'en renvoie aucune.
+
+**Fichiers :** `kleos-server/src/routes/memory/mod.rs`,
+`kleos-server/tests/routes_memory_supersession.rs` ; kleos-cache
+`src/sync_worker.rs`, `tests/sync_worker.rs`.
+
+**Tests :** `routes_memory_supersession.rs` : `/list` porte le booleen, une
+memoire corrigee par `POST /correct` est rendue `is_superseded: true` par
+`GET /memory/{id}`. kleos-cache : ligne retiree jamais projetee, listing sans le
+champ projete comme avant, champ non booleen refuse, ligne repliquee qui sort en
+deux passes puis revient quand la marque est effacee.
+
+**Conditions de retrait :** upstream emet `is_superseded` dans le JSON d'une
+memoire.
+
+## Patch 65 -- une correction est la version suivante de la memoire corrigee (2026-10-19)
+
+**Symptome sous upstream pur :** `intelligence::correction::correct_memory`
+(`POST /correct`) cree le texte corrige par `memory::store` : une ligne
+version 1 sans `parent_memory_id` ni `root_memory_id`, sans embedding, et
+l'original reste `is_latest = 1`. L'original n'est masque que par
+`is_superseded` ; il reste dans `GET /list`, la chaine de versions ignore la
+correction, et la copie n'entre pas dans la recherche vectorielle. Second
+defaut mesure en test : une correction proche de l'original (« 02:00 » ->
+« 03:00 ») est repliee par `store` sur l'original comme doublon, puis le lien
+`supersedes` de l'original vers lui-meme echoue (`NotFound`).
+
+**Approche :** la correction passe par le contrat de version de
+`memory::update` (ou `update_with_chunks` quand le serveur a un embedder) :
+l'original passe `is_latest = 0` (garde `AND is_latest = 1`), la correction
+est `version + 1`, `parent` = original, `root` = racine de l'original, et
+herite de ses metadonnees (categorie, importance, tags, statique, espace,
+statut, archivage, FSRS, episode) ; l'index vectoriel et les chunks suivent.
+Le lien `supersedes`, `is_superseded = 1` sur l'original et la ligne
+`reconsolidations` sont conserves ; le cache de recherche est invalide apres
+le marquage. Corriger une version qui n'est plus la derniere est refuse par
+`update` avant toute ecriture. `correct_memory` garde sa signature upstream et
+delegue a une nouvelle fonction additive `correct_memory_with_embedder` ; la
+route `/correct` appelle cette derniere avec l'embedder du serveur (le texte
+corrige recoit son propre vecteur, jamais celui de l'original).
+
+**Pourquoi pas le niveau d'en dessous :** le chemin d'ecriture est code en dur
+dans `correct_memory`, aucun overlay ne le porte. Garder la signature et
+ajouter une fonction evite de casser un appelant futur.
+
+**Consequences assumees :**
+- la phase Evolution et le payload `version_chain` filtrent `is_superseded = 0`
+  (Patch 62) : une version corrigee n'y est pas nommee ;
+- `POST /correct` sur une version deja corrigee renvoie une erreur ; il faut
+  corriger la derniere version ;
+- echec d'embedding dans `update_with_chunks` : repli upstream sur le vecteur
+  reporte, avec un avertissement ;
+- sans embedder (appel direct de `correct_memory`, ou serveur sans embedder
+  actif), `memory::update` reporte le vecteur de l'original sur la correction :
+  avant ce patch elle n'en avait aucun. Le serveur VOCSAP a toujours un
+  embedder (bge-m3), ce chemin n'y est pas emprunte ;
+- `memory::get` en tete de correction enregistre un acces sur l'original
+  (`access_count`, `last_accessed_at`) meme quand `update` refuse ensuite la
+  correction : comportement anterieur, inchange.
+
+**Fichiers :** `kleos-lib/src/intelligence/correction.rs`,
+`kleos-server/src/routes/intelligence/mod.rs`,
+`kleos-lib/tests/correction_versioning.rs`,
+`kleos-server/tests/routes_memory_supersession.rs`.
+
+**Tests :** `correction_versioning.rs` 5/5 (5 rouges avant) : version suivante
+chainee, metadonnees conservees, seconde correction chainee sur la derniere,
+correction d'une version perimee refusee sans ecriture, vecteur propre avec
+embedder. `routes_memory_supersession.rs` 2/2 : l'original corrige quitte
+`/list` et sa correction y est avec `parent_memory_id` ; la lecture de
+`is_superseded: true` dans `/list` passe par une ligne retiree encore derniere
+version (comme la dedup). `supersession_surfaces` 20/20, `dedup_keeper` 10/10.
+
+**Conditions de retrait :** upstream versionne la correction par le chemin de
+mise a jour.
+
+## Patch 66 -- un lien `contradicts` ne donne plus de bonus dans l'expansion de graphe (2026-10-19)
+
+**Symptome sous upstream pur :** `memory::scoring::link_type_weight` donne au
+lien `contradicts` le meme bonus 1.3 qu'`extends`. Dans l'expansion de graphe
+de la recherche hybride (`search.rs::inject_graph_neighbors`, score du voisin
+= similarite x poids x 0,5 au second saut), une memoire atteinte par une
+contradiction passe devant un voisin atteint par un lien neutre de meme
+similarite. C'est l'inverse de l'intention muninn : une contradiction ne doit
+pas promouvoir l'autre version.
+
+**Approche :** patch chirurgical d'une ligne, `"extends" | "contradicts" =>
+1.3` devient `"extends" => 1.3` ; `contradicts` tombe sur le poids neutre 1.0.
+Le lien reste suivi (le voisin est toujours injecte), seul le bonus disparait.
+
+**Pourquoi pas le niveau d'en dessous :** le bareme est code en dur, aucun
+overlay ni variable d'environnement ne le porte.
+
+**Hors scope, laisse tel quel :** le meme bareme est copie dans
+`graph/pagerank.rs` (poids des aretes du PageRank, qui alimente le bonus
+`pagerank_score` du classement) et `graph/communities.rs` (regroupement, sans
+effet sur le classement). Les deux gardent `contradicts` a 1.3. Changer le
+PageRank modifie un score persistant recalcule en tache de fond : decision a
+mesurer a part.
+
+**Fichiers :** `kleos-lib/src/memory/scoring.rs`,
+`kleos-lib/tests/link_weights.rs`.
+
+**Tests :** `link_weights.rs` : `contradicts` sans bonus sur un lien neutre
+(rouge avant, vert apres), les autres liens types gardent leur bonus. Le test
+upstream `scoring::tests::link_weight_test` reste vert.
+
+**Conditions de retrait :** upstream ramene `contradicts` au poids neutre.
+
+## Patch 67 -- `GET /list?exclude_superseded=true`, utilise par l'outil MCP `memory_list` et `kleos-cli list` (2026-10-20)
+
+**Symptome sous upstream pur (avec Patch 62 et 64) :** `GET /list` garde les
+memoires `is_superseded = 1` encore `is_latest` (contrat de la replique
+kleos-cache, Patch 62) et les marque `is_superseded: true` (Patch 64). Deux
+lecteurs de ce listing sont des agents :
+- le hook de demarrage `session-start-kleos.sh` (`kleos-cli list --limit 5`,
+  bloc RECENT MEMORIES, texte sans le drapeau) ;
+- l'outil MCP `memory_list`, execute cote serveur par `POST /mcp`.
+
+Mesure M-N7 sur le banc (2026-10-20) : `/list?limit=5` sans espace rend 1
+retiree sur 5 (#29825) ; `memory_list` par le pont `kleos-mcp` rend 1 retiree
+a `limit=5` et 8 a `limit=100`.
+
+**Approche :** patch chirurgical, parametre opt-in, aucune signature changee.
+- `kleos-lib` : `ListOptions` gagne `exclude_superseded: bool`
+  (`#[serde(default)]`, `false` dans `Default`). `memory::list` ajoute
+  `is_superseded = 0` au `WHERE` quand il vaut `true` : offset et limit
+  comptent des lignes vivantes, en un seul appel SQL.
+- `GET /list` : `ListQuery.exclude_superseded: Option<bool>`, absent = `false`.
+  Le listing brut reste celui que lit la replique, qui doit voir la ligne et
+  son drapeau pour la retirer de son index. Les deux autres constructeurs de
+  `ListOptions` (tier recent de `/recall`, qui filtre deja en Rust, et
+  `synthesize_profile`) posent `false`, donc rien ne change pour eux.
+- Outil MCP `memory_list` / `memory.list` (`routes/mcp/mod.rs`,
+  `memory_list_arguments`, appele dans `handle_single_rpc` avant le
+  dispatch). Cela couvre l'appel seul, le batch JSON-RPC et tout client qui
+  appelle `POST /mcp` sans le pont. Regles :
+  - des arguments absents ou `null` deviennent `{}` ;
+  - tout autre non-objet (tableau, chaine, nombre) est refuse en erreur
+    JSON-RPC `-32602` (invalid params), sans dispatch ;
+  - `exclude_superseded` absent ou `null` devient `true` ;
+  - un booleen `false` explicite est conserve et rend le listing brut ;
+  - toute autre representation (`"false"`, `0`...) est refusee en `-32602`.
+  Aucune forme d'arguments ne fait partir `/list` brut sans un `false`
+  booleen.
+- `kleos-cli list` : envoie `exclude_superseded=true`, puis
+  `kleos-cli/src/listing.rs::live_rows` ecarte localement toute ligne dont
+  `is_superseded` n'est pas absent, `null` ou `false`.
+  - Un serveur anterieur ignore le champ inconnu (pas de
+    `deny_unknown_fields` sur `ListQuery`) et rend les retirees marquees
+    `true` : la CLI ne les montre pas.
+  - Face a un tel serveur, la page peut etre plus courte que `--limit`, et
+    `--offset` y compte des lignes serveur. Il n'y a pas de sur-demande.
+
+**Pourquoi pas le niveau client :** une premiere version filtrait cote
+clients (`kleos-cli`, pont `kleos-mcp`) un `/list` brut.
+- Pour garder offset et limit exacts, elle devait relire le listing depuis
+  l'offset 0 jusqu'a reunir assez de lignes vivantes.
+- La revue a chiffre ce cout a environ 100 appels HTTP pour une page, sous un
+  prefiltre de 60 requetes par minute.
+- Elle laissait une page courte au-dela de sa borne de lecture.
+- Elle ne couvrait pas un client MCP qui parle a `POST /mcp` sans le pont.
+
+Le filtre SQL resout les trois en un appel. Aucun overlay ne porte une clause
+SQL ni le defaut d'un outil MCP.
+
+**Hors scope, laisse ouvert :** la GUI (`gui/src/lib/api/memory.ts`) et les
+SDK python/go lisent `/list` sans le parametre ; le contournement de
+`KLEOS_SPACE` par un batch MCP est suivi a part (carte 93b17966).
+
+**Fichiers :**
+- `kleos-lib/src/memory/types.rs`, `kleos-lib/src/memory/mod.rs`,
+  `kleos-lib/tests/supersession_surfaces.rs` ;
+- `kleos-server/src/routes/memory/types.rs`,
+  `kleos-server/src/routes/memory/mod.rs`, `kleos-server/src/routes/mcp/mod.rs`,
+  `kleos-server/tests/routes_memory_supersession.rs` ;
+- `kleos-cli/src/main.rs`, `kleos-cli/src/listing.rs`.
+
+**Tests :**
+- `supersession_surfaces.rs::listing_excludes_superseded_on_request_with_exact_pages` :
+  - six memoires dont deux retirees intercalees ;
+  - le listing brut les garde ;
+  - avec le drapeau, les pages (0,2) et (2,2) sont exactes et disjointes, (4,2)
+    est vide ;
+  - la memoire revient quand la marque est effacee.
+- `routes_memory_supersession.rs` :
+  - `/list` sans parametre garde la retiree, `?exclude_superseded=true`
+    l'omet ;
+  - `tools/call` l'omet par defaut sous `memory_list` et sous le nom canonique
+    `memory.list`, seul et en batch, et un `exclude_superseded: false`
+    explicite la rend ;
+  - `memory_list_arguments_never_bypass_the_filter` : arguments `null` et
+    `exclude_superseded: null` filtres ; tableau, chaine, nombre,
+    `exclude_superseded: "false"` et `0` refuses en `-32602`.
+- `kleos-cli/src/listing.rs` : une page d'ancien serveur avec des lignes
+  `true`, mal typees, absentes, `null` et `false` ne garde que les trois
+  dernieres formes.
+- Rouges sans le filtre SQL. Rouges aussi avant validation des arguments MCP
+  (`arguments: null` servait la retiree) et avant `live_rows` (rendait
+  `[5,4,3,2,1]` au lieu de `[5,3,2]`). Mutation : retirer le defaut de
+  l'outil MCP fait echouer le test MCP.
+
+**Conditions de retrait :** upstream offre un listing qui exclut les memoires
+retirees et l'utilise pour ses chemins agent (CLI, outil MCP), ou filtre
+`is_superseded` dans `memory::list` tout en exposant un flux distinct a la
+replique.
+
+---
+
+## Patch 68 -- kleos-mcp injecte `KLEOS_SPACE` dans chaque `tools/call` d'un batch JSON-RPC (2026-10-20)
+
+Extension du Patch 47. Carte roadmap 93b17966.
+
+**Symptome sous Patch 47 seul :** `inject_space` teste `method == "tools/call"`
+sur la valeur de tete. Un batch JSON-RPC (tableau) n'a pas de `method` : il
+traversait le pont sans injection. Chaque `tools/call` sans espace explicite
+du lot partait sans espace, donc ecriture en `default` et `memory_list` / `memory_search` non
+cloisonnes au projet. Le serveur execute bien chaque element d'un batch
+(`kleos-server/src/routes/mcp/mod.rs`).
+
+**Approche :** patch chirurgical dans `inject_space` (`kleos-mcp/src/lib.rs`),
+code deja local (Patch 47), aucun site upstream ouvert. Si la valeur est un
+tableau, chaque element objet passe par la meme regle qu'un appel isole
+(`space` / `space_id` explicite conserve, rien hors `tools/call`, rien si
+`arguments` n'est pas un objet) ; un element non objet est relaye tel quel,
+sans recursion. `inject_space_for_tool_calls` reste no-op si `KLEOS_SPACE` est
+vide, pour le lot entier. Pas de niveau inferieur : l'injection vit deja dans
+le pont, et le serveur n'a pas de canal de scope par requete MCP.
+
+**Fichiers :** `kleos-mcp/src/lib.rs` (`inject_space` + 4 tests),
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-mcp --features kleos-lib/bundled-sqlite --lib`
+- `injects_space_into_each_tools_call_of_a_batch` : deux `tools/call` sans
+  espace et une notification ; les deux appels recoivent `space`, la
+  notification est intacte.
+- `batch_preserves_explicit_space_and_space_id`.
+- `batch_leaves_non_tools_call_elements_intact` : `tools/list`, notification,
+  nombre.
+- `empty_batch_is_forwarded_unchanged`.
+- Avant le correctif, seul `injects_space_into_each_tools_call_of_a_batch`
+  etait rouge ; les trois autres gardent les limites de la transformation et
+  passaient deja. Mutation (elements du tableau relayes sans traitement) : ce
+  meme test echoue.
+- E2E, banc 192.168.10.21:4290, `KLEOS_SPACE=kleos`, batch de deux
+  `memory_list` par stdio : binaire patche = espaces 2 et 3, comme un appel
+  isole ; binaire 0.3.2 installe = espace 71 (bug reproduit). Le meme controle
+  avec `KLEOS_SPACE=supersession-bench` n'etait pas discriminant : les 100
+  memoires les plus recentes du banc sont toutes dans cet espace.
+
+**Conditions de retrait :** celles du Patch 47 (upstream cable un scope MCP
+equivalent), ou upstream traite lui-meme les batchs dans une injection de
+scope cote pont ou serveur.
+
+---
+
+## Patch 69 -- kleos-ingest : compatibilite Windows du watcher
+
+Carte roadmap 3f45e0f8. Candidat a une PR upstream.
+
+**Symptome sous upstream pur :** `kleos-ingest` ne compile pas sous Windows
+MSVC : `watcher.rs` importe `std::os::unix::net::UnixDatagram` et cree un
+signal `tokio::signal::unix::SignalKind::terminate()` hors garde de plateforme.
+Le daemon ne peut donc pas traiter les transcripts Claude Code locaux sur le
+poste Windows.
+
+**Approche :** patch chirurgical dans `kleos-ingest/src/watcher.rs`. Les imports,
+le ping systemd et l'enregistrement SIGTERM restent limites a `cfg(unix)`. Sur
+une cible non-Unix, la branche SIGTERM du `select!` attend un future infini. Le
+future Ctrl+C est cree et pinne une seule fois avant la boucle, puis selectionne
+par reference. Cette amelioration du chemin console maintient le receiver Windows
+pendant les `await` des autres branches. Sa branche fait `break`, donc un future
+Ctrl+C resolu n'est pas re-polle. Pas de niveau inferieur : le code Unix est
+compile dans le binaire, et ni un overlay ni une configuration externe ne peut
+retirer ces symboles du build Windows.
+
+**Fichiers :** `kleos-ingest/src/watcher.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Preuves obtenues sous Windows MSVC :** `cargo test -p kleos-ingest --features
+kleos-lib/bundled-sqlite`, `cargo build --release -p kleos-ingest --features
+kleos-lib/bundled-sqlite`, dry-run `--one-shot` isole avec
+`KLEOS_URL=http://127.0.0.1:9`, et `--status`.
+
+**Resultats mesures (kleos-10, banc local, Kleos #31585) :**
+- Arret brutal (`taskkill /F`) pendant un resume en vol : aucune ligne perdue
+  ni dupliquee. Le resume en vol est abandonne et n'est regenere qu'a la
+  prochaine ecriture du fichier.
+- Arret pendant une passe d'ingestion : aucune perte, mais les POST deja envoyes
+  de la passe interrompue sont rejoues a la relance (15 sur 45 sur le banc).
+- Ces deux comportements sont upstream et preexistants : l'offset est ecrit en
+  fin de passe (`tailer.rs:128`) et il n'y a pas de scan au demarrage. Ils sont
+  hors Patch 69 et suivis par la carte 20d18577.
+- Banc rejouable : `~/.agent-forge/scratch/patch69_kill/run_scenario.py all`.
+
+**Non-regression Linux :** `cargo check -p kleos-ingest` sous WSL, vert
+(operateur, 2026-10-21).
+
+**Limite :** `--dry-run` n'est garanti sans effet de bord qu'avec `--one-shot` ;
+le mode watcher est traite par la carte 19671bc8 (futur Patch 70).
+
+**Conditions de retrait :** upstream gate les appels Unix et maintient un
+chemin d'arret Ctrl+C compilable sous Windows, par exemple via une PR issue de
+ce patch.
+
+---
+
+## Patch 70 -- kleos-ingest : `--dry-run` du watcher sans effet de bord
+
+Carte roadmap 19671bc8. Candidat a une PR upstream.
+
+**Symptome sous upstream pur :** le watcher garde le ledger persistant en
+`--dry-run`, donc `tail_file` avance les offsets et le prochain run reel saute
+des lignes. Apres l'inactivite, il appelle aussi le summarizer, qui poste le
+transcript a Ollama puis le resume a Kleos. Le mode annonce un essai a blanc
+mais modifie l'etat disque et emet des requetes reseau.
+
+**Approche :** patch chirurgical. `main.rs` choisit le ledger en memoire avant
+`Ledger::open` quand `dry_run` est actif, ce qui couvre le watcher et
+`--one-shot` sans jamais ouvrir le chemin configure. `one_shot.rs` ne refait
+plus cette substitution. Le watcher saute seulement `summarize_session` en
+mode dry-run et retire toujours le chemin inactif de `last_activity`. Pas de
+niveau inferieur : un overlay ou une configuration externe ne peut ni empecher
+l'ouverture du ledger ni supprimer les appels reseau du binaire.
+
+**Fichiers :** `kleos-ingest/src/main.rs`, `kleos-ingest/src/one_shot.rs`,
+`kleos-ingest/src/watcher.rs`, `docs/dev-notes/local-patches.md`.
+
+**Preuves obtenues sous Windows MSVC :** le test cible
+`dry_run_leaves_absent_ledger_and_skips_summary_requests` attend le signal de
+traitement du transcript, utilise un texte depassant le seuil du summarizer,
+verifie que le chemin de ledger reste absent et expose deux listeners locaux.
+Une mutation qui retablit la summarisation fait echouer le test avec
+`dry-run must not request Ollama` et un compteur a 1. Le banc CLI externe
+`~/.agent-forge/scratch/patch70_cli/dry_run_cli.py` lance le binaire reel en
+mode watcher, avec ledger existant puis absent, et constate dans les deux cas
+zero requete vers Ollama et Kleos; le hash du ledger existant reste identique.
+
+**Conditions de retrait :** upstream utilise un ledger ephemere et saute la
+summarisation dans le watcher `--dry-run`, par exemple via une PR issue de ce
+patch.
+
+---
+
+## Patch 71 -- kleos /recall : sémantique avant les tiers always-on
+
+Carte roadmap ae3b0f21. Candidat à une PR upstream.
+
+**Symptôme sous upstream pur :** `compose_recall_tiers` réserve jusqu'à cinq
+places aux résultats sémantiques, mais émet static et important avant eux. À
+`--limit 10`, les cinq premiers rangs sont donc always-on et masquent le
+sémantique du top 3. Consommateurs touchés : `kleos-cli context` (défaut
+`--limit 5`) et les hooks qui l'appellent avec une limite plus grande, dont
+`session-start-kleos.sh` (`--limit 8`).
+
+**Approche :** patch chirurgical dans `kleos-lib/src/memory/mod.rs`. Tous les
+résultats sémantiques retenus sont émis avant les tiers static et important ;
+les quotas, la réserve minimale, la déduplication effectuée par l'appelant et
+la composition des tiers restent inchangés, donc l'ensemble des ids retenus est
+celui de l'upstream et seul l'ordre change. Une variable d'environnement ne
+convient pas : elle réglerait le nombre de places réservées, pas leur ordre.
+
+**Fichiers :** `kleos-lib/src/memory/mod.rs`,
+`docs/dev-notes/local-patches.md`,
+`docs/studies/2026-10-20-kleos-nightly-pipeline.md`.
+
+**Tests :** `compose_recall_tiers_emits_semantic_items_before_always_on_items`
+fige les cinq résultats sémantiques réservés en tête à `limit = 10`.
+`compose_recall_tiers_emits_all_retained_semantic_items_before_always_on_items`
+protège l'ordre du suffixe sémantique retenu quand les always-on sont rares.
+`compose_recall_tiers_reserves_only_available_semantic_items` protège la réserve
+plafonnée au nombre de résultats sémantiques disponibles.
+`compose_recall_tiers_respects_limits_below_the_semantic_reserve` est un test de
+caractérisation : il protège le cap à `limit` quand celui-ci est inférieur à la
+réserve, et passe aussi sur l'upstream.
+
+**Conditions de retrait :** upstream émet le sémantique réservé avant les tiers
+always-on, par exemple via une PR issue de ce patch.
+
+---
+
+## Patch 72 -- désactiver l'extraction implicite d'atomes de handoff côté serveur
+
+Carte roadmap e03ca1de. Patch local VOCSAP.
+
+**Symptôme sous upstream pur :** `store_with_atoms` appelle
+`atoms::extract` lorsque le champ `atoms` est absent ou `null`. Cela alimente
+`handoff_atoms` depuis tout appelant, y compris les clients MCP, GUI et les
+anciens clients non redéployés. Le chemin `handoff mechanical` passe déjà par
+le retour anticipé de `store_with_atoms`, donc il ne constitue pas un chemin
+d'alimentation.
+
+**Approche :** `store_with_atoms` ne persiste que les atomes explicitement
+fournis et non vides. Un champ absent, `null` ou un tableau vide ne produit
+aucun atome. Le point de décision est côté serveur afin de couvrir tous les
+appelants sans modifier leur corps HTTP. Le stockage d'atomes explicites reste
+inchangé. Aucun flag de réactivation n'est ajouté : la politique VOCSAP
+abandonne les atomes automatiques.
+
+**Fichiers :** `kleos-lib/src/handoffs/mod.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `store_without_atoms_does_not_extract` utilise un contenu que
+l'heuristique reconnaît puis vérifie que le stockage sans atomes ne crée aucune
+ligne. `store_with_explicit_atoms_persists_them` vérifie qu'un atome explicite
+reste stocké. La mutation qui rétablit l'extraction heuristique fait échouer le
+premier test avec `assertion failed: atoms.is_empty()`. Aucun test upstream
+existant ne supposait l'extraction implicite, donc aucun n'a été ajusté.
+
+**Procédure de purge de production, à exécuter par l'opérateur seulement :**
+précondition : le binaire serveur contenant ce patch est déployé, sinon les
+nouveaux handoffs recréent des atomes. Exécuter pendant la fenêtre de
+déploiement, avec `kleos-server` arrêté. Ne pas lancer cette procédure depuis
+Claude. La base du shard est `/var/lib/kleos/tenants/handoffs/kleos.db`.
+
+Le mode `env` décode `KLEOS_DB_KEY` comme 64 caractères hexadécimaux, puis
+`format_pragma_key` fournit à SQLCipher la forme brute `"x'<64-hex>'"`. Ne
+jamais mettre cette clé dans une ligne de commande ou un prompt interactif. Les
+scripts opérateur prêts à transférer dans un répertoire root-only sont hors
+dépôt : `C:\Users\Olivier\.agent-forge\scratch\handoff_atoms_purge.sql`
+et `C:\Users\Olivier\.agent-forge\scratch\handoff_atoms_purge.sh`.
+
+La sauvegarde est une copie à froid du shard et de ses sidecars, vérifiée par
+`cmp` avant toute suppression :
+
+```text
+# shell root LXC, après systemctl stop kleos-server
+DB=/var/lib/kleos/tenants/handoffs/kleos.db
+STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
+BACKUP=/var/lib/kleos/backups/handoff-atoms-pre-purge-$STAMP
+
+test ! -e "$BACKUP"
+install -d -m 700 "$BACKUP"
+for SOURCE in "$DB" "$DB-wal" "$DB-shm"; do
+    if [ -e "$SOURCE" ]; then
+        cp -a "$SOURCE" "$BACKUP/"
+        cmp -s "$SOURCE" "$BACKUP/${SOURCE##*/}"
+    fi
+done
+```
+
+Exécuter le SQL de purge de manière non interactive. `-bail` arrête SQLCipher
+sur la première erreur et la clé ne quitte jamais le pipe vers SQLCipher :
+
+```text
+PURGE_SQL=/root/handoff_atoms_purge.sql
+(
+    set -a
+    . /etc/kleos/kleos.env
+    set +a
+    { printf 'PRAGMA key = "x'"'"'%s'"'"'";\n' "$KLEOS_DB_KEY"; cat "$PURGE_SQL"; } |
+        sqlcipher -bail "$DB"
+)
+```
+
+`purge.sql` doit compter `handoff_atoms` et `atom_entity_links` avant la
+transaction, supprimer d'abord `handoff_atoms` puis `atom_entity_links`,
+recompter les deux tables, lancer `PRAGMA integrity_check`, puis compter
+`handoffs`. Les deux comptages après doivent être `0` et l'intégrité doit être
+`ok`.
+
+Avant de décider si la base monolithe doit aussi être purgée, compter ses
+tables de migration 63 en lecture seule, avec la même clé :
+
+```text
+MONOLITH=/var/lib/kleos/kleos.db
+(
+    set -a
+    . /etc/kleos/kleos.env
+    set +a
+    {
+        printf 'PRAGMA key = "x'"'"'%s'"'"'";\n' "$KLEOS_DB_KEY"
+        printf '%s\n' 'PRAGMA query_only = ON;'
+        printf '%s\n' 'SELECT COUNT(*) AS monolith_atoms_before FROM handoff_atoms;'
+        printf '%s\n' 'SELECT COUNT(*) AS monolith_links_before FROM atom_entity_links;'
+    } | sqlcipher -bail "$MONOLITH"
+)
+```
+
+Ne purger la base monolithe que si ces comptages sont non nuls et après une
+sauvegarde à froid vérifiée selon le même procédé. Enfin, démarrer le service
+et vérifier son état :
+
+```text
+systemctl start kleos-server
+curl -sf http://127.0.0.1:4200/health
+```
+
+**Retour arrière :** avec le serveur arrêté, supprimer les sidecars courants,
+recopier `kleos.db` puis tout sidecar présent depuis la sauvegarde vérifiée,
+puis redémarrer le service et recompter les deux tables.
+
+**Conditions de retrait :** upstream rend l'extraction d'atomes explicitement
+opt-in par défaut et conserve les atomes fournis par l'appelant.
+
+---
+
+## Patch 73 -- le `project` d'un handoff suit la résolution du space (Patch 33)
+
+Carte roadmap 62e01fcc. Patch local VOCSAP.
+
+**Symptôme sous upstream pur :** `detect_project` nomme le projet d'après le
+remote `origin` en gardant sa casse (`Kleos`), alors que le space du même dépôt
+vaut `kleos`. Les filtres de lecture des handoffs sont des égalités exactes :
+`handoff restore --project kleos` ne voit pas les lignes rangées sous `Kleos`,
+et la reprise de session rate sans erreur.
+
+**Approche :** côté serveur, pour que tous les clients (CLI, MCP, GUI)
+écrivent la même forme. `normalize_store_params` passe le `project` d'un
+handoff `repository` par `space::normalize_space_name` (minuscules,
+`[a-z0-9_-]`) ; le `workstream` par défaut en hérite. Le `project` d'un handoff
+`standalone` reste le workstream brut. La convergence vaut pour un client qui
+envoie un nom de dépôt (`Kleos` et `kleos` se rangent sous `kleos`) ; un client
+qui envoie un chemin `github.com/X/y` est stocké `githubcomxy`, pas `y`.
+
+Lecture : les filtres `project` et `workstream` de la clause partagée et la
+recherche FTS comparent `col = <valeur brute> OR (scope <> 'standalone' AND
+lower(col) = <valeur normalisée>)`. Un handoff `standalone` garde donc une
+lecture exacte (`MyTopic` n'est pas lu par `mytopic`) ; `repository` et
+`legacy` (lignes antérieures à la colonne `scope`) sont lus sans égard à la
+casse. Les atomes (sans colonne `scope`) listés et décroissants comparent
+`project = <brut> OR lower(project) = <normalisé>`. Quand la valeur normalisée
+est vide (project `/`), elle est liée à NULL : la branche `lower()` ne matche
+aucune ligne, y compris les lignes à project vide des UPDATE de décroissance.
+La dédup mécanique compare `lower(project)` à la valeur normalisée.
+
+Les lignes déjà stockées ne sont pas migrées : `lower()` suffit pour les
+variantes mesurées (`Kleos`/`kleos`, `Argus`/`argus`, `AiDex`/`aidex`), qui ne
+diffèrent que par la casse. Une ligne historique à caractères spéciaux
+(`github.com/VOCSAP/koryphaios`) ne reste lisible que par sa valeur brute exacte.
+Pas d'index : `lower()` empêche l'usage d'un index sur `project`, coût
+négligeable à quelques centaines de lignes par utilisateur.
+
+Côté client, `detect_project` garde `SESSION_HANDOFF_PROJECT` en priorité.
+Hors Git, il rend toujours `None`, sans repli sur le basename du cwd ni lecture
+d'un marqueur `.kleos-space` : `None` décide de la portée `standalone` au store
+et au restore. C'est voulu. Dans un dépôt Git, il délègue à
+`space::resolve_project_name` (marqueur `.kleos-space` remonté depuis le
+répertoire, puis basename de la racine Git, puis basename du cwd). Un
+submodule ou dépôt imbriqué sans marqueur propre hérite donc du projet du
+dépôt parent par la remontée du marqueur, comme son space (`prompts-overrides/`
+donne `kleos`) ; c'est voulu. Le repli sur le basename du cwd est atteint
+quand le basename de la racine Git se normalise en vide, ou avec un `GIT_DIR`
+sans `.git` dans les parents.
+
+**Limite connue :** les statistiques (`GROUP BY project`), le classement des
+sessions et `prune_identity_groups` (`PARTITION BY`) regroupent encore sur la
+colonne brute : `Kleos` et `kleos` y restent deux groupes jusqu'à une migration
+des `project` historiques.
+
+**Fichiers :** `kleos-lib/src/handoffs/mod.rs`, `kleos-cli/src/main.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `repository_project_matches_space_normalization` stocke `Kleos`,
+vérifie la forme stockée `kleos` et la relecture par `kleos` et `Kleos` (liste
+et recherche). `legacy_mixed_case_rows_match_normalized_reader` insère en SQL
+une ligne `repository` et une ligne `legacy` sous `Kleos` et les retrouve par
+`kleos` (liste et dernier handoff). `standalone_workstream_reads_stay_exact`
+vérifie qu'un standalone `MyTopic` n'est lu ni par `mytopic` (workstream,
+project, recherche) mais l'est par `MyTopic`.
+`empty_normalized_reader_matches_no_empty_project` vérifie qu'un project `/`
+ne lit ni ne décroît les lignes à project vide.
+`project_detection_follows_space_resolution` crée un dépôt Git `Kleos` au
+remote `Other-Name` (résolu `kleos`), puis un marqueur (résolu par le
+marqueur). `project_detection_matches_this_repository_space` compare
+`detect_project` à `space::resolve_project_name` pour ce dépôt.
+`project_detection_parses_remote_names` est retiré avec `project_from_remote`,
+devenu sans appelant.
+
+**Conditions de retrait :** une migration normalise les `project` historiques
+(après vérification qu'aucun couple de projets ne diffère que par la casse), ce
+qui rend les comparaisons `lower()` superflues.
+
+---
+
+## Patch 74 -- `GET /stats` compte dans la base tenant de l'appelant
+
+Carte roadmap 7bed6b55. Patch local VOCSAP.
+
+**Symptôme sous upstream pur :** avec le sharding tenant actif, `GET /stats`
+rend `"memories": 0` alors que l'utilisateur porte des milliers de mémoires
+(mesuré sur LXC 121 : 0 contre 5227 via `GET /list`). `get_stats` comptait
+`SELECT COUNT(*) FROM memories` sur `state.db`, la base monolithe, qui ne
+reçoit plus de mémoires ; la requête réussit et rend un zéro silencieux. Même
+défaut pour `tasks` et `agents`, dont les écrivains passent par `ResolvedDb`.
+
+**Périmètre décidé :** `/stats` rend les stats du tenant de l'utilisateur
+effectif : son shard en mode shardé, la monolithe sinon. Pas de somme sur tous
+les tenants. Seul `api_keys` reste global (table de la monolithe).
+
+**Approche :** côté serveur, pour couvrir tous les clients. Après
+`require_admin`, `get_stats` résout la base par
+`resolve_db_for_user(&state, auth.effective_user_id())` et y compte `memories`,
+`tasks`, `events` (table `events`), `actions` (table `action_log`) et `agents`.
+`events` et `action_log` n'ont aucun écrivain dans le code ; ils suivent le
+même périmètre par cohérence, les deux tables existent dans le schéma tenant
+(`schema_v44_parity.sql`). `api_keys` reste compté sur `state.db`. La
+résolution après le contrôle admin évite qu'un non-admin crée son shard et
+reçoive une 500 au lieu du refus d'autorisation. La description de la route
+dans `kleos-client` (reprise par `kleos-mcp` via `ROUTES`) suit ce périmètre.
+
+**Écart structurel avec `GET /list` :** `/stats` compte les lignes brutes de la
+table, `/list` filtre toujours `user_id` de l'appelant, `is_latest = 1`,
+`is_consolidated = 0` et `status != 'pending'`, plus les archivées et oubliées
+sauf `include_archived` / `include_forgotten`. Les deux totaux coïncident tant
+que la base ne contient ni version antérieure, ni source consolidée, ni mémoire
+en attente de revue ; en mode monolithe, `/stats` compte aussi les mémoires des
+autres utilisateurs.
+
+**Fichiers :** `kleos-server/src/routes/admin/mod.rs`,
+`kleos-server/tests/routes_admin_stats.rs`, `kleos-client/src/routes.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `stats_counts_rows_of_the_caller_tenant_shard` insère 3 lignes de
+`memories`, `tasks` et `agents` dans le shard de l'admin et 5 dans la
+monolithe, puis vérifie que `/stats` rend 3 pour chacune et `api_keys` = 1.
+`stats_memories_match_paginated_list_in_sharded_mode` et
+`..._in_monolith_mode` stockent 5 mémoires par `POST /store`, en archivent une
+et en oublient une, puis comparent `memories` au total de `GET /list` paginé
+par 2 avec `include_archived=true&include_forgotten=true`.
+
+**Conditions de retrait :** upstream route lui-même `/stats` vers la base
+tenant.
+
+---
+
+## Patch 75 -- `kleos-sh` hors hook refuse toute approbation non accordée
+
+Carte roadmap 42251a7b. Patch local VOCSAP, complète le Patch 55.
+
+**Symptôme :** la liste `KLEOS_GATE_NO_WAIT_AGENTS` (Patch 55) repose sur le
+nom d'agent que le client déclare, et `kleos-sh` déclarait `claude-code` par
+défaut. Hors `--claude-hook`, le mode exec et `--gate-only` fusionnent `Ask`
+avec `Allow` : `kleos-sh --gate-only -c "systemctl status x"` rendait rc 0
+sans aucune approbation. D'autres retours anticipés de `check_handler`
+sautent aussi l'attente avec `requires_approval` posé (chemins forge
+Write/Edit : fail-open, chemin exempté, spec couvrante, mode warn), et un
+serveur ancien ne signale rien.
+
+**Approche :** marqueur positif, fail-closed côté client.
+- `kleos-server` pose `approval_granted: true` uniquement sur le retour
+  approuvé après une vraie attente ; aucun autre retour ne le porte.
+- `kleos-sh`, hors `--claude-hook`, transforme `requires_approval &&
+  !approval_granted` en refus ; un champ absent (serveur ancien) vaut refus.
+  En mode hook, `ask` reste émis comme avant.
+- `--agent` vaut `kleos-sh` par défaut ; le hook passe `--agent claude-code`.
+
+Le marqueur négatif d'une première version (`approval_waived`, posé sur le
+seul retour no-wait) est retiré : il laissait passer les autres retours
+anticipés et les serveurs anciens.
+
+Usage exec : sans être listé, tout check `Bash` entre dans l'attente
+(`TOOLS_REQUIRING_APPROVAL`), plus longue que le timeout client, et finit en
+refus « gate unreachable », même pour une commande bénigne (mesuré : 49,9 s
+puis rc 2 pour `kleos-sh --gate-only --tool-name Bash -c "echo probe"`).
+Pour rendre exec et `--gate-only` utilisables, lister `kleos-sh` dans
+`KLEOS_GATE_NO_WAIT_AGENTS` : grâce au refus ci-dessus, une commande
+`require_approval` reste refusée et seule une commande sans approbation
+requise passe. Contrepartie : une commande `require_approval` lancée via
+`kleos-sh` en exec n'est plus approuvable depuis la TUI ; elle se lance là où
+un humain la confirme.
+
+**Fichiers :** `kleos-server/src/routes/gate/no_wait.rs`
+(`approved_response`), `kleos-server/src/routes/gate/mod.rs` (retour
+approuvé), `kleos-sh/src/gate.rs` (`approval_granted`,
+`outcome_from_result`), `kleos-sh/src/main.rs` (défaut `--agent`),
+`docs/KLEOS_OPERATIONS_MANUAL.md`.
+
+**Tests :** `no_wait::tests::human_approval_is_marked_granted` et
+`result_returned_without_a_wait_carries_no_grant` côté serveur ;
+côté `kleos-sh`, `ungranted_approval_is_denied_outside_hook_mode`,
+`response_without_granted_field_is_denied_outside_hook_mode`,
+`granted_approval_maps_to_ask_outside_hook_mode`,
+`required_approval_maps_to_ask_in_hook_mode`.
+
+**Déploiement :** installer le nouveau `kleos-sh.exe` sur les postes avant
+d'ajouter `kleos-sh` à `KLEOS_GATE_NO_WAIT_AGENTS` (un `kleos-sh` ancien
+exécuterait une commande `require_approval` sans approbation). Le serveur
+peut suivre : tant qu'il n'est pas redéployé, `kleos-sh` refuse aussi les
+approbations réellement accordées hors hook.
+
+**Conditions de retrait :** upstream signale lui-même une approbation
+humaine dans la réponse de `/gate/check`, ou retire la fusion `Ask`/`Allow`
+du mode exec.
+
+---
+
+## Patch 76 -- le pré-filtre du canal vecteur applique les exclusions de l'aval
+
+Carte roadmap c548bd00. Patch local VOCSAP.
+
+**Symptôme :** `POST /memories/search` en budget `low` rend 0 résultat, sans
+erreur, pour certaines requêtes (environ une sur dix sur le jeu d'évaluation
+kleos-cache). Le pré-filtre `filter_owned_visible` ne testait que `user_id`,
+`is_forgotten = 0` et `is_latest = 1`, puis la boucle coupait à
+`candidate_target` (64 à limit 12). Les mémoires archivées, de catégorie
+`growth` ou `activity`, `is_superseded = 1` ou `status = 'pending'` passaient
+ce filtre, occupaient les places de sortie, puis étaient jetées en aval
+(`hydrate_candidates` et le `retain` de `hybrid_search`). En production, les
+7857 auto-réflexions `growth` archivées dominaient le voisinage. Le budget
+`low` retire seulement le repli FTS qui masquait le défaut en `mid`.
+
+**Approche :** une définition unique de « retournable » dans
+`kleos-lib/src/memory/vector.rs` : la constante `REVIEWED_CURRENT_SQL`
+(`status != 'pending' AND is_superseded = 0`), reprise par la requête de
+`hydrate_candidates`, et `ReturnableFilter` (construit depuis `include_noise`,
+`include_archived` et `exclude_consolidated` de `SearchRequest`), qui fournit
+les prédicats SQL du pré-filtre et le test `keeps` du `retain` aval.
+`filter_owned_visible` reçoit ce filtre sur les deux chemins, chunks
+(`chunk_vector_search`) et centroïde (`centroid_or_sqlite_vector`).
+
+**Hors périmètre :** le repli sqlite `vector_search` garde son filtre. Il
+interroge `vector_top_k('memories_vec_1024_idx', ...)`, fonction et index
+propres à libsql, que le schéma ne crée pas sous rusqlite/SQLCipher
+(`kleos-lib/src/db/schema.rs`, `LIBSQL_VECTOR_INDEX_STATEMENTS` ignorées).
+L'erreur SQL est avalée en `Ok(vec![])` : hors libsql ce repli rend toujours
+vide, quel que soit son filtre. Il est aussi appelé par
+`intelligence/linker.rs::auto_link`, dont le filtre `filter_linkable_hits`
+garde les catégories `growth`/`activity` et les mémoires `is_superseded` : y
+ajouter les exclusions de recherche changerait les liens créés le jour où ce
+repli rendrait des voisins.
+
+**Limites connues :** le pré-filtre ne regarde que la fenêtre collectée. Sur
+le chemin chunk, `collect_cap = limit + 128` (192 pour `candidate_target` 64) ;
+si tous les voisins de cette fenêtre sont non retournables, le chemin chunk
+rend vide et `hybrid_search` se replie sur le centroïde. La famine reste
+possible au-delà de cette borne. Par ailleurs `include_archived = true` est
+sans effet en bout de chaîne : `fetch_memories_batch` filtre
+`is_archived = 0` sans condition, donc une mémoire archivée admise par le
+pré-filtre est jetée à l'hydratation. Ce second point est suivi dans une
+carte séparée.
+
+**Fichiers :** `kleos-lib/src/memory/vector.rs`,
+`kleos-lib/src/memory/search.rs`, `docs/dev-notes/local-patches.md`.
+
+**Tests :** `memory::search::tests::vector_prefilter_skips_unreturnable_neighbours`
+(index ANN factice à classement fixe, 100 leurres archived, growth, activity,
+superseded ou pending plus proches que la cible, budget low, limit 12 :
+la cible est retrouvée sur les chemins chunk et centroïde ; avant correctif
+n=0), `vector_prefilter_keeps_returnable_neighbours` (contrôle : 100 leurres
+sains, la cible hors fenêtre reste exclue, n=12),
+`vector_prefilter_honours_include_flags`.
+
+**Conditions de retrait :** upstream aligne lui-même le pré-filtre ANN sur les
+filtres de résultat de `hybrid_search`.
+
+---
+
+## Patch 77 -- plancher local autonome de `kleos-sh`
+
+Carte roadmap `c6a836e6`, spec Agent-Forge `spec_e4da786b`. Sous-lot L1 du
+plancher décrit dans `2026-10-23-kleos-sh-floor.md`.
+
+**Symptôme :** le hook existant de `kleos-sh` demande une clé, construit un
+client HTTP puis appelle `/gate/check`. Il ne peut pas appliquer la politique
+minimale du poste lorsque le serveur, le réseau ou le mécanisme de clés est
+indisponible.
+
+**Approche :** `kleos-sh --floor-only --floor-file <absolu>` est un plancher de
+reconnaissance : il refuse seulement un danger statiquement reconnu. Les refus
+sont `rm-recursive`, les variantes destructrices de `git push`, `git reset
+--hard` et `git clean` forcé. Les arguments sont déquotés avant cette
+classification. Le parcours d'un AST exploitable agrège les décisions visitées
+dans l'ordre `Deny > Warn > Allow`; un `Deny` l'arrête. En échec de parsing,
+un repli lexical parcourt les segments hors corps de heredoc et ignore les
+segments contenant une substitution incomplète. Un heredoc tronqué n'expose pas
+son corps au repli, qui émet un avertissement s'il ne reconnaît aucun refus. Les
+pipelines vers `xargs` inspectent la source quand la commande appelée est un
+interpréteur. Les flags statiques sont classés avant les opérandes dynamiques :
+`rm -rf $M` et `git push -f origin "$B"` restent donc des refus.
+
+Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
+le hook émet seulement `additionalContext` avec `kleos floor: command not
+analyzed (...)`. Il n'émet pas `permissionDecision`. L'avertissement dépend du
+chemin AST réellement rencontré par le scanner; les arguments déjà classés
+comme données, messages Git et heredocs non expansifs non destinés à un
+interpréteur restent silencieux. Le chargeur TOML, le payload invalide et
+l'auto-protection restent fail-closed.
+
+Le payload est plafonné à 192 Kio. Le parsing et la destruction de l'AST restent
+dans un worker à pile de 64 Mio, avec une attente de 3 s. Le préfiltre limite
+à 256 marqueurs structurels et le budget lexical à 4096 tokens hors blanc. Les
+dépassements, panic et timeout produisent un avertissement, sans crash.
+
+Les limites assumées sont les verbes et options dynamiques, les scripts lancés
+indirectement, `make`, `npm run`, les aliases définis ailleurs, `Remove-Item`,
+`rd /s`, `find -delete`, `rsync --delete`. Les flags statiques encore opaques
+sont `git reset --hard=HEAD` et `git -c clé=valeur push -f`. La sonde release
+rev8 a aussi mesuré comme `SILENT` ou `WARN` les formes suivantes alors qu'un
+refus serait attendu : le nom `rm` écrit avec une quote ANSI-C, `source <(...)`
+et `. <(...)`, les pipelines vers `tee >(sh)`, `cat | sh`, `dash` ou `busybox
+sh`, un heredoc vers `dash`, les here-strings vers un interpréteur, les
+substitutions dans `[[ ]]`, `(( ))`, les valeurs de `for` et de `case`,
+l'expansion `${x:-$(...)}`, les substitutions de processus et dans une cible de
+redirection, un programme RTK imbriqué, `cat script | bash`, une entrée encodée
+vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`,
+un `git rebase` sans `--exec`, et un refspec Git dynamique quoté. Un refspec
+Git ordinaire, par exemple `git push origin main`, reste silencieux. Les évaluations dynamiques `eval
+"$cmd"`, `eval "rm -rf $x"` et `bash -c "$(...)"` ne sont pas résolues
+statiquement. Les programmes passés à `docker run … sh -c`, les scripts
+distants de `ssh`, les commandes transmises à `wsl` et le wrapper `winpty` ne
+sont pas inspectés. Des heredocs contenant des substitutions `$(` non fermées
+peuvent coûter exponentiellement et atteindre le timeout avant le refus d'une
+commande ultérieure. L'auto-protection refuse les chemins littéraux, MSYS et
+`~` du fichier de politique, de son dossier ou du binaire, mais ne résout pas
+son chemin via `$HOME`; un payload supérieur à 192 Kio produit un avertissement
+avant cette vérification. Le payload Claude Code exige `hook_event_name =
+"PreToolUse"`, `tool_name = "Bash"` et `tool_input.command` chaîne.
+
+**Fichiers :** `kleos-sh/Cargo.toml`, `kleos-sh/src/floor.rs`,
+`kleos-sh/src/main.rs`, `kleos-sh/tests/floor_only.rs`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-sh` couvre les refus reconnus après déquotage,
+les données inertes, les avertissements sans `permissionDecision`, le payload
+sans cwd, l'auto-protection et le binaire réel face aux volumes structurels, à
+4096 tokens hors blanc et à une ligne de 200 Kio. Les commandes dangereuses
+sont uniquement des données de test. Le rejeu release de 678 commandes a
+produit 493 refus, 11 avertissements et 174 sorties silencieuses; aucun refus
+de la baseline n'est devenu avertissement ou sortie silencieuse, et aucune sortie
+silencieuse de la baseline n'est devenue avertissement.
+
+**Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
+registre local et les exceptions de suppression observées sont validés; ne pas
+le raccorder aux hooks ou retirer les protections existantes avant le lot
+d'activation séparé.
+
+---
+
+## Patch 78 -- `kleos-transcript-consumer` : gel du contrat (lot K0)
+
+Carte roadmap f18dc3c4, spec agent-forge `spec_ce5abd08`. Crate neuf, additif
+pur : aucun fichier upstream modifié hors de la ligne `members` du `Cargo.toml`
+racine.
+
+**Objet :** premier lot du consommateur Kleos des faits d'hypomnema, décrit en
+section 11 de `docs/studies/2026-10-21-kleos-transcript-ingest-target.md`
+(révision 7.1). Contrat d'entrée : §10 de la conception hypomnema au commit
+`ef02cee` et schéma du flux du plan hypomnema, lot 3. Le lot fige les formes
+avant tout code de lecture du flux : aucun binaire, aucun appel réseau ni
+modèle, aucune écriture dans Kleos.
+
+**Approche :**
+- `feed` : `FeedItem {seq, kind, schema_version, payload}` et décodage typé des
+  9 kinds (`session_meta`, `epoch_opened`, `epoch_superseded`,
+  `facts_updated`, `lineage_stabilized`, `lineage_merged`,
+  `lineage_reopened`, `branch_root_changed`, `remap`). Échec fermé : kind
+  inconnu, `schema_version` autre que 1, champ requis absent, valeur hors
+  vocabulaire et ancien champ `secret_patterns_version` sont refusés ; un
+  champ en trop est toléré. Les champs nuls de `session_meta` doivent être
+  présents.
+- `judge` : verdict du juge amont (fidélité, relation) et `effect()`, qui
+  applique la couche 1 de 4.4 ; la fidélité prime sur la relation, et une
+  contradiction sans voisin identifié est écartée. Question de fidélité figée
+  dans `prompts/upstream_judge_fidelity.txt` ; le câblage sur `load_prompt`
+  attend K2.
+- `publish` : corps `StoreRequest` d'une publication (source
+  `kleos-transcript`, importance plafonnée à 5, tags `transcript`, projet,
+  `turn:`, `fact:<lineage8>-<fact_id>` sans la branche, que
+  `branch_root_changed` réécrit, `parent_memory_id` pour une version).
+
+**Fichiers :** `Cargo.toml`, `Cargo.lock`, `kleos-transcript-consumer/**`,
+`docs/dev-notes/local-patches.md`.
+
+**Tests :** `cargo test -p kleos-transcript-consumer --features
+bundled-sqlite`, 27 tests : 10 fichiers de fixtures du flux couvrant les 9
+kinds et les 4 motifs de `remap`, refus du décodage, 5 fixtures du juge (fait
+inventé, déformé, doublon d'agent, contradiction d'agent, fidèle et distinct),
+test d'intégration jetable du corps `StoreRequest` et de la signature de
+`think_setting`, `load_prompt`, `Database::connect_encrypted` et
+`lexicon::word_class`. Chaque test nomme sa mutation, et les 27 mutations ont
+été rejouées une à une sur une copie hors dépôt, rouge constaté (le test des
+signatures de kleos-lib rougit à la compilation). Clippy se
+lance avec `--no-deps` : sans lui, `-D warnings` remonte les avertissements
+préexistants de kleos-lib.
+
+**Écarts relevés :** `branch_root_changed` (plan hypomnema, lot 3) manque à la
+table 11.2 de l'étude. Les formes proposées par Kleos pour les payloads du lot
+6 d'hypomnema (statuts en anglais ASCII, `map_version` en objet, `content`
+d'un fait, `remap` par lignée) attendent la relecture du peer hypomnema.
+
+**Conditions de retrait :** aucune ; le crate est propre au fork.

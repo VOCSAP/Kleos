@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::components::Platform;
+use crate::error::InstallError;
 
 /// Detected information about the current system environment.
 #[derive(Debug, Clone)]
@@ -19,23 +20,27 @@ pub struct PlatformInfo {
     pub has_launchd: bool,
     /// Default directory for installed Kleos binaries.
     pub default_install_dir: PathBuf,
-    /// Default directory for Kleos configuration files (engram.toml, .env).
+    /// Default directory for Kleos configuration files (kleos.toml, .env).
     pub default_config_dir: PathBuf,
     /// Default directory for Kleos runtime data files.
     pub default_data_dir: PathBuf,
 }
 
+/// Platform detection and default-path resolution for the installer.
 impl PlatformInfo {
     /// Detect all platform information for the current machine.
     ///
     /// Reads OS and architecture from compile-time constants, probes for
     /// systemd / launchd availability, and computes default installation
     /// paths following XDG conventions on Unix and Windows conventions on
-    /// Windows.
-    pub fn detect() -> PlatformInfo {
+    /// Windows. Returns `InstallError::Platform` if the machine's OS/arch has
+    /// no published Kleos release (see `Platform::detect`) -- callers should
+    /// surface that message and stop rather than proceeding to a fetch that
+    /// can only fail.
+    pub fn detect() -> Result<PlatformInfo, InstallError> {
         let os_name = std::env::consts::OS.to_string();
         let arch = std::env::consts::ARCH.to_string();
-        let platform = Platform::detect();
+        let platform = Platform::detect()?;
 
         let has_systemd = which_exists("systemctl");
         let has_launchd = os_name == "macos";
@@ -51,7 +56,7 @@ impl PlatformInfo {
         let default_config_dir = if cfg!(windows) {
             home.join("AppData").join("Roaming").join("kleos")
         } else {
-            xdg_config_dir().join("engram")
+            xdg_config_dir().join("kleos")
         };
 
         // Derive from XDG_DATA_HOME (or ~/.local/share on Unix, ~/AppData/Local on
@@ -62,10 +67,10 @@ impl PlatformInfo {
                 .join("kleos")
                 .join("data")
         } else {
-            xdg_data_dir().join("engram").join("data")
+            xdg_data_dir().join("kleos").join("data")
         };
 
-        PlatformInfo {
+        Ok(PlatformInfo {
             platform,
             os_name,
             arch,
@@ -74,7 +79,7 @@ impl PlatformInfo {
             default_install_dir,
             default_config_dir,
             default_data_dir,
-        }
+        })
     }
 }
 

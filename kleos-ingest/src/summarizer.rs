@@ -88,7 +88,7 @@ async fn summarize_with_ollama(transcript: &str, project: &str) -> Option<String
         .build()
         .ok()?;
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
         "messages": [
             {
@@ -104,6 +104,7 @@ async fn summarize_with_ollama(transcript: &str, project: &str) -> Option<String
         "max_tokens": 300,
         "stream": false
     });
+    kleos_lib::llm::inject_openai_compat_reasoning(&mut body);
 
     let resp = client
         .post(&ollama_url)

@@ -5,13 +5,17 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
-use kleos_lib::artifacts::{self, ArtifactSummary, StoreArtifactOpts};
+use kleos_lib::artifacts::{self, PreparedInlineArtifact};
 use kleos_lib::graph::entities::extract_and_link_entities;
 use kleos_lib::intelligence::extraction::fast_extract_facts;
 use kleos_lib::memory::{
     self,
+    abstain::{abstain_gate, AbstainConfig},
     search::{faceted_search, hybrid_search, hybrid_search_reranked},
-    types::{FacetedSearchRequest, ListOptions, SearchRequest, StoreRequest, UpdateRequest},
+    types::{
+        FacetedSearchRequest, InlineArtifactInput, ListOptions, QuestionType, SearchRequest,
+        StoreRequest, UpdateRequest,
+    },
 };
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -28,8 +32,78 @@ use crate::{
 
 mod types;
 use types::{
-    ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions, UpdateTagsBody,
+    CalendarQuery, ForgetBody, ListQuery, RecallBody, SearchBody, SearchTagsBody, TrashListOptions,
+    UpdateTagsBody,
 };
+
+/// Validate and decode every inline attachment before the memory write begins.
+fn prepare_inline_artifacts(
+    inputs: Option<Vec<InlineArtifactInput>>,
+) -> Result<Vec<PreparedInlineArtifact>, AppError> {
+    let inputs = inputs.unwrap_or_default();
+    if inputs.len() > 10 {
+        return Err(AppError(kleos_lib::EngError::InvalidInput(
+            "at most 10 inline artifacts per store call".into(),
+        )));
+    }
+    let mut prepared = Vec::with_capacity(inputs.len());
+    let mut total_bytes = 0usize;
+    for input in inputs {
+        let filename = input.filename.trim();
+        if filename.is_empty() || filename.len() > 255 {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "inline artifact filename must contain 1 to 255 bytes".into(),
+            )));
+        }
+        let mime_type = input
+            .mime_type
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        if mime_type.is_empty() || mime_type.len() > 255 {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "inline artifact MIME type must contain 1 to 255 bytes".into(),
+            )));
+        }
+        if input.data_base64.is_empty() {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(
+                "inline artifact data_base64 must not be empty".into(),
+            )));
+        }
+        let data = base64::engine::general_purpose::STANDARD
+            .decode(&input.data_base64)
+            .map_err(|error| {
+                AppError(kleos_lib::EngError::InvalidInput(format!(
+                    "invalid base64 in artifact '{}': {error}",
+                    input.filename
+                )))
+            })?;
+        if data.len() > kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                "inline artifact '{}' exceeds {} bytes",
+                input.filename,
+                kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES
+            ))));
+        }
+        total_bytes = total_bytes.checked_add(data.len()).ok_or_else(|| {
+            AppError(kleos_lib::EngError::InvalidInput(
+                "inline artifact batch size overflow".into(),
+            ))
+        })?;
+        if total_bytes > kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES {
+            return Err(AppError(kleos_lib::EngError::InvalidInput(format!(
+                "inline artifact batch exceeds {} bytes",
+                kleos_lib::validation::MAX_ARTIFACT_UPLOAD_BYTES
+            ))));
+        }
+        prepared.push(PreparedInlineArtifact {
+            filename: filename.to_string(),
+            mime_type: mime_type.clone(),
+            sha256: artifacts::sha256_hex(&data),
+            indexable_content: artifacts::extract_indexable_content(&mime_type, &data),
+            data,
+        });
+    }
+    Ok(prepared)
+}
 
 /// Mount the memory router with the full set of CRUD, search, recall, tag, profile, and version-chain routes.
 pub fn router() -> Router<AppState> {
@@ -42,6 +116,7 @@ pub fn router() -> Router<AppState> {
         .route("/search/explain", post(explain_search))
         .route("/recall", post(recall))
         .route("/list", get(list_memories))
+        .route("/memories/calendar", get(calendar))
         .route("/tags", get(list_tags))
         .route("/tags/search", post(search_tags))
         .route("/search/faceted", post(faceted_search_handler))
@@ -85,6 +160,7 @@ fn memory_to_json(m: &kleos_lib::memory::types::Memory) -> Value {
         "parent_memory_id": m.parent_memory_id, "root_memory_id": m.root_memory_id,
         "source_count": m.source_count, "is_static": m.is_static,
         "is_forgotten": m.is_forgotten, "is_archived": m.is_archived,
+        "is_superseded": m.is_superseded,
         "is_fact": m.is_fact,
         "is_decomposed": m.is_decomposed, "forget_after": m.forget_after,
         "forget_reason": m.forget_reason, "model": m.model,
@@ -114,11 +190,26 @@ async fn store_memory(
     }
 
     req.user_id = Some(auth.effective_user_id());
+
+    // Patch 33: resolve any (`space_id`, `space`) pair to a single concrete
+    // `space_id`. Empty / sentinel / alias values collapse to the user's
+    // `default` space; named spaces are auto-created on first reference.
+    // After this step the library never sees the free-form `space` field.
+    let resolved_space_id = kleos_lib::space::normalize_space_input(
+        &db,
+        auth.effective_user_id(),
+        req.space_id,
+        req.space.as_deref(),
+    )
+    .await?;
+    req.space_id = Some(resolved_space_id);
+    req.space = None;
+
     let content = req.content.clone();
     let brain_category = req.category.clone();
     let brain_source = req.source.clone();
     let brain_importance = req.importance as f64;
-    let inline_artifacts = req.artifacts.take();
+    let inline_artifacts = prepare_inline_artifacts(req.artifacts.take())?;
     let embedder = state.current_embedder().await;
     let pre_embedded = req.embedding.is_some();
     let result = if let Some(ref e) = embedder {
@@ -127,219 +218,88 @@ async fn store_memory(
         memory::store(&db, req, None, false).await?
     };
     let embedded = pre_embedded || embedder.is_some();
+    let attachment_memory_id = result.duplicate_of.unwrap_or(result.id);
+    let (artifact_summaries, artifact_error) = if inline_artifacts.is_empty() {
+        (Vec::new(), None)
+    } else {
+        match artifacts::store_inline_batch(
+            &db,
+            auth.effective_user_id(),
+            attachment_memory_id,
+            &inline_artifacts,
+        )
+        .await
+        {
+            Ok(summaries) => (summaries, None),
+            Err(error) => {
+                tracing::error!(
+                    memory_id = attachment_memory_id,
+                    error = %error,
+                    "memory persisted but inline artifact batch failed"
+                );
+                (
+                    Vec::new(),
+                    Some("memory persisted but attachments were not committed"),
+                )
+            }
+        }
+    };
     if let Some(existing_id) = result.duplicate_of {
+        if let Some(error) = artifact_error {
+            return Ok((
+                StatusCode::MULTI_STATUS,
+                Json(json!({
+                    "stored": false,
+                    "duplicate": true,
+                    "id": existing_id,
+                    "existing_id": existing_id,
+                    "attachments_committed": false,
+                    "error": error,
+                })),
+            ));
+        }
         return Ok((
             StatusCode::OK,
             Json(json!({
                 "stored": false, "duplicate": true,
                 "existing_id": existing_id, "boosted": true,
                 "distance": Value::Null,
+                "attachments_committed": true,
+                "artifacts": artifact_summaries,
             })),
         ));
     }
 
-    // Process inline artifact attachments (max 10 per store call).
-    let mut artifact_summaries: Vec<ArtifactSummary> = Vec::new();
-    if let Some(ref inline_arts) = inline_artifacts {
-        if inline_arts.len() > 10 {
-            return Err(AppError(kleos_lib::EngError::InvalidInput(
-                "at most 10 inline artifacts per store call".into(),
-            )));
-        }
-        for art in inline_arts {
-            if art.filename.is_empty() {
-                return Err(AppError(kleos_lib::EngError::InvalidInput(
-                    "inline artifact filename must not be empty".into(),
-                )));
-            }
-            if art.data_base64.is_empty() {
-                return Err(AppError(kleos_lib::EngError::InvalidInput(
-                    "inline artifact data_base64 must not be empty".into(),
-                )));
-            }
-            let data = base64::engine::general_purpose::STANDARD
-                .decode(&art.data_base64)
-                .map_err(|e| {
-                    AppError(kleos_lib::EngError::InvalidInput(format!(
-                        "invalid base64 in artifact '{}': {e}",
-                        art.filename
-                    )))
-                })?;
-            let mime = art
-                .mime_type
-                .clone()
-                .unwrap_or_else(|| "application/octet-stream".to_string());
-            let size_bytes = data.len() as i64;
-            let sha256 = artifacts::sha256_hex(&data);
-            let indexable_content = artifacts::extract_indexable_content(&mime, &data);
-            let opts = StoreArtifactOpts {
-                content: indexable_content,
-                ..StoreArtifactOpts::default()
-            };
-            let art_id = artifacts::store_artifact(
-                &db,
-                auth.effective_user_id(),
-                result.id,
-                &art.filename,
-                &art.filename,
-                &mime,
-                size_bytes,
-                &sha256,
-                "inline",
-                Some(data),
-                None,
-                false,
-                &opts,
-            )
-            .await?;
-            artifact_summaries.push(ArtifactSummary {
-                id: art_id,
-                filename: art.filename.clone(),
-                mime_type: mime,
-                size_bytes,
-            });
-        }
+    // Derive facts, entity links, and brain associations from the new memory --
+    // but only once it clears the review gate. A pending (unreviewed) memory must
+    // not seed derived knowledge (the "importance-9 guess becomes a fact" loop the
+    // gate exists to stop); the inbox approve route re-runs this derivation when
+    // the memory is approved, so derivation is deferred, never lost.
+    if !result.pending {
+        spawn_post_store_derivation(
+            &state,
+            &db,
+            result.id,
+            auth.effective_user_id(),
+            content,
+            brain_category,
+            brain_source,
+            brain_importance,
+        )
+        .await;
     }
 
-    // Background: extract facts, preferences, and state from the new memory.
-    // Bounded by fact_extract_sem (H-005); shutdown-propagated via shutdown_token (M-008).
-    {
-        let db = db.clone();
-        let memory_id = result.id;
-        let user_id = auth.effective_user_id();
-        // Clone content before consuming it in the spawn so the entity_extract
-        // block below can use the same value without a borrow conflict.
-        let content_for_extract = content.clone();
-        let permit = match state.fact_extract_sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::warn!("fact_extract semaphore closed; skipping background work");
-                let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(json!({
-                        "stored": true, "id": result.id, "created_at": mem.created_at,
-                        "importance": mem.importance, "embedded": embedded,
-                        "tags": parse_tags(&mem.tags),
-                        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-                    })),
-                ));
-            }
-        };
-        let shutdown = state.shutdown_token.clone();
-        let mut bg = state.background_tasks.lock().await;
-        bg.spawn(async move {
-            let _permit = permit;
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    tracing::debug!("background fact_extract drained on shutdown");
-                }
-                _ = async {
-                    match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
-                        Ok(stats) => {
-                            let total = stats.facts + stats.preferences + stats.state_updates;
-                            if total > 0 {
-                                tracing::debug!(
-                                    memory_id,
-                                    facts = stats.facts,
-                                    prefs = stats.preferences,
-                                    states = stats.state_updates,
-                                    "auto-extraction completed"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
-                    }
-                } => {}
-            }
-        });
-    }
-
-    let content_for_brain = content.clone();
-
-    // Background: extract and link named entities from the new memory.
-    // Uses the same fact_extract_sem semaphore (H-005) and shutdown token (M-008).
-    // Runs in a separate spawn from fact_extract so a failure in one does not
-    // affect the other -- independent error blast radius.
-    {
-        let db = db.clone();
-        let memory_id = result.id;
-        let user_id = auth.effective_user_id();
-        // Move content into this closure; it is no longer needed after this block.
-        let content_for_entities = content;
-        let permit = match state.fact_extract_sem.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => {
-                tracing::warn!("fact_extract semaphore closed; skipping entity extraction");
-                // Semaphore closed means server is shutting down; skip extraction
-                // and fall through to return the stored memory as normal.
-                let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
-                return Ok((
-                    StatusCode::CREATED,
-                    Json(json!({
-                        "stored": true, "id": result.id, "created_at": mem.created_at,
-                        "importance": mem.importance, "embedded": embedded,
-                        "tags": parse_tags(&mem.tags),
-                        "decay_score": mem.decay_score.unwrap_or(mem.importance as f64),
-                    })),
-                ));
-            }
-        };
-        let shutdown = state.shutdown_token.clone();
-        let mut bg = state.background_tasks.lock().await;
-        bg.spawn(async move {
-            let _permit = permit;
-            tokio::select! {
-                _ = shutdown.cancelled() => {
-                    tracing::debug!("background entity_extract drained on shutdown");
-                }
-                _ = async {
-                    match extract_and_link_entities(&db, memory_id, &content_for_entities, user_id).await {
-                        Ok(entities) => {
-                            if !entities.is_empty() {
-                                tracing::debug!(
-                                    memory_id,
-                                    entity_count = entities.len(),
-                                    "auto entity extraction completed"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::warn!(memory_id, "auto entity extraction failed: {}", e),
-                    }
-                } => {}
-            }
-        });
-    }
-
-    // Background: absorb new memory into the Hopfield brain.
-    // Fire-and-forget, best-effort — never fails the store response.
-    // Bounded by brain_absorb_sem (H-005); shutdown-propagated via shutdown_token (M-008).
-    if let Some(brain) = state.brain.clone() {
-        let embedder = state.embedder.clone();
-        let memory_id = result.id;
-        // Act-as aware: absorb under the effective (delegated) user -- the same
-        // owner the memory was stored under (req.user_id) -- not the real caller,
-        // matching the sibling brain blocks and the brain's per-user partitioning.
-        let user_id = auth.effective_user_id();
-        match state.brain_absorb_sem.clone().acquire_owned().await {
-            Ok(permit) => {
-                let shutdown = state.shutdown_token.clone();
-                let mut bg = state.background_tasks.lock().await;
-                bg.spawn(async move {
-                    let _permit = permit;
-                    tokio::select! {
-                        _ = shutdown.cancelled() => {
-                            tracing::debug!("background brain_absorb drained on shutdown");
-                        }
-                        _ = absorb_activity_to_brain(
-                            brain, embedder, user_id, memory_id, content_for_brain,
-                            brain_category, brain_importance, brain_source,
-                        ) => {}
-                    }
-                });
-            }
-            Err(_) => tracing::warn!("brain_absorb semaphore closed; skipping brain absorption"),
-        }
+    if let Some(error) = artifact_error {
+        return Ok((
+            StatusCode::MULTI_STATUS,
+            Json(json!({
+                "stored": true,
+                "duplicate": false,
+                "id": result.id,
+                "attachments_committed": false,
+                "error": error,
+            })),
+        ));
     }
 
     let mem = memory::get(&db, result.id, auth.effective_user_id()).await?;
@@ -351,8 +311,129 @@ async fn store_memory(
     });
     if !artifact_summaries.is_empty() {
         response["artifacts"] = json!(artifact_summaries);
+        response["attachments_committed"] = json!(true);
     }
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+/// Spawn the best-effort post-store derivation for a memory that is now visible to
+/// the agent: fact/preference/state extraction, entity linking, and Hopfield-brain
+/// absorption. Shared by the store route (for memories that clear the review gate)
+/// and the inbox approve route (once a pending memory is approved), so unreviewed
+/// content never seeds derived knowledge yet approved content always does. Each
+/// derivation is bounded by its semaphore (H-005) and drained on shutdown (M-008);
+/// a closed semaphore skips that one derivation and logs, rather than failing the
+/// caller, because the store/approval it follows has already succeeded.
+// Each argument is a distinct input the derivations need (identity, owner, and
+// the four content facets brain absorption records); grouping them would only
+// move the same fields behind a struct name for the two call sites.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn spawn_post_store_derivation(
+    state: &AppState,
+    db: &std::sync::Arc<kleos_lib::db::Database>,
+    memory_id: i64,
+    user_id: i64,
+    content: String,
+    category: String,
+    source: String,
+    importance: f64,
+) {
+    // Fact, preference, and state extraction.
+    match state.fact_extract_sem.clone().acquire_owned().await {
+        Ok(permit) => {
+            let db = db.clone();
+            let content_for_extract = content.clone();
+            let shutdown = state.shutdown_token.clone();
+            let mut bg = state.background_tasks.lock().await;
+            bg.spawn(async move {
+                let _permit = permit;
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::debug!("background fact_extract drained on shutdown");
+                    }
+                    _ = async {
+                        match fast_extract_facts(&db, &content_for_extract, memory_id, user_id, None).await {
+                            Ok(stats) => {
+                                let total = stats.facts + stats.preferences + stats.state_updates;
+                                if total > 0 {
+                                    tracing::debug!(
+                                        memory_id,
+                                        facts = stats.facts,
+                                        prefs = stats.preferences,
+                                        states = stats.state_updates,
+                                        "auto-extraction completed"
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(memory_id, "auto-extraction failed: {}", e),
+                        }
+                    } => {}
+                }
+            });
+        }
+        Err(_) => tracing::warn!("fact_extract semaphore closed; skipping fact extraction"),
+    }
+
+    // Entity extraction and linking. Shares the fact_extract semaphore but runs in
+    // its own spawn so a failure in one does not affect the other.
+    match state.fact_extract_sem.clone().acquire_owned().await {
+        Ok(permit) => {
+            let db = db.clone();
+            let content_for_entities = content.clone();
+            let shutdown = state.shutdown_token.clone();
+            let mut bg = state.background_tasks.lock().await;
+            bg.spawn(async move {
+                let _permit = permit;
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        tracing::debug!("background entity_extract drained on shutdown");
+                    }
+                    _ = async {
+                        match extract_and_link_entities(&db, memory_id, &content_for_entities, user_id).await {
+                            Ok(entities) => {
+                                if !entities.is_empty() {
+                                    tracing::debug!(
+                                        memory_id,
+                                        entity_count = entities.len(),
+                                        "auto entity extraction completed"
+                                    );
+                                }
+                            }
+                            Err(e) => tracing::warn!(memory_id, "auto entity extraction failed: {}", e),
+                        }
+                    } => {}
+                }
+            });
+        }
+        Err(_) => tracing::warn!("fact_extract semaphore closed; skipping entity extraction"),
+    }
+
+    // Absorb the memory into the Hopfield brain. Best-effort; never fails the
+    // caller. Absorbs under the effective (delegated) owner, matching the brain's
+    // per-user partitioning.
+    if let Some(brain) = state.brain.clone() {
+        match state.brain_absorb_sem.clone().acquire_owned().await {
+            Ok(permit) => {
+                let embedder = state.embedder.clone();
+                let shutdown = state.shutdown_token.clone();
+                let content_for_brain = content;
+                let mut bg = state.background_tasks.lock().await;
+                bg.spawn(async move {
+                    let _permit = permit;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::debug!("background brain_absorb drained on shutdown");
+                        }
+                        _ = absorb_activity_to_brain(
+                            brain, embedder, user_id, memory_id, content_for_brain,
+                            category, importance, source,
+                        ) => {}
+                    }
+                });
+            }
+            Err(_) => tracing::warn!("brain_absorb semaphore closed; skipping brain absorption"),
+        }
+    }
 }
 
 /// POST /search -- hybrid keyword + semantic memory search.
@@ -382,6 +463,16 @@ async fn search_memories(
     // Cap limit to prevent DoS via unbounded result sets
     let limit = body.limit.map(|l| l.min(100));
 
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL
+    // filter. None preserves upstream "no spaces filter" semantics.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
     let req = SearchRequest {
         query: body.query,
         embedding,
@@ -391,7 +482,9 @@ async fn search_memories(
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
         user_id: Some(auth.effective_user_id()),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        space: None,
+        include_unscoped: body.include_unscoped,
         include_forgotten: body.include_forgotten,
         mode: body.mode,
         question_type: body.question_type,
@@ -412,7 +505,18 @@ async fn search_memories(
     let results = (*arc_results).clone();
 
     let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
-    let abstained = results.is_empty();
+
+    // L2 ABSTAIN gate. Default-off (KLEOS_ABSTAIN_ENABLED=false) -> decision.abstain is
+    // always false and the response below stays byte-identical to before this gate
+    // existed (the `|| is_empty()` preserves the historical "empty set abstains" rule).
+    // The gate reasons over the best semantic_score across the pool, with cross-encoder
+    // ce_confidence as a supplementary rescue -- never the compound `score`.
+    let abstain_qt = results
+        .iter()
+        .find_map(|r| r.question_type)
+        .unwrap_or(QuestionType::FactRecall);
+    let abstain = abstain_gate(&results, abstain_qt, &AbstainConfig::from_env());
+    let abstained = abstain.abstain || results.is_empty();
 
     // Batch-load artifact summaries for all returned memories.
     let memory_ids: Vec<i64> = results.iter().map(|r| r.memory.id).collect();
@@ -450,6 +554,12 @@ async fn search_memories(
             if let Some(s) = r.fts_score {
                 item["fts_score"] = json!(s);
             }
+            // Raw cross-encoder confidence (uncontaminated by decay/pagerank/recency),
+            // surfaced for the abstain gate and operator debugging. Omitted when the
+            // reranker did not run for this row.
+            if let Some(s) = r.ce_confidence {
+                item["ce_confidence"] = json!(s);
+            }
             if let Some(s) = r.graph_score {
                 item["graph_score"] = json!(s);
             }
@@ -473,9 +583,25 @@ async fn search_memories(
         })
         .collect();
 
-    Ok(Json(json!({
+    // Envelope: `abstained`/`top_score` always present (unchanged). The abstain detail
+    // fields are added only when the gate produced a signal -- so a disabled gate leaves
+    // the response byte-identical, while an enabled gate surfaces why it decided.
+    let mut resp = json!({
         "results": result_items, "abstained": abstained, "top_score": top_score,
-    })))
+    });
+    if let Some(reason) = &abstain.reason {
+        resp["abstain_reason"] = json!(reason);
+    }
+    if let Some(s) = abstain.sem_top {
+        resp["sem_top_score"] = json!(s);
+    }
+    if let Some(s) = abstain.ce_top {
+        resp["ce_top_score"] = json!(s);
+    }
+    if let Some(m) = abstain.margin {
+        resp["sem_margin"] = json!(m);
+    }
+    Ok(Json(resp))
 }
 
 /// Part 5.13: POST /search/explain -- runs the full hybrid search pipeline and
@@ -510,6 +636,15 @@ async fn explain_search(
     let body_query = body.query.clone();
     let limit = body.limit.map(|l| l.min(100));
 
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL filter.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.effective_user_id(),
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
     let req = SearchRequest {
         query: body.query,
         embedding,
@@ -519,7 +654,9 @@ async fn explain_search(
         tags: body.tags.or_else(|| body.tag.map(|tag| vec![tag])),
         threshold: body.threshold,
         user_id: Some(auth.effective_user_id()),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        space: None,
+        include_unscoped: body.include_unscoped,
         include_forgotten: body.include_forgotten,
         mode: body.mode.clone(),
         question_type: body.question_type,
@@ -598,6 +735,21 @@ async fn explain_search(
     })))
 }
 
+/// Maximum pinned/static memories the recall "static" tier surfaces, ordered by
+/// importance. Independent of the recency window so old pinned facts still appear.
+const RECALL_STATIC_LIMIT: usize = 25;
+
+/// Importance floor for the recall "important" tier.
+const RECALL_IMPORTANT_MIN: i32 = 7;
+
+/// Maximum memories the recall "important" tier surfaces, ordered by importance.
+const RECALL_IMPORTANT_LIMIT: usize = 10;
+
+/// Slots a recall response reserves for query-relevant semantic hits before admitting the
+/// always-on static/important tiers, so a user with many pinned/important memories still gets
+/// query-relevant results under a small `limit` instead of an all-static response.
+const RECALL_MIN_SEMANTIC_SLOTS: usize = 5;
+
 /// POST /recall -- retrieve memories ranked by importance and recency.
 #[tracing::instrument(skip_all)]
 async fn recall(
@@ -614,18 +766,28 @@ async fn recall(
         .or(body.context)
         .unwrap_or_default();
 
-    let static_opts = ListOptions {
-        limit: 10,
-        offset: 0,
-        category: None,
-        source: None,
-        user_id: Some(user_id),
-        space_id: body.space_id,
-        include_forgotten: false,
-        include_archived: false,
-    };
-    let all_list = memory::list(&db, static_opts).await?;
-    let static_memories: Vec<_> = all_list.into_iter().filter(|m| m.is_static).collect();
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL filter.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        user_id,
+        body.space_id,
+        body.space.as_deref(),
+    )
+    .await?;
+
+    // Recall-1.1: fetch pinned/static memories by selecting on `is_static` directly and
+    // ordering by importance, so a pinned fact older than the recency window still
+    // surfaces. The prior path listed the 10 newest rows and filtered `is_static`
+    // afterwards, silently dropping every static memory outside that window.
+    // Patch 33: feed the resolved space id so the `space` name field is honored.
+    let static_memories = memory::list_static(
+        &db,
+        user_id,
+        resolved_space_id,
+        body.include_unscoped,
+        RECALL_STATIC_LIMIT,
+    )
+    .await?;
 
     let query_embedding = {
         if let Some(embedder) = state.current_embedder().await {
@@ -646,100 +808,150 @@ async fn recall(
         embedding: query_embedding,
         limit: Some(limit),
         user_id: Some(user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        space: None,
+        include_unscoped: body.include_unscoped,
+        include_forgotten: None,
+        mode: None,
+        question_type: None,
+        expand_relationships: false,
+        include_links: false,
+        latest_only: true,
+        source_filter: None,
+        include_archived: None,
+        include_noise: None,
         ..Default::default()
     };
     let semantic_results = hybrid_search(&db, semantic_req).await?;
 
-    let recent_opts = ListOptions {
-        limit: 20,
-        offset: 0,
-        category: None,
-        source: None,
-        user_id: Some(user_id),
-        space_id: body.space_id,
-        include_forgotten: false,
-        include_archived: false,
-    };
-    let recent_all = memory::list(&db, recent_opts).await?;
-    let important_memories: Vec<_> = recent_all
-        .into_iter()
-        .filter(|m| m.importance >= 7)
-        .take(10)
-        .collect();
+    // Recall-1.2: fetch high-importance memories ordered by importance, not recency, so a
+    // 9-10 importance memory outside the recency window is not invisible. The prior path
+    // listed the 20 newest rows then filtered `importance >= 7`, letting recency outrank
+    // importance.
+    // Patch 33: feed the resolved space id so the `space` name field is honored.
+    let important_memories = memory::list_important(
+        &db,
+        user_id,
+        resolved_space_id,
+        body.include_unscoped,
+        RECALL_IMPORTANT_MIN,
+        RECALL_IMPORTANT_LIMIT,
+    )
+    .await?;
 
+    // Build each tier as a deduped list. Dedup priority is static > important > semantic >
+    // recent, so a memory that qualifies for several tiers is attributed to the strongest.
     let mut seen_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    let static_count = static_memories.len();
-    let important_count = important_memories.len();
-    let mut output: Vec<Value> = Vec::new();
 
-    for m in &static_memories {
-        if seen_ids.insert(m.id) {
-            output.push(json!({
+    // Pinned/static tier.
+    let static_items: Vec<Value> = static_memories
+        .iter()
+        .filter(|m| seen_ids.insert(m.id))
+        .map(|m| {
+            json!({
                 "id": m.id, "content": m.content, "category": m.category,
                 "recall_source": "static", "recall_score": m.importance as f64,
                 "tags": parse_tags(&m.tags),
-            }));
-        }
-    }
-    for m in &important_memories {
-        if seen_ids.insert(m.id) {
-            output.push(json!({
+            })
+        })
+        .collect();
+
+    // High-importance tier.
+    let important_items: Vec<Value> = important_memories
+        .iter()
+        .filter(|m| seen_ids.insert(m.id))
+        .map(|m| {
+            json!({
                 "id": m.id, "content": m.content, "category": m.category,
                 "recall_source": "important", "recall_score": m.importance as f64,
                 "tags": parse_tags(&m.tags),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
-    let mut semantic_count = 0usize;
-    for r in semantic_results.iter() {
-        if seen_ids.insert(r.memory.id) {
-            semantic_count += 1;
-            output.push(json!({
+    // Query-relevant semantic tier.
+    let semantic_items: Vec<Value> = semantic_results
+        .iter()
+        .filter(|r| seen_ids.insert(r.memory.id))
+        .map(|r| {
+            json!({
                 "id": r.memory.id, "content": r.memory.content,
                 "category": r.memory.category, "recall_source": "semantic",
                 "recall_score": r.score, "tags": parse_tags(&r.memory.tags),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
-    let mut recent_count = 0usize;
+    // Recent filler tier (low-importance, non-static rows the other tiers did not cover).
     let recent_extra_opts = ListOptions {
         limit: 10,
         offset: 0,
         category: None,
         source: None,
         user_id: Some(user_id),
-        space_id: body.space_id,
+        space_id: resolved_space_id,
+        include_unscoped: body.include_unscoped,
         include_forgotten: false,
         include_archived: false,
+        from: None,
+        to: None,
+        include_pending: false,
+        exclude_superseded: false,
     };
     let recent_extra = memory::list(&db, recent_extra_opts).await?;
-    for m in recent_extra
+    let recent_items: Vec<Value> = recent_extra
         .iter()
-        .filter(|m| m.importance < 7 && !m.is_static)
-    {
-        if seen_ids.insert(m.id) {
-            recent_count += 1;
-            output.push(json!({
+        .filter(|m| m.importance < 7 && !m.is_static && !m.is_superseded)
+        .filter(|m| seen_ids.insert(m.id))
+        .map(|m| {
+            json!({
                 "id": m.id, "content": m.content, "category": m.category,
                 "recall_source": "recent", "recall_score": m.importance as f64,
                 "tags": parse_tags(&m.tags),
-            }));
-        }
-    }
+            })
+        })
+        .collect();
 
-    output.truncate(limit);
+    // Recall-1.7: compose tiers under `limit` so the always-on static/important tiers cannot
+    // starve the query-relevant semantic tier. The reservation/backfill ordering lives in
+    // memory::compose_recall_tiers so it can be tested independently of the route.
+    let mut output: Vec<Value> = memory::compose_recall_tiers(
+        static_items,
+        important_items,
+        semantic_items,
+        recent_items,
+        limit,
+        RECALL_MIN_SEMANTIC_SLOTS,
+    );
+
+    // Breakdown counts reflect what actually survived composition, not the pre-cap tier sizes.
+    let tier_count = |src: &str| {
+        output
+            .iter()
+            .filter(|v| v["recall_source"].as_str() == Some(src))
+            .count()
+    };
+    let static_count = tier_count("static");
+    let important_count = tier_count("important");
+    let semantic_count = tier_count("semantic");
+    let recent_count = tier_count("recent");
 
     // Background: update FSRS state (grade=Good) for every recalled memory.
     // Fire-and-forget — never delays or fails the recall response.
     {
-        let recalled_ids: Vec<i64> = output.iter().filter_map(|v| v["id"].as_i64()).collect();
+        // Recall-1.5: only grade genuine query-driven retrieval (the semantic tier) as an
+        // active recall. Static/important/recent filler are not retrieval successes, and
+        // grading the whole output Good inflates FSRS stability and corrupts recall-due
+        // ordering and decay for memories that were never actually used.
+        let recalled_ids: Vec<i64> = output
+            .iter()
+            .filter(|v| v["recall_source"].as_str() == Some("semantic"))
+            .filter_map(|v| v["id"].as_i64())
+            .collect();
         let db_clone = db.clone();
         tokio::spawn(async move {
             for id in recalled_ids {
-                record_recall_good(&db_clone, id).await;
+                record_recall_good(&db_clone, id, user_id).await;
             }
         });
     }
@@ -778,19 +990,57 @@ async fn list_memories(
     ResolvedDb(db): ResolvedDb,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Value>, AppError> {
+    // Patch 33: resolve (space_id, space) -> Option<i64> for the SQL filter.
+    let resolved_space_id = kleos_lib::space::resolve_space_filter(
+        &db,
+        auth.effective_user_id(),
+        params.space_id,
+        params.space.as_deref(),
+    )
+    .await?;
+
     let opts = ListOptions {
         limit: params.limit.unwrap_or(50).min(1000),
         offset: params.offset.unwrap_or(0),
         category: params.category,
         source: params.source,
         user_id: Some(auth.effective_user_id()),
-        space_id: params.space_id,
+        space_id: resolved_space_id,
+        include_unscoped: params.include_unscoped,
         include_forgotten: params.include_forgotten.unwrap_or(false),
         include_archived: params.include_archived.unwrap_or(false),
+        from: params.from,
+        to: params.to,
+        include_pending: false,
+        exclude_superseded: params.exclude_superseded.unwrap_or(false),
     };
     let memories = memory::list(&db, opts).await?;
     let results: Vec<Value> = memories.iter().map(memory_to_json).collect();
     Ok(Json(json!({ "results": results })))
+}
+
+/// GET /memories/calendar -- bucketed memory counts for the timeline drill-down.
+#[tracing::instrument(skip_all)]
+async fn calendar(
+    Auth(auth): Auth,
+    ResolvedDb(db): ResolvedDb,
+    Query(q): Query<CalendarQuery>,
+) -> Result<Json<Value>, AppError> {
+    let buckets = memory::calendar_counts(
+        &db,
+        auth.effective_user_id(),
+        &q.granularity,
+        q.year,
+        q.month,
+    )
+    .await?;
+    let out: Vec<Value> = buckets
+        .into_iter()
+        .map(|(bucket, count)| json!({ "bucket": bucket, "count": count }))
+        .collect();
+    Ok(Json(
+        json!({ "buckets": out, "granularity": q.granularity }),
+    ))
 }
 
 /// GET /memory/{id} -- fetch a single memory by id.
@@ -842,12 +1092,27 @@ async fn restore_memory(
 /// PUT /memory/{id} -- update fields on an existing memory.
 #[tracing::instrument(skip_all)]
 async fn update_memory(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Path(id): Path<i64>,
     Json(req): Json<UpdateRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let updated = memory::update(&db, id, req, auth.effective_user_id(), false).await?;
+    // Finding [31]: without an embedder-aware path, a content edit carried the
+    // old version's embedding forward, leaving a stale vector on the new text.
+    let updated = if let Some(embedder) = state.current_embedder().await {
+        memory::update_with_chunks(
+            &db,
+            embedder.as_ref(),
+            id,
+            req,
+            auth.effective_user_id(),
+            false,
+        )
+        .await?
+    } else {
+        memory::update(&db, id, req, auth.effective_user_id(), false).await?
+    };
     Ok(Json(memory_to_json(&updated)))
 }
 
@@ -956,8 +1221,13 @@ async fn synthesize_profile(
             source: None,
             user_id: Some(auth.effective_user_id()),
             space_id: None,
+            include_unscoped: None,
             include_forgotten: false,
             include_archived: true,
+            from: None,
+            to: None,
+            include_pending: false,
+            exclude_superseded: false,
         },
     )
     .await?;

@@ -1,22 +1,46 @@
+//! SQLite database lifecycle, pools, migrations, and guarded tenant writers.
+
+/// Snapshot creation and verification.
 pub mod backup;
+/// Schema convergence against the declared manifest.
+pub mod converge;
+/// Shared database schema migrations.
 pub mod migrations;
+/// Point-in-time snapshot discovery and preparation.
 pub mod pitr;
+/// SQLite reader and writer connection pools.
 pub mod pool;
+/// Database schema definitions.
 pub mod schema;
+/// Expected table and column manifests.
+pub mod schema_manifest;
+/// SQL schema statements.
 pub mod schema_sql;
+/// Tenant shard schema migration chain.
 pub mod tenant_migrations;
+/// Connection-local guards for tenant memory writes.
+mod tenant_write_policy;
+/// Pool configuration and backup data types.
 pub mod types;
+/// VOCSAP schema overlay channel (Patch 41): additive schema changes applied
+/// after the upstream dispatch loop, outside the numbered version sequence.
+mod vocsap;
 
 use crate::config::Config;
-use crate::vector::{LanceIndex, VectorIndex};
+#[cfg(feature = "ml")]
+use crate::vector::LanceIndex;
+use crate::vector::VectorIndex;
 use crate::{EngError, Result};
+#[cfg(feature = "ml")]
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tracing::{info, warn};
 
 pub use pool::DatabasePools;
 pub use types::DbPoolConfig;
 
+/// Async SQLite database handle: pooled connections plus the optional
+/// ANN vector indices and per-connection retrieval configuration.
 pub struct Database {
     db_path: String,
     pools: DatabasePools,
@@ -24,12 +48,17 @@ pub struct Database {
     pub chunk_vector_index: Option<Arc<dyn VectorIndex>>,
     pub pagerank_notify: Arc<tokio::sync::Notify>,
     pub use_chunk_vector_search: bool,
+    /// L5: mirror of `Config.facts_channel_enabled` -- gates the structured_facts RRF
+    /// channel in `hybrid_search`. Default false; set via KLEOS_FACTS_CHANNEL_ENABLED.
+    pub facts_channel_enabled: bool,
     pub embedding_chunk_max_chars: usize,
     pub embedding_chunk_overlap: usize,
     pub embedding_chunk_max_chunks: usize,
     is_tenant: bool,
+    tenant_write_policy: OnceLock<tenant_write_policy::TenantWritePolicy>,
 }
 
+/// Constructors and connection/pool plumbing.
 impl Database {
     /// Connect to a rusqlite database file without encryption.
     ///
@@ -50,6 +79,53 @@ impl Database {
         Self::connect_with_config(&config, key).await
     }
 
+    /// Open an existing credential vault without performing database maintenance.
+    pub async fn connect_existing_read_only_encrypted(
+        db_path: &str,
+        encryption_key: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        let path = std::path::Path::new(db_path);
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| {
+            EngError::DatabaseMessage(format!(
+                "broker vault is not an existing regular file: {error}"
+            ))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(EngError::DatabaseMessage(
+                "broker vault is not an existing regular file".to_owned(),
+            ));
+        }
+        let canonical_path = std::fs::canonicalize(path).map_err(|error| {
+            EngError::DatabaseMessage(format!("failed to canonicalize broker vault: {error}"))
+        })?;
+        let mut uri = url::Url::from_file_path(&canonical_path).map_err(|_| {
+            EngError::DatabaseMessage("failed to construct broker vault URI".to_owned())
+        })?;
+        uri.query_pairs_mut().append_pair("mode", "ro");
+
+        let config = Config::from_env();
+        let pools =
+            DatabasePools::new_read_only(uri.as_str(), DbPoolConfig::default(), encryption_key)
+                .await?;
+        let db = Self {
+            db_path: canonical_path.to_string_lossy().into_owned(),
+            pools,
+            vector_index: None,
+            chunk_vector_index: None,
+            pagerank_notify: Arc::new(tokio::sync::Notify::new()),
+            use_chunk_vector_search: config.use_chunk_vector_search,
+            facts_channel_enabled: config.facts_channel_enabled,
+            embedding_chunk_max_chars: config.embedding_chunk_max_chars,
+            embedding_chunk_overlap: config.embedding_chunk_overlap,
+            embedding_chunk_max_chunks: config.embedding_chunk_max_chunks,
+            is_tenant: false,
+            tenant_write_policy: OnceLock::new(),
+        };
+        db.validate_credential_schema().await?;
+        Ok(db)
+    }
+
+    /// Connect using an explicit `Config` (encryption key optional).
     pub async fn connect_with_config(
         config: &Config,
         encryption_key: Option<[u8; 32]>,
@@ -57,6 +133,8 @@ impl Database {
         Self::connect_with_pool_config(config, DbPoolConfig::default(), encryption_key).await
     }
 
+    /// Connect with explicit pool sizing; runs migrations and opens the
+    /// vector indices per config.
     pub async fn connect_with_pool_config(
         config: &Config,
         pool_config: DbPoolConfig,
@@ -77,6 +155,19 @@ impl Database {
                 EngError::DatabaseMessage(format!("writer pool migration failed: {e}"))
             })??;
 
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("writer pool converge failed: {e}"))
+            })??;
+
         let encrypted_label = if encryption_key.is_some() {
             " (encrypted)"
         } else {
@@ -93,10 +184,12 @@ impl Database {
             chunk_vector_index,
             pagerank_notify: Arc::new(tokio::sync::Notify::new()),
             use_chunk_vector_search: config.use_chunk_vector_search,
+            facts_channel_enabled: config.facts_channel_enabled,
             embedding_chunk_max_chars: config.embedding_chunk_max_chars,
             embedding_chunk_overlap: config.embedding_chunk_overlap,
             embedding_chunk_max_chunks: config.embedding_chunk_max_chunks,
             is_tenant: false,
+            tenant_write_policy: OnceLock::new(),
         })
     }
 
@@ -118,6 +211,19 @@ impl Database {
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("migration failed: {e}")))??;
 
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| {
+                EngError::DatabaseMessage(format!("writer pool converge failed: {e}"))
+            })??;
+
         Ok(Self {
             db_path: ":memory:".to_string(),
             pools,
@@ -125,10 +231,12 @@ impl Database {
             chunk_vector_index: None,
             pagerank_notify: Arc::new(tokio::sync::Notify::new()),
             use_chunk_vector_search: false,
+            facts_channel_enabled: false,
             embedding_chunk_max_chars: 1440,
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
             is_tenant: false,
+            tenant_write_policy: OnceLock::new(),
         })
     }
 
@@ -169,6 +277,17 @@ impl Database {
                 EngError::DatabaseMessage(format!("tenant pool migration failed: {e}"))
             })??;
 
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant converge failed: {e}")))??;
+
         let encrypted_label = if encryption_key.is_some() {
             " (encrypted)"
         } else {
@@ -183,10 +302,12 @@ impl Database {
             chunk_vector_index: None,
             pagerank_notify: Arc::new(tokio::sync::Notify::new()),
             use_chunk_vector_search: false,
+            facts_channel_enabled: false,
             embedding_chunk_max_chars: 1440,
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
             is_tenant: true,
+            tenant_write_policy: OnceLock::new(),
         })
     }
 
@@ -213,6 +334,17 @@ impl Database {
             .await
             .map_err(|e| EngError::DatabaseMessage(format!("tenant migration failed: {e}")))??;
 
+        writer
+            .interact(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+                )
+                .map(|_| ())
+            })
+            .await
+            .map_err(|e| EngError::DatabaseMessage(format!("tenant converge failed: {e}")))??;
+
         Ok(Self {
             db_path: uri,
             pools,
@@ -220,10 +352,12 @@ impl Database {
             chunk_vector_index: None,
             pagerank_notify: Arc::new(tokio::sync::Notify::new()),
             use_chunk_vector_search: false,
+            facts_channel_enabled: false,
             embedding_chunk_max_chars: 1440,
             embedding_chunk_overlap: 160,
             embedding_chunk_max_chunks: 6,
             is_tenant: true,
+            tenant_write_policy: OnceLock::new(),
         })
     }
 
@@ -238,15 +372,57 @@ impl Database {
         .await
     }
 
+    async fn validate_credential_schema(&self) -> Result<()> {
+        self.read(|conn| {
+            conn.prepare(
+                "SELECT id, user_id, name, category, secret_type, encrypted_data, nonce, created_at, updated_at
+                 FROM cred_secrets WHERE 0",
+            )?;
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            EngError::DatabaseMessage(format!("broker vault credential schema validation failed: {error}"))
+        })
+    }
+
     /// Returns true if this is a tenant shard database.
     pub fn is_tenant(&self) -> bool {
         self.is_tenant
     }
 
+    /// Bind live tenant policy before publishing the shard handle to callers.
+    pub fn bind_tenant_write_policy(
+        &self,
+        quota: Arc<arc_swap::ArcSwap<crate::tenant::types::QuotaConfig>>,
+        read_only: Arc<std::sync::atomic::AtomicBool>,
+        dirty: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<()> {
+        if !self.is_tenant {
+            return Err(EngError::InvalidInput(
+                "tenant policy requires a tenant database".into(),
+            ));
+        }
+        self.tenant_write_policy
+            .set(tenant_write_policy::TenantWritePolicy {
+                quota,
+                read_only,
+                dirty,
+            })
+            .map_err(|_| EngError::InvalidInput("tenant write policy already bound".into()))
+    }
+
+    /// Whether writer triggers own quota checks and memory usage accounting.
+    pub fn has_tenant_write_policy(&self) -> bool {
+        self.tenant_write_policy.get().is_some()
+    }
+
+    /// Path of the underlying database file (":memory:" for test DBs).
     pub fn db_path(&self) -> &str {
         &self.db_path
     }
 
+    /// The underlying reader/writer connection pools.
     pub fn pools(&self) -> &DatabasePools {
         &self.pools
     }
@@ -276,9 +452,30 @@ impl Database {
             EngError::DatabaseMessage(format!("failed to acquire writer pool connection: {e}"))
         })?;
 
-        conn.interact(move |conn| f(conn)).await.map_err(|e| {
-            EngError::DatabaseMessage(format!("writer pool interaction failed: {e}"))
-        })?
+        let policy =
+            self.tenant_write_policy
+                .get()
+                .map(|policy| tenant_write_policy::TenantWritePolicy {
+                    quota: policy.quota.clone(),
+                    read_only: policy.read_only.clone(),
+                    dirty: policy.dirty.clone(),
+                });
+        conn.interact(move |conn| {
+            if let Some(policy) = &policy {
+                tenant_write_policy::prepare(conn, policy)?;
+            }
+            let result = f(conn).map_err(tenant_write_policy::classify);
+            if let Some(policy) = &policy {
+                // A multi-statement closure can persist an earlier statement even
+                // when a later one fails. Dirty is an advisory reconciliation hint.
+                policy
+                    .dirty
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            result
+        })
+        .await
+        .map_err(|e| EngError::DatabaseMessage(format!("writer pool interaction failed: {e}")))?
     }
 
     /// Execute a transaction on the database.
@@ -297,6 +494,10 @@ impl Database {
     }
 }
 
+/// Open the LanceDB memory + chunk vector indices per config. Either index
+/// failing to open degrades to `None` (FTS + sqlite-vec retrieval) rather
+/// than failing the whole database connection.
+#[cfg(feature = "ml")]
 async fn open_vector_indices(
     config: &Config,
 ) -> (Option<Arc<dyn VectorIndex>>, Option<Arc<dyn VectorIndex>>) {
@@ -325,7 +526,7 @@ async fn open_vector_indices(
     let chunk_index = match LanceIndex::open_with_table(
         &lance_path,
         config.vector_dimensions,
-        crate::vector::lance::CHUNK_TABLE_NAME,
+        crate::vector::CHUNK_TABLE_NAME,
     )
     .await
     {
@@ -340,4 +541,147 @@ async fn open_vector_indices(
     };
 
     (memory_index, chunk_index)
+}
+
+/// ml-off stub: no ANN backend is compiled in, so both indices are `None`
+/// regardless of `use_lance_index`; retrieval degrades to FTS + sqlite-vec
+/// exactly as it does when a Lance open fails at runtime.
+#[cfg(not(feature = "ml"))]
+async fn open_vector_indices(
+    config: &Config,
+) -> (Option<Arc<dyn VectorIndex>>, Option<Arc<dyn VectorIndex>>) {
+    if config.use_lance_index {
+        warn!(
+            "use_lance_index is set but this build has the 'ml' feature disabled; \
+             continuing without ANN vector indices"
+        );
+    }
+    (None, None)
+}
+
+/// Boot-path guarantees for the declarative schema converger: whatever the
+/// manifest adds on top of the migrated schema must settle after one pass, so
+/// a running server does not repeat schema work on every start.
+#[cfg(test)]
+mod converge_boot_tests {
+    use super::*;
+
+    /// Keystone invariant: converge must be idempotent. Boot already migrates
+    /// and then converges, so a converge run immediately afterwards must find
+    /// nothing left to do. That catches a manifest entry the converge pass
+    /// cannot actually satisfy -- a column spec that does not match what got
+    /// created, an index the manifest keeps trying to add -- which would
+    /// otherwise show up as work repeated on every single boot.
+    ///
+    /// Idempotence, not emptiness-on-the-first-pass, is the property that
+    /// survives a non-empty manifest: asserting the first converge takes zero
+    /// actions would forbid the manifest from ever owning a table, which is
+    /// the entire point of the mechanism.
+    #[tokio::test]
+    async fn global_converge_is_idempotent() -> Result<()> {
+        // connect_memory runs migrations and then converges, so this is the
+        // second pass.
+        let db = Database::connect_memory().await?;
+        let actions = db
+            .read(|conn| {
+                crate::db::converge::converge_schema(
+                    conn,
+                    crate::db::schema_manifest::SCHEMA_MANIFEST,
+                )
+            })
+            .await?;
+        assert!(
+            actions.is_empty(),
+            "global converge not idempotent: {actions:?}"
+        );
+        Ok(())
+    }
+
+    /// Same invariant for the tenant manifest against a freshly-migrated shard.
+    /// The first converge is allowed to act -- that is how a manifest-owned
+    /// table gets created on a shard whose migration chain never had one.
+    #[test]
+    fn tenant_converge_is_idempotent() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::tenant_migrations::run_tenant_migrations(&conn, None).unwrap();
+        crate::db::converge::converge_schema(
+            &conn,
+            crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+        )
+        .unwrap();
+        let second = crate::db::converge::converge_schema(
+            &conn,
+            crate::db::schema_manifest::TENANT_SCHEMA_MANIFEST,
+        )
+        .unwrap();
+        assert!(
+            second.is_empty(),
+            "tenant converge not idempotent: {second:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod broker_readonly_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn create_cred_schema(path: &std::path::Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cred_secrets (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                secret_type TEXT NOT NULL,
+                encrypted_data BLOB NOT NULL,
+                nonce BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+    }
+
+    fn digest(path: &std::path::Path) -> [u8; 32] {
+        Sha256::digest(std::fs::read(path).unwrap()).into()
+    }
+
+    #[tokio::test]
+    async fn broker_readonly_open_preserves_existing_vault_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cred.db");
+        create_cred_schema(&path);
+        let before = digest(&path);
+
+        let db = Database::connect_existing_read_only_encrypted(path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        db.read(|conn| {
+            conn.query_row("SELECT count(*) FROM cred_secrets", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map(|_| ())
+            .map_err(Into::into)
+        })
+        .await
+        .unwrap();
+        drop(db);
+
+        assert_eq!(digest(&path), before);
+    }
+
+    #[tokio::test]
+    async fn broker_readonly_open_rejects_missing_vault_without_creating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.db");
+
+        assert!(
+            Database::connect_existing_read_only_encrypted(path.to_str().unwrap(), None)
+                .await
+                .is_err()
+        );
+        assert!(!path.exists());
+    }
 }

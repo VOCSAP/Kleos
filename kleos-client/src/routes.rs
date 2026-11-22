@@ -361,25 +361,41 @@ pub static ROUTES: &[Route] = &[
         Write,
         "handoffs.store",
         "/handoffs",
-        "Store a new handoff dump.",
+        "Store a repository or standalone handoff with stable session identity.",
         ["handoffs.dump"],
-        r#"{"type":"object","properties":{"project":{"type":"string"},"content":{"type":"string"},"agent":{"type":"string"},"type":{"type":"string"},"branch":{"type":"string"},"directory":{"type":"string"},"session_id":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"metadata":{"type":"object"},"atoms":{"type":"array","items":{"type":"object"}}},"required":["content","project"]}"#
+        r#"{"type":"object","properties":{"project":{"type":"string"},"scope":{"type":"string","enum":["repository","standalone"]},"workstream":{"type":"string","minLength":1},"title":{"type":"string"},"content":{"type":"string","minLength":1},"agent":{"type":"string"},"type":{"type":"string"},"branch":{"type":"string"},"directory":{"type":"string"},"session_id":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"metadata":{"type":"object"},"atoms":{"type":"array","items":{"type":"object"}}},"required":["content"]}"#
     ),
     route!(
         Get,
         Read,
         "handoffs.list",
         "/handoffs",
-        "List handoffs.",
-        r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+        "List handoffs by exact repository, scope, workstream, or session filters.",
+        r#"{"type": "object", "properties": {"project": {"type":"string"}, "scope":{"type":"string","enum":["legacy","repository","standalone"]}, "workstream":{"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
     ),
     route!(
         Get,
         Read,
         "handoffs.latest",
         "/handoffs/latest",
-        "Fetch the most recent handoff.",
-        r#"{"type": "object", "properties": {"project": {"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+        "Fetch the most recent exact filter match without cross-project fallback.",
+        r#"{"type": "object", "properties": {"project": {"type":"string"}, "scope":{"type":"string","enum":["legacy","repository","standalone"]}, "workstream":{"type":"string"}, "agent": {"type":"string"}, "type": {"type":"string"}, "model": {"type":"string"}, "session_id": {"type":"string"}, "host": {"type":"string"}, "since": {"type":"string"}, "limit": {"type":"integer"}}}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "handoffs.get",
+        "/handoffs/{id}",
+        "Fetch one exact caller-owned handoff by id.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "handoffs.candidates",
+        "/handoffs/candidates",
+        "List the newest checkpoint for each stable session identity.",
+        r#"{"type":"object","properties":{"scope":{"type":"string","enum":["legacy","repository","standalone"]},"workstream":{"type":"string"},"project":{"type":"string"},"agent":{"type":"string"},"type":{"type":"string"},"model":{"type":"string"},"host":{"type":"string"},"since":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     route!(
         Get,
@@ -693,7 +709,7 @@ pub static ROUTES: &[Route] = &[
         "/prompt/generate",
         "Pack memories into a prompt for a given task.",
         ["context.generate_prompt"],
-        r#"{"type":"object","properties":{"task":{"type":"string"},"format":{"type":"string"},"limit":{"type":"integer"}},"required":["task"]}"#
+        r#"{"type":"object","properties":{"task":{"type":"string"},"format":{"type":"string"},"limit":{"type":"integer"},"space":{"type":"string","description":"Scope to this space (Patch 33)"},"space_id":{"type":"integer"},"include_unscoped":{"type":"boolean","description":"Also include the default space and legacy unscoped rows (default true)"}},"required":["task"]}"#
     ),
     route!(
         Post,
@@ -736,7 +752,7 @@ pub static ROUTES: &[Route] = &[
         "ingestion.text",
         "/ingest",
         "Ingest raw text into the memory pipeline.",
-        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"title":{"type":"string"},"source":{"type":"string"},"entity_ids":{"type":"array","items":{"type":"integer"}},"project_ids":{"type":"array","items":{"type":"integer"}},"episode_id":{"type":"integer"}},"required":["text"]}"#
+        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"title":{"type":"string"},"source":{"type":"string"},"entity_ids":{"type":"array","items":{"type":"integer"}},"project_ids":{"type":"array","items":{"type":"integer"}},"episode_id":{"type":"integer"},"space":{"type":"string","description":"Target space name (Patch 33); defaults to the user's default space"},"space_id":{"type":"integer"}},"required":["text"]}"#
     ),
     route!(
         Post,
@@ -744,7 +760,7 @@ pub static ROUTES: &[Route] = &[
         "ingestion.bulk",
         "/import/bulk",
         "Bulk import of memories from a structured payload.",
-        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"format":{"type":"string"},"mode":{"type":"string"},"source":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"text":{"type":"string"},"url":{"type":"string"},"format":{"type":"string"},"mode":{"type":"string"},"source":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"},"space":{"type":"string","description":"Target space name (Patch 33); defaults to the user's default space"},"space_id":{"type":"integer"}}}"#
     ),
     route!(
         Post,
@@ -776,7 +792,7 @@ pub static ROUTES: &[Route] = &[
         "ingestion.upload_complete",
         "/ingest/upload/complete",
         "Finalise a chunked upload.",
-        r#"{"type":"object","properties":{"upload_id":{"type":"string"},"total_chunks":{"type":"integer"},"final_sha256":{"type":"string"},"mode":{"type":"string"},"format":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"}},"required":["upload_id"]}"#
+        r#"{"type":"object","properties":{"upload_id":{"type":"string"},"total_chunks":{"type":"integer"},"final_sha256":{"type":"string"},"mode":{"type":"string"},"format":{"type":"string"},"category":{"type":"string"},"project_id":{"type":"integer"},"episode_id":{"type":"integer"},"space":{"type":"string","description":"Target space name (Patch 33); defaults to the user's default space"},"space_id":{"type":"integer"}},"required":["upload_id"]}"#
     ),
     route!(
         Post,
@@ -1136,14 +1152,6 @@ pub static ROUTES: &[Route] = &[
         "Revoke an identity key.",
         r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
     ),
-    route!(
-        Post,
-        Admin,
-        "identity_keys.invite",
-        "/identity-keys/invite",
-        "Issue an invite for identity-key enrollment.",
-        r#"{"type":"object","properties":{"label":{"type":"string"},"ttl_seconds":{"type":"integer"}}}"#
-    ),
     // -- agents -----------------------------------------------------------
     route!(
         Post,
@@ -1470,7 +1478,7 @@ pub static ROUTES: &[Route] = &[
         Admin,
         "admin.stats",
         "/stats",
-        "Server-wide stats.",
+        "Row counts for the caller's tenant (its shard when sharding is on, the shared database otherwise); api_keys counts active keys server-wide.",
         r#"{"type":"object"}"#
     ),
     route!(
@@ -1578,7 +1586,7 @@ pub static ROUTES: &[Route] = &[
         "/context",
         "Build an 8-layer context bundle for a task.",
         ["context.assemble_context", "memory_context"],
-        r#"{"type":"object","properties":{"query":{"type":"string"},"max_tokens":{"type":"integer"},"model_id":{"type":"string"},"source":{"type":"string"},"session":{"type":"string"}},"required":["query"]}"#
+        r#"{"type":"object","properties":{"query":{"type":"string"},"max_tokens":{"type":"integer"},"model_id":{"type":"string"},"source":{"type":"string"},"session":{"type":"string"},"space":{"type":"string","description":"Scope to this space (Patch 33)"},"space_id":{"type":"integer"},"include_unscoped":{"type":"boolean","description":"Also include the default space and legacy unscoped rows (default true)"}},"required":["query"]}"#
     ),
     route!(
         Post,
@@ -2072,7 +2080,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/spec-task",
         "Create a new task spec with acceptance criteria and file coverage for gate enforcement.",
         ["forge_spec_task"],
-        r#"{"type":"object","properties":{"session_id":{"type":"string"},"task_description":{"type":"string"},"task_type":{"type":"string"},"acceptance_criteria":{"type":"array","items":{"type":"string"}},"interface_contract":{"type":"string"},"edge_cases":{"type":"array","items":{"type":"string"}},"files_to_touch":{"type":"array","items":{"type":"string"}},"dependencies":{"type":"string"}},"required":["task_description","task_type","acceptance_criteria","interface_contract","edge_cases"]}"#
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"task_description":{"type":"string","minLength":1},"task_type":{"type":"string","enum":["feature","bugfix","refactor","enhancement","test","docs"]},"acceptance_criteria":{"type":"array","minItems":2,"items":{"type":"string","minLength":1}},"interface_contract":{"type":"string","minLength":1},"edge_cases":{"type":"array","minItems":3,"items":{"type":"string","minLength":1}},"files_to_touch":{"type":"array","items":{"type":"string","minLength":1}},"dependencies":{"type":"string"}},"required":["task_description","task_type","acceptance_criteria","interface_contract","edge_cases"]}"#
     ),
     route!(
         Post,
@@ -2081,7 +2089,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/update-spec",
         "Transition a spec to a new lifecycle status (active, completed, failed, blocked).",
         ["forge_update_spec"],
-        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"status":{"type":"string"},"note":{"type":"string"}},"required":["spec_id","status"]}"#
+        r#"{"type":"object","properties":{"spec_id":{"type":"string","minLength":1},"status":{"type":"string","enum":["active","completed","failed","blocked"]},"note":{"type":"string"}},"required":["spec_id","status"]}"#
     ),
     route!(
         Get,
@@ -2090,7 +2098,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/specs",
         "List forge specs for the authenticated user, optionally filtered by status.",
         ["forge_list_specs"],
-        r#"{"type":"object","properties":{"status":{"type":"string"},"limit":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"status":{"type":"string","enum":["active","completed","failed","blocked"]},"limit":{"type":"integer","minimum":1}}}"#
     ),
     route!(
         Get,
@@ -2108,7 +2116,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/log-hypothesis",
         "Record a new hypothesis before touching code in response to a bug.",
         ["forge_log_hypothesis"],
-        r#"{"type":"object","properties":{"session_id":{"type":"string"},"bug_description":{"type":"string"},"hypothesis":{"type":"string"},"confidence":{"type":"number"},"spec_id":{"type":"string"}},"required":["bug_description","hypothesis"]}"#
+        r#"{"type":"object","properties":{"session_id":{"type":"string"},"bug_description":{"type":"string","minLength":1},"hypothesis":{"type":"string","minLength":1},"confidence":{"type":"number","minimum":0,"maximum":1},"spec_id":{"type":"string"}},"required":["bug_description","hypothesis"]}"#
     ),
     route!(
         Post,
@@ -2117,7 +2125,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/log-outcome",
         "Record the outcome of an existing hypothesis (correct, incorrect, or partial).",
         ["forge_log_outcome"],
-        r#"{"type":"object","properties":{"hypothesis_id":{"type":"string"},"outcome":{"type":"string"},"notes":{"type":"string"}},"required":["hypothesis_id","outcome"]}"#
+        r#"{"type":"object","properties":{"hypothesis_id":{"type":"string","minLength":1},"outcome":{"type":"string","enum":["correct","incorrect","partial"]},"notes":{"type":"string"}},"required":["hypothesis_id","outcome"]}"#
     ),
     route!(
         Get,
@@ -2126,7 +2134,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/recall-errors",
         "Search past hypotheses by keyword across bug description and hypothesis text.",
         ["forge_recall_errors"],
-        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     route!(
         Post,
@@ -2135,7 +2143,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/consider-approaches",
         "Store two or more named design alternatives and return a structured comparison prompt.",
         ["forge_consider_approaches"],
-        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"problem":{"type":"string"},"approaches":{"type":"array","items":{"type":"object"}},"chosen_index":{"type":"integer"}},"required":["problem","approaches"]}"#
+        r#"{"type":"object","properties":{"spec_id":{"type":"string"},"problem":{"type":"string","minLength":1},"approaches":{"type":"array","minItems":2,"items":{"type":"object","properties":{"name":{"type":"string","minLength":1},"description":{"type":"string","minLength":1},"pros":{"type":"array","items":{"type":"string"}},"cons":{"type":"array","items":{"type":"string"}},"score":{"type":"number"}},"required":["name","description"]}},"chosen_index":{"type":"integer","minimum":0}},"required":["problem","approaches"]}"#
     ),
     route!(
         Post,
@@ -2153,7 +2161,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/session-learn",
         "Persist a mid-session discovery to forge_session_learns.",
         ["forge_session_learn"],
-        r#"{"type":"object","properties":{"discovery":{"type":"string"},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"spec_id":{"type":"string"}},"required":["discovery"]}"#
+        r#"{"type":"object","properties":{"discovery":{"type":"string","minLength":1},"context":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"spec_id":{"type":"string"}},"required":["discovery"]}"#
     ),
     route!(
         Get,
@@ -2162,7 +2170,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/session-recall",
         "Search forge_session_learns by keyword in the discovery text.",
         ["forge_session_recall"],
-        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer"}}}"#
+        r#"{"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":100}}}"#
     ),
     // -- forge compute (stateless, backed by agent_forge library) ---------
     route!(
@@ -2181,7 +2189,7 @@ pub static ROUTES: &[Route] = &[
         "/forge/declare-unknowns",
         "Partition unknowns into blocking and non-blocking sets and return a clear action directive.",
         ["forge_declare_unknowns"],
-        r#"{"type":"object","properties":{"unknowns":{"type":"array","items":{"type":"object","properties":{"description":{"type":"string"},"blocking":{"type":"boolean"},"resolution_hint":{"type":"string"}},"required":["description","blocking"]}}}}"#
+        r#"{"type":"object","properties":{"unknowns":{"type":"array","minItems":1,"items":{"type":"object","properties":{"description":{"type":"string","minLength":1},"blocking":{"type":"boolean"},"resolution_hint":{"type":"string"}},"required":["description","blocking"]}}},"required":["unknowns"]}"#
     ),
     route!(
         Post,
@@ -4258,6 +4266,94 @@ pub static ROUTES: &[Route] = &[
         "Auto: GET /llms.txt.",
         r#"{"type":"object","additionalProperties":true}"#
     ),
+    // -- attention notes --------------------------------------------------
+    route!(
+        Post,
+        Write,
+        "attention.create",
+        "/attention",
+        "Create an attention note (persistent sticky reminder for agents).",
+        r#"{"type":"object","properties":{"content":{"type":"string"},"priority":{"type":"integer","description":"1 (low) to 10 (high), default 5"}},"required":["content"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "attention.list",
+        "/attention",
+        "List open attention notes, ordered by priority then age.",
+        r#"{"type":"object","properties":{"limit":{"type":"integer"}}}"#
+    ),
+    route!(
+        Patch,
+        Write,
+        "attention.update",
+        "/attention/{id}",
+        "Update content or priority of an attention note.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"},"content":{"type":"string"},"priority":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Delete,
+        Write,
+        "attention.delete",
+        "/attention/{id}",
+        "Delete an attention note (mark as done).",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    // -- toolbox -----------------------------------------------------------
+    // Catalog of the tools a team already has. The sheet is shared across
+    // users; "where I keep it" is per user. `toolbox.find` is a read, but the
+    // server gates POST on Write scope unless the path is on its read-only-POST
+    // allowlist, so it is declared Write here to match what is enforced.
+    route!(
+        Post,
+        Write,
+        "toolbox.index",
+        "/toolbox/entries",
+        "Index a tool (repo, skill, plugin, CLI, MCP server, doc) into the shared catalog and record where you keep it.",
+        ["toolbox_index"],
+        r#"{"type":"object","properties":{"key":{"type":"object","description":"Raw identity; the server derives the canonical key from it. Give git_remote for a clone, url for a hosted tool, local_path otherwise.","properties":{"git_remote":{"type":"string","description":"git remote get-url origin, any spelling"},"url":{"type":"string"},"local_path":{"type":"string","description":"Absolute path on the indexing machine"},"host":{"type":"string","description":"Hostname of the indexing machine"}}},"kind":{"type":"string","description":"repo, skill, plugin, cli, mcp, doc or other"},"name":{"type":"string"},"summary":{"type":"string","description":"3-5 dense sentences: what it is for and when to use it. This is what gets embedded."},"body":{"type":"string","description":"Full markdown sheet"},"keywords":{"type":"array","items":{"type":"string"},"description":"10-25 keywords, max 64"},"canonical_url":{"type":"string"},"commit":{"type":"object","description":"Commit the sheet was written from; drives the newer-wins overwrite policy.","properties":{"sha":{"type":"string"},"time":{"type":"integer","description":"Commit time, unix seconds"}},"required":["sha"]},"tags":{"type":"array","items":{"type":"string"},"description":"Tags on your own location row"},"notes":{"type":"string"},"force":{"type":"boolean","description":"Overwrite the shared sheet even when the stored commit is not older"}},"required":["key","kind","name","summary"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "toolbox.find",
+        "/toolbox/find",
+        "Search your indexed tools in natural language (FTS + embeddings); results carry the places you keep each tool.",
+        ["toolbox_find"],
+        r#"{"type":"object","properties":{"query":{"type":"string","description":"Natural language description of the task at hand"},"kind":{"type":"string","description":"Keep only tools of this kind"},"tags":{"type":"array","items":{"type":"string"},"description":"Keep only tools whose location carries all of these tags"},"limit":{"type":"integer","description":"1 to 50, default 10"},"rerank":{"type":"boolean","description":"Cross-encoder second pass when a reranker is loaded"}},"required":["query"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "toolbox.get",
+        "/toolbox/entries/{id}",
+        "Fetch one indexed tool sheet plus your locations for it.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Get,
+        Read,
+        "toolbox.list",
+        "/toolbox/entries",
+        "List the tools you have indexed, name-ordered.",
+        r#"{"type":"object","properties":{"kind":{"type":"string"},"limit":{"type":"integer","description":"1 to 100, default 25"},"offset":{"type":"integer"}}}"#
+    ),
+    route!(
+        Delete,
+        Write,
+        "toolbox.forget",
+        "/toolbox/entries/{id}",
+        "Forget a tool for yourself: drops your locations for it, never the shared sheet.",
+        r#"{"type":"object","properties":{"id":{"type":"integer"}},"required":["id"]}"#
+    ),
+    route!(
+        Post,
+        Write,
+        "toolbox.reindex",
+        "/toolbox/reindex",
+        "Compute the embeddings missing from your indexed tools. Idempotent; call until candidates is 0.",
+        r#"{"type":"object","properties":{"missing_only":{"type":"boolean","description":"Skip sheets embedded by a different model, only fill empty ones"},"limit":{"type":"integer","description":"Sheets to embed in this call, 1 to 1000, default 200"}}}"#
+    ),
 ];
 
 #[cfg(test)]
@@ -4339,6 +4435,33 @@ mod tests {
         // The read-side artifact tools must resolve for MCP dispatch.
         assert!(resolve_tool_name("artifacts_list_for_memory").is_some());
         assert!(resolve_tool_name("artifacts_search").is_some());
+    }
+
+    /// Remote Forge schemas must advertise the constraints enforced by handlers.
+    #[test]
+    fn forge_schemas_match_lifecycle_validation() {
+        let spec_route = find_by_name("forge.spec_task").expect("forge spec route");
+        let spec_schema: serde_json::Value =
+            serde_json::from_str(spec_route.input_schema).expect("spec schema parses");
+        assert_eq!(
+            spec_schema["properties"]["acceptance_criteria"]["minItems"],
+            2
+        );
+        assert_eq!(spec_schema["properties"]["edge_cases"]["minItems"], 3);
+        assert!(spec_schema["properties"]["task_type"]["enum"]
+            .as_array()
+            .expect("task type enum")
+            .iter()
+            .any(|value| value == "bugfix"));
+
+        let update_route = find_by_name("forge.update_spec").expect("forge update route");
+        let update_schema: serde_json::Value =
+            serde_json::from_str(update_route.input_schema).expect("update schema parses");
+        assert!(update_schema["properties"]["status"]["enum"]
+            .as_array()
+            .expect("status enum")
+            .iter()
+            .any(|value| value == "completed"));
     }
 
     /// The underscore alias must not become a block-list bypass: the underscore

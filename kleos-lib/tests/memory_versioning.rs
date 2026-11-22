@@ -39,10 +39,12 @@ fn base_store(content: &str) -> StoreRequest {
         is_static: None,
         user_id: Some(1),
         space_id: None,
+        space: None,
         parent_memory_id: None,
         chunk_embeddings: None,
         sync_id: None,
         artifacts: None,
+        created_at: None,
     }
 }
 

@@ -98,6 +98,12 @@ pub fn chunk_text_with_limit(
             end
         };
 
+        // Patch 39: floor `actual_end` defensively. SENTENCE_BREAK.find
+        // returns a char-safe offset, rfind(' ') is also char-safe (ASCII
+        // space), but a future edit could change either to a byte-arith
+        // pattern. Cheap idempotent guard.
+        let actual_end = floor_char_boundary(text, actual_end);
+
         let chunk = text[start..actual_end].trim().to_string();
         if !chunk.is_empty() {
             chunks.push(chunk);

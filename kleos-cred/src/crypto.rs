@@ -23,11 +23,27 @@ pub const SALT_SIZE: usize = 16;
 
 /// Argon2id memory parameter in KiB. 64 MiB resists GPU brute force while
 /// staying under the smallest container footprint we ship.
+#[cfg(not(test))]
 const ARGON2_MEMORY_KIB: u32 = 65536;
+
+/// Test-floor Argon2id memory cost (the argon2 crate's `Params::MIN_M_COST`,
+/// 8 KiB). Unit tests exercise KDF plumbing (determinism, salt handling,
+/// roundtrips), not KDF strength, and the production cost made this crate's
+/// test binary the slowest in CI. rustc only sets `--cfg test` when compiling
+/// this crate as its own test harness, so this value cannot reach release
+/// builds or any dependent crate.
+#[cfg(test)]
+const ARGON2_MEMORY_KIB: u32 = 8;
 
 /// Argon2id iteration count. 3 passes is the OWASP 2023 recommendation for
 /// the 64 MiB memory class.
+#[cfg(not(test))]
 const ARGON2_ITERATIONS: u32 = 3;
+
+/// Test-floor iteration count (`Params::MIN_T_COST`); see the test-floor
+/// `ARGON2_MEMORY_KIB` above for the rationale and reach guarantee.
+#[cfg(test)]
+const ARGON2_ITERATIONS: u32 = 1;
 
 /// Argon2id parallelism. Single lane keeps WASM and small-container targets
 /// viable; the memory cost already dominates.
@@ -53,8 +69,31 @@ pub const KDF_SALT_FILE_ENV: &str = "CRED_KDF_SALT_FILE";
 const LEGACY_SALT: &[u8] = b"cred-yubikey-v1\0";
 
 /// Legacy argon2 params matching private cred: m=19MiB, t=2, p=1.
+#[cfg(not(test))]
 const LEGACY_ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+/// Legacy argon2 iteration count matching private cred (see above).
+#[cfg(not(test))]
 const LEGACY_ARGON2_ITERATIONS: u32 = 2;
+
+/// Test-floor legacy memory cost; see the test-floor `ARGON2_MEMORY_KIB` for
+/// the rationale and the cfg(test) reach guarantee.
+#[cfg(test)]
+const LEGACY_ARGON2_MEMORY_KIB: u32 = 8;
+/// Test-floor legacy iteration count; see the test-floor `ARGON2_MEMORY_KIB`.
+#[cfg(test)]
+const LEGACY_ARGON2_ITERATIONS: u32 = 1;
+
+/// Compile-time tripwire pinning the production KDF cost. The cfg(test)
+/// shadow consts above exist only inside this crate's own test harness; this
+/// assert guarantees every shipped build derives keys at full strength.
+#[cfg(not(test))]
+const _: () = assert!(
+    ARGON2_MEMORY_KIB == 65536
+        && ARGON2_ITERATIONS == 3
+        && LEGACY_ARGON2_MEMORY_KIB == 19 * 1024
+        && LEGACY_ARGON2_ITERATIONS == 2,
+    "production Argon2 cost params must not be weakened"
+);
 
 /// Derive an encryption key compatible with private cred (single-user YubiKey-only mode).
 ///
@@ -399,11 +438,13 @@ pub fn generate_hmac_secret() -> [u8; 20] {
     secret
 }
 
+// Unit tests for key derivation, encryption/decryption, and tamper detection.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::SecretData;
 
+    // Deriving a key twice from the same user id and password yields the same key.
     #[test]
     fn derive_key_deterministic() {
         let key1 = derive_key(1, b"password123", None);
@@ -411,6 +452,7 @@ mod tests {
         assert_eq!(key1, key2);
     }
 
+    // Different user ids derive different keys from the same password.
     #[test]
     fn derive_key_varies_with_user() {
         let key1 = derive_key(1, b"password", None);
@@ -427,6 +469,8 @@ mod tests {
         assert_ne!(legacy_deterministic_salt(1), legacy_deterministic_salt(2));
     }
 
+    // With no salt file configured, derive_key must equal an explicit derivation
+    // using the legacy deterministic salt.
     #[test]
     fn derive_key_default_matches_legacy_salt() {
         // With no salt file configured, derive_key must equal an explicit
@@ -437,6 +481,8 @@ mod tests {
         assert_eq!(via_default, via_explicit);
     }
 
+    // Two deployments with the same password but different random salts
+    // derive different keys, while the same salt reproduces the same key.
     #[test]
     fn different_salts_diverge_same_password() {
         // The core of the fix: two deployments with the same password but
@@ -449,6 +495,7 @@ mod tests {
         assert_eq!(key_a, key_a2);
     }
 
+    // init_kdf_salt_file creates a readable salt and is idempotent on a second call.
     #[test]
     fn init_kdf_salt_file_creates_idempotent_readable_salt() {
         let path = std::env::temp_dir().join(format!("cred-kdf-test-{}.salt", std::process::id()));
@@ -468,6 +515,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    // read_salt_file returns None for non-hex content or hex of the wrong length.
     #[test]
     fn read_salt_file_rejects_bad_input() {
         let path = std::env::temp_dir().join(format!("cred-kdf-bad-{}.salt", std::process::id()));
@@ -478,6 +526,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    // Different passwords derive different keys for the same user id.
     #[test]
     fn derive_key_varies_with_password() {
         let key1 = derive_key(1, b"password1", None);
@@ -485,6 +534,7 @@ mod tests {
         assert_ne!(key1, key2);
     }
 
+    // Supplying a YubiKey HMAC response changes the derived key vs. no response.
     #[test]
     fn derive_key_varies_with_yubikey() {
         let key1 = derive_key(1, b"password", None);
@@ -492,6 +542,7 @@ mod tests {
         assert_ne!(key1, key2);
     }
 
+    // A SecretData::ApiKey encrypted and decrypted round-trips with all fields intact.
     #[test]
     fn encrypt_decrypt_roundtrip() {
         let key = derive_key(1, b"test-password", None);
@@ -518,6 +569,7 @@ mod tests {
         }
     }
 
+    // Decrypting a secret with a different key than it was encrypted with must fail.
     #[test]
     fn wrong_key_fails_decryption() {
         let key1 = derive_key(1, b"correct-password", None);
@@ -531,6 +583,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Decrypting a secret with the wrong nonce must fail.
     #[test]
     fn wrong_nonce_fails_decryption() {
         let key = derive_key(1, b"password", None);
@@ -544,6 +597,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // hash_key produces a deterministic 64-char hex SHA-256 digest.
     #[test]
     fn hash_key_consistent() {
         let key = b"test-key-data";
@@ -553,6 +607,7 @@ mod tests {
         assert_eq!(hash1.len(), 64); // SHA-256 hex = 64 chars
     }
 
+    // The deprecated legacy KDF is deterministic for the same HMAC response.
     #[allow(deprecated)]
     #[test]
     fn derive_key_legacy_deterministic() {
@@ -562,6 +617,7 @@ mod tests {
         assert_eq!(key1, key2);
     }
 
+    // The legacy KDF and the new KDF derive different keys for the same input.
     #[allow(deprecated)]
     #[test]
     fn derive_key_legacy_differs_from_new() {
@@ -572,6 +628,7 @@ mod tests {
         assert_ne!(legacy, *new);
     }
 
+    // Raw plaintext bytes encrypted then decrypted round-trip exactly.
     #[test]
     fn encrypt_decrypt_raw_roundtrip() {
         let key = generate_random_key();
@@ -582,6 +639,7 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    // Decrypting raw ciphertext with a different key than it was encrypted with must fail.
     #[test]
     fn encrypt_decrypt_raw_wrong_key_fails() {
         let key1 = generate_random_key();
@@ -593,6 +651,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // Ciphertext shorter than the nonce+tag overhead must be rejected, not panic.
     #[test]
     fn decrypt_too_short_fails() {
         let key = generate_random_key();
@@ -601,6 +660,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // A passphrase-encrypted recovery blob decrypts back to the original HMAC secret.
     #[test]
     fn encrypt_recovery_decrypt_recovery_roundtrip() {
         let passphrase = "correct-horse-battery-staple";
@@ -611,6 +671,7 @@ mod tests {
         assert_eq!(decrypted, hmac_secret);
     }
 
+    // Decrypting a recovery blob with the wrong passphrase must fail.
     #[test]
     fn decrypt_recovery_wrong_passphrase_fails() {
         let hmac_secret = b"20-byte-hmac-secret!";
@@ -620,12 +681,14 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // generate_hmac_secret always produces exactly 20 bytes.
     #[test]
     fn generate_hmac_secret_length() {
         let secret = generate_hmac_secret();
         assert_eq!(secret.len(), 20);
     }
 
+    // Two successive calls to generate_hmac_secret must not produce the same bytes.
     #[test]
     fn generate_hmac_secret_random() {
         let s1 = generate_hmac_secret();
@@ -634,6 +697,7 @@ mod tests {
         assert_ne!(s1, s2);
     }
 
+    // Flipping a byte in the ciphertext portion must fail AEAD decryption.
     #[test]
     fn tamper_detection_ciphertext_byte_flip() {
         let key = generate_random_key();
@@ -650,6 +714,7 @@ mod tests {
         );
     }
 
+    // Flipping a byte in the nonce portion must fail AEAD decryption.
     #[test]
     fn tamper_detection_nonce_byte_flip() {
         let key = generate_random_key();
@@ -666,6 +731,7 @@ mod tests {
         );
     }
 
+    // An empty plaintext still encrypts and decrypts back to an empty slice.
     #[test]
     fn zero_length_plaintext_roundtrip() {
         let key = generate_random_key();
@@ -676,6 +742,7 @@ mod tests {
         assert_eq!(decrypted, plaintext);
     }
 
+    // Deriving a key from the same passphrase and salt twice yields the same key.
     #[test]
     fn derive_key_from_passphrase_deterministic() {
         let salt = [0x42u8; SALT_SIZE];
@@ -684,6 +751,7 @@ mod tests {
         assert_eq!(key1, key2);
     }
 
+    // A different salt derives a different key from the same passphrase.
     #[test]
     fn derive_key_from_passphrase_differs_with_different_salt() {
         let salt1 = [0x11u8; SALT_SIZE];

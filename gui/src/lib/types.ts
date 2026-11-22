@@ -323,6 +323,9 @@ export interface GraphData {
   edges: GraphEdge[];
   node_count: number;
   edge_count: number;
+  candidate_node_count?: number;
+  connected_view?: boolean;
+  full_view?: boolean;
 }
 
 // Access level an instance grant conveys over an owner's shard.
@@ -374,5 +377,26 @@ export interface AdminSpace {
   owner_username: string | null;
   name: string;
   description: string | null;
+  created_at: string;
+}
+
+// Represents one date bucket in the timeline calendar aggregation.
+export interface CalendarBucket {
+  bucket: string;
+  count: number;
+}
+
+// Represents one music track exposed by the server music manifest.
+export interface Track {
+  src: string;
+  name: string;
+}
+
+// Represents one pending memory awaiting inbox review.
+export interface InboxItem {
+  id: number;
+  content: string;
+  category: string;
+  source: string;
   created_at: string;
 }

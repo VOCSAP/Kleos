@@ -140,6 +140,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::brain::router())
         .merge(routes::context::router())
         .merge(routes::inbox::router())
+        .merge(routes::attention::router())
         .merge(routes::ingestion::router())
         .merge(routes::jobs::router())
         .merge(routes::pack::router())
@@ -150,6 +151,7 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::forge::router())
         .merge(routes::gate::router())
         .merge(routes::supervisor::router())
+        .merge(routes::claude_hooks::router())
         .merge(routes::growth::router())
         .merge(routes::sessions::router())
         .merge(routes::agents::router())
@@ -172,7 +174,8 @@ fn merge_api_routes() -> Router<AppState> {
         .merge(routes::policy::router())
         .merge(routes::users::router())
         .merge(routes::mcp_schema::router())
-        .merge(routes::mcp_tokens::router());
+        .merge(routes::mcp_tokens::router())
+        .merge(routes::toolbox::router());
 
     // Frameshift growth routes ship behind a feature gate (default off). When
     // disabled, `/frameshift-growth/*` is never mounted and returns 404.
@@ -231,10 +234,9 @@ pub fn build_router(state: AppState) -> Router {
     // Metrics endpoint is unauthenticated (for Prometheus scraping)
     let metrics_routes = crate::middleware::metrics::router();
 
-    // Public routes served without auth -- the MCP schema endpoint lets
-    // external proxies discover tool definitions at startup. The broca
-    // ingest endpoint is also public: it receives Axon webhooks and is
-    // protected at the network layer rather than with bearer tokens.
+    // Public routes served without auth. The MCP schema endpoint lets external
+    // proxies discover tool definitions at startup, and the Broca dashboard is
+    // a static shell whose data requests still use authenticated API routes.
     let public_routes = routes::mcp_schema::public_router().merge(routes::broca::ingest_router());
 
     Router::new()

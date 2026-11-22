@@ -1,0 +1,1 @@
+{"protocol":1,"entries":[{"service":"github","key":"api-key","type":"api_key"},{"service":"kleos","key":"api-key","type":"api_key"},{"service":"smtp","key":"api-key","type":"api_key"}]}

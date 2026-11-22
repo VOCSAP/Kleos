@@ -1,5 +1,7 @@
 mod hook;
 mod import_plugins;
+mod listing;
+mod space;
 use hook::{run_hook, HookCommands};
 use kleos_client::{truncate, Client};
 use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
@@ -61,6 +63,18 @@ enum Commands {
         /// Source identifier
         #[arg(short, long)]
         source: Option<String>,
+        /// Patch 33: scope this memory to a named space (resolved or created on
+        /// the server). Defaults to $KLEOS_SPACE env var or the cwd-detected
+        /// project name. Use `--no-space` to force the cross-project bucket.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: bypass name resolution and use an explicit numeric id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket regardless
+        /// of the marker, env var or cwd-detected name.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
     },
     /// Search memories
     Search {
@@ -69,6 +83,19 @@ enum Commands {
         /// Maximum results
         #[arg(short, long, default_value = "10")]
         limit: usize,
+        /// Patch 33: limit the search to a named space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: limit the search to an explicit numeric space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
+        /// Patch 33: include the user's `default` space and legacy NULL rows
+        /// when filtering by a named space (defaults to server-side `true`).
+        #[arg(long)]
+        include_unscoped: Option<bool>,
     },
     /// Get context for a query (richer output than search)
     Context {
@@ -77,12 +104,29 @@ enum Commands {
         /// Maximum memories to return
         #[arg(short, long, default_value = "5")]
         limit: usize,
+        /// Patch 33: limit the context to a named space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: limit the context to an explicit numeric space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
+        /// Patch 33: include the user's `default` space and legacy NULL rows
+        /// when filtering by a named space (defaults to server-side `true`).
+        #[arg(long)]
+        include_unscoped: Option<bool>,
     },
     /// Recall a specific memory by ID
     Recall {
         /// Memory ID
         id: String,
     },
+    /// Patch 33: spaces management subcommands (resolve current space,
+    /// list, ensure-by-name).
+    #[command(subcommand)]
+    Space(SpaceCommands),
     /// Evaluate content through the guard system
     Guard {
         /// Content to evaluate
@@ -96,6 +140,19 @@ enum Commands {
         /// Offset
         #[arg(short, long, default_value = "0")]
         offset: usize,
+        /// Patch 33: limit the listing to a named space.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33: limit the listing to an explicit numeric space id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33: force the cross-project (`default`) bucket.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
+        /// Patch 33: include the user's `default` space and legacy NULL rows
+        /// when filtering by a named space (defaults to server-side `true`).
+        #[arg(long)]
+        include_unscoped: Option<bool>,
     },
     /// Delete a memory
     Delete {
@@ -125,6 +182,20 @@ enum Commands {
         /// Category to assign
         #[arg(short, long, default_value = "general")]
         category: String,
+        /// Patch 33.2: scope the ingested memories to a named space (resolved
+        /// or created on the server). Defaults to $KLEOS_SPACE env var or the
+        /// cwd-detected project name; with neither, the server uses the
+        /// `default` space (never unscoped). Use `--no-space` to force the
+        /// cross-project bucket.
+        #[arg(long)]
+        space: Option<String>,
+        /// Patch 33.2: bypass name resolution and use an explicit numeric id.
+        #[arg(long)]
+        space_id: Option<i64>,
+        /// Patch 33.2: force the cross-project (`default`) bucket regardless
+        /// of the marker, env var or cwd-detected name.
+        #[arg(long, default_value_t = false)]
+        no_space: bool,
     },
     /// Surface memories most in need of reinforcement for a topic
     RecallDue {
@@ -184,9 +255,6 @@ enum Commands {
     /// User account management (admin-only, multi-user instances)
     #[command(subcommand)]
     User(UserCommands),
-    /// Enrollment invite management (generate one-time tokens for FIDO2 key registration)
-    #[command(subcommand)]
-    Invite(InviteCommands),
     /// Artifact storage management
     #[command(subcommand)]
     Artifact(ArtifactCommands),
@@ -466,11 +534,39 @@ enum ForgeCommands {
     },
 }
 
+/// Patch 33 -- subcommands for `kleos-cli space`.
+#[derive(Subcommand)]
+enum SpaceCommands {
+    /// Print the project's resolved space name (marker > git > cwd
+    /// basename, normalized). Stdout-only, no network call. Used by
+    /// the parity test that compares Rust vs bash resolution.
+    Resolve,
+    /// List spaces owned by the authenticated user.
+    List,
+    /// Ensure a space with the given name exists, creating it if needed,
+    /// then print its numeric id on stdout.
+    Ensure {
+        /// Space name (will be normalized server-side).
+        name: String,
+    },
+}
+
 /// Subcommands for `kleos-cli admin` -- long-running admin operations.
 #[derive(Subcommand)]
 enum AdminCommands {
     /// Backfill missing primary + chunk embeddings across all tenants. Long-running.
     BackfillChunks,
+    /// Backfill associative ('similarity') links for unlinked memories across all
+    /// tenants by nearest-neighbour search. Restores graph connectivity lost to a
+    /// regression. Long-running. Use --dry-run first to preview counts.
+    BackfillLinks {
+        /// Compute how many links WOULD be created without writing any.
+        #[arg(long)]
+        dry_run: bool,
+        /// Max unlinked memories to process per tenant (throttle). Default: 100000.
+        #[arg(long, default_value_t = 100_000)]
+        limit: usize,
+    },
     /// Rebuild the FTS5 index on every tenant DB. Cheap.
     RebuildFts,
     /// Rebuild the Lance ANN index (IVF_HNSW_PQ) over current vectors.
@@ -611,20 +707,6 @@ enum UserCommands {
         /// Include deactivated users in the output
         #[arg(long)]
         include_inactive: bool,
-    },
-}
-
-/// Subcommands for `kleos-cli invite` -- one-time enrollment tokens.
-#[derive(Subcommand)]
-enum InviteCommands {
-    /// Generate a one-time enrollment invite for a user
-    Create {
-        /// Target user ID who will consume this invite
-        #[arg(long)]
-        user_id: i64,
-        /// Auth method (defaults to "fido2")
-        #[arg(long, default_value = "fido2")]
-        method: String,
     },
 }
 
@@ -1046,6 +1128,12 @@ enum HandoffCommands {
     Dump {
         #[arg(long)]
         project: Option<String>,
+        /// Logical stream used to group related standalone sessions.
+        #[arg(long)]
+        workstream: Option<String>,
+        /// Human-readable session label shown during candidate selection.
+        #[arg(long)]
+        title: Option<String>,
         #[arg(long)]
         branch: Option<String>,
         #[arg(long)]
@@ -1065,8 +1153,15 @@ enum HandoffCommands {
     },
     /// Get latest handoff(s) with filters
     Restore {
+        /// Exact handoff id to restore without inference.
+        #[arg(long)]
+        id: Option<i64>,
         #[arg(long)]
         project: Option<String>,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        workstream: Option<String>,
         #[arg(long)]
         agent: Option<String>,
         #[arg(long, name = "type")]
@@ -1111,9 +1206,26 @@ enum HandoffCommands {
         #[arg(long)]
         project: Option<String>,
         #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        workstream: Option<String>,
+        #[arg(long)]
         agent: Option<String>,
         #[arg(long, name = "type")]
         handoff_type: Option<String>,
+    },
+    /// List the newest checkpoint for each stable session identity.
+    Candidates {
+        #[arg(long, default_value = "20")]
+        limit: i64,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        workstream: Option<String>,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        since: Option<String>,
     },
     /// Full-text search across handoff content
     Search {
@@ -1262,6 +1374,9 @@ async fn main() {
             importance,
             tags,
             source,
+            space,
+            space_id,
+            no_space,
         } => {
             let tags_list: Vec<String> = tags
                 .as_deref()
@@ -1286,6 +1401,14 @@ async fn main() {
                 body["source"] = json!(src);
             }
 
+            // Patch 33 -- inject the resolved space (or none if no signal).
+            let (sid, sname) = space::determine_space_for_request(
+                *no_space,
+                space.as_deref(),
+                *space_id,
+            );
+            space::inject_space_into_body(&mut body, sid, sname);
+
             match client.post("/store", body).await {
                 Ok(v) => {
                     if let Some(existing_id) = value_as_string(v.get("existing_id")) {
@@ -1300,8 +1423,24 @@ async fn main() {
             }
         }
 
-        Commands::Search { query, limit } => {
-            let body = json!({ "query": query, "limit": limit });
+        Commands::Search {
+            query,
+            limit,
+            space,
+            space_id,
+            no_space,
+            include_unscoped,
+        } => {
+            let mut body = json!({ "query": query, "limit": limit });
+            let (sid, sname) = space::determine_space_for_request(
+                *no_space,
+                space.as_deref(),
+                *space_id,
+            );
+            space::inject_space_into_body(&mut body, sid, sname);
+            if let Some(iu) = include_unscoped {
+                body["include_unscoped"] = json!(iu);
+            }
             match client.post("/search", body).await {
                 Ok(v) => {
                     let results = v.as_array().cloned().unwrap_or_else(|| {
@@ -1349,8 +1488,24 @@ async fn main() {
             }
         }
 
-        Commands::Context { query, limit } => {
-            let body = json!({ "query": query, "context": query, "limit": limit });
+        Commands::Context {
+            query,
+            limit,
+            space,
+            space_id,
+            no_space,
+            include_unscoped,
+        } => {
+            let mut body = json!({ "query": query, "context": query, "limit": limit });
+            let (sid, sname) = space::determine_space_for_request(
+                *no_space,
+                space.as_deref(),
+                *space_id,
+            );
+            space::inject_space_into_body(&mut body, sid, sname);
+            if let Some(iu) = include_unscoped {
+                body["include_unscoped"] = json!(iu);
+            }
             match client.post("/recall", body).await {
                 Ok(v) => {
                     println!("{}", serde_json::to_string_pretty(&v).unwrap());
@@ -1444,11 +1599,39 @@ async fn main() {
             }
         }
 
-        Commands::List { limit, offset } => {
-            match client
-                .get(&format!("/list?limit={}&offset={}", limit, offset))
-                .await
-            {
+        Commands::List {
+            limit,
+            offset,
+            space,
+            space_id,
+            no_space,
+            include_unscoped,
+        } => {
+            // Patch 33 -- resolve the space, percent-encode the name into the
+            // query string. Numeric `space_id` and `include_unscoped` are
+            // appended likewise. None of these get appended when unresolved.
+            let (sid, sname) = space::determine_space_for_request(
+                *no_space,
+                space.as_deref(),
+                *space_id,
+            );
+            let mut url = format!(
+                "/list?limit={}&offset={}&exclude_superseded=true",
+                limit, offset
+            );
+            if let Some(id) = sid {
+                url.push_str(&format!("&space_id={}", id));
+            }
+            if let Some(name) = sname {
+                url.push_str(&format!(
+                    "&space={}",
+                    utf8_percent_encode(&name, NON_ALPHANUMERIC)
+                ));
+            }
+            if let Some(iu) = include_unscoped {
+                url.push_str(&format!("&include_unscoped={}", iu));
+            }
+            match client.get(&url).await {
                 Ok(v) => {
                     let items = v.as_array().cloned().unwrap_or_else(|| {
                         v.get("results")
@@ -1456,6 +1639,7 @@ async fn main() {
                             .cloned()
                             .unwrap_or_default()
                     });
+                    let items = listing::live_rows(items);
                     if items.is_empty() {
                         println!("No memories.");
                     }
@@ -1494,8 +1678,13 @@ async fn main() {
             mode,
             source,
             category,
+            space,
+            space_id,
+            no_space,
         } => {
-            handle_ingest(&client, text, file, mode, source, category).await;
+            let target_space =
+                space::determine_space_for_request(*no_space, space.as_deref(), *space_id);
+            handle_ingest(&client, text, file, mode, source, category, target_space).await;
         }
 
         Commands::Health => match client.get("/health").await {
@@ -1900,10 +2089,6 @@ async fn main() {
             handle_user_command(&client, user_cmd).await;
         }
 
-        Commands::Invite(invite_cmd) => {
-            handle_invite_command(&client, invite_cmd).await;
-        }
-
         Commands::Artifact(artifact_cmd) => {
             handle_artifact_command(&client, artifact_cmd).await;
         }
@@ -1912,8 +2097,68 @@ async fn main() {
             handle_admin_command(&client, admin_cmd).await;
         }
 
+        // Patch 33 -- spaces management subcommands.
+        Commands::Space(space_cmd) => {
+            handle_space_command(&client, space_cmd).await;
+        }
+
         Commands::Forge(forge_cmd) => {
             handle_forge_command(&client, forge_cmd).await;
+        }
+    }
+}
+
+/// Patch 33 -- dispatcher for `kleos-cli space <subcommand>`.
+async fn handle_space_command(client: &Client, cmd: &SpaceCommands) {
+    match cmd {
+        SpaceCommands::Resolve => {
+            // No network. Mirror the bash helper: print the resolved
+            // project name to stdout. Used by the parity test.
+            let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+            match space::resolve_project_name(&cwd) {
+                Some(name) => println!("{}", name),
+                None => println!(),
+            }
+        }
+        SpaceCommands::List => match client.get("/spaces").await {
+            Ok(v) => {
+                let items = v.as_array().cloned().unwrap_or_else(|| {
+                    v.get("spaces")
+                        .and_then(|r| r.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                });
+                if items.is_empty() {
+                    println!("No spaces.");
+                }
+                for item in &items {
+                    let id = value_as_string(item.get("id")).unwrap_or_else(|| "?".to_string());
+                    let name = item.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                    let desc = item
+                        .get("description")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    if desc.is_empty() {
+                        println!("#{} {}", id, name);
+                    } else {
+                        println!("#{} {} -- {}", id, name, desc);
+                    }
+                }
+            }
+            Err(e) => eprintln!("Error: {}", e),
+        },
+        SpaceCommands::Ensure { name } => {
+            let body = json!({ "name": name });
+            match client.post("/spaces", body).await {
+                Ok(v) => {
+                    if let Some(id) = value_as_string(v.get("id")) {
+                        println!("{}", id);
+                    } else {
+                        println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                    }
+                }
+                Err(e) => eprintln!("Error: {}", e),
+            }
         }
     }
 }
@@ -1937,6 +2182,16 @@ async fn handle_admin_command(client: &Client, cmd: &AdminCommands) {
             {
                 Ok(v) => pretty(v),
                 Err(e) => err("backfill_chunks", e),
+            }
+        }
+        AdminCommands::BackfillLinks { dry_run, limit } => {
+            let path = format!("/admin/backfill_links?dry_run={dry_run}&limit={limit}");
+            match client
+                .post_with_timeout(&path, json!({}), long_timeout)
+                .await
+            {
+                Ok(v) => pretty(v),
+                Err(e) => err("backfill_links", e),
             }
         }
         AdminCommands::RebuildFts => {
@@ -2132,6 +2387,7 @@ async fn handle_ingest(
     mode: &str,
     source: &Option<String>,
     category: &str,
+    target_space: (Option<i64>, Option<String>),
 ) {
     // Prefer --file when given; fall back to --text; error otherwise.
     let (raw_bytes, is_binary, source_label) = match (file, text) {
@@ -2169,12 +2425,13 @@ async fn handle_ingest(
     if !is_binary {
         // Hot path: POST /ingest with the decoded string body.
         let text_body = String::from_utf8(raw_bytes).expect("utf8 verified above");
-        let body = json!({
+        let mut body = json!({
             "text": text_body,
             "mode": mode,
             "source": source_label,
             "category": category,
         });
+        space::inject_space_into_body(&mut body, target_space.0, target_space.1);
         match client.post("/ingest", body).await {
             Ok(v) => {
                 if let Some(id) = value_as_string(v.get("job_id")) {
@@ -2261,13 +2518,14 @@ async fn handle_ingest(
         }
     }
     let final_hash = format!("{:x}", full_hasher.finalize());
-    let complete_body = json!({
+    let mut complete_body = json!({
         "upload_id": upload_id,
         "total_chunks": total_chunks as i64,
         "final_sha256": final_hash,
         "mode": mode,
         "category": category,
     });
+    space::inject_space_into_body(&mut complete_body, target_space.0, target_space.1);
     match client.post("/ingest/upload/complete", complete_body).await {
         Ok(v) => {
             let memories = v
@@ -2827,6 +3085,18 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             )
                         };
                     let hash = sha256_hex(&content);
+                    // Refuse to write through an existing symlink or any
+                    // non-regular entry: a poisoned skill row could otherwise
+                    // redirect this write over an arbitrary user file.
+                    if let Ok(meta) = std::fs::symlink_metadata(&path) {
+                        if !meta.is_file() {
+                            eprintln!(
+                                "Refusing to write {}: existing path is not a regular file",
+                                path
+                            );
+                            return;
+                        }
+                    }
                     if let Err(e) = std::fs::write(&path, &content) {
                         eprintln!("Failed to write {}: {}", path, e);
                         return;
@@ -2861,7 +3131,10 @@ async fn handle_skill_command(client: &Client, cmd: &SkillCommands) {
                             // file that looks like a materialized agent (a .md
                             // with no traversal component) so a poisoned record
                             // cannot turn dematerialize into arbitrary deletion.
-                            if !is_safe_materialization_path(path) {
+                            if !is_safe_materialization_path(
+                                path,
+                                std::env::var("HOME").ok().as_deref(),
+                            ) {
                                 eprintln!(
                                     "Refusing to remove suspicious materialization path: {}",
                                     path
@@ -3132,10 +3405,11 @@ fn sanitize_download_name(server_name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// True when a server-supplied materialization path is safe to delete: it must
-/// be a `.md` file (what materialize writes) and contain no `..` traversal
-/// component. Guards dematerialize against a poisoned record pointing the
-/// removal at an arbitrary file.
-fn is_safe_materialization_path(path: &str) -> bool {
+/// be a `.md` file (what materialize writes), contain no `..` traversal
+/// component, and -- when absolute -- sit inside `~/.claude/`. Guards
+/// dematerialize against a poisoned record pointing the removal at an
+/// arbitrary file.
+fn is_safe_materialization_path(path: &str, home: Option<&str>) -> bool {
     let p = std::path::Path::new(path);
     let is_md = p
         .extension()
@@ -3144,7 +3418,16 @@ fn is_safe_materialization_path(path: &str) -> bool {
     let no_traversal = !p
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
-    is_md && no_traversal
+    // Absolute paths must sit inside ~/.claude/: target_path comes from the
+    // server, and an unconstrained absolute path from a poisoned record could
+    // point the dematerialize remove_file at any .md the user owns. Custom
+    // materialize dirs outside ~/.claude get a refusal and delete manually.
+    let in_allowed_root = if p.is_absolute() {
+        home.is_some_and(|h| p.starts_with(std::path::Path::new(h).join(".claude")))
+    } else {
+        true
+    };
+    is_md && no_traversal && in_allowed_root
 }
 
 /// Encodes a byte slice as lowercase hexadecimal.
@@ -3481,33 +3764,39 @@ async fn handle_cred_command(client: &Client, cmd: &CredCommands) {
     }
 }
 
-/// Detects the project name from git remote or directory name.
+/// Detects a project only inside a Git worktree, named like the space
+/// (`.kleos-space` marker, then Git root basename). Ordinary directory names
+/// are never promoted to projects.
 fn detect_project(dir: Option<&str>) -> Option<String> {
     let dir = dir
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let detected = detect_project_at_path(&dir)?;
+    std::env::var("SESSION_HANDOFF_PROJECT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or(Some(detected))
+}
 
-    if let Ok(val) = std::env::var("SESSION_HANDOFF_PROJECT") {
-        if !val.is_empty() {
-            return Some(val);
-        }
-    }
-
-    let output = std::process::Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(&dir)
+/// Detects a repository identity at an exact filesystem path and returns
+/// `None` when the path is not inside a Git worktree.
+fn detect_project_at_path(dir: &std::path::Path) -> Option<String> {
+    let root_output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(dir)
         .output()
         .ok()?;
-    if output.status.success() {
-        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let name = url.rsplit('/').next().unwrap_or(&url);
-        let name = name.strip_suffix(".git").unwrap_or(name);
-        if !name.is_empty() {
-            return Some(name.to_string());
-        }
+    if !root_output.status.success() {
+        return None;
     }
-
-    dir.file_name().map(|n| n.to_string_lossy().to_string())
+    if String::from_utf8_lossy(&root_output.stdout)
+        .trim()
+        .is_empty()
+    {
+        return None;
+    }
+    space::resolve_project_name(dir)
 }
 
 /// Detects the current git branch name.
@@ -3563,11 +3852,52 @@ fn detect_model() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Resolves the stable handoff session id from an explicit value or known
+/// agent environment variables.
+fn detect_session_id(explicit: Option<&String>) -> Option<String> {
+    explicit
+        .cloned()
+        .or_else(|| std::env::var("CODEX_THREAD_ID").ok())
+        .or_else(|| std::env::var("SESSION_ID").ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Resolves a logical workstream from an explicit value, environment, or
+/// repository project label.
+fn detect_workstream(explicit: Option<&String>, project: Option<&String>) -> Option<String> {
+    explicit
+        .cloned()
+        .or_else(|| std::env::var("SESSION_HANDOFF_WORKSTREAM").ok())
+        .or_else(|| project.cloned())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Returns whether restore is running outside Git without the stable session
+/// identity required to avoid selecting an unrelated standalone handoff.
+fn restore_requires_exact_session(in_git_worktree: bool, session_id: Option<&str>) -> bool {
+    !in_git_worktree && session_id.is_none()
+}
+
+/// Resolves dump scope exclusively from Git worktree detection so an explicit
+/// compatibility project label cannot turn a standalone session into a
+/// repository handoff.
+fn dump_scope(in_git_worktree: bool) -> &'static str {
+    if in_git_worktree {
+        "repository"
+    } else {
+        "standalone"
+    }
+}
+
 /// Dispatches session handoff subcommands (dump, restore, list, gc, etc.).
 async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
     match cmd {
         HandoffCommands::Dump {
             project,
+            workstream,
+            title,
             branch,
             agent,
             handoff_type,
@@ -3596,32 +3926,53 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             };
 
             let dir_str = dir.as_deref();
-            let project = project.clone().or_else(|| detect_project(dir_str));
+            let detected_project = detect_project(dir_str);
+            let in_git_worktree = detected_project.is_some();
+            let project = project.clone().or(detected_project);
             let branch = branch.clone().or_else(|| detect_branch(dir_str));
-
-            let Some(ref project) = project else {
-                eprintln!("Error: could not detect project. Use --project");
+            let scope = dump_scope(in_git_worktree);
+            let Some(workstream) = detect_workstream(workstream.as_ref(), project.as_ref()) else {
+                eprintln!("Error: standalone handoffs require --workstream");
                 std::process::exit(1);
             };
+            let session_id = detect_session_id(session.as_ref());
+            if scope == "standalone" && session_id.is_none() {
+                eprintln!(
+                    "Error: standalone handoffs require --session, SESSION_ID, or CODEX_THREAD_ID"
+                );
+                std::process::exit(1);
+            }
+            if scope == "standalone" && handoff_type.as_deref() == Some("mechanical") {
+                eprintln!("Error: mechanical handoffs require a Git worktree");
+                std::process::exit(1);
+            }
 
-            let body = json!({
-                "project": project,
+            let mut body = json!({
+                "scope": scope,
+                "workstream": workstream,
+                "title": title,
                 "branch": branch,
                 "directory": dir.clone().or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string())),
                 "agent": agent.clone().unwrap_or_else(detect_agent),
                 "type": handoff_type.clone().unwrap_or_else(|| "manual".to_string()),
                 "content": content_str,
-                "session_id": session.clone().or_else(|| std::env::var("SESSION_ID").ok()),
+                "session_id": session_id,
                 "model": model.clone().or_else(detect_model),
                 "host": host.clone().unwrap_or_else(detect_host),
             });
+            if let Some(ref project) = project {
+                body["project"] = json!(project);
+            }
 
             match client.post("/handoffs", body).await {
                 Ok(v) => {
                     if v.get("skipped").and_then(|s| s.as_bool()).unwrap_or(false) {
-                        eprintln!("Skipped duplicate handoff for '{}'", project);
+                        eprintln!("Skipped duplicate handoff for '{}'", workstream);
                     } else if let Some(id) = v.get("id") {
-                        println!("Stored handoff #{} (project={})", id, project);
+                        println!(
+                            "Stored handoff #{} (scope={}, workstream={})",
+                            id, scope, workstream
+                        );
                     } else {
                         println!("{}", serde_json::to_string_pretty(&v).unwrap());
                     }
@@ -3631,7 +3982,10 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         }
 
         HandoffCommands::Restore {
+            id,
             project,
+            scope,
+            workstream,
             agent,
             handoff_type,
             model,
@@ -3640,10 +3994,43 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             limit,
             dir,
         } => {
-            let project = project.clone().or_else(|| detect_project(dir.as_deref()));
+            if let Some(id) = id {
+                match client.get(&format!("/handoffs/{id}")).await {
+                    Ok(value) => {
+                        if let Some(content) = value.get("content").and_then(|c| c.as_str()) {
+                            println!("{}", content);
+                        } else {
+                            println!("{}", serde_json::to_string_pretty(&value).unwrap());
+                        }
+                    }
+                    Err(error) => eprintln!("Error: {}", error),
+                }
+                return;
+            }
+
+            let detected_project = detect_project(dir.as_deref());
+            let in_git_worktree = detected_project.is_some();
+            let project = project.clone().or(detected_project);
+            let session_id = detect_session_id(session.as_ref());
+            if restore_requires_exact_session(in_git_worktree, session_id.as_deref()) {
+                eprintln!(
+                    "Error: standalone restore requires --id or a stable --session. Use `kleos-cli handoff candidates` to choose one."
+                );
+                std::process::exit(1);
+            }
+            let workstream = detect_workstream(workstream.as_ref(), project.as_ref());
             let mut params: Vec<(&str, String)> = Vec::new();
             if let Some(ref p) = project {
                 params.push(("project", p.clone()));
+            }
+            if let Some(value) = scope
+                .clone()
+                .or_else(|| project.is_none().then(|| "standalone".to_string()))
+            {
+                params.push(("scope", value));
+            }
+            if let Some(ref value) = workstream {
+                params.push(("workstream", value.clone()));
             }
             if let Some(ref a) = agent {
                 params.push(("agent", a.clone()));
@@ -3654,7 +4041,7 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             if let Some(ref m) = model {
                 params.push(("model", m.clone()));
             }
-            if let Some(ref s) = session {
+            if let Some(ref s) = session_id {
                 params.push(("session_id", s.clone()));
             }
             if let Some(ref s) = since {
@@ -3690,11 +4077,16 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
 
         HandoffCommands::Latest { project, dir } => {
             let project = project.clone().or_else(|| detect_project(dir.as_deref()));
-            let query = if let Some(ref p) = project {
-                format!("?project={}", utf8_percent_encode(p, NON_ALPHANUMERIC))
-            } else {
-                String::new()
+            let Some(ref project) = project else {
+                eprintln!(
+                    "Error: latest requires a Git project. For standalone sessions use `handoff restore --session ...` or `handoff candidates`."
+                );
+                std::process::exit(1);
             };
+            let query = format!(
+                "?project={}",
+                utf8_percent_encode(project, NON_ALPHANUMERIC)
+            );
 
             match client.get(&format!("/handoffs/latest{}", query)).await {
                 Ok(v) => {
@@ -3722,7 +4114,14 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                     .to_string_lossy()
                     .to_string()
             });
-            let project = project.clone().or_else(|| detect_project(Some(&work_dir)));
+            let detected_project = detect_project(Some(&work_dir));
+            if detected_project.is_none() {
+                eprintln!(
+                    "Error: mechanical handoffs require a Git worktree. Use `handoff dump --workstream ...` for standalone sessions."
+                );
+                std::process::exit(1);
+            }
+            let project = project.clone().or(detected_project);
 
             let Some(ref project) = project else {
                 eprintln!("Error: could not detect project. Use --project");
@@ -3818,12 +4217,14 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
 
             let body = json!({
                 "project": project,
+                "scope": "repository",
+                "workstream": project,
                 "branch": branch,
                 "directory": work_dir,
                 "agent": agent.clone().unwrap_or_else(detect_agent),
                 "type": "mechanical",
                 "content": content,
-                "session_id": session.clone().or_else(|| std::env::var("SESSION_ID").ok()),
+                "session_id": detect_session_id(session.as_ref()),
                 "model": model.clone().or_else(detect_model),
                 "host": host.clone().unwrap_or_else(detect_host),
                 "metadata": json!({"cwd": work_dir, "auto": true}),
@@ -3834,7 +4235,9 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
                     if v.get("skipped").and_then(|s| s.as_bool()).unwrap_or(false) {
                         eprintln!("Skipped duplicate mechanical handoff for '{}'", project);
                     } else if let Some(id) = v.get("id") {
-                        println!("Stored mechanical handoff #{} (project={})", id, project);
+                        // stderr, not stdout: Codex fails any hook whose stdout is non-JSON,
+                        // and this runs as a Stop hook. Matches the skip-path message above.
+                        eprintln!("Stored mechanical handoff #{} (project={})", id, project);
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
@@ -3844,12 +4247,20 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         HandoffCommands::List {
             limit,
             project,
+            scope,
+            workstream,
             agent,
             handoff_type,
         } => {
             let mut params: Vec<(&str, String)> = Vec::new();
             if let Some(ref p) = project {
                 params.push(("project", p.clone()));
+            }
+            if let Some(ref value) = scope {
+                params.push(("scope", value.clone()));
+            }
+            if let Some(ref value) = workstream {
+                params.push(("workstream", value.clone()));
             }
             if let Some(ref a) = agent {
                 params.push(("agent", a.clone()));
@@ -3868,37 +4279,53 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
             match client.get(&format!("/handoffs?{}", query)).await {
                 Ok(v) => {
                     if let Some(handoffs) = v.get("handoffs").and_then(|h| h.as_array()) {
-                        println!(
-                            "{:>6}  {:<20}  {:<20}  {:<12}  {:<10}  {:<8}  {:<10}  {:>6}",
-                            "ID", "Created", "Project", "Agent", "Type", "Host", "Session", "Size"
-                        );
-                        println!("{}", "-".repeat(100));
-                        for h in handoffs {
-                            let session_display = h
-                                .get("session_id")
-                                .and_then(|s| s.as_str())
-                                .map(|s| &s[..s.len().min(8)])
-                                .unwrap_or("");
-                            let content_len = h
-                                .get("content")
-                                .and_then(|c| c.as_str())
-                                .map(|c| c.len())
-                                .unwrap_or(0);
-                            println!(
-                                "{:>6}  {:<20}  {:<20}  {:<12}  {:<10}  {:<8}  {:<10}  {:>6}",
-                                h.get("id").and_then(|i| i.as_i64()).unwrap_or(0),
-                                h.get("created_at").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("project").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("agent").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("type").and_then(|s| s.as_str()).unwrap_or(""),
-                                h.get("host").and_then(|s| s.as_str()).unwrap_or(""),
-                                session_display,
-                                content_len,
-                            );
-                        }
+                        print_handoff_rows(handoffs, false);
                     }
                 }
                 Err(e) => eprintln!("Error: {}", e),
+            }
+        }
+
+        HandoffCommands::Candidates {
+            limit,
+            scope,
+            workstream,
+            agent,
+            since,
+        } => {
+            let mut params: Vec<(&str, String)> = vec![("limit", limit.to_string())];
+            if let Some(ref value) = scope {
+                params.push(("scope", value.clone()));
+            }
+            if let Some(ref value) = workstream {
+                params.push(("workstream", value.clone()));
+            }
+            if let Some(ref value) = agent {
+                params.push(("agent", value.clone()));
+            }
+            if let Some(ref value) = since {
+                params.push(("since", value.clone()));
+            }
+            let query = params
+                .iter()
+                .map(|(key, value)| {
+                    format!("{}={}", key, utf8_percent_encode(value, NON_ALPHANUMERIC))
+                })
+                .collect::<Vec<_>>()
+                .join("&");
+
+            match client.get(&format!("/handoffs/candidates?{query}")).await {
+                Ok(value) => {
+                    if let Some(handoffs) = value.get("handoffs").and_then(|rows| rows.as_array()) {
+                        if handoffs.is_empty() {
+                            eprintln!("No session handoff candidates found");
+                        } else {
+                            print_handoff_rows(handoffs, true);
+                            eprintln!("Restore exactly with: kleos-cli handoff restore --id <ID>");
+                        }
+                    }
+                }
+                Err(error) => eprintln!("Error: {}", error),
             }
         }
 
@@ -3973,6 +4400,44 @@ async fn handle_handoff_command(client: &Client, cmd: &HandoffCommands) {
         HandoffCommands::Atoms { cmd } => {
             handle_atom_command(client, cmd).await;
         }
+    }
+}
+
+/// Prints identity-first handoff rows so standalone candidates remain
+/// distinguishable even when they have no repository directory.
+fn print_handoff_rows(handoffs: &[Value], full_session: bool) {
+    println!("ID\tCreated\tScope\tWorkstream\tTitle\tSession\tType\tAgent");
+    for handoff in handoffs {
+        let session = handoff
+            .get("session_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let session_display = if full_session {
+            session.to_string()
+        } else {
+            session.chars().take(12).collect()
+        };
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            handoff.get("id").and_then(Value::as_i64).unwrap_or(0),
+            handoff
+                .get("created_at")
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+            handoff
+                .get("scope")
+                .and_then(Value::as_str)
+                .unwrap_or("legacy"),
+            handoff
+                .get("workstream")
+                .and_then(Value::as_str)
+                .or_else(|| handoff.get("project").and_then(Value::as_str))
+                .unwrap_or(""),
+            handoff.get("title").and_then(Value::as_str).unwrap_or(""),
+            session_display,
+            handoff.get("type").and_then(Value::as_str).unwrap_or(""),
+            handoff.get("agent").and_then(Value::as_str).unwrap_or(""),
+        );
     }
 }
 
@@ -4152,30 +4617,6 @@ async fn handle_user_command(client: &Client, cmd: &UserCommands) {
                         }
                         _ => println!("No users found."),
                     }
-                }
-                Err(e) => eprintln!("Error: {}", e),
-            }
-        }
-    }
-}
-
-/// Dispatches `kleos-cli invite` subcommands to the /identity-keys/invite API.
-async fn handle_invite_command(client: &Client, cmd: &InviteCommands) {
-    match cmd {
-        InviteCommands::Create { user_id, method } => {
-            let body = json!({ "user_id": user_id, "method": method });
-            match client.post("/identity-keys/invite", body).await {
-                Ok(v) => {
-                    let token = v.get("token").and_then(|s| s.as_str()).unwrap_or("?");
-                    let uid = v.get("user_id").and_then(|i| i.as_i64()).unwrap_or(0);
-                    let expires = v.get("expires_at").and_then(|s| s.as_str()).unwrap_or("?");
-                    // The raw token is displayed exactly once. Copy it now.
-                    println!("Enrollment invite created for user #{}:", uid);
-                    println!("  Token:   {}", token);
-                    println!("  Method:  {}", method);
-                    println!("  Expires: {}", expires);
-                    println!();
-                    println!("This token will not be shown again.");
                 }
                 Err(e) => eprintln!("Error: {}", e),
             }
@@ -4777,7 +5218,19 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
                     if s.trim().is_empty() {
                         None
                     } else {
-                        serde_json::from_str::<Vec<String>>(&s).ok()
+                        match serde_json::from_str::<Vec<String>>(&s) {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                // Surface malformed rows instead of silently
+                                // rendering them as empty lists.
+                                eprintln!(
+                                    "warning: malformed JSON array in spec row ({}): {}",
+                                    e,
+                                    s.chars().take(80).collect::<String>()
+                                );
+                                None
+                            }
+                        }
                     }
                 })
                 .unwrap_or_default()
@@ -4941,22 +5394,38 @@ async fn handle_forge_command(client: &Client, cmd: &ForgeCommands) {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_safe_materialization_path, resolve_credential_authority_url, sanitize_download_name,
+        detect_project_at_path, dump_scope, is_safe_materialization_path,
+        resolve_credential_authority_url, restore_requires_exact_session, sanitize_download_name,
     };
     use kleos_lib::config::DEFAULT_CREDENTIAL_AUTHORITY_URL;
 
-    /// Dematerialize only deletes .md files with no traversal component.
+    /// Dematerialize only deletes .md files with no traversal component,
+    /// and absolute paths only inside ~/.claude/.
     #[test]
     fn safe_materialization_path_guards_deletion() {
+        let home = Some("/home/u");
         assert!(is_safe_materialization_path(
-            "/home/u/.claude/agents/foo.md"
+            "/home/u/.claude/agents/foo.md",
+            home
         ));
-        assert!(is_safe_materialization_path("agents/bar.md"));
+        assert!(is_safe_materialization_path("agents/bar.md", home));
         // Wrong extension or traversal is refused.
-        assert!(!is_safe_materialization_path("/etc/cron.d/evil"));
-        assert!(!is_safe_materialization_path("/home/u/.bashrc"));
-        assert!(!is_safe_materialization_path("../../etc/passwd.md"));
-        assert!(!is_safe_materialization_path("agents/../../x.md"));
+        assert!(!is_safe_materialization_path("/etc/cron.d/evil", home));
+        assert!(!is_safe_materialization_path("/home/u/.bashrc", home));
+        assert!(!is_safe_materialization_path("../../etc/passwd.md", home));
+        assert!(!is_safe_materialization_path("agents/../../x.md", home));
+        // Absolute .md OUTSIDE ~/.claude is refused: a poisoned record must
+        // not aim deletion at arbitrary user documents.
+        assert!(!is_safe_materialization_path("/home/u/notes/real.md", home));
+        assert!(!is_safe_materialization_path(
+            "/home/other/.claude/agents/foo.md",
+            home
+        ));
+        // No HOME resolvable: refuse all absolute paths.
+        assert!(!is_safe_materialization_path(
+            "/home/u/.claude/agents/foo.md",
+            None
+        ));
     }
 
     /// A server-supplied filename is reduced to its final, CWD-relative component.
@@ -4992,6 +5461,101 @@ mod tests {
         assert!(sanitize_download_name(".").is_none());
         assert!(sanitize_download_name("..").is_none());
         assert!(sanitize_download_name("/").is_none());
+    }
+
+    /// Non-Git folders, including date-slug session directories, never become
+    /// inferred project identities.
+    #[test]
+    fn project_detection_rejects_ordinary_directories() {
+        let unique = format!(
+            "kleos-handoff-non-git-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&path).expect("create isolated test directory");
+        assert_eq!(detect_project_at_path(&path), None);
+        std::fs::remove_dir(&path).expect("remove isolated empty test directory");
+    }
+
+    /// A Git worktree resolves its project like its space: the marker wins,
+    /// otherwise the normalized Git root basename, whatever the remote name.
+    #[test]
+    fn project_detection_follows_space_resolution() {
+        let parent = std::env::temp_dir().join(format!(
+            "kleos-handoff-git-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let repo = parent.join("Kleos");
+        std::fs::create_dir_all(&repo).expect("create test repository");
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("run git")
+                .status;
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/Other-Name.git",
+        ]);
+        let nested = repo.join("src");
+        std::fs::create_dir(&nested).expect("create nested directory");
+
+        assert_eq!(detect_project_at_path(&nested).as_deref(), Some("kleos"));
+
+        std::fs::write(repo.join(".kleos-space"), "# comment\nVOCSAP Space\n")
+            .expect("write marker");
+        assert_eq!(
+            detect_project_at_path(&nested).as_deref(),
+            Some("vocsapspace")
+        );
+
+        std::fs::remove_dir_all(&parent).expect("remove test repository");
+    }
+
+    /// This repository resolves its handoff project to the same name as its
+    /// space.
+    #[test]
+    fn project_detection_matches_this_repository_space() {
+        let crate_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let project = detect_project_at_path(crate_dir);
+        assert!(project.is_some());
+        assert_eq!(project, crate::space::resolve_project_name(crate_dir));
+    }
+
+    /// A project label does not make a non-Git restore safe; callers outside
+    /// Git still need an exact handoff id or stable session id.
+    #[test]
+    fn standalone_restore_requires_stable_session() {
+        assert!(restore_requires_exact_session(false, None));
+        assert!(!restore_requires_exact_session(false, Some("thread-123")));
+        assert!(!restore_requires_exact_session(true, None));
+    }
+
+    /// Dump scope depends on Git detection, not an explicit compatibility
+    /// project label supplied while outside a worktree.
+    #[test]
+    fn standalone_dump_scope_cannot_be_overridden_by_project_label() {
+        let explicit_project = Some("legacy-project".to_string());
+        let detected_project: Option<String> = None;
+        let resolved_project = explicit_project.or(detected_project.clone());
+
+        assert_eq!(resolved_project.as_deref(), Some("legacy-project"));
+        assert_eq!(dump_scope(detected_project.is_some()), "standalone");
+        assert_eq!(dump_scope(true), "repository");
     }
 
     /// PHYLAXD_URL input wins over legacy CREDD_URL input.

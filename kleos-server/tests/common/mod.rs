@@ -58,6 +58,7 @@ pub async fn test_app() -> (Router, AppState) {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),
@@ -67,6 +68,7 @@ pub async fn test_app() -> (Router, AppState) {
         sessions: Arc::new(RwLock::new(HashMap::new())),
         eidolon_config: None,
         approval_notify: None,
+        supervisor_notifiers: Arc::new(RwLock::new(HashMap::new())),
         pending_approvals: Arc::new(Mutex::new(HashMap::new())),
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
@@ -77,7 +79,8 @@ pub async fn test_app() -> (Router, AppState) {
         background_tasks: Arc::new(Mutex::new(JoinSet::new())),
         fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
-        audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        // Detached audit channel: no worker in tests, events are dropped.
+        audit_tx: tokio::sync::mpsc::channel(64).0,
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),
@@ -121,6 +124,7 @@ pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
     let credd = Arc::new(CreddClient::from_config(&config));
     let state = AppState {
         db,
+        encryption_key: None,
         config: Arc::new(config),
         credd,
         embedder: Arc::new(RwLock::new(None)),
@@ -130,6 +134,7 @@ pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
         sessions: Arc::new(RwLock::new(HashMap::new())),
         eidolon_config: None,
         approval_notify: None,
+        supervisor_notifiers: Arc::new(RwLock::new(HashMap::new())),
         pending_approvals: Arc::new(Mutex::new(HashMap::new())),
         safe_mode: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         dreamer_stats: kleos_server::dreamer::new_stats_handle(),
@@ -140,7 +145,8 @@ pub async fn test_app_with_sharding() -> (Router, AppState, TempDir) {
         background_tasks: Arc::new(Mutex::new(JoinSet::new())),
         fact_extract_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         brain_absorb_sem: Arc::new(tokio::sync::Semaphore::new(64)),
-        audit_log_sem: Arc::new(tokio::sync::Semaphore::new(64)),
+        // Detached audit channel: no worker in tests, events are dropped.
+        audit_tx: tokio::sync::mpsc::channel(64).0,
         ingest_sem: Arc::new(tokio::sync::Semaphore::new(64)),
         replay_guard: Arc::new(ReplayGuard::new()),
         session_manager: Arc::new(SessionManager::new([0u8; 32])),

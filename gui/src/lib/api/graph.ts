@@ -5,12 +5,12 @@ import type { GraphData } from '$lib/types';
 // that only need a flat node list).
 export const getGraph = (max = 1500) => request<GraphData>(`/graph?max=${max}`);
 
-// Fetch the memory graph with relationship depth -- this is the form the
-// living-organism 3D graph uses. `depth` controls how far edge traversal walks
-// from seed nodes; without it the backend collapses most edges, which is why
-// the rebuilt graph rendered 0 edges. Mirrors the old GUI's getGraph(3, 1500).
-export const getMemoryGraph = (depth = 3, max = 1500) =>
-  request<GraphData>(`/graph?depth=${depth}&max=${max}`);
+// Fetch every active memory and real relationship for the full galaxy atlas.
+//
+// Rendering remains bounded by GPU level-of-detail in the view, but the data
+// request itself has no arbitrary client node ceiling and retains honest
+// disconnected components, including isolated memories.
+export const getMemoryGraph = () => request<GraphData>('/graph?full=true');
 
 // A detected memory community (cluster). `top_memories` lists representative
 // memory ids whose nodes inherit the community color/clustering force.
@@ -25,8 +25,7 @@ export interface CommunitiesResponse {
   count: number;
 }
 
-// Fetch community/cluster assignments used to color nodes and seed the
-// Fibonacci-sphere clustering forces.
+// Fetch community assignments used to group related nodes.
 export const getCommunities = () =>
   request<CommunitiesResponse>('/communities').catch(
     () => ({ communities: [], count: 0 }) as CommunitiesResponse
@@ -46,7 +45,7 @@ export interface GraphStats {
   };
 }
 
-// Fetch instance stats (db size + per-category counts) for the header/legend.
+// Fetch instance stats with database size and per-category counts.
 export const getStats = () => request<GraphStats>('/stats').catch(() => null);
 
 // A single linked-memory entry shown in the detail panel.

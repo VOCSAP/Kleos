@@ -6,15 +6,68 @@ use crate::sessions::scrub::scrub_message;
 use crate::{EngError, Result};
 use rusqlite::{params, OptionalExtension};
 
-const CONVERSATION_COLUMNS: &str = "id, agent, session_id, title, metadata, started_at, updated_at";
+fn rusqlite_to_eng_error(err: rusqlite::Error) -> EngError {
+    EngError::DatabaseMessage(err.to_string())
+}
+
+// Patch 33: space_id (migration v57) is included so handlers and search
+// surfaces can partition conversations by project the same way memories
+// are partitioned (cf. kleos_lib::space).
+const CONVERSATION_COLUMNS: &str =
+    "id, agent, session_id, title, metadata, started_at, updated_at, space_id";
 
 const CONVERSATION_LIST_COLUMNS: &str =
-    "c.id, c.agent, c.session_id, c.title, c.metadata, c.started_at, c.updated_at, \
+    "c.id, c.agent, c.session_id, c.title, c.metadata, c.started_at, c.updated_at, c.space_id, \
      (SELECT COUNT(*) FROM messages WHERE conversation_id = c.id) as message_count";
 
 const MESSAGE_COLUMNS: &str = "id, conversation_id, role, content, metadata, created_at";
 
-// --- Types ---
+/// Patch 33 -- compose the WHERE clause and bound params for the inclusive
+/// space filter used by `list_conversations` and `search_messages`. The
+/// `col` arg is the fully qualified column name (e.g. `c.space_id`) so the
+/// helper can be reused on different table aliases. Returns
+/// `(clause, params)` where `clause` starts with `WHERE ` when non-empty
+/// or is an empty string when no filtering applies.
+///
+/// Semantics matrix:
+/// | space_id      | include_unscoped | clause                              |
+/// |---------------|------------------|-------------------------------------|
+/// | None          | _                | "" (upstream behaviour)             |
+/// | Some(N)       | Some(true)       | scoped + default + legacy NULL      |
+/// | Some(N)       | Some(false)/None | scoped only                         |
+fn build_space_filter(
+    col: &str,
+    space_id: Option<i64>,
+    include_unscoped: Option<bool>,
+    user_id: i64,
+) -> (String, Vec<rusqlite::types::Value>) {
+    let Some(sid) = space_id else {
+        return (String::new(), Vec::new());
+    };
+    if matches!(include_unscoped, Some(true)) {
+        // Inclusive: named space + user's default (resolved via subquery) + legacy NULL.
+        let clause = format!(
+            "WHERE ({col} = ?1 \
+              OR {col} = (SELECT id FROM spaces WHERE user_id = ?2 \
+                          AND name = 'default' LIMIT 1) \
+              OR {col} IS NULL)"
+        );
+        (
+            clause,
+            vec![
+                rusqlite::types::Value::Integer(sid),
+                rusqlite::types::Value::Integer(user_id),
+            ],
+        )
+    } else {
+        let clause = format!("WHERE {col} = ?1");
+        (clause, vec![rusqlite::types::Value::Integer(sid)])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -25,6 +78,8 @@ pub struct Conversation {
     pub metadata: Option<String>,
     pub started_at: String,
     pub updated_at: String,
+    /// Patch 33 -- project scope (NULL for pre-v57 legacy rows).
+    pub space_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +91,8 @@ pub struct ConversationListItem {
     pub metadata: Option<String>,
     pub started_at: String,
     pub updated_at: String,
+    /// Patch 33 -- project scope (NULL for pre-v57 legacy rows).
+    pub space_id: Option<i64>,
     pub message_count: i64,
 }
 
@@ -67,6 +124,14 @@ pub struct CreateConversationRequest {
     pub session_id: Option<String>,
     pub title: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    /// Patch 33 -- numeric space id (resolved server-side from `space`
+    /// name or auto-defaulted via `space::normalize_space_input`).
+    #[serde(default)]
+    pub space_id: Option<i64>,
+    /// Patch 33 -- wire-only free-form space name (server resolves to
+    /// `space_id` before calling the library).
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +161,12 @@ pub struct BulkInsertRequest {
     pub title: Option<String>,
     pub metadata: Option<serde_json::Value>,
     pub messages: Vec<BulkMessageInput>,
+    /// Patch 33 -- numeric space id (resolved server-side).
+    #[serde(default)]
+    pub space_id: Option<i64>,
+    /// Patch 33 -- wire-only free-form space name.
+    #[serde(default)]
+    pub space: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,12 +176,56 @@ pub struct UpsertConversationRequest {
     pub title: Option<String>,
     pub metadata: Option<serde_json::Value>,
     pub messages: Option<Vec<BulkMessageInput>>,
+    /// Patch 33 -- numeric space id (resolved server-side).
+    #[serde(default)]
+    pub space_id: Option<i64>,
+    /// Patch 33 -- wire-only free-form space name.
+    #[serde(default)]
+    pub space: Option<String>,
+}
+
+/// Patch 49 Lot C: `SearchMessagesRequest` is deserialized directly as the
+/// JSON body of POST /messages/search (kleos-server/src/routes/conversations/
+/// mod.rs::search_msgs), so it is the HTTP boundary type for that route even
+/// though it lives in kleos-lib. Mirrors the fix applied to the
+/// kleos-server-side boundary structs: an absent `include_unscoped` must
+/// deserialize to the documented server-side default `Some(true)`, not
+/// `None` (which downstream treats as strict). An explicit
+/// `include_unscoped: false` still deserializes to `Some(false)`.
+fn default_include_unscoped() -> Option<bool> {
+    Some(true)
+}
+
+/// Patch 49 task 2: `#[serde(default = ...)]` alone only fires when the KEY
+/// is absent. `SearchMessagesRequest` is a JSON POST body (unlike the
+/// Query-extracted boundary structs), so an explicit `"include_unscoped":
+/// null` IS reachable here and would otherwise deserialize to `None`
+/// (treated as strict downstream). Collapses `null` into the same
+/// inclusive default as absent; an explicit `true`/`false` is unaffected.
+fn deserialize_include_unscoped<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.or_else(default_include_unscoped))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMessagesRequest {
     pub query: String,
     pub limit: Option<usize>,
+    /// Patch 33 -- limit the search to messages whose parent conversation
+    /// is in this space. None preserves upstream "no filter" behaviour.
+    #[serde(default)]
+    pub space_id: Option<i64>,
+    /// Patch 33 -- include the user's default space (and pre-v57 NULL
+    /// rows) when filtering by space_id. None falls back to strict.
+    #[serde(
+        default = "default_include_unscoped",
+        deserialize_with = "deserialize_include_unscoped"
+    )]
+    pub include_unscoped: Option<bool>,
 }
 
 // --- Row mappers ---
@@ -124,6 +239,9 @@ fn row_to_conversation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation
         metadata: row.get(4)?,
         started_at: row.get(5)?,
         updated_at: row.get(6)?,
+        // Patch 33 -- column added by tenant migration v57. Pre-v57 rows
+        // read as NULL until the legacy migration (cf. plan section 11).
+        space_id: row.get(7)?,
     })
 }
 
@@ -138,7 +256,9 @@ fn row_to_conversation_list_item(
         metadata: row.get(4)?,
         started_at: row.get(5)?,
         updated_at: row.get(6)?,
-        message_count: row.get(7)?,
+        // Patch 33 -- v57 column. message_count is shifted to index 8.
+        space_id: row.get(7)?,
+        message_count: row.get(8)?,
     })
 }
 
@@ -184,11 +304,17 @@ pub async fn create_conversation(
     let agent = req.agent.clone();
     let session_id = req.session_id.clone();
     let title = req.title.clone();
+    // Patch 33 -- the wire-only `space` field is resolved server-side
+    // (via `space::normalize_space_input`) before the handler calls us;
+    // we only persist the numeric `space_id`. Library callers that bypass
+    // the server can pre-fill `space_id` directly.
+    let space_id = req.space_id;
     let new_id: i64 = db
         .write(move |conn| {
             conn.execute(
-                "INSERT INTO conversations (agent, session_id, title, metadata, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![agent, session_id, title, meta_str, user_id],
+                "INSERT INTO conversations (agent, session_id, title, metadata, space_id, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![agent, session_id, title, meta_str, space_id, user_id],
             )
             ?;
             Ok(conn.last_insert_rowid())
@@ -238,21 +364,44 @@ pub async fn get_conversation_by_session(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id, limit))]
+#[tracing::instrument(skip(db), fields(user_id, limit, space_id, include_unscoped))]
 pub async fn list_conversations(
     db: &Database,
     user_id: i64,
     limit: usize,
+    // Patch 33 -- optional space partitioning. `None` preserves upstream
+    // behaviour (no space filter). Some(id) + include_unscoped=Some(true)
+    // expands to `space_id IN (?cur, ?default) OR space_id IS NULL`.
+    space_id: Option<i64>,
+    include_unscoped: Option<bool>,
 ) -> Result<Vec<ConversationListItem>> {
+    let (space_clause, mut params_vec) =
+        build_space_filter("c.space_id", space_id, include_unscoped, user_id);
+    // Always scope to the caller's own conversations (single-DB owner
+    // isolation), in addition to the optional Patch 33 space filter.
+    let user_idx = params_vec.len() + 1;
+    let where_clause = if space_clause.is_empty() {
+        format!("WHERE c.user_id = ?{user_idx}")
+    } else {
+        format!("{space_clause} AND c.user_id = ?{user_idx}")
+    };
+    params_vec.push(rusqlite::types::Value::Integer(user_id));
+    let limit_idx = params_vec.len() + 1;
     let sql = format!(
-        "SELECT {} FROM conversations c WHERE c.user_id = ?2 ORDER BY c.updated_at DESC LIMIT ?1",
-        CONVERSATION_LIST_COLUMNS
+        "SELECT {cols} FROM conversations c {where_clause} \
+         ORDER BY c.updated_at DESC LIMIT ?{limit_idx}",
+        cols = CONVERSATION_LIST_COLUMNS,
     );
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![limit as i64, user_id], |row| {
-            row_to_conversation_list_item(row)
-        })?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let mut all_params: Vec<rusqlite::types::Value> = params_vec;
+        all_params.push(rusqlite::types::Value::Integer(limit as i64));
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(all_params.iter().cloned()),
+                |row| row_to_conversation_list_item(row),
+            )
+            .map_err(rusqlite_to_eng_error)?;
         let mut convs = Vec::new();
         for row in rows {
             convs.push(row?);
@@ -262,23 +411,44 @@ pub async fn list_conversations(
     .await
 }
 
-#[tracing::instrument(skip(db), fields(user_id, agent = %agent, limit))]
+#[tracing::instrument(skip(db), fields(user_id, agent = %agent, limit, space_id, include_unscoped))]
 pub async fn list_conversations_by_agent(
     db: &Database,
     user_id: i64,
     agent: &str,
     limit: usize,
+    // Patch 33 -- optional space partitioning (cf. list_conversations).
+    space_id: Option<i64>,
+    include_unscoped: Option<bool>,
 ) -> Result<Vec<ConversationListItem>> {
     let agent = agent.to_string();
+    let (space_clause, mut params_vec) =
+        build_space_filter("c.space_id", space_id, include_unscoped, user_id);
+    let agent_idx = params_vec.len() + 1;
+    let user_idx = agent_idx + 1;
+    let limit_idx = user_idx + 1;
+    // Always scope to the caller's own conversations (single-DB owner
+    // isolation), in addition to the agent and optional Patch 33 space filter.
+    let where_clause = if space_clause.is_empty() {
+        format!("WHERE c.agent = ?{agent_idx} AND c.user_id = ?{user_idx}")
+    } else {
+        format!("{space_clause} AND c.agent = ?{agent_idx} AND c.user_id = ?{user_idx}")
+    };
     let sql = format!(
-        "SELECT {} FROM conversations c WHERE c.agent = ?1 AND c.user_id = ?3 ORDER BY c.updated_at DESC LIMIT ?2",
-        CONVERSATION_LIST_COLUMNS
+        "SELECT {cols} FROM conversations c {where_clause} \
+         ORDER BY c.updated_at DESC LIMIT ?{limit_idx}",
+        cols = CONVERSATION_LIST_COLUMNS,
     );
+    params_vec.push(rusqlite::types::Value::Text(agent));
+    params_vec.push(rusqlite::types::Value::Integer(user_id));
+    params_vec.push(rusqlite::types::Value::Integer(limit as i64));
     db.read(move |conn| {
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params![agent, limit as i64, user_id], |row| {
-            row_to_conversation_list_item(row)
-        })?;
+        let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params_vec.iter().cloned()), |row| {
+                row_to_conversation_list_item(row)
+            })
+            .map_err(rusqlite_to_eng_error)?;
         let mut convs = Vec::new();
         for row in rows {
             convs.push(row?);
@@ -426,7 +596,7 @@ pub async fn list_messages(
     .await
 }
 
-#[tracing::instrument(skip(db, req), fields(user_id, limit = ?req.limit))]
+#[tracing::instrument(skip(db, req), fields(user_id, limit = ?req.limit, space_id = ?req.space_id))]
 pub async fn search_messages(
     db: &Database,
     req: SearchMessagesRequest,
@@ -437,21 +607,46 @@ pub async fn search_messages(
     if sanitized.is_empty() {
         return Ok(vec![]);
     }
-    // Scope FTS hits to the caller's own conversations via the joined owner.
-    let sql = "SELECT m.id, m.conversation_id, m.role, m.content, m.metadata, m.created_at, \
+    // Patch 33 -- optional space filter on the parent conversation
+    // (FTS row -> message -> conversation). The filter expression is
+    // appended to the existing FTS WHERE.
+    let (space_clause, space_params) =
+        build_space_filter("c.space_id", req.space_id, req.include_unscoped, user_id);
+    // build_space_filter returns "WHERE ..." for non-empty filters; here we
+    // need an AND fragment because the FTS WHERE comes first.
+    let space_and = if space_clause.is_empty() {
+        String::new()
+    } else {
+        // Strip the leading "WHERE " and prefix with " AND ".
+        format!(" AND {}", space_clause.trim_start_matches("WHERE ").trim())
+    };
+    let query_idx = space_params.len() + 1;
+    // Always scope FTS hits to the caller's own conversations via the joined
+    // owner (single-DB owner isolation), in addition to the space filter.
+    let user_idx = query_idx + 1;
+    let limit_idx = user_idx + 1;
+    let sql = format!(
+        "SELECT m.id, m.conversation_id, m.role, m.content, m.metadata, m.created_at, \
          c.agent, c.title as conv_title \
          FROM messages_fts f \
          JOIN messages m ON f.rowid = m.id \
          JOIN conversations c ON m.conversation_id = c.id \
-         WHERE messages_fts MATCH ?1 AND c.user_id = ?3 \
-         ORDER BY m.created_at DESC LIMIT ?2"
-        .to_string();
+         WHERE messages_fts MATCH ?{query_idx}{space_and} AND c.user_id = ?{user_idx} \
+         ORDER BY m.created_at DESC LIMIT ?{limit_idx}"
+    );
+    let mut all_params: Vec<rusqlite::types::Value> = space_params;
+    all_params.push(rusqlite::types::Value::Text(sanitized));
+    all_params.push(rusqlite::types::Value::Integer(user_id));
+    all_params.push(rusqlite::types::Value::Integer(limit as i64));
     match db
         .read(move |conn| {
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(params![sanitized, limit as i64, user_id], |row| {
-                row_to_message_search_result(row)
-            })?;
+            let mut stmt = conn.prepare(&sql).map_err(rusqlite_to_eng_error)?;
+            let rows = stmt
+                .query_map(
+                    rusqlite::params_from_iter(all_params.iter().cloned()),
+                    |row| row_to_message_search_result(row),
+                )
+                .map_err(rusqlite_to_eng_error)?;
             let mut results = Vec::new();
             for row in rows {
                 results.push(row?);
@@ -481,13 +676,17 @@ pub async fn bulk_insert_conversation(
     let agent = req.agent.clone();
     let session_id = req.session_id.clone();
     let title = req.title.clone();
+    // Patch 33 -- propagate space_id (resolved server-side from the
+    // wire-only `space` name via normalize_space_input). NULL is preserved
+    // when the caller is a library consumer that hasn't resolved.
+    let space_id = req.space_id;
     // INSERT ... RETURNING avoids the cross-connection last_insert_rowid race.
     let conv_id: i64 = db
         .write(move |conn| {
             Ok(conn.query_row(
-                "INSERT INTO conversations (agent, session_id, title, metadata, user_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-                params![agent, session_id, title, meta_str, user_id],
+                "INSERT INTO conversations (agent, session_id, title, metadata, space_id, user_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+                params![agent, session_id, title, meta_str, space_id, user_id],
                 |row| row.get(0),
             )?)
         })
@@ -535,7 +734,8 @@ pub async fn upsert_conversation(
             existing
         }
     } else {
-        // Create new
+        // Create new -- propagate Patch 33 space resolution from the
+        // upsert payload to the underlying create.
         create_conversation(
             db,
             CreateConversationRequest {
@@ -543,6 +743,8 @@ pub async fn upsert_conversation(
                 session_id: Some(req.session_id),
                 title: req.title,
                 metadata: req.metadata,
+                space_id: req.space_id,
+                space: req.space,
             },
             user_id,
         )
@@ -607,5 +809,25 @@ mod tests {
         let input = "normal conversation text";
         let result = apply_scrub(input, &["alpha-secret".to_string()]);
         assert_eq!(result, input);
+    }
+
+    // Patch 49 Lot C acceptance check: `SearchMessagesRequest` is deserialized as the JSON
+    // body of POST /messages/search (kleos-server/src/routes/conversations/mod.rs), so
+    // serde_json is the correct medium here (unlike the query-string structs in
+    // kleos-server, which use serde_urlencoded via axum's Query<T> extractor). An absent
+    // `include_unscoped` key must deserialize to the documented default `Some(true)`, while
+    // an explicit `false` must still deserialize to `Some(false)`.
+    #[test]
+    fn search_messages_request_include_unscoped_default_is_true_but_explicit_false_stays_false() {
+        let absent: SearchMessagesRequest = serde_json::from_str(r#"{"query": "x"}"#).unwrap();
+        assert_eq!(absent.include_unscoped, Some(true));
+
+        let explicit_false: SearchMessagesRequest =
+            serde_json::from_str(r#"{"query": "x", "include_unscoped": false}"#).unwrap();
+        assert_eq!(explicit_false.include_unscoped, Some(false));
+
+        let explicit_true: SearchMessagesRequest =
+            serde_json::from_str(r#"{"query": "x", "include_unscoped": true}"#).unwrap();
+        assert_eq!(explicit_true.include_unscoped, Some(true));
     }
 }

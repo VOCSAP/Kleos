@@ -5,17 +5,35 @@ use axum::{
     Json, Router,
 };
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use crate::error::AppError;
 use crate::extractors::{Auth, ResolvedDb};
 use crate::state::AppState;
 use kleos_lib::approvals::{
-    create_approval, decide, expire_stale, get_approval, list_pending, CreateApprovalRequest,
-    DecideRequest,
+    create_approval, decide, expire_stale, get_approval, list_pending, read_gate_id_for_approval,
+    ApprovalDecision, CreateApprovalRequest, DecideRequest,
 };
+use kleos_lib::gate::respond_to_gate;
 
 mod types;
 use types::{ApprovalResponse, DecideBody};
+
+/// Patch 20c (2026-05-22): default upper bound on how long
+/// `/approvals/pending` keeps the long-poll connection open before
+/// returning the (possibly empty) list. Override via
+/// `KLEOS_APPROVALS_LONGPOLL_TIMEOUT_SECS`. Mirrors the supervisor
+/// counterpart so a single client-side `KLEOS_HTTP_LONGPOLL_TIMEOUT_SECS`
+/// covers both endpoints with the same `client > server` margin.
+const DEFAULT_APPROVALS_LONGPOLL_TIMEOUT_SECS: u64 = 30;
+
+fn approvals_longpoll_timeout() -> Duration {
+    let secs = std::env::var("KLEOS_APPROVALS_LONGPOLL_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_APPROVALS_LONGPOLL_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -53,21 +71,80 @@ async fn get_handler(
     Ok(Json(approval.into()))
 }
 
+/// GET /approvals/pending
+/// Returns approvals waiting for a human decision for the authenticated
+/// user. Patch 20c turns this into a long-poll proper: when the user's
+/// queue is empty, the handler subscribes to `state.approval_notify`
+/// (signalled by `create_handler` and `decide_handler`) and awaits either
+/// a notification or the configured deadline before returning. This
+/// removes the previous hot-loop pattern where the TUI re-polled the
+/// endpoint every few hundred milliseconds, blowing past the per-IP
+/// pre-auth rate limit (20/min).
+///
+/// The notify channel is global (shared with `/gate/check` and other
+/// approval flows), so a wake-up may fire for an event belonging to
+/// another tenant. That is harmless: the handler re-queries the DB
+/// filtered by `auth.user_id` and returns empty if nothing matches,
+/// then re-enters the await. Cost is one cheap DB query per spurious
+/// wake-up, well below the cost of busy-polling.
 async fn list_pending_handler(
+    State(state): State<AppState>,
     ResolvedDb(db): ResolvedDb,
     Auth(auth): Auth,
 ) -> Result<Json<Value>, AppError> {
-    // First expire any stale approvals for this user
-    let expired_count = expire_stale(&db).await?;
+    // Subscribe before the first claim attempt so a create racing in
+    // between the claim and the await still wakes us up.
+    let mut rx = state.approval_notify.as_ref().map(|tx| {
+        let mut rx = tx.subscribe();
+        rx.mark_unchanged();
+        rx
+    });
 
-    let approvals = list_pending(&db, auth.effective_user_id()).await?;
-    let responses: Vec<ApprovalResponse> = approvals.into_iter().map(Into::into).collect();
+    let deadline = tokio::time::Instant::now() + approvals_longpoll_timeout();
 
-    Ok(Json(json!({
-        "approvals": responses,
-        "count": responses.len(),
-        "expired_count": expired_count,
-    })))
+    loop {
+        // Expire stale approvals on every iteration; the work is cheap
+        // and keeps the table from accumulating zombies across long-polls.
+        let expired_count = expire_stale(&db).await?;
+        // Use effective_user_id() so an act-as caller (instance sharing #73)
+        // sees the owner's pending approvals, aligning with upstream.
+        let approvals = list_pending(&db, auth.effective_user_id()).await?;
+        let responses: Vec<ApprovalResponse> = approvals.into_iter().map(Into::into).collect();
+        let count = responses.len();
+
+        if count > 0 {
+            return Ok(Json(json!({
+                "approvals": responses,
+                "count": count,
+                "expired_count": expired_count,
+            })));
+        }
+
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Ok(Json(json!({
+                "approvals": Vec::<ApprovalResponse>::new(),
+                "count": 0,
+                "expired_count": expired_count,
+            })));
+        }
+
+        let remaining = deadline - now;
+        match rx.as_mut() {
+            Some(rx_inner) => {
+                // Either a signal arrives or the per-iter timeout elapses;
+                // either way we loop and re-check the DB. A dropped
+                // sender (`Err`) is treated like a timeout: we let the
+                // outer deadline check terminate us on the next iter.
+                let _ = tokio::time::timeout(remaining, rx_inner.changed()).await;
+            }
+            None => {
+                // No notify channel configured (degenerate test setup);
+                // fall back to a short sleep so we do not spin.
+                tokio::time::sleep(remaining.min(Duration::from_secs(1))).await;
+            }
+        }
+    }
 }
 
 async fn decide_handler(
@@ -79,11 +156,55 @@ async fn decide_handler(
 ) -> Result<Json<ApprovalResponse>, AppError> {
     let req = DecideRequest {
         decision: body.decision,
-        decided_by: body.decided_by,
-        reason: body.reason,
+        decided_by: body.decided_by.clone(),
+        reason: body.reason.clone(),
     };
 
+    // Patch 21 (2026-05-22): read the optional gate correlation BEFORE
+    // calling `decide`, so we can relay the decision to the gate caller
+    // even if downstream lookups fail later. `read_gate_id_for_approval`
+    // is safe on pre-migration deployments (returns Ok(None)).
+    let gate_id_opt = read_gate_id_for_approval(&db, &id).await?;
+
     let approval = decide(&db, &id, &req, auth.effective_user_id()).await?;
+
+    // Patch 21: if this approval was bridged from the gate pipeline,
+    // relay the decision back to the caller blocking inside check_handler.
+    // The respond_to_gate persistence is authoritative (DB CAS); the
+    // oneshot wake-up is best-effort. If the caller already timed out,
+    // both calls are no-ops and the caller has already received a denial.
+    if let Some(gate_id) = gate_id_opt {
+        let approved = matches!(approval.status, kleos_lib::approvals::ApprovalStatus::Approved)
+            || body.decision == ApprovalDecision::Approved;
+        let reason_for_gate = body.reason.as_deref();
+        // 727d97fc merge: respond_to_gate gained a `responder_agent` param
+        // (upstream #93 self-approval guard). The /approvals decide path is
+        // operator-facing -- the responding principal is the human operator
+        // (carried in `decided_by`), not an agent -- so pass None; the guard
+        // only fires for agent-bound keys on the direct /gate/respond path.
+        // Use effective_user_id() to match the `decide` call above so the gate
+        // CAS targets the delegated tenant under act_as.
+        if let Err(err) = respond_to_gate(
+            &db,
+            gate_id,
+            approved,
+            reason_for_gate,
+            auth.effective_user_id(),
+            None,
+        )
+        .await
+        {
+            tracing::warn!(
+                "approvals: bridged gate_id={} respond_to_gate failed: {}",
+                gate_id,
+                err
+            );
+        }
+        let mut approvals_map = state.pending_approvals.lock().await;
+        if let Some((_, tx)) = approvals_map.remove(&gate_id) {
+            let _ = tx.send(approved);
+        }
+    }
 
     // Notify any waiting watchers that a decision was made
     if let Some(ref tx) = state.approval_notify {

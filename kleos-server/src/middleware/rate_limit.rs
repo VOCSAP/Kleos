@@ -1,15 +1,90 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+
 use axum::{
     extract::{Request, State},
     middleware::Next,
     response::Response,
 };
 use kleos_lib::auth::AuthContext;
+use kleos_lib::gate::approval_patterns;
 use kleos_lib::ratelimit;
 
 use crate::middleware::client_ip::client_ip;
 use crate::state::AppState;
 
 const OPEN_PATHS: &[&str] = &["/health", "/live", "/ready", "/bootstrap"];
+
+/// Pre-authentication per-IP rate limit (requests per minute). Kept low to
+/// resist brute-force auth attempts; authenticated callers use per-key limits.
+///
+/// Patch 28 (2026-05-23): the const is the upstream-aligned default. Operators
+/// can override at runtime via `KLEOS_PREAUTH_IP_LIMIT` (positive integer).
+/// Patch 26 confirmed that 20/min was too tight for multi-client dev hosts
+/// (sidecar + TUI + CLI + hooks sharing a single source IP); upstream merge
+/// aa6a0bec independently raised the baseline to 60/min for bursty MCP
+/// sessions, so the default tracks that value while the override still
+/// unblocks heavier workloads.
+const DEFAULT_PREAUTH_IP_LIMIT: i64 = 60;
+
+/// Patch 28 (2026-05-23): read `KLEOS_PREAUTH_IP_LIMIT` per-request. Invalid
+/// or non-positive values silently fall back to `fallback` so a typo cannot
+/// accidentally disable the preauth rate limit. Read on every request (no
+/// `LazyLock`) so the operator can hot-tune via a service reload without a full
+/// restart cycle.
+///
+/// 727d97fc merge: the fallback is now the upstream config field
+/// `preauth_ip_rpm` (#93, default 60 == `DEFAULT_PREAUTH_IP_LIMIT`) rather than
+/// the bare const, so the env var still wins for hot-tuning while an unset env
+/// var tracks the operator's config value. Both defaults are 60, so behaviour
+/// is unchanged unless one is explicitly set.
+fn preauth_ip_limit(fallback: i64) -> i64 {
+    let fallback = if fallback > 0 {
+        fallback
+    } else {
+        DEFAULT_PREAUTH_IP_LIMIT
+    };
+    std::env::var("KLEOS_PREAUTH_IP_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(fallback)
+}
+
+/// Patch 28 (2026-05-23): resolve the path of the trusted-IPs whitelist file.
+/// Cascade: explicit env var `KLEOS_PREAUTH_IP_TRUSTED_FILE` wins; otherwise
+/// auto-resolve to `${KLEOS_DATA_DIR}/preauth_ip_trusted.txt` (mirrors the
+/// Patch 19b `gate_data_file` convention but without the `gate/` subdir,
+/// since this lives at the server middleware level, not the gate domain).
+fn preauth_ip_trusted_file() -> Option<PathBuf> {
+    if let Ok(v) = std::env::var("KLEOS_PREAUTH_IP_TRUSTED_FILE") {
+        if !v.is_empty() {
+            return Some(PathBuf::from(v));
+        }
+    }
+    for env in ["KLEOS_DATA_DIR", "ENGRAM_DATA_DIR"] {
+        if let Some(raw) = std::env::var_os(env) {
+            if !raw.is_empty() {
+                return Some(PathBuf::from(raw).join("preauth_ip_trusted.txt"));
+            }
+        }
+    }
+    None
+}
+
+/// Patch 28 (2026-05-23): IPs listed in the trusted file bypass the preauth
+/// IP middleware entirely. Defense-in-depth on hosts whose source IPs are
+/// known and operator-controlled. Reuses the Patch 19b loader
+/// (`kleos_lib::gate::approval_patterns::load`) which caches reads for 5s,
+/// honours `#` comments and blank lines, and returns `Vec::new()` when the
+/// file is absent or empty. We pass `env = None` because the operator chose
+/// file-only management (decision 2026-05-23: env var CSV harder to maintain
+/// than a one-IP-per-line file).
+fn preauth_ip_trusted_set() -> HashSet<String> {
+    let path = preauth_ip_trusted_file();
+    let patterns = approval_patterns::load(path.as_deref(), None, &[]);
+    patterns.into_iter().collect()
+}
 
 fn too_many_requests(retry_after: i64) -> Response {
     let body = serde_json::json!({
@@ -103,13 +178,21 @@ pub async fn preauth_rate_limit_middleware(
         return next.run(request).await;
     }
 
-    // Resolve the caller's IP once. Trusted local/mesh sources (loopback,
-    // WireGuard mesh) are exempt entirely so a local agent fleet sharing one
-    // source IP doesn't throttle itself against a limit meant for untrusted
-    // internet brute-force. Empty exempt list (default) means no exemption.
+    // Resolve the caller's IP once (upstream #93 `client_ip`). Two independent
+    // trusted-source bypasses apply, unioned at the 727d97fc merge:
+    //   - upstream #93: CIDR exempt list from config (`rate_limit_exempt_cidrs`)
+    //     for trusted local/mesh sources (loopback, WireGuard mesh) so a local
+    //     agent fleet sharing one source IP doesn't throttle itself against a
+    //     limit meant for untrusted internet brute-force. Empty list = no exempt.
+    //   - Patch 28 (VOCSAP): operator-managed exact-IP file whitelist
+    //     (`preauth_ip_trusted.txt`), defense-in-depth on known source IPs.
     let resolved = client_ip(&request, &state.config.trusted_proxies);
     if let Some(ip) = &resolved {
         if state.config.is_rate_limit_exempt(ip) {
+            return next.run(request).await;
+        }
+        // Patch 28 (2026-05-23): file-based trusted-IP whitelist bypass.
+        if preauth_ip_trusted_set().contains(ip) {
             return next.run(request).await;
         }
     }
@@ -124,9 +207,26 @@ pub async fn preauth_rate_limit_middleware(
             "ip:unknown".to_string()
         }
     };
-    match ratelimit::check_and_increment(&state.db, &key, state.config.preauth_ip_rpm, 60).await {
+    // Patch 28: `KLEOS_PREAUTH_IP_LIMIT` env var wins for hot-tuning; when unset
+    // the limit tracks upstream's config field `preauth_ip_rpm` (#93, default
+    // 60). Read per-request so the operator can adjust either lever live.
+    let limit = preauth_ip_limit(state.config.preauth_ip_rpm);
+    match ratelimit::check_and_increment(&state.db, &key, limit, 60).await {
         Ok(true) => next.run(request).await,
-        Ok(false) => too_many_requests(60),
+        Ok(false) => {
+            // Patch 26: surface preauth IP rejects (HTTP 429) as WARN so
+            // /var/log/kleos-server.log identifies which bucket saturated
+            // without requiring rate_limits DB decryption. Patch 28: emit
+            // the dynamic limit so the operator can tell which cap was
+            // active when the reject fired.
+            tracing::warn!(
+                bucket = %key,
+                limit = limit,
+                path = %path,
+                "preauth_rate_limit reject (429)"
+            );
+            too_many_requests(60)
+        }
         Err(e) => {
             tracing::error!("preauth rate_limit check failed for {}: {}", key, e);
             let body = serde_json::json!({
@@ -180,18 +280,56 @@ pub async fn rate_limit_middleware(
 
     let auth_ctx = request.extensions().get::<AuthContext>().cloned();
 
-    let (user_id, limit) = match auth_ctx {
-        Some(ctx) => (ctx.user_id, ctx.key.rate_limit as i64),
+    // Patch 20 (2026-05-22): rate-limit bucket is keyed per-API-key
+    // (`key:{api_key.id}`) instead of per-user (`user:{user_id}`). The
+    // `ApiKey.rate_limit` field is already declared per-key in the auth
+    // module; previously the middleware aggregated all keys of the same
+    // user into one shared bucket, so a buggy bearer (e.g. a TUI ignoring
+    // Retry-After) saturated every other bearer of the same user. The
+    // new keying gives each bearer its own independent budget while
+    // keeping the declared `rate_limit` value as the limit.
+    //
+    // Patch 20b (2026-05-22): synthetic AuthContexts produced by
+    // `open_access_context()` and `synthetic_key_for_identity_with_scopes()`
+    // both stamp `ApiKey.id = 0` (no row backing them in the api_keys
+    // table). With the naive Patch 20 keying every synthetic context
+    // (open access + every PIV identity holder) would collide on the same
+    // `key:0` bucket cross-tenant, which is strictly worse than the
+    // pre-Patch 20 per-user keying. When the resolved key id is zero we
+    // fall back to a per-user synthetic key so PIV identities and open
+    // access remain isolated per tenant.
+    let (bucket_key, limit) = match auth_ctx {
+        Some(ctx) => {
+            let limit = ctx.key.rate_limit as i64;
+            let key = if ctx.key.id == 0 {
+                format!("synth:user:{}", ctx.user_id)
+            } else {
+                format!("key:{}", ctx.key.id)
+            };
+            (key, limit)
+        }
         // Unauthenticated requests are handled by auth middleware; pass through here.
         None => return next.run(request).await,
     };
 
-    let key = format!("user:{}", user_id);
+    let key = bucket_key;
     let cost = endpoint_cost(&path, request.method());
 
     match ratelimit::check_and_increment_by(&state.db, &key, limit, 60, cost).await {
         Ok(true) => next.run(request).await,
-        Ok(false) => too_many_requests(60),
+        Ok(false) => {
+            // Patch 26: surface per-key rejects (HTTP 429) as WARN.
+            // bucket discriminates key:N (real API key) from synth:user:N
+            // (synthetic AuthContext fallback per Patch 20b).
+            tracing::warn!(
+                bucket = %key,
+                limit = limit,
+                cost = cost,
+                path = %path,
+                "per_key_rate_limit reject (429)"
+            );
+            too_many_requests(60)
+        }
         Err(e) => {
             // SECURITY: fail CLOSED on backend errors for authenticated
             // requests. Previously we passed the request through on error,

@@ -48,6 +48,21 @@ pub struct ArtifactSummary {
     pub size_bytes: i64,
 }
 
+/// Fully validated inline artifact ready for one transactional batch insert.
+#[derive(Debug, Clone)]
+pub struct PreparedInlineArtifact {
+    /// Display filename stored with the attachment.
+    pub filename: String,
+    /// Validated media type stored with the attachment.
+    pub mime_type: String,
+    /// Decoded attachment bytes.
+    pub data: Vec<u8>,
+    /// SHA-256 digest of the decoded bytes.
+    pub sha256: String,
+    /// Optional UTF-8 content eligible for artifact full-text search.
+    pub indexable_content: Option<String>,
+}
+
 /// Compute SHA-256 hash of byte data, returned as a hex string.
 pub fn sha256_hex(data: &[u8]) -> String {
     use sha2::Digest;
@@ -56,14 +71,27 @@ pub fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Compute the sharded blob path for a given SHA-256 hash.
+/// Compute the sharded, per-tenant blob path for a given SHA-256 hash.
 ///
-/// Format: `{blobs_dir}/{sha[0:2]}/{sha[2:4]}/{sha}.bin` (or `.enc` if
-/// encrypted). The two-level fan-out keeps per-directory inode counts
+/// Format: `{blobs_dir}/{user_id}/{sha[0:2]}/{sha[2:4]}/{sha}.bin` (or `.enc`
+/// if encrypted). The two-level sha fan-out keeps per-directory inode counts
 /// manageable even at scale (max 256 dirs per level).
-pub fn blob_path(blobs_dir: &std::path::Path, sha256: &str, encrypted: bool) -> std::path::PathBuf {
+///
+/// The `user_id` segment is essential in shared-monolith mode with artifact
+/// encryption: the sha256 is the PLAINTEXT hash, but the stored bytes are
+/// per-tenant ciphertext. Without the tenant segment two tenants uploading
+/// identical content would derive the same path, and the second upload would
+/// overwrite the first's blob with bytes only the second tenant can decrypt.
+/// In a per-tenant shard the segment is a harmless constant.
+pub fn blob_path(
+    blobs_dir: &std::path::Path,
+    user_id: i64,
+    sha256: &str,
+    encrypted: bool,
+) -> std::path::PathBuf {
     let ext = if encrypted { "enc" } else { "bin" };
     blobs_dir
+        .join(user_id.to_string())
         .join(&sha256[..2])
         .join(&sha256[2..4])
         .join(format!("{}.{}", sha256, ext))
@@ -209,6 +237,84 @@ pub async fn store_artifact(
             |row| row.get::<_, i64>(0),
         )
         .map_err(|e| crate::EngError::Internal(format!("failed to insert artifact: {e}")))
+    })
+    .await
+}
+
+/// Store a validated inline attachment batch atomically and idempotently.
+///
+/// Identity is `(owner, memory, filename, media type, digest)`. A retry returns
+/// the existing row, while a concurrent retry serializes through the database
+/// transaction and cannot create a second attachment with the same identity.
+pub async fn store_inline_batch(
+    db: &Database,
+    user_id: i64,
+    memory_id: i64,
+    artifacts: &[PreparedInlineArtifact],
+) -> Result<Vec<ArtifactSummary>> {
+    let artifacts = artifacts.to_vec();
+    db.transaction(move |tx| {
+        let owns_memory = tx
+            .query_row(
+                "SELECT 1 FROM memories WHERE id = ?1 AND user_id = ?2",
+                params![memory_id, user_id],
+                |_| Ok(()),
+            )
+            .optional()?;
+        if owns_memory.is_none() {
+            return Err(crate::EngError::NotFound("memory not found".into()));
+        }
+
+        let mut stored = Vec::with_capacity(artifacts.len());
+        for artifact in artifacts {
+            let size_bytes = i64::try_from(artifact.data.len())
+                .map_err(|_| crate::EngError::InvalidInput("artifact is too large".into()))?;
+            let existing = tx
+                .query_row(
+                    "SELECT id FROM artifacts \
+                     WHERE user_id = ?1 AND memory_id = ?2 AND filename = ?3 \
+                       AND mime_type = ?4 AND sha256 = ?5 LIMIT 1",
+                    params![
+                        user_id,
+                        memory_id,
+                        artifact.filename,
+                        artifact.mime_type,
+                        artifact.sha256
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            let id = match existing {
+                Some(id) => id,
+                None => {
+                    tx.execute(
+                        "INSERT INTO artifacts \
+                         (name, memory_id, filename, artifact_type, content, mime_type, \
+                          size_bytes, sha256, storage_mode, data, is_encrypted, is_indexed, user_id) \
+                         VALUES (?1, ?2, ?1, 'file', ?3, ?4, ?5, ?6, 'inline', ?7, 0, ?8, ?9)",
+                        params![
+                            artifact.filename,
+                            memory_id,
+                            artifact.indexable_content,
+                            artifact.mime_type,
+                            size_bytes,
+                            artifact.sha256,
+                            artifact.data,
+                            artifact.indexable_content.is_some() as i64,
+                            user_id
+                        ],
+                    )?;
+                    tx.last_insert_rowid()
+                }
+            };
+            stored.push(ArtifactSummary {
+                id,
+                filename: artifact.filename,
+                mime_type: artifact.mime_type,
+                size_bytes,
+            });
+        }
+        Ok(stored)
     })
     .await
 }
@@ -368,9 +474,28 @@ pub async fn delete_artifact(
         )?;
 
         if rows_deleted == 0 {
-            Ok(None)
-        } else {
-            Ok(disk_path)
+            return Ok(None);
+        }
+
+        // Reference-count before signalling an unlink. Disk-tier blobs are
+        // content-addressed, so two artifacts with identical bytes share one
+        // blob file. Only hand the path back for unlinking when no surviving
+        // row still references it -- otherwise deleting one artifact would
+        // destroy the blob another still points to.
+        match disk_path {
+            Some(path) => {
+                let still_referenced: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM artifacts WHERE disk_path = ?1",
+                    params![path],
+                    |row| row.get(0),
+                )?;
+                if still_referenced == 0 {
+                    Ok(Some(path))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
         }
     })
     .await
@@ -400,7 +525,24 @@ pub async fn search_artifacts(
         ));
     }
 
-    let query = query.to_string();
+    // Reject oversized queries before sanitization to avoid CPU-intensive
+    // tokenization on pathologically large input (same bound as fts_search
+    // and search_episodes_fts).
+    if query.len() > crate::validation::MAX_FTS_QUERY_LEN {
+        return Err(crate::EngError::InvalidInput(format!(
+            "query exceeds maximum length of {} bytes",
+            crate::validation::MAX_FTS_QUERY_LEN
+        )));
+    }
+
+    // Sanitize into a quoted OR-of-tokens MATCH expression so FTS5 operators
+    // in user input (AND/OR/NOT/NEAR, quotes, parens, column filters) cannot
+    // be reinterpreted or raise syntax errors. Mirrors fts_search /
+    // search_episodes_fts, which bind the sanitized form, never the raw query.
+    let query = crate::memory::fts::fts_or_match_query(query);
+    if query.is_empty() {
+        return Ok(vec![]);
+    }
     let limit = limit as i64;
 
     db.read(move |conn| {

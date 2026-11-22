@@ -1,4 +1,4 @@
-use super::types::VectorHit;
+use super::types::{SearchRequest, VectorHit};
 use crate::db::Database;
 use crate::Result;
 use std::collections::HashSet;
@@ -17,6 +17,52 @@ const MIN_POOL_BUFFER: usize = 32;
 /// Extra distinct memories collected beyond `limit` in chunk search before the
 /// owner/visibility filter, bounding the size of the follow-up IN query.
 const COLLECT_BUFFER: usize = 128;
+
+/// Predicates every hybrid_search result satisfies whatever the request says.
+pub(super) const REVIEWED_CURRENT_SQL: &str = "status != 'pending' AND is_superseded = 0";
+
+const NOISE_CATEGORIES: [&str; 2] = ["activity", "growth"];
+
+/// Request-dependent returnability, shared by the vector pre-filter and the
+/// downstream candidate filter of hybrid_search so neither keeps a memory the
+/// other drops.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReturnableFilter {
+    pub include_noise: bool,
+    pub include_archived: bool,
+    pub exclude_consolidated: bool,
+}
+
+impl ReturnableFilter {
+    pub(super) fn from_request(req: &SearchRequest) -> Self {
+        Self {
+            include_noise: req.include_noise.unwrap_or(false),
+            include_archived: req.include_archived.unwrap_or(false),
+            exclude_consolidated: req.exclude_consolidated.unwrap_or(false),
+        }
+    }
+
+    pub(super) fn keeps(&self, category: &str, is_archived: bool, is_consolidated: bool) -> bool {
+        (self.include_noise || !NOISE_CATEGORIES.contains(&category))
+            && (self.include_archived || !is_archived)
+            && !(self.exclude_consolidated && is_consolidated)
+    }
+
+    fn sql_predicates(&self) -> String {
+        let mut sql = format!(" AND {REVIEWED_CURRENT_SQL}");
+        if !self.include_noise {
+            let quoted: Vec<String> = NOISE_CATEGORIES.iter().map(|c| format!("'{c}'")).collect();
+            let _ = write!(sql, " AND category NOT IN ({})", quoted.join(","));
+        }
+        if !self.include_archived {
+            sql.push_str(" AND is_archived = 0");
+        }
+        if self.exclude_consolidated {
+            sql.push_str(" AND is_consolidated = 0");
+        }
+        sql
+    }
+}
 
 /// Serialize a query embedding to the `[f1,f2,...]` string form that
 /// libsql's `vector()` parser accepts. Single pre-allocated String +
@@ -124,6 +170,7 @@ pub async fn chunk_vector_search(
     embedding: &[f32],
     limit: usize,
     user_id: i64,
+    filter: &ReturnableFilter,
 ) -> Result<Vec<VectorHit>> {
     let Some(index) = db.chunk_vector_index.as_ref() else {
         return Ok(Vec::new());
@@ -134,10 +181,10 @@ pub async fn chunk_vector_search(
 
     // Dedup chunk hits down to distinct parent memories in distance order. The
     // chunk index carries no tenant identity, so we OVER-COLLECT candidates
-    // (beyond `limit`) and then drop any that are not owned by the caller and
-    // currently visible (is_latest, not forgotten). Without this filter foreign
-    // or superseded memories occupy the `limit` slots and are only discarded
-    // later at hydration -- recall starvation in monolith mode.
+    // (beyond `limit`) and then drop any that are not owned by the caller or
+    // that hybrid_search would not return. Without this filter those memories
+    // occupy the `limit` slots and are only discarded later at hydration --
+    // recall starvation.
     let collect_cap = limit.saturating_add(COLLECT_BUFFER);
     let mut seen: HashSet<i64> = HashSet::with_capacity(collect_cap);
     // (memory_id, chunk_idx, distance) preserving distance order.
@@ -154,7 +201,7 @@ pub async fn chunk_vector_search(
     }
 
     let candidate_ids: Vec<i64> = candidates.iter().map(|(id, _, _)| *id).collect();
-    let owned = filter_owned_visible(db, &candidate_ids, user_id).await?;
+    let owned = filter_owned_visible(db, &candidate_ids, user_id, filter).await?;
 
     let mut out: Vec<VectorHit> = Vec::with_capacity(limit);
     let mut winners: Vec<(i64, usize)> = Vec::with_capacity(limit);
@@ -187,20 +234,29 @@ pub async fn chunk_vector_search(
     Ok(out)
 }
 
-/// Return the subset of `ids` that belong to `user_id` and are currently
-/// visible (is_latest, not forgotten). One batched query; preserves nothing
-/// about order (caller re-orders against its candidate list).
-async fn filter_owned_visible(db: &Database, ids: &[i64], user_id: i64) -> Result<HashSet<i64>> {
+/// Return the subset of `ids` that belong to `user_id`, are currently visible
+/// (is_latest, not forgotten) and that hybrid_search would return under
+/// `filter`. One batched query; preserves nothing about order (caller
+/// re-orders against its candidate list).
+/// `pub(super)` so search.rs's centroid path can apply the same shared-index
+/// ownership filter (finding [87]).
+pub(super) async fn filter_owned_visible(
+    db: &Database,
+    ids: &[i64],
+    user_id: i64,
+    filter: &ReturnableFilter,
+) -> Result<HashSet<i64>> {
     if ids.is_empty() {
         return Ok(HashSet::new());
     }
     let ids_owned: Vec<i64> = ids.to_vec();
+    let returnable = filter.sql_predicates();
     db.read(move |conn| {
         let placeholders = ids_owned.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id FROM memories \
              WHERE id IN ({placeholders}) AND user_id = ? \
-               AND is_forgotten = 0 AND is_latest = 1"
+               AND is_forgotten = 0 AND is_latest = 1{returnable}"
         );
         let mut stmt = conn.prepare(&sql)?;
         let mut params: Vec<&dyn rusqlite::types::ToSql> = Vec::with_capacity(ids_owned.len() + 1);
@@ -218,6 +274,8 @@ async fn filter_owned_visible(db: &Database, ids: &[i64], user_id: i64) -> Resul
     .await
 }
 
+/// Fetches chunk content for a batch of `(memory_id, chunk_idx)` winners in a
+/// single reader connection, keyed by memory id. Missing chunks are skipped.
 async fn fetch_chunk_texts_batch(
     db: &Database,
     winners: &[(i64, usize)],
@@ -247,10 +305,13 @@ async fn fetch_chunk_texts_batch(
     .await
 }
 
+/// Tests for embedding JSON serialization and owner/visibility chunk filtering.
 #[cfg(test)]
 mod tests {
     use super::embedding_to_json_array;
 
+    /// Reference (pre-optimization) JSON-array formatter used to verify
+    /// `embedding_to_json_array` produces byte-identical output.
     fn old_format(embedding: &[f32]) -> String {
         format!(
             "[{}]",
@@ -262,22 +323,27 @@ mod tests {
         )
     }
 
+    /// Verifies an empty embedding serializes to an empty JSON array.
     #[test]
     fn empty() {
         assert_eq!(embedding_to_json_array(&[]), "[]");
     }
 
+    /// Verifies a single-element embedding matches the old formatter's output.
     #[test]
     fn single() {
         assert_eq!(embedding_to_json_array(&[1.5]), old_format(&[1.5]));
     }
 
+    /// Verifies a full 1024-dim embedding matches the old formatter byte-for-byte.
     #[test]
     fn matches_old_format_on_full_vector() {
         let v: Vec<f32> = (0..1024).map(|i| (i as f32).sin() * 0.25).collect();
         assert_eq!(embedding_to_json_array(&v), old_format(&v));
     }
 
+    /// Verifies special float values (zero, negative zero, min/max, subnormal
+    /// scale) still match the old formatter's output.
     #[test]
     fn matches_old_format_with_specials() {
         let v = [0.0_f32, -0.0, 1.0, -1.0, f32::MIN, f32::MAX, 1e-10, 1e10];
@@ -311,7 +377,9 @@ mod tests {
             .await
             .unwrap();
 
-        let owned = super::filter_owned_visible(&db, &ids, 1).await.unwrap();
+        let owned = super::filter_owned_visible(&db, &ids, 1, &Default::default())
+            .await
+            .unwrap();
         assert!(owned.contains(&ids[0]), "owned + visible must be kept");
         assert!(!owned.contains(&ids[1]), "foreign user excluded");
         assert!(
@@ -320,5 +388,62 @@ mod tests {
         );
         assert!(!owned.contains(&ids[3]), "forgotten excluded");
         assert_eq!(owned.len(), 1);
+    }
+
+    /// The pre-filter SQL keeps exactly the rows hybrid_search keeps downstream:
+    /// `keeps()` plus the reviewed-current predicates, for every flag combination.
+    #[tokio::test]
+    async fn filter_sql_matches_keeps_for_every_flag_combination() {
+        use super::ReturnableFilter;
+        use crate::db::Database;
+        // (label, category, is_archived, is_consolidated, is_superseded, pending)
+        let rows = [
+            ("archived", "general", true, false, false, false),
+            ("growth", "growth", false, false, false, false),
+            ("activity", "activity", false, false, false, false),
+            ("superseded", "general", false, false, true, false),
+            ("pending", "general", false, false, false, true),
+            ("consolidated", "general", false, true, false, false),
+            ("healthy", "general", false, false, false, false),
+        ];
+        let db = Database::connect_memory().await.expect("db");
+        let ids: Vec<i64> = db
+            .write(move |conn| {
+                let mut ids = Vec::new();
+                for (_, category, archived, consolidated, superseded, pending) in rows {
+                    let id: i64 = conn.query_row(
+                        "INSERT INTO memories (content, user_id, category, is_archived, \
+                         is_consolidated, is_superseded) VALUES ('x', 1, ?1, ?2, ?3, ?4) \
+                         RETURNING id",
+                        rusqlite::params![category, archived, consolidated, superseded],
+                        |r| r.get(0),
+                    )?;
+                    if pending {
+                        conn.execute("UPDATE memories SET status = 'pending' WHERE id = ?1", [id])?;
+                    }
+                    ids.push(id);
+                }
+                Ok(ids)
+            })
+            .await
+            .unwrap();
+
+        for bits in 0..8u8 {
+            let filter = ReturnableFilter {
+                include_noise: bits & 1 != 0,
+                include_archived: bits & 2 != 0,
+                exclude_consolidated: bits & 4 != 0,
+            };
+            let kept = super::filter_owned_visible(&db, &ids, 1, &filter)
+                .await
+                .unwrap();
+            for ((label, category, archived, consolidated, superseded, pending), id) in
+                rows.iter().zip(&ids)
+            {
+                let expected =
+                    filter.keeps(category, *archived, *consolidated) && !superseded && !pending;
+                assert_eq!(kept.contains(id), expected, "{label} row under {filter:?}");
+            }
+        }
     }
 }

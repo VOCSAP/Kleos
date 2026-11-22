@@ -8,14 +8,6 @@ use crate::tailer;
 use crate::writer::KleosWriter;
 
 pub async fn run(config: Config, ledger: Ledger, writer: KleosWriter, dry_run: bool) {
-    // In dry-run mode, use an in-memory ledger so we don't advance offsets
-    let ledger = if dry_run {
-        tracing::info!("dry-run: using ephemeral in-memory ledger (offsets won't persist)");
-        Ledger::open(Path::new(":memory:")).expect("in-memory ledger")
-    } else {
-        ledger
-    };
-
     let config = Arc::new(config);
     let ledger = Arc::new(ledger);
     let writer = Arc::new(Mutex::new(writer));

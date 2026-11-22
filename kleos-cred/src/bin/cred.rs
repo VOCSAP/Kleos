@@ -2,12 +2,12 @@
 //!
 //! Compatible with private cred's data format when using legacy mode.
 
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use argon2::{password_hash::SaltString, Argon2, Params, PasswordHasher};
-use clap::{Parser, Subcommand};
+use clap::{parser::ValueSource, CommandFactory, FromArgMatches, Parser, Subcommand};
 use rand::rngs::OsRng;
 use rand::TryRngCore;
 use sha2::{Digest, Sha256};
@@ -49,6 +49,10 @@ const CRED_GET_SESSION_TTL_SECS_ENV: &str = "CRED_GET_SESSION_TTL_SECS";
 const CRED_AGENT_CONTEXT_ENV: &str = "CRED_AGENT_CONTEXT";
 const AI_AGENT_ENV: &str = "AI_AGENT";
 const DEFAULT_CRED_GET_SESSION_TTL_SECS: i64 = 8 * 60 * 60;
+#[cfg_attr(not(unix), allow(dead_code))]
+const BROKER_PROTOCOL_VERSION: u8 = 1;
+#[cfg_attr(not(unix), allow(dead_code))]
+const BROKER_RESPONSE_LIMIT_BYTES: usize = 512 * 1024;
 
 /// YubiKey-encrypted credential manager.
 #[derive(Parser)]
@@ -517,19 +521,37 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn detect_get_access_context() -> GetAccessContext {
-    if env_truthy(AI_AGENT_ENV) || env_truthy(CRED_AGENT_CONTEXT_ENV) {
+/// Pure access-context policy, split out so the rules are unit-testable without
+/// touching process env or the real terminal.
+///
+/// `cred get` prints a plaintext secret. The old policy only recognised agents
+/// by env signals and otherwise fell through to `Interactive` (print freely),
+/// so any subprocess that did not set a known agent var leaked the secret. The
+/// robust signal is interactivity: a human runs `cred get` attached to a real
+/// terminal (stdout is a TTY); an agent or script captures stdout through a
+/// pipe. Captured stdout therefore requires a session grant -- fail closed --
+/// while a real terminal still prints. Authorized non-interactive use mints a
+/// grant via `cred session start`.
+fn classify_get_access_context(
+    agent_env: bool,
+    managed_env: bool,
+    stdout_is_tty: bool,
+) -> GetAccessContext {
+    if agent_env {
         return GetAccessContext::Agent;
     }
-
-    if std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok()
-        || std::env::var("CLAUDE_SESSION_ID").is_ok()
-        || std::env::var("KLEOS_SESSION_ID").is_ok()
-    {
+    if managed_env || !stdout_is_tty {
         return GetAccessContext::ManagedSession;
     }
-
     GetAccessContext::Interactive
+}
+
+fn detect_get_access_context() -> GetAccessContext {
+    let agent_env = env_truthy(AI_AGENT_ENV) || env_truthy(CRED_AGENT_CONTEXT_ENV);
+    let managed_env = std::env::var("CLAUDE_CODE_ENTRYPOINT").is_ok()
+        || std::env::var("CLAUDE_SESSION_ID").is_ok()
+        || std::env::var("KLEOS_SESSION_ID").is_ok();
+    classify_get_access_context(agent_env, managed_env, io::stdout().is_terminal())
 }
 
 fn default_get_session_ttl_secs() -> i64 {
@@ -698,9 +720,82 @@ async fn cmd_session(cmd: SessionCmd) -> Result<()> {
     }
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(serde::Serialize)]
+struct BrokerResolveRequest<'a> {
+    protocol: u8,
+    service: &'a str,
+    key: &'a str,
+    field: Option<&'a str>,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrokerResolveResponse {
+    protocol: u8,
+    value: String,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrokerEntriesResponse {
+    protocol: u8,
+    entries: Vec<BrokerEntry>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrokerEntry {
+    service: String,
+    key: String,
+    #[serde(rename = "type")]
+    secret_type: String,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrokerErrorResponse {
+    protocol: u8,
+    error: BrokerErrorBody,
+}
+
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrokerErrorBody {
+    code: String,
+}
+
+struct BrokerClientError {
+    code: i32,
+}
+
+impl BrokerClientError {
+    const fn new(code: i32) -> Self {
+        Self { code }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let command = Cli::command();
+    let matches = command.get_matches();
+    let auth_mode_explicit = matches.value_source("auth_mode") != Some(ValueSource::DefaultValue);
+    let cli = Cli::from_arg_matches(&matches).expect("clap already validated arguments");
+    let broker_socket_configured = std::env::var_os("CRED_BROKER_SOCKET").is_some();
+
+    if cli.auth_mode == "broker" || broker_socket_configured {
+        match run_broker_client(cli, auth_mode_explicit).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                eprintln!("cred: {}", broker_error_name(error.code));
+                std::process::exit(error.code);
+            }
+        }
+    }
 
     match cli.command {
         Commands::Init => cmd_init().await,
@@ -1060,6 +1155,289 @@ async fn cmd_store(
 
     eprintln!("stored: {}/{}", service, key);
     Ok(())
+}
+
+fn broker_error_name(code: i32) -> &'static str {
+    match code {
+        2 => "INVALID_REQUEST",
+        65 => "INVALID_RESPONSE",
+        66 => "NOT_FOUND",
+        69 => "UNAVAILABLE",
+        70 => "INTERNAL",
+        77 => "DENIED",
+        78 => "INVALID_CONFIGURATION",
+        126 => "NOT_EXECUTABLE",
+        127 => "NOT_FOUND",
+        _ => "INTERNAL",
+    }
+}
+
+async fn run_broker_client(
+    cli: Cli,
+    auth_mode_explicit: bool,
+) -> std::result::Result<(), BrokerClientError> {
+    let socket = std::env::var_os("CRED_BROKER_SOCKET")
+        .map(PathBuf::from)
+        .ok_or_else(|| BrokerClientError::new(78))?;
+    if socket.as_os_str().is_empty() || !socket.is_absolute() {
+        return Err(BrokerClientError::new(78));
+    }
+    if cli.auth_mode != "broker" && auth_mode_explicit {
+        return Err(BrokerClientError::new(78));
+    }
+    if cli.master_password.is_some() || cli.keyfile.is_some() {
+        return Err(BrokerClientError::new(78));
+    }
+
+    match cli.command {
+        Commands::Exec {
+            service,
+            key,
+            field,
+            env,
+            stdin,
+            hash,
+            command,
+        } => {
+            if hash
+                .as_deref()
+                .is_some_and(|algorithm| algorithm != "argon2")
+            {
+                return Err(BrokerClientError::new(2));
+            }
+            let mut value = broker_resolve(&socket, &service, &key, field.as_deref()).await?;
+            if hash.is_some() {
+                let hashed = hash_value_argon2(&value).map_err(|_| BrokerClientError::new(70))?;
+                value.zeroize();
+                value = hashed;
+            }
+            run_broker_exec(value, env.as_deref(), stdin, command).await
+        }
+        Commands::List { service } => {
+            let entries = broker_list(&socket).await?;
+            print_broker_entries(&entries, service.as_deref());
+            Ok(())
+        }
+        _ => Err(BrokerClientError::new(77)),
+    }
+}
+
+#[cfg(unix)]
+fn broker_http_client(socket: &Path) -> std::result::Result<reqwest::Client, BrokerClientError> {
+    reqwest::Client::builder()
+        .unix_socket(socket)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|_| BrokerClientError::new(69))
+}
+
+async fn broker_resolve(
+    socket: &Path,
+    service: &str,
+    key: &str,
+    field: Option<&str>,
+) -> std::result::Result<String, BrokerClientError> {
+    #[cfg(not(unix))]
+    {
+        let _ = (socket, service, key, field);
+        return Err(BrokerClientError::new(78));
+    }
+    #[cfg(unix)]
+    {
+        let client = broker_http_client(socket)?;
+        let response = client
+            .post("http://cred-broker/v1/resolve")
+            .json(&BrokerResolveRequest {
+                protocol: BROKER_PROTOCOL_VERSION,
+                service,
+                key,
+                field,
+            })
+            .send()
+            .await
+            .map_err(|_| BrokerClientError::new(69))?;
+        let (status, body) = read_broker_response(response).await?;
+        let body = Zeroizing::new(body);
+        if status != reqwest::StatusCode::OK {
+            return Err(broker_status_error(status, &body));
+        }
+        let response: BrokerResolveResponse =
+            serde_json::from_slice(&body).map_err(|_| BrokerClientError::new(65))?;
+        if response.protocol != BROKER_PROTOCOL_VERSION {
+            return Err(BrokerClientError::new(65));
+        }
+        Ok(response.value)
+    }
+}
+
+async fn broker_list(socket: &Path) -> std::result::Result<Vec<BrokerEntry>, BrokerClientError> {
+    #[cfg(not(unix))]
+    {
+        let _ = socket;
+        return Err(BrokerClientError::new(78));
+    }
+    #[cfg(unix)]
+    {
+        let client = broker_http_client(socket)?;
+        let response = client
+            .get("http://cred-broker/v1/entries")
+            .send()
+            .await
+            .map_err(|_| BrokerClientError::new(69))?;
+        let (status, body) = read_broker_response(response).await?;
+        if status != reqwest::StatusCode::OK {
+            return Err(broker_status_error(status, &body));
+        }
+        let response: BrokerEntriesResponse =
+            serde_json::from_slice(&body).map_err(|_| BrokerClientError::new(65))?;
+        if response.protocol != BROKER_PROTOCOL_VERSION {
+            return Err(BrokerClientError::new(65));
+        }
+        Ok(response.entries)
+    }
+}
+
+#[cfg(unix)]
+async fn read_broker_response(
+    mut response: reqwest::Response,
+) -> std::result::Result<(reqwest::StatusCode, Vec<u8>), BrokerClientError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > BROKER_RESPONSE_LIMIT_BYTES as u64)
+    {
+        return Err(BrokerClientError::new(65));
+    }
+    let status = response.status();
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| BrokerClientError::new(69))?
+    {
+        if body.len().saturating_add(chunk.len()) > BROKER_RESPONSE_LIMIT_BYTES {
+            return Err(BrokerClientError::new(65));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((status, body))
+}
+
+#[cfg(unix)]
+fn broker_status_error(status: reqwest::StatusCode, body: &[u8]) -> BrokerClientError {
+    let parsed = match serde_json::from_slice::<BrokerErrorResponse>(body) {
+        Ok(parsed) if parsed.protocol == BROKER_PROTOCOL_VERSION => parsed,
+        _ => return BrokerClientError::new(65),
+    };
+    let expected = match status {
+        reqwest::StatusCode::BAD_REQUEST => ("INVALID_REQUEST", 65),
+        reqwest::StatusCode::FORBIDDEN => ("DENIED", 77),
+        reqwest::StatusCode::NOT_FOUND => ("NOT_FOUND", 66),
+        reqwest::StatusCode::METHOD_NOT_ALLOWED => ("METHOD_NOT_ALLOWED", 65),
+        reqwest::StatusCode::PAYLOAD_TOO_LARGE => ("TOO_LARGE", 65),
+        reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE => ("UNSUPPORTED_MEDIA_TYPE", 65),
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY => ("FIELD_UNAVAILABLE", 65),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE => ("UNAVAILABLE", 69),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR => ("INTERNAL", 70),
+        _ => return BrokerClientError::new(65),
+    };
+    if parsed.error.code == expected.0 {
+        BrokerClientError::new(expected.1)
+    } else {
+        BrokerClientError::new(65)
+    }
+}
+
+async fn run_broker_exec(
+    value: String,
+    env_name: Option<&str>,
+    use_stdin: bool,
+    command: Vec<String>,
+) -> std::result::Result<(), BrokerClientError> {
+    let mut value = Zeroizing::new(value);
+    let program = command
+        .first()
+        .ok_or_else(|| BrokerClientError::new(2))?
+        .clone();
+    let args = &command[1..];
+    let mut child_command = tokio::process::Command::new(&program);
+    child_command.args(args);
+    if use_stdin {
+        child_command.stdin(std::process::Stdio::piped());
+    } else {
+        child_command.env(env_name.unwrap_or("CRED_VALUE"), value.as_str());
+    }
+    let mut child = match child_command.spawn() {
+        Ok(child) => child,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(BrokerClientError::new(127))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return Err(BrokerClientError::new(126))
+        }
+        Err(_) => return Err(BrokerClientError::new(70)),
+    };
+    if use_stdin {
+        if let Some(mut child_stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            let write_result = child_stdin.write_all(value.as_bytes()).await;
+            value.zeroize();
+            write_result.map_err(|_| BrokerClientError::new(70))?;
+        }
+    }
+    value.zeroize();
+    let status = child.wait().await.map_err(|_| BrokerClientError::new(70))?;
+    std::process::exit(status.code().unwrap_or(1));
+}
+
+fn print_broker_entries(entries: &[BrokerEntry], service_filter: Option<&str>) {
+    let entries = entries
+        .iter()
+        .filter(|entry| service_filter.is_none_or(|service| entry.service == service))
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        println!("no secrets stored");
+        return;
+    }
+    let max_service = entries
+        .iter()
+        .map(|entry| entry.service.len())
+        .max()
+        .unwrap_or(7)
+        .max(7);
+    let max_key = entries
+        .iter()
+        .map(|entry| entry.key.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+    println!(
+        "{:<width_s$}  {:<width_k$}  TYPE",
+        "SERVICE",
+        "KEY",
+        width_s = max_service,
+        width_k = max_key
+    );
+    println!(
+        "{:-<width_s$}  {:-<width_k$}  {:-<10}",
+        "",
+        "",
+        "",
+        width_s = max_service,
+        width_k = max_key
+    );
+    for entry in &entries {
+        println!(
+            "{:<width_s$}  {:<width_k$}  {}",
+            entry.service,
+            entry.key,
+            entry.secret_type,
+            width_s = max_service,
+            width_k = max_key,
+        );
+    }
+    println!("\n{} secret(s)", entries.len());
 }
 
 fn hash_value_argon2(plain: &str) -> Result<String> {
@@ -3519,6 +3897,65 @@ mod user_id_migration_tests {
     }
 }
 
+#[cfg(all(test, unix))]
+mod broker_selection_tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> (Cli, bool) {
+        let matches = Cli::command().get_matches_from(args);
+        let explicit = matches.value_source("auth_mode") != Some(ValueSource::DefaultValue);
+        (
+            Cli::from_arg_matches(&matches).expect("valid arguments"),
+            explicit,
+        )
+    }
+
+    async fn broker_exit_code(args: &[&str]) -> Option<i32> {
+        let (cli, explicit) = parse(args);
+        run_broker_client(cli, explicit).await.err().map(|e| e.code)
+    }
+
+    struct BrokerSocketVariable;
+
+    impl Drop for BrokerSocketVariable {
+        fn drop(&mut self) {
+            std::env::remove_var("CRED_BROKER_SOCKET");
+        }
+    }
+
+    #[tokio::test]
+    async fn broker_socket_alone_selects_broker_mode_and_explicit_local_modes_conflict() {
+        std::env::remove_var("CRED_AUTH_MODE");
+        std::env::remove_var("CRED_KEYFILE");
+        std::env::remove_var("CRED_MASTER_PASSWORD");
+        let _restore = BrokerSocketVariable;
+        std::env::set_var("CRED_BROKER_SOCKET", "/nonexistent-broker-dir/cred.sock");
+
+        assert_eq!(
+            broker_exit_code(&["cred", "list"]).await,
+            Some(69),
+            "default auth mode must reach the transport, not be refused as a conflict"
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "broker", "list"]).await,
+            Some(69)
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "keyfile", "list"]).await,
+            Some(78)
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "password", "list"]).await,
+            Some(78)
+        );
+        assert_eq!(
+            broker_exit_code(&["cred", "--auth-mode", "yubikey", "list"]).await,
+            Some(78),
+            "an explicit yubikey choice is a local authentication option"
+        );
+    }
+}
+
 #[cfg(test)]
 mod get_session_guard_tests {
     use super::*;
@@ -3534,6 +3971,32 @@ mod get_session_guard_tests {
         let err = enforce_get_access_policy(GetAccessContext::ManagedSession, false).unwrap_err();
         assert!(err.to_string().contains("requires a valid session grant"));
         assert!(enforce_get_access_policy(GetAccessContext::ManagedSession, true).is_ok());
+    }
+
+    #[test]
+    fn non_interactive_stdout_requires_managed_session() {
+        // Agent env hard-blocks regardless of TTY.
+        assert_eq!(
+            classify_get_access_context(true, false, true),
+            GetAccessContext::Agent
+        );
+        // No agent env: a real interactive terminal prints freely.
+        assert_eq!(
+            classify_get_access_context(false, false, true),
+            GetAccessContext::Interactive
+        );
+        // Captured (non-TTY) stdout -- an agent or script reading the output --
+        // requires a session grant. This is the fail-closed gate that stops
+        // plaintext leaking to a process that did not set an agent env var.
+        assert_eq!(
+            classify_get_access_context(false, false, false),
+            GetAccessContext::ManagedSession
+        );
+        // A managed-session env signal requires a grant even at a TTY.
+        assert_eq!(
+            classify_get_access_context(false, true, true),
+            GetAccessContext::ManagedSession
+        );
     }
 
     #[test]

@@ -1,0 +1,2 @@
+Memory (category={{category}}, importance={{importance}}, recall_hits=0, age>=7d):
+"{{snippet}}"

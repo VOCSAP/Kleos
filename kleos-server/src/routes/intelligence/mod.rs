@@ -8,7 +8,7 @@ use kleos_lib::intelligence::{
     causal::{add_link, backward_chain, create_chain, get_chain, list_chains},
     consolidation::{consolidate, find_consolidation_candidates, list_consolidations, sweep},
     contradiction::{detect_contradictions, scan_all_contradictions},
-    correction::correct_memory,
+    correction::correct_memory_with_embedder,
     decomposition::decompose,
     digests::{generate_digest, list_digests},
     duplicates::{deduplicate, find_duplicates},
@@ -283,7 +283,9 @@ async fn decompose_handler(
     ResolvedDb(db): ResolvedDb,
     Path(memory_id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let child_ids = decompose(&db, memory_id, auth.user_id).await?;
+    // Finding [91]: use effective_user_id like every other handler in this
+    // file so admin-on-behalf-of requests scope to the acting identity.
+    let child_ids = decompose(&db, memory_id, auth.effective_user_id()).await?;
     Ok(Json(json!({ "child_ids": child_ids })))
 }
 
@@ -633,7 +635,8 @@ async fn predictive_sequences_handler(
     Json(body): Json<SequencesBody>,
 ) -> Result<Json<Value>, AppError> {
     let window_mins = body.window_mins.unwrap_or(60).clamp(1, 24 * 60);
-    let patterns = detect_sequence_patterns(&db, auth.user_id, window_mins).await?;
+    // Finding [91]: effective_user_id, matching the rest of the file.
+    let patterns = detect_sequence_patterns(&db, auth.effective_user_id(), window_mins).await?;
     Ok(Json(
         json!({ "patterns": patterns, "window_mins": window_mins, "count": patterns.len() }),
     ))
@@ -752,12 +755,15 @@ async fn sweep_handler(
 
 #[tracing::instrument(skip_all)]
 async fn correct_handler(
+    State(state): State<AppState>,
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
     Json(body): Json<CorrectBody>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let corrected = correct_memory(
+    let embedder = state.current_embedder().await;
+    let corrected = correct_memory_with_embedder(
         &db,
+        embedder.as_deref(),
         auth.effective_user_id(),
         body.memory_id,
         &body.content,
@@ -835,9 +841,15 @@ async fn run_pipeline_handler(
     Auth(auth): Auth,
     ResolvedDb(db): ResolvedDb,
 ) -> Result<Json<Value>, AppError> {
-    let report = default_pipeline(state.config.consolidation_enabled)
-        .run(&db, auth.effective_user_id())
-        .await?;
+    let report = default_pipeline(
+        state.config.consolidation_enabled,
+        state
+            .config
+            .auto_link_enabled
+            .then_some(state.config.auto_link_batch),
+    )
+    .run(&db, auth.effective_user_id())
+    .await?;
     Ok(Json(json!(report)))
 }
 

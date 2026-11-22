@@ -9,6 +9,9 @@ cd "$REPO_ROOT"
 
 git config core.hooksPath .githooks
 chmod +x .githooks/*
+# The pre-push hook runs this; make it executable on disk too (the repo's
+# core.fileMode = false means the committed bit is not always honored locally).
+chmod +x scripts/preflight.sh
 
 echo "git hooks installed (core.hooksPath -> .githooks)"
 echo "Active hooks:"

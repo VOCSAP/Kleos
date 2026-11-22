@@ -1,9 +1,13 @@
 mod exec;
+mod floor;
 mod gate;
 mod observe;
 
 use clap::Parser;
+use std::path::{Path, PathBuf};
 use std::process;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -15,7 +19,7 @@ struct Cli {
     #[arg(long, help = "Gate-only mode: check and exit, do not execute")]
     gate_only: bool,
 
-    #[arg(long, default_value = "claude-code", help = "Agent identity")]
+    #[arg(long, default_value = "kleos-sh", help = "Agent identity")]
     agent: String,
 
     #[arg(long, help = "Tool name for gate check (e.g. Bash, Write)")]
@@ -26,6 +30,12 @@ struct Cli {
     /// exits 0 (the JSON carries deny/allow). Implies --gate-only.
     #[arg(long)]
     claude_hook: bool,
+
+    #[arg(long, conflicts_with_all = ["command", "gate_only", "claude_hook"])]
+    floor_only: bool,
+
+    #[arg(long, requires = "floor_only")]
+    floor_file: Option<PathBuf>,
 }
 
 /// Build the Claude Code PreToolUse hookSpecificOutput envelope. Returns
@@ -163,8 +173,16 @@ fn resolve_api_key() -> Option<String> {
     None
 }
 
-#[cfg(unix)]
 fn resolve_key_via_credd() -> Option<String> {
+    #[cfg(unix)]
+    return resolve_key_via_credd_socket();
+    #[cfg(not(unix))]
+    return resolve_key_via_credd_tcp();
+}
+
+/// Unix branch: contacts kleos-credd via a Unix domain socket (CREDD_SOCKET).
+#[cfg(unix)]
+fn resolve_key_via_credd_socket() -> Option<String> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
@@ -203,9 +221,50 @@ fn resolve_key_via_credd() -> Option<String> {
     Some(key.to_string())
 }
 
+/// Non-Unix branch: contacts kleos-credd via TCP HTTP (CREDD_BIND).
+/// kleos-credd exposes the same HTTP API on its TCP listener (default
+/// 127.0.0.1:4400) as on its Unix socket, so the request is identical.
 #[cfg(not(unix))]
-fn resolve_key_via_credd() -> Option<String> {
-    None
+fn resolve_key_via_credd_tcp() -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let bind_addr = std::env::var("CREDD_BIND")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "127.0.0.1:4400".to_string());
+    let agent_key = std::env::var("CREDD_AGENT_KEY").ok()?;
+    if agent_key.is_empty() {
+        return None;
+    }
+
+    let slot = std::env::var("KLEOS_AGENT_SLOT")
+        .unwrap_or_else(|_| "claude-code-wsl".into())
+        .replace(['\r', '\n'], "");
+    let agent_key = agent_key.replace(['\r', '\n'], "");
+    let request = format!(
+        "GET /bootstrap/kleos-bearer?agent={} HTTP/1.1\r\n\
+         Host: localhost\r\n\
+         Authorization: Bearer {}\r\n\
+         Connection: close\r\n\
+         \r\n",
+        slot, agent_key
+    );
+
+    let mut stream = TcpStream::connect(&bind_addr).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+    stream.write_all(request.as_bytes()).ok()?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+
+    let body = response.split("\r\n\r\n").nth(1)?;
+    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    let key = v.get("key")?.as_str()?;
+    if key.is_empty() {
+        return None;
+    }
+    Some(key.to_string())
 }
 
 /// Fail-open policy. In --claude-hook mode the default is OPEN (matching
@@ -279,6 +338,7 @@ fn cred_slot() -> String {
 }
 
 fn read_hostname() -> String {
+    #[cfg(unix)]
     if let Ok(h) = std::fs::read_to_string("/proc/sys/kernel/hostname") {
         let trimmed = h.trim().to_string();
         if !trimmed.is_empty() {
@@ -286,6 +346,13 @@ fn read_hostname() -> String {
         }
     }
     if let Ok(h) = std::env::var("HOSTNAME") {
+        if !h.is_empty() {
+            return h;
+        }
+    }
+    // COMPUTERNAME is the standard hostname env var on Windows
+    #[cfg(not(unix))]
+    if let Ok(h) = std::env::var("COMPUTERNAME") {
         if !h.is_empty() {
             return h;
         }
@@ -312,9 +379,18 @@ fn build_client() -> reqwest::Client {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4);
+    // On Windows, tokio IOCP completion notifications can arrive after 2s even
+    // when the TCP handshake succeeds quickly. Default raised to 5s; override
+    // with KLEOS_SH_CONNECT_TIMEOUT_SECS if needed.
+    let connect_timeout_secs: u64 = std::env::var("KLEOS_SH_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5);
+    // Ensure overall timeout is long enough to outlive the connect phase.
+    let effective_timeout = timeout_secs.max(connect_timeout_secs + 2);
     reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
+        .timeout(Duration::from_secs(effective_timeout))
         .redirect(reqwest::redirect::Policy::limited(1))
         .build()
         .expect("failed to build HTTP client")
@@ -331,9 +407,104 @@ fn deny_and_exit(claude_hook: bool, reason: &str) -> ! {
     process::exit(2);
 }
 
+fn floor_only_decision(payload: &str, floor_file: &Path, binary: &Path) -> floor::FloorDecision {
+    let payload = payload.to_string();
+    let floor_file = floor_file.to_path_buf();
+    let binary = binary.to_path_buf();
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker = thread::Builder::new()
+        .name("floor-analysis".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            let decision = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match floor::FloorPolicy::load(&floor_file) {
+                    Ok(policy) => floor::evaluate_payload(&policy, &payload, &floor_file, &binary),
+                    Err(_) => floor::FloorDecision::Deny("floor-policy-invalid".to_string()),
+                }
+            }))
+            .unwrap_or_else(|_| floor::FloorDecision::Warn("floor-internal-error".to_string()));
+            let _ = sender.send(decision);
+        });
+    if worker.is_err() {
+        return floor::FloorDecision::Deny("floor-internal-error".to_string());
+    }
+    receiver
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap_or_else(|_| floor::FloorDecision::Warn("floor-analysis-timeout".to_string()))
+}
+
+fn floor_deny_json(reason: &str) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&serde_json::json!({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
+}
+
+fn write_floor_deny(writer: &mut impl std::io::Write, reason: &str) -> std::io::Result<()> {
+    let json = floor_deny_json(reason).map_err(std::io::Error::other)?;
+    writer.write_all(json.as_bytes())?;
+    writer.write_all(b"\n")
+}
+
+fn exit_floor_deny(reason: &str) -> ! {
+    let mut stdout = std::io::stdout().lock();
+    match write_floor_deny(&mut stdout, reason) {
+        Ok(()) => process::exit(0),
+        Err(err) => {
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr().lock(),
+                format!("floor deny emission failed: {err}\n").as_bytes(),
+            );
+            process::exit(2);
+        }
+    }
+}
+
+fn exit_floor_warning(reason: &str) -> ! {
+    emit_claude_decision(
+        "",
+        None,
+        Some(&format!("kleos floor: command not analyzed ({reason})")),
+    );
+    process::exit(0);
+}
+
+fn run_floor_only(floor_file: Option<&PathBuf>) -> ! {
+    let Some(floor_file) = floor_file.filter(|path| path.is_absolute()) else {
+        exit_floor_deny("floor-policy-invalid");
+    };
+    let mut payload = String::new();
+    if std::io::Read::read_to_string(&mut std::io::stdin(), &mut payload).is_err() {
+        exit_floor_deny("floor-invalid-payload");
+    }
+    let binary = match std::env::current_exe() {
+        Ok(binary) => binary,
+        Err(_) => exit_floor_deny("floor-self-protection"),
+    };
+    if payload.contains(floor_file.to_string_lossy().as_ref())
+        || payload.contains(binary.to_string_lossy().as_ref())
+    {
+        exit_floor_deny("floor: floor-self-protection");
+    }
+    if payload.len() > 192 * 1024 {
+        exit_floor_warning("floor: floor-input-too-large");
+    }
+    match floor_only_decision(&payload, floor_file, &binary) {
+        floor::FloorDecision::Deny(reason) => exit_floor_deny(&format!("floor: {reason}")),
+        floor::FloorDecision::Warn(reason) => exit_floor_warning(&format!("floor: {reason}")),
+        floor::FloorDecision::Allow => process::exit(0),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    if cli.floor_only {
+        run_floor_only(cli.floor_file.as_ref());
+    }
 
     // claude_hook implies gate_only: a hook decides, it does not execute.
     let gate_only = cli.gate_only || cli.claude_hook;
@@ -407,8 +578,7 @@ async fn main() {
             .or_else(|| Some("Bash".to_string())),
     };
 
-    // In hook mode: single 4s attempt, fail open on timeout (matching bash).
-    // Non-hook (exec) mode: 4 retries with exponential backoff, fail closed.
+    // Hook mode: a single attempt, so the harness timeout is not exceeded.
     let max_attempts: usize = if cli.claude_hook { 1 } else { 4 };
     let outcome = match &api_key {
         Some(key) => {
@@ -416,7 +586,7 @@ async fn main() {
             let mut delay_ms = 250u64;
             let mut got: Option<gate::GateOutcome> = None;
             for attempt in 0..max_attempts {
-                match gate::check_remote(&client, &server, key, &req).await {
+                match gate::check_remote(&client, &server, key, &req, cli.claude_hook).await {
                     Ok(outcome) => {
                         got = Some(outcome);
                         break;
@@ -525,7 +695,19 @@ async fn main() {
         gate::GateOutcome::Deny { reason, .. } => {
             deny_and_exit(cli.claude_hook, &reason);
         }
-        gate::GateOutcome::Allow {
+        gate::GateOutcome::Ask {
+            reason, enrichment, ..
+        } if cli.claude_hook => {
+            emit_claude_decision("ask", Some(&reason), enrichment.as_deref());
+            process::exit(0);
+        }
+        gate::GateOutcome::Ask {
+            command: resolved_cmd,
+            enrichment,
+            gate_id,
+            ..
+        }
+        | gate::GateOutcome::Allow {
             command: resolved_cmd,
             enrichment,
             gate_id,
@@ -628,11 +810,49 @@ mod tests {
     }
 
     #[test]
+    fn build_decision_ask_keeps_reason_and_enrichment() {
+        let v = build_claude_decision("ask", Some("needs a human"), Some("ctx"))
+            .expect("non-empty body");
+        let h = &v["hookSpecificOutput"];
+        assert_eq!(h["permissionDecision"], "ask");
+        assert_eq!(h["permissionDecisionReason"], "needs a human");
+        assert_eq!(h["additionalContext"], "ctx");
+    }
+
+    #[test]
     fn build_decision_explicit_allow_no_enrichment() {
         // An explicit allow without context still emits something so the
         // caller can confirm the hook ran.
         let v = build_claude_decision("allow", None, None).expect("non-empty body");
         let h = &v["hookSpecificOutput"];
         assert_eq!(h["permissionDecision"], "allow");
+    }
+
+    #[test]
+    fn floor_deny_json_is_encoded_before_stdout_emission() {
+        let json = floor_deny_json("floor: rm-recursive").expect("deny JSON");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(value["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert_eq!(
+            value["hookSpecificOutput"]["permissionDecisionReason"],
+            "floor: rm-recursive"
+        );
+    }
+
+    #[test]
+    fn floor_deny_writer_returns_an_error_instead_of_panicking() {
+        struct FailingWriter;
+
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("stdout unavailable"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        assert!(write_floor_deny(&mut FailingWriter, "floor: rm-recursive").is_err());
     }
 }

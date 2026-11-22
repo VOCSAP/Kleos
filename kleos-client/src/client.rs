@@ -76,10 +76,63 @@ impl Client {
         req
     }
 
+    /// Splits a caller's total timeout budget across the configured failover
+    /// URLs so that trying every URL stays within the requested wall time.
+    ///
+    /// `execute` retries the next URL on connection-level failures, and each
+    /// attempt is bounded by the reqwest client's own timeout. Handing every
+    /// attempt the full budget therefore made the real worst case
+    /// `timeout * urls.len()`: a primary that accepted the TCP connection and
+    /// then stalled consumed the caller's entire budget, so the secondary URL
+    /// was never reached before an outer supervisor (for example the 130s
+    /// hooks.json wrapper around `kleos-cli hook pre-tool`) killed the process.
+    ///
+    /// A single configured URL keeps the full budget. The divisor is clamped to
+    /// at least 1 so an empty URL list cannot divide by zero.
+    fn per_attempt_timeout(&self, total: Duration) -> Duration {
+        let attempts = self.urls.len().max(1) as u32;
+        total / attempts
+    }
+
+    /// Sends a request, retrying once when a cached session token was the
+    /// credential and the server answered 401.
+    ///
+    /// Sessions live in the server's memory and expire on a sliding TTL, so a
+    /// cached token may be unknown to it. `apply_auth` then sends
+    /// `X-Kleos-Session` alone -- no signature, no bearer -- and the server's
+    /// session path falls through to its generic "Authentication required"
+    /// fallback, a 401 that names the wrong cause. Dropping the token forces
+    /// the second attempt to re-sign. A request that carried no session token
+    /// is not retried, so a rejected key still costs one round trip.
+    async fn execute(
+        &self,
+        http: &reqwest::Client,
+        method: &str,
+        path: &str,
+        body: Option<&[u8]>,
+        content_type: Option<&str>,
+    ) -> Result<reqwest::Response, String> {
+        let used_session = self
+            .signer
+            .as_ref()
+            .is_some_and(|s| s.cached_session().is_some());
+        let resp = self
+            .execute_once(http, method, path, body, content_type)
+            .await?;
+        if !used_session || resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(resp);
+        }
+        if let Some(signer) = &self.signer {
+            signer.clear_session();
+        }
+        self.execute_once(http, method, path, body, content_type)
+            .await
+    }
+
     /// Core request dispatcher with URL failover. Tries each configured URL in
     /// order; on connection-level failures (timeout, refused, unreachable) falls
     /// through to the next URL. HTTP errors (4xx, 5xx) are returned immediately.
-    async fn execute(
+    async fn execute_once(
         &self,
         http: &reqwest::Client,
         method: &str,
@@ -265,6 +318,16 @@ impl Client {
             )
         })?;
         let parsed: Result<Value, _> = serde_json::from_slice(&bytes);
+        if status == reqwest::StatusCode::MULTI_STATUS {
+            // Preserve the complete result so partial memory/import writes can
+            // be recovered by ID and counts without automatically replaying them.
+            return Err(format!(
+                "HTTP {} {}: partial persistence; response: {}",
+                status,
+                url,
+                String::from_utf8_lossy(&bytes)
+            ));
+        }
         if status.is_success() {
             parsed.or_else(|_| {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
@@ -288,7 +351,7 @@ impl Client {
     /// Sends a GET request with a per-call timeout; returns an empty object on 404.
     pub async fn get_with_timeout(&self, path: &str, timeout: Duration) -> Result<Value, String> {
         let http = reqwest::Client::builder()
-            .timeout(timeout)
+            .timeout(self.per_attempt_timeout(timeout))
             .build()
             .map_err(|e| format!("http client build failed: {e}"))?;
         let resp = self.execute(&http, "GET", path, None, None).await?;
@@ -319,7 +382,7 @@ impl Client {
     ) -> Result<Value, String> {
         let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
         let http = reqwest::Client::builder()
-            .timeout(timeout)
+            .timeout(self.per_attempt_timeout(timeout))
             .build()
             .map_err(|e| format!("http client build failed: {e}"))?;
         let resp = self
@@ -513,6 +576,9 @@ fn append_query_string(path: &str, args: &Value) -> String {
     format!("{path}?{}", &qs[1..]) // skip leading '&'
 }
 
+/// Appends one `&key=value` pair to a query string, percent-encoding both
+/// halves. Arrays repeat the key once per element; null and non-scalar values
+/// are skipped by the caller.
 fn push_qparam(qs: &mut String, key: &str, val: &Value) {
     let encoded_key = utf8_percent_encode(key, NON_ALPHANUMERIC);
     let raw = match val {
@@ -561,11 +627,74 @@ pub fn truncate(s: &str, max: usize) -> &str {
     }
 }
 
+/// Unit tests for timeout budgeting, query-string building, and path rendering.
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
+    /// An HTTP 207 response is an error with recovery identity, without replay.
+    #[tokio::test]
+    async fn partial_persistence_retains_response_identity() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let body = json!({"id": 123, "stored": true, "attachments_committed": false, "error": "attachment batch failed"}).to_string();
+        let expected = body.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let _bytes_read = socket.read(&mut request).await.unwrap();
+            let response = format!("HTTP/1.1 207 Multi-Status\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = Client::new(format!("http://{address}"), None, None);
+        let result = client.post("/memory", json!({"content": "partial"})).await;
+        server.await.unwrap();
+        let error = result.expect_err("partial persistence must not report success");
+        assert!(error.contains("207"), "{error}");
+        assert!(error.contains(&expected), "{error}");
+    }
+
+    /// A single configured URL must keep the caller's whole budget: there is no
+    /// second attempt to reserve time for.
+    #[test]
+    fn per_attempt_timeout_single_url_keeps_full_budget() {
+        let c = Client::new("http://one:4200".to_string(), None, None);
+        assert_eq!(
+            c.per_attempt_timeout(Duration::from_secs(130)),
+            Duration::from_secs(130)
+        );
+    }
+
+    /// With failover configured, trying every URL must fit inside the caller's
+    /// requested wall time. This is the regression: each attempt previously got
+    /// the full budget, so a stalling primary consumed all of it and the
+    /// secondary was never reached before an outer supervisor killed the process.
+    #[test]
+    fn per_attempt_timeout_divides_across_failover_urls() {
+        let c = Client::new(
+            "http://primary:4200,http://backup:4200".to_string(),
+            None,
+            None,
+        );
+        let per = c.per_attempt_timeout(Duration::from_secs(130));
+        assert_eq!(per, Duration::from_secs(65));
+        assert!(per * c.urls.len() as u32 <= Duration::from_secs(130));
+    }
+
+    /// An empty or malformed URL list must not panic on divide-by-zero.
+    #[test]
+    fn per_attempt_timeout_empty_url_list_does_not_panic() {
+        let c = Client::new(String::new(), None, None);
+        assert!(c.urls.is_empty());
+        assert_eq!(
+            c.per_attempt_timeout(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+    }
+
+    /// Scalar values become plain key=value pairs.
     #[test]
     fn query_string_from_scalars() {
         let args = json!({"limit": 10, "offset": 5});
@@ -575,6 +704,7 @@ mod tests {
         assert!(result.contains("offset=5"));
     }
 
+    /// Null and empty-object values are omitted rather than serialised.
     #[test]
     fn query_string_skips_null_and_empty_object() {
         let args = json!({"limit": 10, "filter": null, "opts": {}});
@@ -584,12 +714,14 @@ mod tests {
         assert!(!result.contains("opts"));
     }
 
+    /// No args (or a null arg object) leaves the path untouched.
     #[test]
     fn query_string_empty_args() {
         assert_eq!(append_query_string("/list", &json!({})), "/list");
         assert_eq!(append_query_string("/list", &json!(null)), "/list");
     }
 
+    /// Spaces and separators are percent-encoded so they cannot alter the query.
     #[test]
     fn query_string_encodes_special_chars() {
         let args = json!({"q": "hello world&more"});
@@ -599,11 +731,88 @@ mod tests {
         assert!(result.contains("q="));
     }
 
+    /// Array values repeat the key once per element.
     #[test]
     fn query_string_array_repeats_key() {
         let args = json!({"tags": ["bug", "fix"]});
         let result = append_query_string("/list", &args);
         let count = result.matches("tags=").count();
         assert_eq!(count, 2);
+    }
+
+    /// Accepts two connections, answering 401 to any request that carries a
+    /// session token and 200 to any that does not. Returns the per-request
+    /// record of "carried a session token", which is what the assertions read.
+    fn spawn_session_probe(
+        listener: tokio::net::TcpListener,
+        always_401: bool,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<bool>>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = std::sync::Arc::clone(&seen);
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+                let with_session = req.contains("x-kleos-session:");
+                recorder.lock().unwrap().push(with_session);
+                // `connection: close` on every answer: a keep-alive socket
+                // would let the retry reuse this connection, and the second
+                // `accept` would then never resolve.
+                let resp = if with_session || always_401 {
+                    "HTTP/1.1 401 Unauthorized\r\nconnection: close\r\ncontent-length: 2\r\n\r\n{}"
+                } else {
+                    "HTTP/1.1 200 OK\r\nconnection: close\r\ncontent-length: 11\r\n\r\n{\"ok\":true}"
+                };
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        seen
+    }
+
+    /// A session token the server rejects must cost one retry, not a failed
+    /// command. `apply_auth` sends `X-Kleos-Session` alone, so such a request
+    /// reaches the server with no signature to fall back on and earns a 401
+    /// whose message blames the missing signature. The second attempt must
+    /// carry no token, which is what the recorded `[true, false]` proves.
+    #[tokio::test]
+    async fn stale_session_token_is_dropped_and_the_request_replayed() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = spawn_session_probe(listener, false);
+
+        let signer = kleos_lib::auth_piv::RequestSigner::from_key_bytes(
+            [9u8; 32],
+            "host",
+            "session-retry-test",
+            "none",
+        );
+        signer.set_session("stale.session.token".to_string());
+        let client = Client::new(format!("http://{addr}"), None, Some(signer));
+
+        let out = client.get("/health").await.expect("the retry must recover");
+        assert_eq!(out["ok"], json!(true));
+        assert_eq!(*seen.lock().unwrap(), vec![true, false]);
+    }
+
+    /// Without a session token there is nothing stale to shed, so a 401 is the
+    /// server's verdict on the credential itself and must be returned after a
+    /// single round trip rather than doubled.
+    #[tokio::test]
+    async fn rejected_bearer_key_is_not_retried() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = spawn_session_probe(listener, true);
+
+        let client = Client::new(format!("http://{addr}"), Some("bad-key".to_string()), None);
+
+        let err = client.get("/health").await.unwrap_err();
+        assert!(err.contains("401"), "unexpected error: {err}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 }

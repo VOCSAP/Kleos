@@ -52,6 +52,25 @@ Use this table when choosing the right command:
 - Claude hook handlers fail open on transport failures by design. Direct shell
   execution paths default to fail closed unless configured otherwise.
 
+### API key format
+
+Bearer API keys are accepted in three equivalent prefix forms:
+
+| Prefix | Example | Notes |
+|---|---|---|
+| `engram_` | `engram_a1b2c3d4...` | Canonical internal form |
+| `kleos_` | `kleos_a1b2c3d4...` | VOCSAP rebrand alias |
+| `eg_` | `eg_a1b2c3d4...` | Legacy shorthand |
+
+All three map to the same DB lookup. The hex portion after the prefix is
+identical in every case -- only the label differs. If the GUI or a CLI client
+reports "Invalid API Key", check that the key uses one of these three prefixes
+and that the hex portion is 32 or 64 characters.
+
+Keys are generated in `engram_<hex32>` form by the server. A key recorded in
+an env file as `kleos_<hex>` is valid and will authenticate correctly
+(VOCSAP fork, Patch 6 in `docs/dev-notes/local-patches.md`).
+
 ## `kleos-cli`
 
 Synopsis:
@@ -98,10 +117,14 @@ Use for:
 
 - Fast recall before asking a human, opening a broad investigation, or editing.
 
-#### `kleos-cli context QUERY [--limit N]`
+#### `kleos-cli context QUERY [--limit N] [--space NAME | --space-id N | --no-space] [--include-unscoped BOOL]`
 
 - Calls `POST /recall` with both `query` and `context`.
 - Returns richer JSON context than `search`.
+- Scoped to a space resolved as `--space-id` > `--space` > `$KLEOS_SPACE` >
+  the `.kleos-space` marker / git root name of the cwd. A scoped read also
+  returns the `default` space and unscoped rows unless
+  `--include-unscoped false`.
 
 Use for:
 
@@ -139,7 +162,7 @@ Use for:
 
 - Review loops and reinforcement passes.
 
-#### `kleos-cli ingest [--text TEXT | --file PATH] [--mode raw|extract] [--source SRC] [--category CAT]`
+#### `kleos-cli ingest [--text TEXT | --file PATH] [--mode raw|extract] [--source SRC] [--category CAT] [--space NAME | --space-id N | --no-space]`
 
 How it works:
 
@@ -148,6 +171,10 @@ How it works:
   `POST /ingest/upload/init`, repeated `POST /ingest/upload/chunk`,
   then `POST /ingest/upload/complete`.
 - Upload chunks are 1 MiB and hashed with SHA-256.
+- The target space is resolved like `store` (`--space-id` > `--space` >
+  `$KLEOS_SPACE` > cwd marker / git root name). When nothing resolves, the
+  server files the memories in the `default` space; ingested memories are
+  never left unscoped.
 
 Use for:
 
@@ -327,22 +354,99 @@ Use for:
 
 - `curl`, SDKs, deployment tools, or any child process that needs a secret.
 
+### Attention notes
+
+Think Post-its on a monitor, not memories. Attention notes are not ingested,
+ranked, embedded, or decayed -- they just sit there and stare at you until you
+explicitly delete them. Use them for short "don't forget to …" items that need
+to survive session boundaries without getting buried in recall noise.
+
+Priority range is 1 (low) to 10 (high), default 5. The list is always returned
+sorted by priority descending, then creation time ascending (oldest high-priority
+note first).
+
+**HTTP API**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/attention` | Create a note |
+| `GET` | `/attention` | List all open notes |
+| `PATCH` | `/attention/{id}` | Update content and/or priority |
+| `DELETE` | `/attention/{id}` | Delete a note (mark as done) |
+
+**POST /attention**
+
+```json
+{ "content": "rebase the watcher fix onto main", "priority": 8 }
+```
+
+Returns the created note (201). `priority` is optional; defaults to 5.
+
+**GET /attention**
+
+```
+GET /attention?limit=50
+```
+
+Returns `{ "notes": [...], "count": N }`. `limit` defaults to 50, max 200.
+
+**PATCH /attention/{id}**
+
+Both fields are optional; omit what you don't want to change.
+
+```json
+{ "priority": 10 }
+```
+
+Returns the updated note.
+
+**DELETE /attention/{id}**
+
+Returns 204 on success, 404 if the note does not exist or belongs to another
+tenant.
+
+**Typical agent workflow**
+
+1. On session start: `GET /attention` -- review open reminders.
+2. During work: `POST /attention` -- pin a new reminder for next time.
+3. When a task is done: `DELETE /attention/{id}` -- remove the note.
+
 ### Handoffs
 
-#### `kleos-cli handoff dump [--project P] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
+Handoff identity has three independent parts:
+
+- `scope`: `repository` or `standalone` for new writes; migrated rows retain
+  `legacy`.
+- `workstream`: the logical subject that groups related sessions.
+- `session_id`: the stable identity of one agent thread within a workstream.
+
+`project` remains a compatibility and repository label. `directory` is
+provenance only and is never promoted to identity outside a Git worktree.
+
+#### `kleos-cli handoff dump [--project P] [--workstream W] [--title TEXT] [--branch B] [--agent A] [--handoff-type T] [--session S] [--model M] [--host H] [--content TEXT] [--dir PATH]`
 
 - Stores a handoff via `POST /handoffs`.
 - If `--content` is omitted, reads stdin.
-- Auto-detects project from `SESSION_HANDOFF_PROJECT`, git origin, or cwd name.
+- Inside Git, detects a repository project from `SESSION_HANDOFF_PROJECT`, the
+  origin URL, or the Git root name.
+- Outside Git, stores a semantic `standalone` handoff and requires a logical
+  workstream plus a stable session id. The CLI resolves session identity from
+  `--session`, `SESSION_ID`, or `CODEX_THREAD_ID`.
+- `SESSION_HANDOFF_WORKSTREAM` supplies a reusable default workstream.
 
 #### `kleos-cli handoff restore [filters...]`
 
-- Calls `GET /handoffs`.
+- `--id ID` calls `GET /handoffs/{id}` for an exact restore.
+- Filtered restore calls `GET /handoffs`.
 - Prints only the handoff content bodies.
+- Outside Git, restore requires an exact handoff id or stable session id. It
+  never guesses from the global newest row.
 
 #### `kleos-cli handoff latest [--project P] [--dir PATH]`
 
 - Calls `GET /handoffs/latest`.
+- Requires a repository project. A missing exact project match returns not
+  found instead of falling back to a different project.
 
 #### `kleos-cli handoff mechanical [--project P] [--agent A] [--dir PATH] [--session S] [--model M] [--host H]`
 
@@ -351,15 +455,23 @@ How it works:
 - Collects git status, recent commits, diff stats, stashes, and recently
   modified files from the working tree.
 - Stores that bundle as a `mechanical` handoff via `POST /handoffs`.
+- Refuses to run outside a Git worktree, even when `--project` is supplied.
 
 Use for:
 
 - Mechanical state capture at session boundaries.
 
-#### `kleos-cli handoff list [--limit N] [--project P] [--agent A] [--handoff-type T]`
+#### `kleos-cli handoff list [--limit N] [--project P] [--scope S] [--workstream W] [--agent A] [--handoff-type T]`
 
 - Calls `GET /handoffs`.
 - Prints a summary table.
+
+#### `kleos-cli handoff candidates [--limit N] [--scope S] [--workstream W] [--agent A] [--since TIME]`
+
+- Calls `GET /handoffs/candidates`.
+- Returns only the newest checkpoint for each stable session id.
+- Prints complete ids and session identities so an ambiguous standalone
+  restore can be selected explicitly with `handoff restore --id ID`.
 
 #### `kleos-cli handoff search QUERY [--project P] [--limit N]`
 
@@ -379,11 +491,16 @@ Use for:
 
 - Registers session start with `POST /activity`.
 - Fetches growth context from `/growth/materialize`.
+- Fetches the living prompt from `POST /prompt/generate`, scoped to the
+  project space (`$KLEOS_SPACE`, else the `.kleos-space` marker / git root
+  name of the hook's cwd).
 - Emits Claude hook JSON on stdout.
 
 #### `kleos-cli hook user-prompt`
 
 - Reads Claude hook JSON from stdin.
+- Recalls memories through the sidecar `/recall`, scoped to the project space
+  (same resolution as `session-start`).
 - Checks supervisor pending injections through `/supervisor/pending`.
 - Emits deny if a supervisor violation is pending; otherwise no output.
 
@@ -597,7 +714,14 @@ Failure policy:
 Important options:
 
 - `-c`: command string
-- `--agent`: agent identity label, default `claude-code`
+- `--agent`: agent identity label, default `kleos-sh`; the Claude hook passes
+  `--agent claude-code`. Outside `--claude-hook`, a command that requires
+  approval is denied unless the server reports `approval_granted: true`, which
+  it only does after a human approved it during the wait.
+  Direct execution and `--gate-only` need the agent (`kleos-sh` by default)
+  listed in the server's `KLEOS_GATE_NO_WAIT_AGENTS`: otherwise every `Bash`
+  check waits for an approval longer than the client timeout and ends in a
+  "gate unreachable" deny, even for a benign command.
 - `--tool-name`: reported tool name, default `Bash`
 - `--gate-only`
 - `--claude-hook`
@@ -716,6 +840,41 @@ Purpose:
 - Structured reasoning, code review, and workflow enforcement tool.
 - All commands read JSON input and write JSON output.
 
+### Local MCP and Fluency
+
+Build the local MCP server with Fluency enabled:
+
+```bash
+cargo build -p agent-forge --features fluency --bin agent-forge-mcp
+```
+
+Register `agent-forge-mcp --db ~/.agent-forge/forge.db` as a stdio MCP server.
+It exposes 19 mandatory code-work tools covering specs, approaches,
+hypotheses, learning, verification, review, checkpoint and rollback, and the
+completion gates against one local database. `recall_errors` and
+`session_recall` make prior failures and reusable discoveries available before
+the next implementation decision.
+`checkpoint` and `review` remain local because they inspect the active Git
+checkout and write `docs/agent-forge/` inside that checkout; the remote Kleos
+MCP continues to own shared memory, activity, and coordination.
+
+MCP calls that inspect or mutate a repository require an explicit `repo_root`.
+Git snapshots, rollback, emitted slices, reviews, and session diffs all use that
+same root even when a client launches the server from another directory. The
+database scopes checkpoint names by canonical Git root. Pre-upgrade checkpoint
+rows are retained as historical evidence but must be recreated before rollback.
+The stdio transport enforces initialization before tool calls, accepts JSON-RPC
+batches after initialization, and reports failed Agent-Forge outputs with MCP
+`isError: true`.
+
+Fluency emission fails closed when rendered evidence contains a concrete local
+user-home path. Verification commands intended for public records must use
+repository-relative paths.
+
+The MCP binary requires the `fluency` feature. This keeps documentation
+emission opt-in for normal `agent-forge` builds while ensuring a configured
+local MCP server cannot silently advertise a workflow that lacks `review`.
+
 Output contract:
 
 - The output file always receives a structured result.
@@ -787,7 +946,7 @@ What it does:
 Input:
 
 - optional `query`
-- optional `limit`
+- optional `limit`, from 1 to 100
 
 What it does:
 
@@ -1204,13 +1363,14 @@ Deep reference:
 Synopsis:
 
 ```bash
-kleos-sidecar [--config sidecar.toml] [--port N] [--host HOST] [--watch]
+kleos-sidecar [--config sidecar.toml] [--port N] [--host HOST] \
+  [--code-context-mode off|shadow|inject] [--code-max-tokens N]
 ```
 
 Purpose:
 
-- Local batching proxy for observations, session traffic, and optional
-  Claude session-file watching.
+- Local batching proxy for observations, session traffic, and deterministic
+  repository context selected from Agent-Forge's persistent syntax index.
 
 Config precedence:
 
@@ -1230,16 +1390,31 @@ Important options:
 - `--token`
 - `--kleos-url`
 - `--kleos-api-key`
-- `--watch`
-- `--watch-dir`, default `~/.claude/projects`
-- batch sizing, compression, idle TTL, and log format controls
+- `--code-context-mode`, default `shadow`
+- `--code-max-tokens`, default `2000`
+- batch sizing, retention, idle TTL, and log format controls
+
+Code-context modes:
+
+- `off` disables index refresh and retrieval.
+- `shadow` refreshes and measures selected snippets but does not add them to
+  prompt context.
+- `inject` adds high-confidence snippets under the separate code token budget.
 
 How it works:
 
 - Generates a bearer token at startup if one is not supplied.
 - Queues observations per session and flushes them in batches.
-- Can watch Claude session JSONL files directly and ingest those changes.
-- Uses a local LLM path for `/compress` when configured.
+- Uses session-start, post-tool, and user-prompt hooks to refresh changed Git
+  repositories and retrieve bounded snippets.
+- Serializes refresh writes, coalesces duplicate refreshes for the same
+  repository, and serves prompts from the latest completed index revision.
+- Revalidates source hashes before direct ranking or relation expansion, so a
+  changed file cannot seed stale graph context while refresh is in progress.
+- Stores the code index locally in SQLite. Bulk indexed source is never sent to
+  Kleos memory endpoints.
+- Suppresses unchanged repeated snippets in inject mode unless the prompt names
+  the exact symbol or the underlying file changed.
 
 ## `kleos-server`
 
@@ -1269,6 +1444,33 @@ Operational notes:
 - Default bind is `127.0.0.1:4200`.
 - Initial bootstrap key flow is separate from normal auth.
 - Multi-user tenant sharding is enabled by default.
+- `KLEOS_SESSION_KEY` -- 32-byte hex HMAC key for the session manager
+  (`kleos-lib/src/auth_piv.rs`) that lets a PIV/soft-signed identity avoid
+  re-signing every request. If unset, the server generates an ephemeral key at
+  startup and logs a warning; sessions minted under that key do not survive a
+  restart. Set it explicitly for any deployment that should keep sessions alive
+  across restarts. Generate one with `openssl rand -hex 32`.
+- A from-source systemd unit template is provided at
+  `dist/kleos-server.service` for running the server as a long-lived service.
+
+Optional GUI-population flags (all default-off; behavior is byte-identical to
+prior releases when unset):
+
+- `KLEOS_PROJECTS_DERIVE_ENABLED=1` -- the Memory > Projects tab augments the
+  explicit `projects` rows with projects derived from distinct `tasks.project`
+  values (Chiasm activity), scoped to the caller. Derived cards show the task
+  count and are never persisted. Use this when you tag activity with
+  `--project` but do not curate explicit project records.
+- `KLEOS_REVIEW_GATE_ENABLED=1` plus `KLEOS_REVIEW_GATE_SOURCES=src1,src2,...`
+  -- newly stored memories whose `source` is in the comma-separated allowlist
+  are written with `status='pending'` so they land in the Memory > Inbox
+  (Review) queue for approve/reject instead of being auto-approved. Sources not
+  listed (and all stores when the allowlist is empty) stay `approved`, so
+  explicit `memory_store` calls are never gated unless you opt their source in.
+  While pending, a memory is withheld from recall, search, and listings (the
+  `include_pending` opt-in surfaces it for the Inbox view) and only becomes
+  recallable once approved. The gate is off by default, so a fresh install
+  behaves byte-identically to releases without it: nothing is held for review.
 
 ## `kleos-mcp`
 
@@ -1359,3 +1561,59 @@ If command behavior here and ad hoc prompt instructions disagree, prefer:
 3. Ad hoc prompt text
 
 When in doubt, inspect the source before inventing a new usage pattern.
+
+---
+
+## Troubleshooting
+
+### "Invalid API Key" on the GUI or kleos-cli
+
+**Symptom:** The web GUI shows "Invalid API Key" after entering a key, or
+`kleos-cli` returns a 401 on every call.
+
+**Cause A -- wrong prefix (most common on VOCSAP deployments):**
+
+The server accepts `engram_`, `kleos_`, and `eg_` prefixes. Any other prefix
+is rejected before the DB lookup. If the key was copied from an env file and
+shows a different prefix, the auth will silently fail.
+
+Fix: verify the prefix is one of the three accepted forms. The hex portion
+(32 or 64 chars) must follow immediately after the underscore.
+
+**Cause B -- key not in localStorage:**
+
+The GUI stores the key in `localStorage` under `engram_api_key`. If the
+browser cleared storage (private window, cookie clear), the key is gone.
+Click "Set API Key" in the sidebar and re-enter it.
+
+**Cause C -- pepper mismatch (server-side):**
+
+v2 keys are hashed with `KLEOS_API_KEY_PEPPER`. If the pepper in
+`/etc/kleos/kleos.env` changed since the key was generated, the hash will
+not match. Re-generate a key with the current pepper via
+`kleos-cli admin api-key create`.
+
+---
+
+### GUI shows correct key but all requests fail with 403
+
+The key exists and authenticates but lacks the required scope for the endpoint.
+Check the key scopes with `kleos-cli admin api-key list` and regenerate with
+the necessary scopes if needed.
+
+---
+
+### kleos-sidecar not receiving observations from kleos-sh
+
+kleos-sh looks for the sidecar at `KLEOS_SIDECAR_URL` (default
+`http://127.0.0.1:4201`). The sidecar listens on `KLEOS_SIDECAR_PORT`
+(default `7711`).
+
+These two env vars are **independent**. Set both explicitly:
+
+```bash
+KLEOS_SIDECAR_PORT=7711          # sidecar listen port
+KLEOS_SIDECAR_URL=http://127.0.0.1:7711  # full URL for kleos-sh to reach the sidecar
+```
+
+Omitting the port from `KLEOS_SIDECAR_URL` routes to port 80 and fails silently.

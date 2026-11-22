@@ -39,8 +39,49 @@ struct Args {
     install_dir: Option<std::path::PathBuf>,
 
     /// Installation profile for non-interactive mode: server, agent-host, full.
+    /// Unrecognised values (including "custom", which has no non-interactive
+    /// component selection) are rejected with an error rather than silently
+    /// falling back to "server".
     #[arg(long, default_value = "server")]
     profile: String,
+
+    /// Override any config field (non-interactive): --set field=value. Repeatable;
+    /// use dotted keys for nested fields, e.g. --set backup_enabled=true
+    /// --set eidolon.enabled=true.
+    #[arg(long = "set", value_name = "FIELD=VALUE")]
+    set: Vec<String>,
+
+    /// Append a raw KEY=VALUE line to the generated .env (non-interactive).
+    /// Repeatable; for env-only settings like KLEOS_GUI_PASSWORD.
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
+
+    /// Seed configuration from an existing kleos.toml before applying overrides
+    /// (non-interactive). The imported file is authoritative for config fields.
+    #[arg(long, value_name = "PATH")]
+    config_file: Option<std::path::PathBuf>,
+
+    /// Enable anonymous read-only access (writes the three env vars the server
+    /// requires together). Non-interactive.
+    #[arg(long)]
+    open_access: bool,
+
+    /// Comma-separated allowed CORS origins (non-interactive).
+    #[arg(long, value_name = "ORIGINS")]
+    cors: Option<String>,
+
+    /// Set the GUI password, which enables the web GUI (non-interactive).
+    #[arg(long, value_name = "PASSWORD")]
+    gui_password: Option<String>,
+
+    /// Force regeneration of all secrets (encryption key, API key pepper,
+    /// HMAC secret) even when upgrading over an existing install.
+    /// WARNING: this invalidates every previously issued API key and every
+    /// active session signed with the old HMAC secret. Default is to
+    /// preserve secrets found in the existing install and only generate the
+    /// ones that are missing (non-interactive).
+    #[arg(long)]
+    regenerate_secrets: bool,
 }
 
 /// Initialize the tracing subscriber for diagnostic output.
@@ -74,13 +115,23 @@ fn install_panic_hook() {
     }));
 }
 
+/// Parse CLI args and dispatch to the non-interactive runner or the TUI wizard.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     if args.non_interactive {
         init_tracing(false);
-        noninteractive::run(args.version, args.install_dir, &args.profile).await
+        let cli = noninteractive::CliConfig {
+            set: args.set,
+            env: args.env,
+            config_file: args.config_file,
+            open_access: args.open_access,
+            cors: args.cors,
+            gui_password: args.gui_password,
+            regenerate_secrets: args.regenerate_secrets,
+        };
+        noninteractive::run(args.version, args.install_dir, &args.profile, cli).await
     } else {
         init_tracing(true);
         install_panic_hook();
@@ -100,15 +151,19 @@ async fn main() -> anyhow::Result<()> {
         terminal.show_cursor()?;
 
         match result? {
-            Some(result) => {
+            wizard::WizardOutcome::Installed(result) => {
                 println!("Installation complete.");
                 if let Some(url) = &result.server_url {
                     println!("Server URL: {url}");
                 }
                 println!("API key: {}", result.api_key);
             }
-            None => {
+            wizard::WizardOutcome::Cancelled => {
                 println!("Installation cancelled.");
+            }
+            wizard::WizardOutcome::Failed(err) => {
+                eprintln!("Installation failed: {err}");
+                std::process::exit(1);
             }
         }
 

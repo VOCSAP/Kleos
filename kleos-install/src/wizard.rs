@@ -23,6 +23,7 @@ use ratatui::{
 };
 
 use crate::steps::{
+    advanced::{draw_advanced_step, handle_advanced_input, AdvancedStepState},
     components::{draw_components_step, handle_components_input, ComponentsStepState},
     embeddings::{draw_embeddings_step, handle_embeddings_input, EmbeddingsStepState},
     security::{draw_security_step, handle_security_input, SecurityStepState},
@@ -49,10 +50,13 @@ pub enum WizardStep {
     Security,
     /// System service manager integration.
     SystemIntegration,
+    /// Advanced (expert) server toggles.
+    Advanced,
     /// Final summary and install confirmation.
     Summary,
 }
 
+/// Step-ordering and display helpers for the TUI wizard flow.
 impl WizardStep {
     /// Return the short display label used in the step indicator bar.
     pub fn label(self) -> &'static str {
@@ -62,6 +66,7 @@ impl WizardStep {
             WizardStep::Embeddings => "Embeddings",
             WizardStep::Security => "Security",
             WizardStep::SystemIntegration => "System",
+            WizardStep::Advanced => "Advanced",
             WizardStep::Summary => "Summary",
         }
     }
@@ -82,6 +87,8 @@ struct StepStates {
     security: SecurityStepState,
     /// State for the system integration step.
     system: SystemStepState,
+    /// State for the advanced toggle step.
+    advanced: AdvancedStepState,
     /// State for the summary and install step.
     summary: SummaryStepState,
 }
@@ -117,15 +124,18 @@ pub struct WizardState {
     pub version: String,
     /// Detected information about the current platform.
     pub platform_info: PlatformInfo,
-    /// Existing installation detected on the system, if any.
-    #[allow(dead_code)]
+    /// Existing installation detected on the system, if any. Read by the
+    /// Summary step to render the upgrade notice.
     pub existing_install: Option<ExistingInstall>,
     /// Whether the quit confirmation dialog is currently shown.
     pub show_quit_confirm: bool,
     /// Whether this is an upgrade of an existing installation.
     pub is_upgrade: bool,
+    /// Overrides collected from the Advanced step, folded into the plan.
+    pub advanced_overrides: kleos_install_core::config::ConfigOverrides,
 }
 
+/// Construction and plan assembly for the TUI wizard's mutable state.
 impl WizardState {
     /// Build the initial wizard state from platform info and CLI overrides.
     ///
@@ -143,6 +153,16 @@ impl WizardState {
         let existing_install = kleos_install_core::upgrade::detect_existing_install();
         let is_upgrade = existing_install.is_some();
 
+        // On an upgrade, reuse secrets from the existing install's `.env` so the
+        // SQLCipher database stays decryptable and previously issued API keys /
+        // signed tokens stay valid. A field that comes back `None` (missing or
+        // partial `.env`) still falls back to a freshly generated value, exactly
+        // as a brand-new install would generate it.
+        let preserved_secrets = existing_install
+            .as_ref()
+            .map(kleos_install_core::upgrade::read_preserved_secrets)
+            .unwrap_or_default();
+
         let server_config = ServerConfig {
             data_dir: platform_info.default_data_dir.clone(),
             db_path: "kleos.db".to_string(),
@@ -150,10 +170,16 @@ impl WizardState {
         };
 
         let security_config = SecurityConfig {
-            encryption_key: security::generate_encryption_key(),
-            api_key_pepper: security::generate_api_key_pepper(),
+            encryption_key: preserved_secrets
+                .encryption_key
+                .unwrap_or_else(security::generate_encryption_key),
+            api_key_pepper: preserved_secrets
+                .api_key_pepper
+                .unwrap_or_else(security::generate_api_key_pepper),
             initial_api_key: security::generate_api_key(),
-            hmac_secret: security::generate_hmac_secret(),
+            hmac_secret: preserved_secrets
+                .hmac_secret
+                .unwrap_or_else(security::generate_hmac_secret),
             open_access: false,
         };
 
@@ -184,6 +210,7 @@ impl WizardState {
             existing_install,
             show_quit_confirm: false,
             is_upgrade,
+            advanced_overrides: kleos_install_core::config::ConfigOverrides::default(),
         };
         state.rebuild_steps();
         state
@@ -210,6 +237,11 @@ impl WizardState {
 
         if has_systemd_or_launchd && has_server {
             steps.push(WizardStep::SystemIntegration);
+        }
+
+        // Advanced server toggles are only relevant when a server is installed.
+        if has_server {
+            steps.push(WizardStep::Advanced);
         }
 
         steps.push(WizardStep::Summary);
@@ -261,6 +293,7 @@ impl WizardState {
             embedding: self.embedding_config.clone(),
             reranker: self.reranker_config.clone(),
             security: self.security_config.clone(),
+            overrides: self.advanced_overrides.clone(),
         };
 
         InstallPlan {
@@ -291,20 +324,53 @@ fn auto_detect_system_integration(platform: &PlatformInfo) -> SystemIntegration 
     }
 }
 
+/// Final outcome of a wizard session, returned to `main` so it can choose the
+/// correct process exit code and message.
+///
+/// Before this type existed, `run_wizard` returned `Option<InstallResult>`:
+/// a user quitting before ever attempting an install and a user quitting
+/// after a failed install attempt both produced `None`, so a failed install
+/// exited the process with status 0 just like a plain cancel. `Failed`
+/// restores that distinction.
+#[derive(Debug)]
+pub enum WizardOutcome {
+    /// The user confirmed the summary and the installation completed.
+    Installed(InstallResult),
+    /// The user quit with no outstanding failed install attempt.
+    Cancelled,
+    /// The user quit after an install attempt failed; the string is the same
+    /// error message shown on the summary step's failure banner.
+    Failed(String),
+}
+
+/// Decide the wizard's final outcome when the user confirms quitting.
+///
+/// A quit while an install error is still on record (an attempt failed and
+/// the user neither retried nor navigated back to clear it) is reported as
+/// `Failed` so the process exits non-zero; a quit with no outstanding error
+/// -- before any install attempt, or after acknowledging one -- is a plain
+/// `Cancelled`. Pulled out as its own pure function so the distinction is
+/// unit-testable without driving the whole terminal event loop.
+fn quit_outcome(pending_install_error: Option<String>) -> WizardOutcome {
+    match pending_install_error {
+        Some(err) => WizardOutcome::Failed(err),
+        None => WizardOutcome::Cancelled,
+    }
+}
+
 /// Run the interactive wizard event loop.
 ///
-/// Draws the wizard, handles keyboard events, and returns either a completed
-/// `InstallResult` (when the user confirms and install succeeds) or `None` when
-/// the user quits.
+/// Draws the wizard, handles keyboard events, and returns a `WizardOutcome`
+/// describing whether the install completed, was cancelled, or failed.
 pub async fn run_wizard<B: Backend>(
     terminal: &mut Terminal<B>,
     version: Option<String>,
     install_dir: Option<PathBuf>,
-) -> anyhow::Result<Option<InstallResult>>
+) -> anyhow::Result<WizardOutcome>
 where
     B::Error: Send + Sync + std::error::Error + 'static,
 {
-    let platform_info = PlatformInfo::detect();
+    let platform_info = PlatformInfo::detect()?;
     let mut state = WizardState::new(platform_info, version, install_dir);
 
     let mut step_states = StepStates {
@@ -313,6 +379,7 @@ where
         embeddings: EmbeddingsStepState::new(),
         security: SecurityStepState::new(),
         system: SystemStepState::new(&state),
+        advanced: AdvancedStepState::new(),
         summary: SummaryStepState::new(),
     };
 
@@ -352,6 +419,9 @@ where
                 WizardStep::SystemIntegration => {
                     draw_system_step(f, chunks[2], &state, &step_states.system);
                 }
+                WizardStep::Advanced => {
+                    draw_advanced_step(f, chunks[2], &state, &step_states.advanced);
+                }
                 WizardStep::Summary => {
                     draw_summary_step(f, chunks[2], &state, &step_states.summary);
                 }
@@ -371,7 +441,7 @@ where
                     if key.kind == KeyEventKind::Press {
                         match key.code {
                             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                                return Ok(None);
+                                return Ok(quit_outcome(step_states.summary.install_error.take()));
                             }
                             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                                 state.show_quit_confirm = false;
@@ -420,6 +490,9 @@ where
             WizardStep::SystemIntegration => {
                 handle_system_input(key, &mut state, &mut step_states.system)
             }
+            WizardStep::Advanced => {
+                handle_advanced_input(key, &mut state, &mut step_states.advanced)
+            }
             WizardStep::Summary => {
                 handle_summary_input(key, &mut state, &mut step_states.summary).await
             }
@@ -432,7 +505,7 @@ where
                 if state.current_step == WizardStep::Summary {
                     // Summary confirmed and install ran -- return the result.
                     if let Some(ref r) = step_states.summary.install_result {
-                        return Ok(Some(r.clone()));
+                        return Ok(WizardOutcome::Installed(r.clone()));
                     }
                 } else {
                     // After components step, rebuild step list and re-init dependent states.
@@ -451,5 +524,105 @@ where
                 state.show_quit_confirm = true;
             }
         }
+    }
+}
+
+/// Tests for the pure, filesystem-free pieces of the wizard: plan assembly
+/// and the failed-vs-cancelled quit distinction.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kleos_install_core::Platform;
+
+    /// Build a minimal `WizardState` for exercising `build_plan` directly,
+    /// without calling `PlatformInfo::detect()` (which probes the real
+    /// machine) or touching the filesystem.
+    fn test_state() -> WizardState {
+        let platform_info = PlatformInfo {
+            platform: Platform::LinuxX64,
+            os_name: "linux".to_string(),
+            arch: "x86_64".to_string(),
+            has_systemd: false,
+            has_launchd: false,
+            default_install_dir: PathBuf::from("/tmp/kleos-test/bin"),
+            default_config_dir: PathBuf::from("/tmp/kleos-test/config"),
+            default_data_dir: PathBuf::from("/tmp/kleos-test/data"),
+        };
+
+        WizardState {
+            current_step: WizardStep::Components,
+            steps: vec![WizardStep::Components, WizardStep::Summary],
+            selected_components: vec!["kleos-server".to_string(), "kleos-cli".to_string()],
+            selected_profile: Some(Profile::Server),
+            server_config: ServerConfig::default(),
+            embedding_config: None,
+            reranker_config: None,
+            security_config: SecurityConfig {
+                encryption_key: "enc".to_string(),
+                api_key_pepper: "pepper".to_string(),
+                initial_api_key: "kleos_test".to_string(),
+                hmac_secret: "hmac".to_string(),
+                open_access: false,
+            },
+            system_integration: SystemIntegration::None,
+            install_dir: PathBuf::from("/tmp/kleos-test/bin"),
+            config_dir: PathBuf::from("/tmp/kleos-test/config"),
+            version: "latest".to_string(),
+            platform_info,
+            existing_install: None,
+            show_quit_confirm: false,
+            is_upgrade: false,
+            advanced_overrides: kleos_install_core::config::ConfigOverrides::default(),
+        }
+    }
+
+    // build_plan carries the server config through when kleos-server is
+    // selected, and passes version/dirs/is_upgrade unchanged.
+    #[test]
+    fn build_plan_includes_server_when_selected() {
+        let state = test_state();
+        let plan = state.build_plan();
+
+        assert!(plan.config.server.is_some());
+        assert_eq!(plan.components, vec!["kleos-server", "kleos-cli"]);
+        assert_eq!(plan.version, "latest");
+        assert!(!plan.is_upgrade);
+    }
+
+    // build_plan omits the server config entirely when kleos-server is not in
+    // the selected component list (e.g. an AgentHost-profile install).
+    #[test]
+    fn build_plan_omits_server_when_not_selected() {
+        let mut state = test_state();
+        state.selected_components = vec!["kleos-cli".to_string()];
+        let plan = state.build_plan();
+
+        assert!(plan.config.server.is_none());
+    }
+
+    // is_upgrade flows straight through from wizard state to the plan.
+    #[test]
+    fn build_plan_carries_is_upgrade_flag() {
+        let mut state = test_state();
+        state.is_upgrade = true;
+        let plan = state.build_plan();
+
+        assert!(plan.is_upgrade);
+    }
+
+    // A quit with a pending install error must be reported as Failed, not
+    // Cancelled -- this is the fix for a failed install exiting status 0.
+    #[test]
+    fn quit_outcome_is_failed_when_error_pending() {
+        let outcome = quit_outcome(Some("boom".to_string()));
+        assert!(matches!(outcome, WizardOutcome::Failed(ref e) if e == "boom"));
+    }
+
+    // A quit with no pending error (the common case: before any install
+    // attempt, or after one succeeded/was acknowledged) is Cancelled.
+    #[test]
+    fn quit_outcome_is_cancelled_when_no_error() {
+        let outcome = quit_outcome(None);
+        assert!(matches!(outcome, WizardOutcome::Cancelled));
     }
 }

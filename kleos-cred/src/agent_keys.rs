@@ -21,6 +21,7 @@ pub struct AgentKey {
     pub revoked_at: Option<String>,
 }
 
+/// Validity and access checks for a stored agent key.
 impl AgentKey {
     /// Check if this key is currently valid (not revoked).
     pub fn is_valid(&self) -> bool {
@@ -50,11 +51,20 @@ pub struct AgentKeyPermissions {
     pub allow_raw: bool,
     /// Allowed namespace patterns (empty = all namespaces allowed).
     pub namespaces: Vec<String>,
+    /// Set when the stored permissions blob failed to parse. Empty category and
+    /// namespace lists mean "all", so a corrupt blob must not deserialize to an
+    /// all-empty struct that silently grants everything; when true, allows_*
+    /// deny unconditionally (fail closed). Not serialized; defaults false.
+    malformed: bool,
 }
 
+/// Permission checks and JSON (de)serialization for an agent key's allow-lists.
 impl AgentKeyPermissions {
     /// Check if a category is allowed.
     pub fn allows_category(&self, category: &str) -> bool {
+        if self.malformed {
+            return false;
+        }
         if self.categories.is_empty() {
             return true;
         }
@@ -71,6 +81,9 @@ impl AgentKeyPermissions {
     ///
     /// Empty namespaces list means all namespaces are allowed.
     pub fn allows_namespace(&self, ns: &str) -> bool {
+        if self.malformed {
+            return false;
+        }
         if self.namespaces.is_empty() {
             return true;
         }
@@ -87,6 +100,18 @@ impl AgentKeyPermissions {
         })
     }
 
+    /// Construct permissions from explicit allow-lists (not from a stored blob).
+    /// The `malformed` fail-closed flag stays private; use this from other crates
+    /// instead of a struct literal.
+    pub fn new(categories: Vec<String>, allow_raw: bool, namespaces: Vec<String>) -> Self {
+        Self {
+            categories,
+            allow_raw,
+            namespaces,
+            malformed: false,
+        }
+    }
+
     /// Serialize to JSON for storage.
     pub fn to_json(&self) -> String {
         serde_json::json!({
@@ -99,7 +124,21 @@ impl AgentKeyPermissions {
 
     /// Deserialize from JSON.
     pub fn from_json(json: &str) -> Self {
-        let value: serde_json::Value = serde_json::from_str(json).unwrap_or_default();
+        // Fail closed: a permissions blob that does not parse must not widen
+        // access. Empty category/namespace lists mean "all", so returning a
+        // Default (all-empty) here would grant everything -- flag it malformed
+        // instead so allows_* deny.
+        let value: serde_json::Value = match serde_json::from_str(json) {
+            Ok(v) => v,
+            Err(_) => {
+                return Self {
+                    malformed: true,
+                    allow_raw: false,
+                    categories: Vec::new(),
+                    namespaces: Vec::new(),
+                };
+            }
+        };
         let categories = value
             .get("categories")
             .and_then(|v| v.as_array())
@@ -126,6 +165,7 @@ impl AgentKeyPermissions {
             categories,
             allow_raw,
             namespaces,
+            malformed: false,
         }
     }
 }
@@ -343,6 +383,7 @@ pub async fn delete_agent_key(db: &Database, user_id: i64, name: &str) -> Result
     Ok(())
 }
 
+/// Unit tests for agent-key permission scoping and key encoding.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,9 +394,37 @@ mod tests {
             categories: vec!["aws".into(), "gcp*".into()],
             allow_raw: true,
             namespaces: vec!["prod".into(), "staging/*".into()],
+            malformed: false,
         }
     }
 
+    /// A malformed permissions blob must fail closed (deny everything), not
+    /// deserialize to an all-empty struct that grants everything. A valid blob
+    /// with empty lists still legitimately means "all".
+    #[test]
+    fn malformed_permissions_blob_fails_closed() {
+        let bad = AgentKeyPermissions::from_json("{not valid json");
+        assert!(
+            !bad.allows_category("aws"),
+            "malformed must deny categories"
+        );
+        assert!(
+            !bad.allows_namespace("prod"),
+            "malformed must deny namespaces"
+        );
+        assert!(!bad.allow_raw, "malformed must deny raw");
+        let empty = AgentKeyPermissions::from_json(r#"{"categories":[],"namespaces":[]}"#);
+        assert!(
+            empty.allows_category("aws"),
+            "valid empty blob still means all"
+        );
+        assert!(
+            empty.allows_namespace("prod"),
+            "valid empty blob still means all"
+        );
+    }
+
+    /// An exact category pattern matches only that category.
     #[test]
     fn permissions_allows_exact_match() {
         let perms = setup_permissions();
@@ -363,6 +432,7 @@ mod tests {
         assert!(!perms.allows_category("azure"));
     }
 
+    /// A trailing-star category pattern matches by prefix.
     #[test]
     fn permissions_allows_wildcard() {
         let perms = setup_permissions();
@@ -371,6 +441,7 @@ mod tests {
         assert!(perms.allows_category("gcp/project"));
     }
 
+    /// An empty category list allows every category.
     #[test]
     fn permissions_empty_allows_all() {
         let perms = AgentKeyPermissions::default();
@@ -378,6 +449,7 @@ mod tests {
         assert!(perms.allows_category("really/anything"));
     }
 
+    /// to_json then from_json preserves the permission fields.
     #[test]
     fn permissions_json_roundtrip() {
         let perms = setup_permissions();
@@ -388,6 +460,7 @@ mod tests {
         assert_eq!(perms.namespaces, restored.namespaces);
     }
 
+    /// An exact namespace pattern matches only that namespace.
     #[test]
     fn permissions_allows_namespace_exact() {
         let perms = setup_permissions();
@@ -395,6 +468,7 @@ mod tests {
         assert!(!perms.allows_namespace("dev"));
     }
 
+    /// A "prefix/*" namespace pattern matches paths under the prefix, not the bare prefix.
     #[test]
     fn permissions_allows_namespace_prefix_wildcard() {
         let perms = setup_permissions();
@@ -403,6 +477,7 @@ mod tests {
         assert!(!perms.allows_namespace("staging")); // prefix match requires content after /
     }
 
+    /// An empty namespace list allows every namespace.
     #[test]
     fn permissions_namespace_empty_allows_all() {
         let perms = AgentKeyPermissions::default();
@@ -410,18 +485,21 @@ mod tests {
         assert!(perms.allows_namespace("prod"));
     }
 
+    /// A "*" namespace pattern allows every namespace.
     #[test]
     fn permissions_namespace_star_allows_all() {
         let perms = AgentKeyPermissions {
             categories: vec![],
             allow_raw: false,
             namespaces: vec!["*".into()],
+            malformed: false,
         };
         assert!(perms.allows_namespace("prod"));
         assert!(perms.allows_namespace("dev"));
         assert!(perms.allows_namespace("any-namespace"));
     }
 
+    /// A blob without a "namespaces" field deserializes to "all namespaces" (back-compat).
     #[test]
     fn permissions_json_backward_compat_missing_namespaces() {
         // Old JSON without "namespaces" field should deserialize to empty vec (all allowed).
@@ -431,6 +509,7 @@ mod tests {
         assert!(perms.allows_namespace("any-namespace"));
     }
 
+    /// Key generation yields a 32-byte key and a matching SHA-256 hex hash.
     #[test]
     fn generate_key_produces_valid_hash() {
         let (key, hash) = generate_agent_key();
@@ -440,6 +519,7 @@ mod tests {
         assert_eq!(hash_key(&key), hash);
     }
 
+    /// A formatted key round-trips through parse_agent_key.
     #[test]
     fn format_and_parse_key() {
         let (key, _) = generate_agent_key();

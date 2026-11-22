@@ -27,8 +27,12 @@ use types::{BulkArchiveBody, CreateMemoryBody, LoginForm, UpdateMemoryBody};
 /// HMAC-SHA256 signer used for GUI session cookies.
 type HmacSha256 = Hmac<Sha256>;
 
-const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60; // 24 hours
-const COOKIE_NAME: &str = "engram_auth";
+/// GUI session lifetime in seconds.
+const GUI_COOKIE_MAX_AGE: i64 = 24 * 60 * 60;
+/// Canonical Kleos GUI session cookie name.
+const COOKIE_NAME: &str = "kleos_auth";
+/// Pre-rename cookie name accepted during the compatibility window.
+const LEGACY_COOKIE_NAME: &str = "engram_auth";
 
 /// Readable (non-HttpOnly) cookie carrying the CSRF token for the GUI session,
 /// and the header the SPA echoes it in on mutating requests.
@@ -105,7 +109,7 @@ async fn load_or_generate_hmac_secret(data_dir: &str) -> SecretString {
         if secret.len() < 32 {
             tracing::error!(
                 len = secret.len(),
-                "ENGRAM_HMAC_SECRET is too short (minimum 32 characters); ignoring"
+                "KLEOS_HMAC_SECRET is too short (minimum 32 characters); ignoring"
             );
         } else {
             return SecretString::new(secret);
@@ -405,17 +409,18 @@ fn verify_cookie(cookie: &str, secret: &SecretString) -> Option<GuiSession> {
     })
 }
 
-/// Extract the kleos_auth cookie from headers
+/// Extract the canonical or legacy GUI authentication cookie from headers.
 fn get_auth_cookie(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .map(|s| s.trim())
-        .find(|s| s.starts_with(&format!("{}=", COOKIE_NAME)))?
-        .strip_prefix(&format!("{}=", COOKIE_NAME))
-        .map(|s| s.to_string())
+    let raw = headers.get(header::COOKIE)?.to_str().ok()?;
+    extract_named_cookie(raw, COOKIE_NAME).or_else(|| extract_named_cookie(raw, LEGACY_COOKIE_NAME))
+}
+
+/// Extract one exact cookie value from a raw Cookie header.
+fn extract_named_cookie(raw: &str, name: &str) -> Option<String> {
+    raw.split(';')
+        .map(str::trim)
+        .find_map(|cookie| cookie.strip_prefix(&format!("{name}=")))
+        .map(str::to_string)
 }
 
 /// Resolve the GUI session (user_id + scopes) from the cookie, if any.
@@ -477,7 +482,7 @@ pub async fn is_gui_authenticated(state: &AppState, headers: &HeaderMap) -> bool
 /// Determine cookie attributes based on config, not client-supplied headers.
 ///
 /// SECURITY (SEC-MED-6): X-Forwarded-Proto is trivially spoofable when no
-/// trusted reverse proxy strips it. Use the `ENGRAM_SECURE_COOKIES` env var
+/// trusted reverse proxy strips it. Use the `KLEOS_SECURE_COOKIES` env var
 /// (set to "1" or "true") when the server is behind TLS.
 fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
     static SECURE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -487,7 +492,7 @@ fn cookie_attributes(_headers: &HeaderMap) -> &'static str {
             .unwrap_or(false)
     });
 
-    // L-R3-005: prefer SameSite=Strict regardless of ENGRAM_SECURE_COOKIES.
+    // L-R3-005: prefer SameSite=Strict regardless of KLEOS_SECURE_COOKIES.
     // The previous default (Lax in non-secure mode) let any cross-site
     // top-level GET (including links to /gui/logout) carry the cookie,
     // which made forced-logout CSRF trivially exploitable.
@@ -523,8 +528,8 @@ async fn gui_auth(
 ) -> Response {
     // SECURITY (SEC-MED-7): gui_enabled controls whether the GUI is reachable.
     // It does NOT gate a password prompt -- actual authentication uses the API
-    // key submitted in the form. Set KLEOS_GUI_PASSWORD or the legacy
-    // ENGRAM_GUI_PASSWORD to any non-empty value to enable the GUI.
+    // key submitted in the form. Set KLEOS_GUI_PASSWORD to any non-empty
+    // value to enable the GUI; legacy configuration remains accepted.
     if !state.config.gui_enabled {
         return (StatusCode::FORBIDDEN, "GUI authentication not configured").into_response();
     }
@@ -587,6 +592,7 @@ async fn gui_auth(
 async fn gui_logout(headers: HeaderMap) -> Response {
     let attrs = cookie_attributes(&headers);
     let cookie = format!("{}=; Max-Age=0; {}", COOKIE_NAME, attrs);
+    let legacy_cookie = format!("{}=; Max-Age=0; {}", LEGACY_COOKIE_NAME, attrs);
     let csrf_clear = format!(
         "{}=; Max-Age=0; {}",
         CSRF_COOKIE_NAME,
@@ -596,6 +602,7 @@ async fn gui_logout(headers: HeaderMap) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::SET_COOKIE, cookie)
+        .header(header::SET_COOKIE, legacy_cookie)
         .header(header::SET_COOKIE, csrf_clear)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(r#"{"ok":true}"#))
@@ -1066,6 +1073,114 @@ async fn gui_bulk_archive(
     Ok(Json(json!({ "archived": archived })))
 }
 
+/// Turn a track filename ("moonlit-dreams.mp3") into a display name
+/// ("Moonlit Dreams"). An optional names.json sidecar (handled in the manifest
+/// handler) overrides this for tracks that need exact titles.
+fn prettify_track_name(file_name: &str) -> String {
+    let stem = file_name.strip_suffix(".mp3").unwrap_or(file_name);
+    stem.split(['-', '_'])
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// GET /media/music/manifest.json -- list available tracks. Empty array when
+/// no music dir is configured or the dir cannot be read, which keeps the GUI
+/// player hidden by default.
+async fn serve_music_manifest(State(state): State<AppState>) -> Response {
+    let Some(dir) = state.config.gui_music_dir.as_ref() else {
+        return music_json("[]".to_string());
+    };
+    // Reject any parent-directory traversal in the operator-configured music
+    // dir before touching the filesystem. This `..` containment check is also
+    // the sanitizer the CodeQL rust/path-injection query recognizes: the dir is
+    // used only on the branch where the check passed, so the env-sourced path no
+    // longer taints the reads below.
+    if dir.contains("..") {
+        return music_json("[]".to_string());
+    }
+    let root = std::path::Path::new(dir);
+    // Optional sidecar of exact titles.
+    let overrides: std::collections::HashMap<String, String> =
+        match fs::read_to_string(root.join("names.json")).await {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
+            Err(_) => std::collections::HashMap::new(),
+        };
+    let mut entries: Vec<Value> = Vec::new();
+    if let Ok(mut rd) = fs::read_dir(root).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !name.to_ascii_lowercase().ends_with(".mp3") {
+                continue;
+            }
+            let title = overrides
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| prettify_track_name(&name));
+            entries.push(json!({ "src": name, "name": title }));
+        }
+    }
+    // Stable order so the player track index is deterministic across loads.
+    entries.sort_by(|a, b| a["src"].as_str().cmp(&b["src"].as_str()));
+    music_json(serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string()))
+}
+
+/// Build a no-store JSON response for the music manifest.
+fn music_json(body: String) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// GET /media/music/{file} -- serve one mp3 from the configured music dir.
+/// Path-traversal-safe: the canonical resolved path must stay within the dir,
+/// and only .mp3 files are served.
+async fn serve_music_file(State(state): State<AppState>, Path(file): Path<String>) -> Response {
+    let Some(dir) = state.config.gui_music_dir.as_ref() else {
+        return (StatusCode::NOT_FOUND, "no music").into_response();
+    };
+    // Accept only a bare .mp3 filename. The strict character allowlist rejects
+    // path separators, parent-dir segments, and any other character, so the
+    // user-supplied value cannot escape the configured music directory.
+    let valid = file.len() <= 255
+        && file.to_ascii_lowercase().ends_with(".mp3")
+        && !file.contains("..")
+        && file
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if !valid {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let root = std::path::Path::new(dir);
+    let full = root.join(&file);
+    // Defense in depth: the resolved path must still resolve inside the dir.
+    let (Ok(canonical), Ok(root_canonical)) = (full.canonicalize(), root.canonicalize()) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if !canonical.starts_with(&root_canonical) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match fs::read(&canonical).await {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "audio/mpeg")
+            .header(header::CACHE_CONTROL, "public, max-age=86400")
+            .body(Body::from(bytes))
+            .unwrap(),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
 /// Build the GUI router with auth, static assets, and memory mutation routes.
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -1076,6 +1191,8 @@ pub fn router() -> Router<AppState> {
         .route("/_app/login.css", get(serve_login_css))
         .route("/_app/login.js", get(serve_login_js))
         .route("/_app/{*path}", get(serve_app_assets))
+        .route("/media/music/manifest.json", get(serve_music_manifest))
+        .route("/media/music/{file}", get(serve_music_file))
         // GUI memory CRUD
         .route("/gui/memories", post(gui_create_memory))
         .route(
@@ -1089,6 +1206,13 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Verify that music filenames become readable labels in the GUI.
+    #[test]
+    fn prettify_track_name_humanizes_filenames() {
+        assert_eq!(prettify_track_name("moonlit-dreams.mp3"), "Moonlit Dreams");
+        assert_eq!(prettify_track_name("soft_bee_pulse.mp3"), "Soft Bee Pulse");
+    }
 
     // The login bridge establishes the cookie session via /gui/auth and
     // redirects to the app. It must NOT persist the raw API key in localStorage
@@ -1109,6 +1233,21 @@ mod tests {
         assert!(LOGIN_JS.contains("try {"));
         assert!(LOGIN_JS.contains("catch"));
         assert!(LOGIN_JS.contains("Unable to reach Kleos"));
+    }
+
+    /// The canonical cookie must win when both names are present, while a
+    /// pre-rename cookie remains readable during migration.
+    #[test]
+    fn auth_cookie_prefers_kleos_and_accepts_legacy_name() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            "engram_auth=legacy; kleos_auth=current".parse().unwrap(),
+        );
+        assert_eq!(get_auth_cookie(&headers).as_deref(), Some("current"));
+
+        headers.insert(header::COOKIE, "engram_auth=legacy".parse().unwrap());
+        assert_eq!(get_auth_cookie(&headers).as_deref(), Some("legacy"));
     }
 
     // The CSRF token must be deterministic per session, bound to both the

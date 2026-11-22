@@ -1,0 +1,12 @@
+[submodule "wiki"]
+	path = wiki
+	url = https://github.com/VOCSAP/Kleos.wiki.git
+[submodule "prompts-overrides"]
+	path = prompts-overrides
+	url = https://github.com/VOCSAP/Kleos.prompts
+[submodule "gate-rules"]
+	path = gate-rules
+	url = https://github.com/VOCSAP/Kleos.gates-rules.git
+[submodule "lexicon-overrides"]
+	path = lexicon-overrides
+	url = https://github.com/VOCSAP/Kleos.lexicon.git

@@ -46,8 +46,41 @@ pub fn monotonic_millis() -> u64 {
 const GROWTH_REFLECT_CHANCE: f64 = 0.2;
 /// Number of recent memory contents to feed growth::reflect as context.
 const GROWTH_CONTEXT_SIZE: usize = 20;
+/// Number of most-recent growth observations fed back as `existing_growth`,
+/// so the LLM's "do NOT repeat things already known" instruction has actual
+/// prior observations to check against instead of always seeing `None`.
+const EXISTING_GROWTH_LIMIT: usize = 15;
+
+/// Join the most-recent growth observations into a single string for the
+/// `existing_growth` field of `GrowthReflectRequest`. `space_id` scopes the
+/// observations to the same space as the reflection being fed (Patch 33) --
+/// `None` (the legacy/default bucket) falls back to `list_observations`'s
+/// unfiltered "no space scoping" behaviour, matching the convention already
+/// used by routes/prompts/mod.rs for context-assembly call sites that have
+/// no resolved space. The review-gate predicate (status/is_archived) inside
+/// `list_observations` is unconditional, so this never widens past it.
+async fn existing_growth_context(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
+) -> Option<String> {
+    match growth::list_observations(db, EXISTING_GROWTH_LIMIT, space_id, None, user_id).await {
+        Ok(obs) if !obs.is_empty() => Some(
+            obs.into_iter()
+                .map(|o| o.content)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Ok(_) => None,
+        Err(e) => {
+            warn!(user_id, error = %e, "dreamer: failed to load existing growth observations");
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize)]
+/// Reports the latest background cycle and accumulated outcomes.
 pub struct DreamerStats {
     pub running: bool,
     pub cycles_total: u64,
@@ -65,6 +98,7 @@ pub struct DreamerStats {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+/// Accumulates successful and failed background operations.
 pub struct DreamerTotals {
     pub pipeline_ok: u64,
     pub pipeline_failed: u64,
@@ -101,14 +135,21 @@ pub struct SkillEvolutionReport {
     pub derives_attempted: u64,
     pub derives_succeeded: u64,
     pub derives_failed: u64,
+    /// Concurrent selection lost the persistent pair claim to another cycle.
+    pub derives_skipped_cooldown: u64,
+    /// Persistence failures prevented an autonomous attempt from starting.
+    pub derives_claim_failed: u64,
 }
 
+/// Shares dreamer observations between the worker and HTTP readers.
 pub type DreamerStatsHandle = Arc<RwLock<DreamerStats>>;
 
+/// Creates an initially idle dreamer statistics handle.
 pub fn new_stats_handle() -> DreamerStatsHandle {
     Arc::new(RwLock::new(DreamerStats::default()))
 }
 
+/// Lists active database owners for individually scoped background work.
 pub(crate) async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError> {
     db.read(|conn| {
         let mut stmt = conn.prepare("SELECT id FROM users ORDER BY id")?;
@@ -118,6 +159,7 @@ pub(crate) async fn active_user_ids(db: &Database) -> Result<Vec<i64>, EngError>
     .await
 }
 
+/// Starts the cancellable background worker and its tenant cycle gates.
 pub fn start_dreamer_task(
     db: Arc<Database>,
     config: Arc<Config>,
@@ -201,6 +243,7 @@ pub fn start_dreamer_task(
     (token, handle)
 }
 
+/// Checks whether the evolution interval has elapsed since the previous pass.
 fn should_run_evolution(last_run: &Option<Instant>, interval_secs: u64) -> bool {
     if interval_secs == 0 {
         return true;
@@ -211,6 +254,7 @@ fn should_run_evolution(last_run: &Option<Instant>, interval_secs: u64) -> bool 
     }
 }
 
+/// Compares monotonic request activity with the configured idle threshold.
 fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
     if threshold_secs == 0 {
         return true;
@@ -224,6 +268,7 @@ fn is_idle(last_request_time: &AtomicU64, threshold_secs: u64) -> bool {
     elapsed_secs >= threshold_secs
 }
 
+/// Runs one monolithic intelligence cycle and updates shared observations.
 async fn run_cycle(
     db: &Arc<Database>,
     brain: Option<&Arc<dyn BrainBackend>>,
@@ -250,9 +295,12 @@ async fn run_cycle(
     let mut last_report: Option<Value> = None;
 
     for user_id in &users {
-        match default_pipeline(config.consolidation_enabled)
-            .run(db, *user_id)
-            .await
+        match default_pipeline(
+            config.consolidation_enabled,
+            config.auto_link_enabled.then_some(config.auto_link_batch),
+        )
+        .run(db, *user_id)
+        .await
         {
             Ok(report) => {
                 total_ok += report.ok_count;
@@ -342,60 +390,106 @@ async fn run_cycle(
         }
     }
 
-    // Post-dream hook 2: probabilistic growth reflection per user.
+    // Post-dream hook 2: probabilistic growth reflection per (user, space)
+    // pair. Patch 35 -- iterate per space to fix Kleos #3028 (growth
+    // observations leaked across projects when the per-user reflection
+    // mixed contexts from unrelated spaces). Patch 33 6/N already extended
+    // `GrowthReflectRequest.space_id` and the INSERT; this site finally
+    // propagates a concrete value instead of the placeholder `None`.
+    // 727d97fc merge: upstream #101 made the brain dream result per-user
+    // (`brain_results` HashMap); deserialize each user's own result inside
+    // the per-user loop, before the per-space fan-out.
     let mut growth_calls = 0u64;
     let mut growth_stored = 0u64;
     for user_id in &users {
-        let roll: f64 = rand::random();
-        if roll >= GROWTH_REFLECT_CHANCE {
-            continue;
-        }
-        // Deserialize this user's own dream result for growth context.
-        let dream_cycle: Option<DreamCycleResult> = brain_results.get(user_id).and_then(|v| {
-            match serde_json::from_value::<DreamCycleResult>(v.clone()) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    warn!(user_id, error = %e, "dreamer: failed to deserialize dream cycle for growth context");
-                    None
+        // Deserialize this user's own dream cycle result for growth context
+        // enrichment (upstream #101 keyed the result per user).
+        let dream_cycle: Option<DreamCycleResult> =
+            brain_results.get(user_id).and_then(|v| {
+                match serde_json::from_value::<DreamCycleResult>(v.clone()) {
+                    Ok(c) => Some(c),
+                    Err(e) => {
+                        warn!(user_id = *user_id, error = %e, "dreamer: failed to deserialize dream cycle for growth context");
+                        None
+                    }
                 }
-            }
-        });
-        match recent_memory_contents(db, *user_id, GROWTH_CONTEXT_SIZE).await {
-            Ok(ctx) if !ctx.is_empty() => {
-                let mut merged_ctx = Vec::new();
-                if let Some(ref dc) = dream_cycle {
-                    // Pattern/edge counts are passed as 0 until BrainBackend exposes a
-                    // stats() API. When that lands, replace the literals with
-                    // state.brain_stats().await or equivalent.
-                    merged_ctx = growth::build_dream_context(dc, 0, 0);
-                }
-                merged_ctx.extend(ctx);
+            });
 
-                let req = GrowthReflectRequest {
-                    service: "dreamer".to_string(),
-                    context: merged_ctx,
-                    existing_growth: None,
-                    prompt_override: None,
-                };
-                match growth::reflect(db, &req, *user_id).await {
-                    Ok(res) => {
-                        growth_calls += 1;
-                        if res.stored_memory_id.is_some() {
-                            growth_stored += 1;
-                            info!(
+        let spaces = match list_user_spaces(db, *user_id).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    user_id = *user_id,
+                    error = %e,
+                    "dreamer: failed to enumerate spaces, skipping growth this tick"
+                );
+                continue;
+            }
+        };
+        for space_id_opt in &spaces {
+            let roll: f64 = rand::random();
+            if roll >= GROWTH_REFLECT_CHANCE {
+                continue;
+            }
+            match recent_memory_contents_for_space(
+                db,
+                *user_id,
+                *space_id_opt,
+                GROWTH_CONTEXT_SIZE,
+            )
+            .await
+            {
+                Ok(ctx) if !ctx.is_empty() => {
+                    let mut merged_ctx = Vec::new();
+                    if let Some(ref dc) = dream_cycle {
+                        // Pattern/edge counts are passed as 0 until BrainBackend exposes a
+                        // stats() API. When that lands, replace the literals with
+                        // state.brain_stats().await or equivalent. Brain stays a global
+                        // associative substrate (cf. plan section 4), so the dream
+                        // context is space-agnostic by design.
+                        merged_ctx = growth::build_dream_context(dc, 0, 0);
+                    }
+                    merged_ctx.extend(ctx);
+
+                    let req = GrowthReflectRequest {
+                        service: "dreamer".to_string(),
+                        context: merged_ctx,
+                        existing_growth: existing_growth_context(db, *user_id, *space_id_opt)
+                            .await,
+                        prompt_override: None,
+                        space_id: *space_id_opt,
+                    };
+                    match growth::reflect(db, &req, *user_id).await {
+                        Ok(res) => {
+                            growth_calls += 1;
+                            if res.stored_memory_id.is_some() {
+                                growth_stored += 1;
+                                info!(
+                                    user_id = *user_id,
+                                    space_id = ?space_id_opt,
+                                    "dreamer: growth reflection stored observation"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
                                 user_id = *user_id,
-                                "dreamer: growth reflection stored observation"
-                            );
+                                space_id = ?space_id_opt,
+                                error = %e,
+                                "dreamer: growth::reflect failed"
+                            )
                         }
                     }
-                    Err(e) => {
-                        warn!(user_id = *user_id, error = %e, "dreamer: growth::reflect failed")
-                    }
                 }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                warn!(user_id = *user_id, error = %e, "dreamer: failed to load growth context")
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(
+                        user_id = *user_id,
+                        space_id = ?space_id_opt,
+                        error = %e,
+                        "dreamer: failed to load growth context"
+                    )
+                }
             }
         }
     }
@@ -543,6 +637,18 @@ async fn run_skill_evolution(
             }
         };
         for (parents, direction) in derive_pairs {
+            match analyzer::claim_derive_attempt(db, user_id, &parents).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    report.derives_skipped_cooldown += 1;
+                    continue;
+                }
+                Err(error) => {
+                    report.derives_claim_failed += 1;
+                    warn!(user_id, parents = ?parents, error = %error, "dreamer: derive attempt claim failed");
+                    continue;
+                }
+            }
             report.derives_attempted += 1;
             match evolver::derive_skill(db, Some(llm), &parents, &direction, "dreamer", user_id)
                 .await
@@ -566,28 +672,103 @@ async fn run_skill_evolution(
     report
 }
 
-async fn recent_memory_contents(
+/// Patch 35 -- list space ids registered for this user, plus the legacy
+/// `None` bucket (memories rows written before Patch 33 with
+/// `space_id = NULL`). Drives the per-space outer loop around
+/// `growth::reflect` so observations are no longer mixed across projects
+/// (cf. Kleos #3028).
+///
+/// Source-of-truth is the `spaces` table (which keeps `user_id`), not
+/// `memories` -- Phase 5.1 dropped `memories.user_id` because tenant
+/// shards already isolate per user at the DB level. We always append a
+/// `None` bucket so the legacy NULL rows still get a reflection turn
+/// (the inner helper returns `Vec::new()` when no such rows remain,
+/// making the bucket a safe no-op once the migration chantier reassigns
+/// them).
+async fn list_user_spaces(
     db: &Database,
     user_id: i64,
+) -> Result<Vec<Option<i64>>, EngError> {
+    db.read(move |conn| {
+        let mut stmt = conn
+            .prepare("SELECT id FROM spaces WHERE user_id = ?1 ORDER BY id")
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let rows = stmt
+            .query_map(rusqlite::params![user_id], |row| row.get::<_, i64>(0))
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+        let mut spaces: Vec<Option<i64>> = rows
+            .collect::<std::result::Result<Vec<i64>, _>>()
+            .map_err(|e| EngError::DatabaseMessage(e.to_string()))?
+            .into_iter()
+            .map(Some)
+            .collect();
+        spaces.push(None);
+        Ok(spaces)
+    })
+    .await
+}
+
+/// Patch 35 -- recent_memory_contents variant scoped to a single space.
+/// `space_id = None` selects the legacy NULL bucket; `Some(id)` selects
+/// rows whose `space_id` exactly equals the given concrete id. SQL is
+/// split per branch because `IS NULL` is not equivalent to `= ?` for the
+/// NULL sentinel (NULL!=NULL in SQL semantics).
+///
+/// `user_id` filters rows by owner: upstream #93 re-added `memories.user_id`
+/// (migration 64 / tenant v55) for monolith multi-user isolation, so the query
+/// scopes by BOTH user and space. In sharded mode the predicate is a no-op
+/// (one tenant per shard); in monolith mode it prevents cross-tenant leakage.
+async fn recent_memory_contents_for_space(
+    db: &Database,
+    user_id: i64,
+    space_id: Option<i64>,
     limit: usize,
 ) -> Result<Vec<String>, EngError> {
     let limit_i64 = limit as i64;
-    db.read(move |conn| {
-        // Scope to the user: in monolith mode the growth pass runs on the shared
-        // state.db, so without the user_id predicate every user's reflection
-        // ingested the globally most-recent memories of ALL users (and could
-        // store cross-tenant observations). Harmless in sharded mode (one tenant
-        // per shard), correct in monolith.
-        let mut stmt = conn.prepare(
-            "SELECT content FROM memories \
-                 WHERE is_forgotten = 0 AND is_archived = 0 AND is_latest = 1 \
-                 AND user_id = ?2 \
-                 ORDER BY created_at DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![limit_i64, user_id], |row| {
-            row.get::<_, String>(0)
-        })?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    // 727d97fc merge: combine Patch 35's space scoping with upstream #93's
+    // user_id predicate and upstream's review-gate `status != 'pending'`
+    // predicate. Upstream re-added `memories.user_id` (migration 64 / tenant
+    // v55) for monolith multi-user isolation, so the growth pass must filter
+    // BOTH the space (avoid cross-project leakage, Kleos #3028) AND the user
+    // (avoid cross-tenant leakage in monolith mode); `status != 'pending'`
+    // keeps an unreviewed memory out of the growth-reflection context.
+    db.read(move |conn| match space_id {
+        Some(sid) => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content FROM memories \
+                     WHERE is_forgotten = 0 AND is_archived = 0 \
+                       AND is_latest = 1 AND user_id = ?3 AND space_id = ?1 \
+                       AND status != 'pending' \
+                     ORDER BY created_at DESC LIMIT ?2",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map(rusqlite::params![sid, limit_i64, user_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        }
+        None => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content FROM memories \
+                     WHERE is_forgotten = 0 AND is_archived = 0 \
+                       AND is_latest = 1 AND user_id = ?2 AND space_id IS NULL \
+                       AND status != 'pending' \
+                     ORDER BY created_at DESC LIMIT ?1",
+                )
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            let rows = stmt
+                .query_map(rusqlite::params![limit_i64, user_id], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| EngError::DatabaseMessage(e.to_string()))
+        }
     })
     .await
 }
@@ -641,9 +822,12 @@ async fn run_cycle_tenants(
         };
 
         for user_id in &users {
-            if let Err(e) = default_pipeline(config.consolidation_enabled)
-                .run(&tenant_db, *user_id)
-                .await
+            if let Err(e) = default_pipeline(
+                config.consolidation_enabled,
+                config.auto_link_enabled.then_some(config.auto_link_batch),
+            )
+            .run(&tenant_db, *user_id)
+            .await
             {
                 warn!(
                     tenant = %tenant_row.tenant_id,
@@ -653,22 +837,50 @@ async fn run_cycle_tenants(
                 );
             }
 
-            let roll: f64 = rand::random();
-            if roll < GROWTH_REFLECT_CHANCE {
-                if let Ok(ctx) =
-                    recent_memory_contents(&tenant_db, *user_id, GROWTH_CONTEXT_SIZE).await
+            // Patch 35 -- per-space outer loop mirroring run_cycle.
+            let spaces = match list_user_spaces(&tenant_db, *user_id).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        tenant = %tenant_row.tenant_id,
+                        user_id = *user_id,
+                        error = %e,
+                        "dreamer: tenant failed to enumerate spaces, skipping growth"
+                    );
+                    Vec::new()
+                }
+            };
+            for space_id_opt in &spaces {
+                let roll: f64 = rand::random();
+                if roll >= GROWTH_REFLECT_CHANCE {
+                    continue;
+                }
+                if let Ok(ctx) = recent_memory_contents_for_space(
+                    &tenant_db,
+                    *user_id,
+                    *space_id_opt,
+                    GROWTH_CONTEXT_SIZE,
+                )
+                .await
                 {
                     if !ctx.is_empty() {
                         let req = GrowthReflectRequest {
                             service: "dreamer".to_string(),
                             context: ctx,
-                            existing_growth: None,
+                            existing_growth: existing_growth_context(
+                                &tenant_db,
+                                *user_id,
+                                *space_id_opt,
+                            )
+                            .await,
                             prompt_override: None,
+                            space_id: *space_id_opt,
                         };
                         if let Err(e) = growth::reflect(&tenant_db, &req, *user_id).await {
                             warn!(
                                 tenant = %tenant_row.tenant_id,
                                 user_id = *user_id,
+                                space_id = ?space_id_opt,
                                 error = %e,
                                 "dreamer: tenant growth reflect failed"
                             );

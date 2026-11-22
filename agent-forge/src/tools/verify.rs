@@ -7,6 +7,7 @@ use crate::db::Database;
 use crate::json_io::Output;
 use crate::tools::{ToolError, ToolResult};
 use chrono::Utc;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::process::Command;
 use std::time::Instant;
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 /// Input for `verify`: a single command or a list of `steps`, plus optional
 /// linkage to a spec criterion or skill execution record.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct VerifyInput {
     pub command: Option<String>,
     pub expected_exit_code: Option<i32>,
@@ -26,7 +27,7 @@ pub struct VerifyInput {
 }
 
 /// One verification step: command line, the exit code that means success, and an optional label.
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, JsonSchema)]
 pub struct VerifyStep {
     pub command: String,
     pub expected_exit_code: Option<i32>,
@@ -256,7 +257,7 @@ pub fn verify(db: &Database, input: VerifyInput) -> ToolResult {
 }
 
 /// Input for `challenge_code`: target file plus optional override of the focus list.
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct ChallengeCodeInput {
     pub file_path: Option<String>,
     pub focus_areas: Option<Vec<String>>,
@@ -325,9 +326,12 @@ pub fn challenge_code(_db: &Database, input: ChallengeCodeInput) -> ToolResult {
 }
 
 /// Input for `session_diff`: optional base ref to diff against (default `HEAD~10`).
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 pub struct SessionDiffInput {
+    /// Git revision to compare against.
     pub base: Option<String>,
+    /// Repository whose diff will be summarized.
+    pub repo_root: Option<String>,
 }
 
 /// Validate a git ref to prevent flag injection or shell metacharacters.
@@ -357,20 +361,35 @@ fn validate_git_ref(s: &str) -> std::result::Result<(), ToolError> {
 /// digest plus the list of changed files. Used as the final pre-done audit step.
 pub fn session_diff(_db: &Database, input: SessionDiffInput) -> ToolResult {
     let base = input.base.unwrap_or_else(|| "HEAD~10".into());
+    let repo_root = input.repo_root.unwrap_or_else(|| ".".into());
     // SECURITY: validate the ref to prevent flag injection into git args.
     validate_git_ref(&base)?;
 
     let output = Command::new("git")
         .args(["diff", "--stat", &base])
+        .current_dir(&repo_root)
         .output()
         .map_err(|e| ToolError::IoError(e.to_string()))?;
+    if !output.status.success() {
+        return Err(ToolError::IoError(format!(
+            "git diff --stat failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
 
     let diff_stat = String::from_utf8_lossy(&output.stdout);
 
     let files_output = Command::new("git")
         .args(["diff", "--name-only", &base])
+        .current_dir(&repo_root)
         .output()
         .map_err(|e| ToolError::IoError(e.to_string()))?;
+    if !files_output.status.success() {
+        return Err(ToolError::IoError(format!(
+            "git diff --name-only failed: {}",
+            String::from_utf8_lossy(&files_output.stderr).trim()
+        )));
+    }
 
     let files: Vec<String> = String::from_utf8_lossy(&files_output.stdout)
         .lines()

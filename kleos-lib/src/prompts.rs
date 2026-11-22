@@ -44,10 +44,15 @@ pub async fn generate_prompt(
 
             // Static facts
             {
+                // Review-gate + liveness: is_archived = 0 and is_latest = 1 drop
+                // rejected and superseded rows; status != 'pending' withholds
+                // memories still awaiting review from the generated prompt.
                 let mut stmt = conn.prepare(
                     "SELECT id, content, category, importance \
                          FROM memories \
                          WHERE is_static = 1 AND is_forgotten = 0 \
+                           AND is_archived = 0 AND is_latest = 1 \
+                           AND status != 'pending' AND is_superseded = 0 \
                            AND is_consolidated = 0 AND user_id = ?1",
                 )?;
                 let rows = stmt.query_map(params![prompt_user_id], |row| {
@@ -67,12 +72,15 @@ pub async fn generate_prompt(
 
             // Important memories
             {
+                // status != 'pending' is the review-gate predicate: pending
+                // memories must not surface in the generated prompt.
                 let mut stmt = conn.prepare(
                     "SELECT id, content, category, importance, \
                                 COALESCE(decay_score, importance) AS ds \
                          FROM memories \
                          WHERE is_forgotten = 0 AND is_archived = 0 \
                            AND is_latest = 1 AND is_consolidated = 0 \
+                           AND status != 'pending' AND is_superseded = 0 \
                            AND user_id = ?1 \
                          ORDER BY ds DESC LIMIT 1000",
                 )?;
@@ -243,27 +251,30 @@ pub async fn generate_header(
 // Living prompt -- Eidolon-style context block with brain recall
 // ---------------------------------------------------------------------------
 
-/// Credential scrubbing patterns. Lines matching any of these patterns AND
-/// containing "=" or ":" (but not "://" or "path") are redacted.
-const SCRUB_PATTERNS: &[&str] = &[
-    "password",
-    "passwd",
-    "secret",
-    "token",
-    "api_key",
-    "apikey",
-    "private_key",
-    "bearer",
-    "authorization",
-    "credential",
-];
-
 /// Remove credential values from arbitrary text before inserting into prompts.
+///
+/// Credential keywords from the i18n
+/// lexicon, matched through fold_for_matching so that "Mot de Passe :
+/// xxx" matches "mot de passe" without depending on exact casing or
+/// accent presence. The credential_keywords class declares stem = false
+/// in the TOML so api_key / clé_privée etc. are not corrupted by
+/// morphological stemming.
 pub fn scrub_credentials(text: &str) -> String {
     let mut result = String::with_capacity(text.len());
     for line in text.lines() {
-        let line_lower = line.to_lowercase();
-        let is_cred = SCRUB_PATTERNS.iter().any(|pat| line_lower.contains(pat));
+        let is_cred = crate::lexicon::supported_languages().iter().any(|lang| {
+            let folded_line =
+                crate::lexicon::fold_word_for_class(line, lang, "credential_keywords");
+            crate::lexicon::word_class(lang, "credential_keywords")
+                .iter()
+                .any(|pat| {
+                    folded_line.contains(&crate::lexicon::fold_word_for_class(
+                        pat,
+                        lang,
+                        "credential_keywords",
+                    ))
+                })
+        });
         if is_cred
             && (line.contains('=')
                 || (line.contains(':') && !line.contains("://") && !line.contains("path")))
@@ -337,15 +348,14 @@ fn format_contradictions(contradictions: &[ContradictionInfo]) -> String {
 /// Build the full living-context prompt block.
 ///
 /// All memory lists are optional -- callers pass what they have from brain
-/// queries. The engram_url is embedded in the Syntheos tools table.
-#[allow(clippy::too_many_arguments)]
+/// queries. Transport configuration stays out of the prompt because clients
+/// can reach Kleos through different configured routes.
 pub fn build_living_prompt(
     task: &str,
     task_memories: &[MemorySummary],
     task_contradictions: &[ContradictionInfo],
     infra_memories: &[MemorySummary],
     failure_memories: &[MemorySummary],
-    engram_url: &str,
     servers: &[ServerEntry],
     safety_rules: &[String],
 ) -> String {
@@ -406,7 +416,7 @@ the brain's current understanding.
 
 ## Syntheos Tools
 
-All services at **{engram_url}**. Use these throughout your session.
+Use the configured Kleos integration throughout your session.
 
 | Service | Key Endpoints | When to Use |
 |---------|--------------|-------------|
@@ -424,7 +434,25 @@ All services at **{engram_url}**. Use these throughout your session.
         infra_context = infra_context,
         safety_section = safety_section,
         failure_context = failure_context,
-        engram_url = engram_url,
         server_table = server_table,
     )
+}
+
+/// Regression coverage for living-context prompt rendering.
+#[cfg(test)]
+mod tests {
+    use super::build_living_prompt;
+
+    /// Ensures the server-rendered prompt never advertises a client endpoint.
+    #[test]
+    fn living_prompt_does_not_advertise_an_endpoint() {
+        let prompt =
+            build_living_prompt("inspect the active project", &[], &[], &[], &[], &[], &[]);
+
+        assert!(!prompt.contains("http://127.0.0.1:4200"));
+        assert!(!prompt.contains("http://"));
+        assert!(!prompt.contains("https://"));
+        assert!(!prompt.contains("All services at"));
+        assert!(prompt.contains("## Syntheos Tools"));
+    }
 }
