@@ -7734,11 +7734,12 @@ sont `rm-recursive`, les variantes destructrices de `git push`, `git reset
 --hard` et `git clean` forcé. Les arguments sont déquotés avant cette
 classification. Le parcours d'un AST exploitable agrège les décisions visitées
 dans l'ordre `Deny > Warn > Allow`; un `Deny` l'arrête. En échec de parsing,
-un repli lexical parcourt les segments hors corps de heredoc et ignore les
-segments contenant une substitution incomplète. Un heredoc tronqué n'expose pas
-son corps au repli, qui émet un avertissement s'il ne reconnaît aucun refus. Les
-pipelines vers `xargs` inspectent la source quand la commande appelée est un
-interpréteur. Les flags statiques sont classés avant les opérandes dynamiques :
+un repli lexical parcourt les segments hors corps de heredoc et ignore tout
+segment contenant `$(` ou un backquote. Un heredoc tronqué n'expose pas son
+corps au repli, qui émet un avertissement s'il ne reconnaît aucun refus. Les
+pipelines vers `xargs` inspectent la source lorsqu'un interpréteur apparaît
+après `xargs`, y compris après ses options ou un wrapper. Les flags statiques
+sont classés avant les opérandes dynamiques :
 `rm -rf $M` et `git push -f origin "$B"` restent donc des refus.
 
 Une analyse dynamique, opaque ou hors budget n'accorde jamais de permission :
@@ -7765,16 +7766,18 @@ sh`, un heredoc vers `dash`, les here-strings vers un interpréteur, les
 substitutions dans `[[ ]]`, `(( ))`, les valeurs de `for` et de `case`,
 l'expansion `${x:-$(...)}`, les substitutions de processus et dans une cible de
 redirection, un programme RTK imbriqué, `cat script | bash`, une entrée encodée
-vers `sh`, `busybox rm`, `builtin eval`, `watch`, `xargs -0` ou `xargs -n1`,
-un `git rebase` sans `--exec`, et un refspec Git dynamique quoté. Un refspec
-Git ordinaire, par exemple `git push origin main`, reste silencieux. Les évaluations dynamiques `eval
-"$cmd"`, `eval "rm -rf $x"` et `bash -c "$(...)"` ne sont pas résolues
+vers `sh`, `busybox rm`, `builtin eval` et `watch`. Un refspec Git ordinaire,
+par exemple `git push origin main`, reste silencieux. Les évaluations dynamiques
+`eval "$cmd"`, `eval "rm -rf $x"` et `bash -c "$(...)"` ne sont pas résolues
 statiquement. Les programmes passés à `docker run … sh -c`, les scripts
 distants de `ssh`, les commandes transmises à `wsl` et le wrapper `winpty` ne
-sont pas inspectés. Des heredocs contenant des substitutions `$(` non fermées
-peuvent coûter exponentiellement et atteindre le timeout avant le refus d'une
-commande ultérieure. L'auto-protection refuse les chemins littéraux, MSYS et
-`~` du fichier de politique, de son dossier ou du binaire, mais ne résout pas
+sont pas inspectés. Dans le repli lexical, une substitution complète `$(...)`
+produit un avertissement plutôt qu'un refus. Sa détection de heredoc confond
+`<<<`, `$((1<<2))` et `<<-` avec tabulation, et ne lit qu'un heredoc par ligne :
+ces formes produisent un avertissement, pas une sortie silencieuse. Un heredoc
+non quoté avec 16 niveaux de `$(` peut coûter exponentiellement et atteindre le
+timeout de 3 s. L'auto-protection refuse les chemins littéraux, MSYS et `~` du
+fichier de politique, de son dossier ou du binaire, mais ne résout pas
 son chemin via `$HOME`; un payload supérieur à 192 Kio produit un avertissement
 avant cette vérification. Le payload Claude Code exige `hook_event_name =
 "PreToolUse"`, `tool_name = "Bash"` et `tool_input.command` chaîne.
@@ -7788,9 +7791,9 @@ les données inertes, les avertissements sans `permissionDecision`, le payload
 sans cwd, l'auto-protection et le binaire réel face aux volumes structurels, à
 4096 tokens hors blanc et à une ligne de 200 Kio. Les commandes dangereuses
 sont uniquement des données de test. Le rejeu release de 678 commandes a
-produit 493 refus, 11 avertissements et 174 sorties silencieuses; aucun refus
-de la baseline n'est devenu avertissement ou sortie silencieuse, et aucune sortie
-silencieuse de la baseline n'est devenue avertissement.
+produit 493 refus, 11 avertissements et 174 sorties silencieuses. Les mesures
+sur ce corpus et les sondes comparatives n'ont perdu aucun refus de la baseline;
+aucune sortie silencieuse de la baseline n'est devenue avertissement.
 
 **Conditions de retrait :** remplacer ce sous-lot par le lot L2 lorsque le
 registre local et les exceptions de suppression observées sont validés; ne pas

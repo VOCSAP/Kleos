@@ -756,17 +756,34 @@ fn command_is_xargs_without_interpreter(command: &ast::Command) -> bool {
     let Some(words) = words.into_iter().collect::<Option<Vec<_>>>() else {
         return false;
     };
-    let mut words = words.into_iter();
-    if words.next().as_deref() != Some("xargs") {
-        return false;
+    words.first().is_some_and(|word| word == "xargs") && !xargs_runs_interpreter(&words)
+}
+
+fn xargs_runs_interpreter(args: &[String]) -> bool {
+    args.iter().skip(1).any(|arg| {
+        matches!(
+            normalize_verb(arg).as_deref(),
+            Some("bash" | "sh" | "zsh" | "dash" | "ksh")
+        )
+    })
+}
+
+fn xargs_program(args: &[String]) -> Option<&[String]> {
+    let mut index = 1;
+    while let Some(arg) = args.get(index) {
+        if arg == "--" {
+            return args.get(index + 1..);
+        }
+        if !arg.starts_with('-') {
+            return args.get(index..);
+        }
+        index += match arg.as_str() {
+            "-a" | "-d" | "-E" | "-I" | "-n" | "-P" | "-s" | "--arg-file" | "--delimiter"
+            | "--eof" | "--max-args" | "--max-chars" | "--max-procs" | "--replace" => 2,
+            _ => 1,
+        };
     }
-    let Some(program) = words.find(|word| !word.starts_with('-')) else {
-        return true;
-    };
-    !matches!(
-        normalize_verb(&program).as_deref(),
-        Some("bash" | "sh" | "zsh" | "dash" | "ksh")
-    )
+    None
 }
 
 fn command_is_interpreter(command: &ast::Command) -> bool {
@@ -781,7 +798,7 @@ fn command_is_interpreter(command: &ast::Command) -> bool {
         .is_some_and(|verb| {
             matches!(
                 verb.as_str(),
-                "bash" | "sh" | "zsh" | "cmd" | "powershell" | "pwsh" | "xargs"
+                "bash" | "sh" | "zsh" | "dash" | "ksh" | "cmd" | "powershell" | "pwsh" | "xargs"
             )
         })
 }
@@ -990,11 +1007,7 @@ fn scan_executed_args(policy: &FloorPolicy, verb: &str, args: &[String]) -> Floo
             })
             .cloned(),
         "eval" => Some(args[1..].join(" ")),
-        "xargs" => args
-            .iter()
-            .skip(1)
-            .find(|arg| !arg.starts_with('-'))
-            .map(|_| args[1..].join(" ")),
+        "xargs" => xargs_program(args).map(|program| program.join(" ")),
         "find" => args
             .iter()
             .position(|arg| matches!(arg.as_str(), "-exec" | "-execdir" | "-ok"))
@@ -1011,7 +1024,7 @@ fn scan_executed_args(policy: &FloorPolicy, verb: &str, args: &[String]) -> Floo
     source
         .map(|source| scan_executed_source(policy, &source))
         .unwrap_or_else(|| {
-            if matches!(verb, "bash" | "sh" | "zsh" | "dash" | "ksh") {
+            if matches!(verb, "bash" | "sh" | "zsh" | "dash" | "ksh" | "xargs") {
                 FloorDecision::Allow
             } else {
                 FloorDecision::Warn("floor-opaque-command".to_string())
@@ -1867,6 +1880,11 @@ flags_any = ["force"]
     fn scans_xargs_interpreter_sources() {
         for (command, reason) in [
             ("echo rm -rf x | xargs -I{} sh -c {}", "rm-recursive"),
+            ("echo rm -rf x | xargs -I {} sh -c {}", "rm-recursive"),
+            ("echo rm -rf x | xargs -n 1 sh -c {}", "rm-recursive"),
+            ("echo rm -rf x | xargs -P 4 sh -c {}", "rm-recursive"),
+            ("echo rm -rf x | xargs -0 -I {} bash -c {}", "rm-recursive"),
+            ("echo rm -rf x | xargs -I{} sudo sh -c {}", "rm-recursive"),
             (
                 "echo 'git push -f origin main' | xargs -I{} bash -c '{}'",
                 "git-rewrite",
@@ -1875,10 +1893,34 @@ flags_any = ["force"]
                 "cat <<'EOF' | xargs -I{} sh -c '{}'\nrm -rf x\nEOF",
                 "rm-recursive",
             ),
+            ("cat <<'EOF' | dash\n$(rm -rf /)\nEOF", "rm-recursive"),
+            ("cat <<'EOF' | ksh\n$(rm -rf /)\nEOF", "rm-recursive"),
         ] {
             assert_eq!(
                 policy().evaluate(command),
                 FloorDecision::Deny(reason.into()),
+                "{command}"
+            );
+        }
+        for command in [
+            "git diff --name-only | xargs wc -l",
+            "git ls-files | xargs grep foo",
+        ] {
+            assert_eq!(
+                policy().evaluate(command),
+                FloorDecision::Allow,
+                "{command}"
+            );
+        }
+        for command in [
+            "echo x | xargs rm -rf",
+            "printf '%s\\n' a b | xargs rm -rf",
+            "xargs rm -rf",
+            "ls | xargs rm -rf",
+        ] {
+            assert_eq!(
+                policy().evaluate(command),
+                FloorDecision::Deny("rm-recursive".into()),
                 "{command}"
             );
         }
