@@ -108,7 +108,7 @@ Cartes liées : `f18dc3c4` (mise en service), `20d18577` (reprise après arrêt 
 | F13 | La porte de revue ne sera jamais activée ; l'inbox d'approbation existe et se consulte depuis l'interface web GUI de Kleos, pas depuis kleos-cli ni le serveur MCP | Décision opérateur du 2026-10-21 (Kleos #31722) |
 | F14 | Tiers servis sans requête : le tier « important » de `/recall` prend `importance >= 7` (`RECALL_IMPORTANT_MIN`, `kleos-server/src/routes/memory/mod.rs:681`, appel `:770`) ; `/context` ne remonte d'office que les statiques d'importance au moins 9 (`kleos-lib/src/context/mod.rs:601`) et les insights d'importance au moins 8 (`kleos-lib/src/context/deps.rs:117`) | DÉDUIT (lignes lues) |
 | F15 | Filtres de lecture existants : `source_filter` et `tags` sont des filtres **positifs** (égalité de source, `kleos-lib/src/memory/search.rs:1543-1575`) ; aucun filtre d'**exclusion** par source n'existe. Seules les catégories `activity` et `growth` sont exclues par défaut de la recherche (`search.rs:1101-1107`) | DÉDUIT (lignes lues) ; absence d'un filtre d'exclusion SUPPOSÉE (lecture de `search.rs` seulement) |
-| F16 | La dédup de fond (Patch 60) garde l'importance la plus haute, et à égalité l'id le plus haut | DÉDUIT (`docs/dev-notes/local-patches.md:6606-6613`) |
+| F16 | La dédup de fond (Patch 60) garde l'importance la plus haute, et à égalité l'id le plus haut | DÉDUIT (`docs/history/vocsap-patch-journal.md:6606-6613`) |
 | **F17** | Secrets réels dans le corpus du poste (4 777 fichiers, 7,1 Go le 2026-10-22 ; comptes de valeurs distinctes, aucune valeur affichée) : 3 clés `kleos_<hex32>`, 4 valeurs `KLEOS_*_KEY` suivies de 32 hex ou plus, 12 jetons GitHub `gh[ousr]_` (les formats `gho`/`ghu`/`ghs`/`ghr` manquaient à la passe prévue, qui ne connaissait que `ghp_` et `github_pat_`), 51 URL de forme `scheme://user:secret@` (candidats, faux positifs possibles), 0 clé WireGuard | MESURÉ (rapporté, #32381) |
 | **F18** | Injections du harnais dans le corpus : `=== RECENT MEMORIES ===` 7 948 fois en lignes `attachment` et 37 fois en lignes `user` ; corps de skill « Base directory for this skill » 2 673 fois en lignes `user` ; `<task-notification>` 1 037 fois en lignes `user` ; refus de hook `PreToolUse:… hook error` 6 285 fois dans des `tool_result` de lignes `user` | MESURÉ (rapporté, #32381) |
 | **F19** | `scrub_credentials` : le lexique `credential_keywords` (`en.toml`) contient `password`, `passwd`, `passphrase`, `secret`, `api_key`, `apikey`, `token`, `bearer`, `authorization`, `credential`, `private_key`, `ssh_key`, `client_secret`, mais **ni `key` seul, ni `privatekey`, ni `api-key`** ; la passe exige `=` ou `:` sans `://` sur la ligne et **remplace la ligne entière**. Donc `KLEOS_DB_KEY`, `KLEOS_IDENTITY_KEY`, `KLEOS_SESSION_KEY` et les clés `kleos_<hex>` passent, et une ligne de fait contenant `token` (« 9 084 tokens ») est effacée | DÉDUIT (rapporté, #32359, `kleos-lib/src/prompts.rs:262-289` et lexique `en.toml`) |
@@ -211,7 +211,7 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
 | E6 | Volume stocké en B : environ 44 Mo par jour, soit environ 620 Mo sur 14 jours, plus l'index des uuid. **Révision 6** : le relais ne stocke plus que A+, au plus 9 Mo par jour (cible 3.2), soit environ 130 Mo sur 14 jours ; le chiffre B reste comme borne haute | DÉDUIT (F1, F3) | R : hors de `kleos.db` ; S : dans la base principale, sa WAL et ses sauvegardes ; l'écart se réduit avec A+ mais ne change pas le sens |
 | E7 | Chiffrement au repos et rédaction : `Database::connect_encrypted` applique une clé de 32 octets par `PRAGMA key` (`kleos-lib/src/db/mod.rs:57-65`), avec la feature `sqlcipher` de kleos-lib (`kleos-lib/Cargo.toml:30`) ; `prompts::scrub_credentials` est public (`kleos-lib/src/prompts.rs:262`, module `pub mod prompts`, `lib.rs:48`). L'authentification démon vers relais reste à fournir par R (1.4). **Révision 6** : `scrub_credentials` n'est plus réutilisé tel quel, parce qu'il remplace la ligne entière (F19) ; seul son lexique `credential_keywords` est repris (1.4). La rédaction redevient du code propre au démon, dans R comme dans S | DÉDUIT (lignes lues). Chiffrement de `kleos.db` en production SUPPOSÉ, non vérifié non plus par le consultant | **Neutre** pour le chiffrement ; neutre aussi pour la rédaction depuis la révision 6, puisqu'aucune option ne la réutilise ; S garde l'avantage sur l'authentification seulement |
 | E8 | Les routes mémoire limitent le corps à 256 Kio ; la réception de segments demande sa propre route et sa propre limite | DÉDUIT (`routes/memory/mod.rs:74`) | neutre : route neuve dans les deux options |
-| E9 | **Force décisive.** Upstream a touché `kleos-server/src/dreamer.rs` dans chacun des 4 merges de juin à août (`50e03774`, `61fd2acf`, `cb1bff54`, `733a9466`), et `docs/dev-notes/local-patches.md:125` classe déjà ce fichier « ELEVE (2 blocs) ». L'API publique de kleos-lib a bougé aussi (`llm/mod.rs` : `f857f7cd`, `2a6f0f9a`, `7e207b90`), mais bien moins que l'intérieur du dreamer | Ligne `local-patches.md:125` DÉDUITE (lue) ; liste des commits MESURÉE (rapporté, consultant) | R : dépend de l'API publique de kleos-lib, pas de l'intérieur du dreamer |
+| E9 | **Force décisive.** Upstream a touché `kleos-server/src/dreamer.rs` dans chacun des 4 merges de juin à août (`50e03774`, `61fd2acf`, `cb1bff54`, `733a9466`), et `docs/history/vocsap-patch-journal.md:125` classe déjà ce fichier « ELEVE (2 blocs) ». L'API publique de kleos-lib a bougé aussi (`llm/mod.rs` : `f857f7cd`, `2a6f0f9a`, `7e207b90`), mais bien moins que l'intérieur du dreamer | Ligne `local-patches.md:125` DÉDUITE (lue) ; liste des commits MESURÉE (rapporté, consultant) | R : dépend de l'API publique de kleos-lib, pas de l'intérieur du dreamer |
 | E10 | La ligne `members` du `Cargo.toml` racine liste 26 crates sur une seule ligne ; upstream l'a modifiée 8 fois en deux mois | Forme DÉDUITE (`Cargo.toml:3`) ; fréquence MESURÉE (rapporté, consultant) | R hors workspace : un crate ajouté à cette ligne serait un conflit à presque chaque pull |
 
 **Coût de rebase.**
@@ -272,7 +272,7 @@ démon vers serveur est figé d'abord, l'embranchement n'engage que le côté se
      existe. Il reste simultanément antérieur à `f1db1cf7` tant que le gel ELv2 tient.
      La décision opérateur du 2026-10-22 a mergé upstream jusqu'à `8182e57f` avec
      `418cdd26`, puis a exclu `f1db1cf7` et tout commit ultérieur sous PolyForm
-     Noncommercial (Kleos #32284). Voir [Gel upstream](../dev-notes/local-patches.md#gel-upstream).
+     Noncommercial (Kleos #32284). Voir [Gel upstream](../history/vocsap-patch-journal.md#gel-upstream).
      L'API de kleos-lib utilisée par le relais cesse donc de bouger côté upstream, ce
      qui renforce le verdict R : la condition 1 de renversement est levée.
   4. La liste des champs de `StoreRequest` utilisés par le relais (`content`,
@@ -1558,7 +1558,7 @@ sur le fork VOCSAP, hors des `members` du `Cargo.toml` racine. **Validé par l'o
 le 2026-10-21**, ainsi que la règle de bump : après chaque merge du fork et un build
 vert, le rev épinglé suit `418cdd26` ou un commit postérieur dès que le relais existe,
 avec le test d'intégration jetable de 1.3. Il reste antérieur à `f1db1cf7` tant que le
-gel ELv2 décidé le 2026-10-22 tient (Kleos #32284). Voir [Gel upstream](../dev-notes/local-patches.md#gel-upstream).
+gel ELv2 décidé le 2026-10-22 tient (Kleos #32284). Voir [Gel upstream](../history/vocsap-patch-journal.md#gel-upstream).
 La variante (a') de la dédup,
 validée un temps, est abandonnée avec la porte (F13, carte 6ee2297f en wontfix). S et
 la réécriture sur place de kleos-ingest sont écartés.
@@ -1588,12 +1588,12 @@ la réécriture sur place de kleos-ingest sont écartés.
   interface web GUI) ; `kleos-lib/src/memory/search.rs:1090-1125`, `:1535-1575` ;
   `kleos-lib/src/memory/mod.rs:1255-1360` ; `kleos-server/src/routes/memory/mod.rs:40-63`,
   `:681`, `:760-775` ; `kleos-lib/src/context/mod.rs:590-603` ;
-  `kleos-lib/src/context/deps.rs:117` ; `docs/dev-notes/local-patches.md:6594-6621`
+  `kleos-lib/src/context/deps.rs:117` ; `docs/history/vocsap-patch-journal.md:6594-6621`
   (Patch 60) ;
   `kleos-lib/src/prompts.rs:255-289` ; `kleos-lib/src/llm/mod.rs:40-50` ;
   `kleos-lib/src/llm/prompts.rs:95-100` ; `kleos-lib/src/db/mod.rs:55-66` ;
   `kleos-lib/src/lib.rs` (modules publics) ; `kleos-lib/Cargo.toml:30` ;
-  `kleos-ingest/Cargo.toml:26` ; `Cargo.toml:3` ; `docs/dev-notes/local-patches.md:125` ;
+  `kleos-ingest/Cargo.toml:26` ; `Cargo.toml:3` ; `docs/history/vocsap-patch-journal.md:125` ;
   `kleos-lib/src/db/schema_sql.rs:95` (index `sync_id` non unique : le relais ne peut pas
   s'appuyer sur `sync_id` pour l'idempotence des publications, DÉDUIT).
 - Tables upstream `conversations` / `messages`, écartées comme stockage de travail en

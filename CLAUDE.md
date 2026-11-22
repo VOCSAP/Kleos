@@ -1,22 +1,17 @@
-# CLAUDE.md -- conventions du fork VOCSAP
+# CLAUDE.md -- conventions du depot VOCSAP/Kleos
 
-Ce depot est un **fork de `Ghost-Frame/Kleos` gele a `8182e57f`** (depuis le
-2026-10-22). Upstream a change de licence (PolyForm Noncommercial 1.0.0, commit
-`f1db1cf7`), ce qui interdit l'usage professionnel interne : plus aucun merge
-upstream, et un correctif upstream posterieur se reecrit localement sans
-reprendre le code recu sous cette licence. Detail et condition de levee dans
-`docs/dev-notes/local-patches.md`, section "Gel upstream".
-
-Depuis le gel, les conventions ci-dessous servent l'exploitation (rechargement
-a chaud, tracabilite des patchs), plus le cout d'un rebase.
+`VOCSAP/Kleos` est le depot de reference de Kleos, branche `main`. Il n'y a
+plus de depot amont : le projet d'origine (`Ghost-Frame/Kleos`) a ete retire de
+GitHub. Les "Patch N" cites dans le code et la doc renvoient au journal fige
+`docs/history/vocsap-patch-journal.md`, qui n'est plus alimente.
 
 Ce fichier est **tracke**. Ce qui est propre a un poste ou a l'infrastructure
 (hotes, IPs, procedure de deploiement, modele LLM cible) vit dans
 `CLAUDE.local.md`, gitignored.
 
-**Note sur les references** : sous `docs/dev-notes/`, seul `local-patches.md`
-est tracke, le reste est gitignored (`.gitignore` ligne 65). Une reference a un
-autre fichier de ce dossier ne resout que sur un poste qui l'a produit.
+**Note sur les references** : `docs/dev-notes/` est entierement gitignored.
+Une reference a un fichier de ce dossier ne resout que sur un poste qui l'a
+produit.
 
 ---
 
@@ -48,7 +43,7 @@ ni restart, et couvre les quatre types de la table plus bas.
 
 **Modifier le prompt embarque** (`kleos-lib/src/**/*.rs`, ou
 `kleos-lib/prompts/**/*.txt`) quand le changement doit devenir le defaut du
-binaire. Le consigner alors comme patch numerote (section "Patchs locaux").
+binaire. Le justifier alors dans le message de commit.
 
 Cela vaut aussi pour le raisonnement cote LLM (formuler une question,
 contraindre un format JSON, durcir une regle anti-fabrication) : overlay pour
@@ -57,7 +52,7 @@ iterer, prompt embarque une fois le reglage valide.
 ### Procedure d'edition d'un prompt
 
 1. Identifier l'ID canonique du prompt (voir `docs/dev-notes/llm-prompts-catalog.md`, 35 ids surchargeables au 2026-05-19).
-2. Copier la version embedded depuis `kleos-lib/prompts/<id>.txt` (point de depart fidele a upstream + patches locaux).
+2. Copier la version embedded depuis `kleos-lib/prompts/<id>.txt` (version par defaut du binaire).
 3. Editer ou creer le fichier d'override dans `prompts-overrides/<id>.txt`.
 4. Commit + push dans le submodule :
    ```bash
@@ -72,7 +67,7 @@ iterer, prompt embarque une fois le reglage valide.
 
 1. `KLEOS_LLM_PROMPT_REPOSITORY` (explicit) si set
 2. `${KLEOS_DATA_DIR}/prompts` si le dossier existe (convention par defaut)
-3. Embedded only (upstream behavior)
+3. Embedded only
 
 Cache TTL : 5 secondes (`kleos-lib/src/llm/prompts.rs::TTL_SECS`).
 
@@ -116,8 +111,7 @@ diagnostic confirme.
 **Regle d'or** : tout ajout ou modif de schema DB cote VOCSAP (nouvelle colonne,
 index, table) passe par le **canal overlay** `kleos-lib/src/db/vocsap/mod.rs`,
 **jamais** par une nouvelle entree dans `MIGRATIONS` / `TENANT_MIGRATIONS`.
-Convention en place, couverte par des tests ; elle n'a plus d'enjeu de merge
-depuis le gel.
+Convention en place, couverte par des tests.
 
 ### Procedure pour ajouter un changement de schema VOCSAP
 
@@ -140,7 +134,7 @@ depuis le gel.
 
 | Path | Repo | Branche |
 |---|---|---|
-| `wiki/` | `VOCSAP/Kleos.wiki.git` (fork du wiki upstream) | `master` |
+| `wiki/` | `VOCSAP/Kleos.wiki.git` | `master` |
 | `prompts-overrides/` | `VOCSAP/Kleos.prompts` | `main` |
 | `lexicon-overrides/` | `VOCSAP/Kleos.lexicon` | `main` |
 | `gate-rules/` | `VOCSAP/Kleos.gates-rules` | `main` |
@@ -160,26 +154,12 @@ montes **separement** cote serveur, pas via `git submodule update` (chemins dans
 
 ---
 
-## Patchs locaux
+## Changements de comportement
 
-Tout changement de comportement reste documente comme patch numerote dans
-`docs/dev-notes/local-patches.md`, pour la tracabilite : symptome, approche,
-fichiers touches, tests, conditions de retrait.
-
-- Plus de contrainte de niveau minimal, ni d'interdiction des attributs
-  cosmetiques : le gel supprime le cout de rebase qui les justifiait.
-- Plus de PR upstream : le `CONTRIBUTING` post-relicence donne un droit de
-  relicence au proprietaire.
-- Le fait non evident se stocke dans Kleos ; le tag `delta-upstream` n'est plus
-  requis.
+Un changement de comportement se justifie dans son message de commit. Une
+architecture ou un invariant va dans `docs/`, un fait non evident dans Kleos.
+Aucun nouveau patch numerote n'est ajoute au journal fige.
 
 Le complement pratique (grep cross-call-site avant patch, quand deleguer a un
-sous-agent pour un audit independant) reste valable et vit dans
+sous-agent pour un audit independant) vit dans
 `.claude/rules/kleos-patching-discipline.md`.
-
----
-
-## Reference des patches locaux
-
-`docs/dev-notes/local-patches.md` est le journal des patchs (un patch numerote
-par section) et du gel upstream, avec l'historique des merges passes.

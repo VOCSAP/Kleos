@@ -752,7 +752,7 @@ variantes `rtk` de `permissions.deny` (5.8, règle de transfert).
 
 **Lot 6, nettoyage.** Conversion des anciens `blocked_patterns.txt` et
 `require_approval_patterns.txt` en catégories ; retrait des deux listes
-blanches ; patch numéroté dans `docs/dev-notes/local-patches.md` ; README du
+blanches ; patch numéroté dans `docs/history/vocsap-patch-journal.md` ; README du
 submodule ; cartes C7 (`kleos-cli hook`, OpenClaw) traitées ou reportées
 explicitement.
 

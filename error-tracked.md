@@ -32,4 +32,4 @@ c'est une regression ou un bug pre-existant, pour ne pas re-investiguer.
 ### References
 
 - Kleos memoire #7739 (constat pre-existant).
-- Patch 38 i18n : voir `docs/dev-notes/local-patches.md` et `CLAUDE.md` projet section lexicons.
+- Patch 38 i18n : voir `docs/history/vocsap-patch-journal.md` et `CLAUDE.md` projet section lexicons.

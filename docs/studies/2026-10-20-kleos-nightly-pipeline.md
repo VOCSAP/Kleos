@@ -476,7 +476,7 @@ lien type, pas seulement pour `contradicts`.
 
 **Amendement v2, historique conservé :** N2/M-N7 a été corrigé par Patch 67 ; déploiement
 confirmé dans le brief du lead, non remesuré par l'architecte. La documentation du patch
-(`docs/dev-notes/local-patches.md:7063-7089`) distingue le brut de réplication, le filtre
+(`docs/history/vocsap-patch-journal.md:7063-7089`) distingue le brut de réplication, le filtre
 serveur et les lecteurs agents (DÉDUIT). N7 reste pertinent pour les annotations et
 références, mais sa mention d'une future table de faits est caduque (M-N5). N1/N9
 bloquent les nouveaux liens du pipeline ; ils ne désactivent pas les producteurs
@@ -560,7 +560,7 @@ portes v2 plutôt que recopier leur consensus ou leur pointeur sans texte histor
 pas par une réécriture du graphe ou du cache. Le canal prompt overlay porte le contrat
 LLM ; il ne peut pas fournir l'état transactionnel, l'autorisation ou le filtrage de
 lecture (hypothèse de découpage, N1/N2/M-N3). Chaque futur site source reste à chiffrer
-contre `docs/dev-notes/local-patches.md` avant code ; aucun nombre de lignes de patch
+contre `docs/history/vocsap-patch-journal.md` avant code ; aucun nombre de lignes de patch
 n'est garanti par cette étude.
 
 ---

@@ -37,7 +37,7 @@ rendu dans l'interface GUI, la detection sur d'autres categories que `decision`.
 
 Niveau d'ecart upstream vise : **additif** (nouveaux modules, overlay de schema), plus
 quelques **patchs chirurgicaux** d'accroche, un patch numerote par lot (Patch 67, 68,
-69 dans `docs/dev-notes/local-patches.md`).
+69 dans `docs/history/vocsap-patch-journal.md`).
 
 ---
 

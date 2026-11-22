@@ -69,7 +69,7 @@ and that the hex portion is 32 or 64 characters.
 
 Keys are generated in `engram_<hex32>` form by the server. A key recorded in
 an env file as `kleos_<hex>` is valid and will authenticate correctly
-(VOCSAP fork, Patch 6 in `docs/dev-notes/local-patches.md`).
+(VOCSAP fork, Patch 6 in `docs/history/vocsap-patch-journal.md`).
 
 ## `kleos-cli`
 

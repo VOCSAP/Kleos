@@ -66,7 +66,7 @@ Niveau le plus bas qui resout le probleme, dans l'ordre :
 | Additif pur | regle de supersession sur `structured_facts` (phase 2), module d'ingestion git (phase 5), catalogue (phase 4) |
 | Patch chirurgical | predicats `is_superseded = 0` au recall, `correct_memory`, poids du lien `contradicts`, phase Evolution (phase 1) |
 
-Chaque phase de code = une section numerotee dans `docs/dev-notes/local-patches.md`
+Chaque phase de code = une section numerotee dans `docs/history/vocsap-patch-journal.md`
 (prochain numero libre : 60 au 2026-10-17) + un fait stocke dans Kleos avec le tag
 `delta-upstream`. Les corrections de la phase 1 sont des bugs upstream purs :
 candidats a une PR vers `Ghost-Frame/Kleos` pour effacer le delta.
@@ -398,7 +398,7 @@ Tests : `cargo test -p kleos-lib --lib memory` et `--lib context` (Windows :
 Livre (commits locaux de la branche) : 1f `bef8a136` ; 1e Patch 60 `2f592b75` et
 Patch 61 `0ea4b143` ; 1a Patch 62 `ae757473` ; 1d Patch 63 `57bba709` ; 1g Patch 64
 `efd078bf` + `ed41d140` et kleos-cache `63abf63` ; 1b Patch 65 `9b526c43` + `d89fc2f1` ;
-1c Patch 66 `0f9936ac`. Detail par patch : `docs/dev-notes/local-patches.md`.
+1c Patch 66 `0f9936ac`. Detail par patch : `docs/history/vocsap-patch-journal.md`.
 
 ### 5.1 Verdict de la porte de la phase 1 (2026-10-19)
 
@@ -916,7 +916,7 @@ si la phase 2 montre des retraits provoques par des memoires non utilisateur.
 
 ## 13. Livrables et documentation
 
-- [ ] Une section par phase de code dans `docs/dev-notes/local-patches.md`
+- [ ] Une section par phase de code dans `docs/history/vocsap-patch-journal.md`
       (Patch 60+) : symptome sous upstream pur, approche et pourquoi pas le niveau
       en dessous, fichiers, tests, conditions de retrait.
 - [ ] Un fait Kleos par patch avec le tag `delta-upstream`.
@@ -1023,7 +1023,7 @@ Format : `date · phase · condition · resultat · fichier de mesure`.
   `kleos-lib/lexicon/{fr,en,de}.toml`.
 - `hooks/full/{user-prompt-lean.sh, session-start-kleos.sh}`.
 - `kleos-lib/src/db/vocsap/mod.rs` (canal overlay schema, Patch 41).
-- `CLAUDE.md`, `docs/dev-notes/local-patches.md` (Patches 37, 37.1, 38, 41).
+- `CLAUDE.md`, `docs/history/vocsap-patch-journal.md` (Patches 37, 37.1, 38, 41).
 
 ---
 
@@ -1034,7 +1034,7 @@ Session dediee : etude et implementation de la supersession des memoires dans Kl
 
 Contexte
 - Lis d'abord en entier docs/studies/2026-10-17-supersession-muninn-plan.md. C'est le plan de reference ; ne le reformule pas, applique-le.
-- Lis ensuite CLAUDE.md, CLAUDE.local.md (chemins, hotes, procedure de deploiement) et les sections Patch 37, 37.1, 38 et 41 de docs/dev-notes/local-patches.md.
+- Lis ensuite CLAUDE.md, CLAUDE.local.md (chemins, hotes, procedure de deploiement) et les sections Patch 37, 37.1, 38 et 41 de docs/history/vocsap-patch-journal.md.
 - Branche de travail : ccr-bfdfcf62-1j7z1k (a jour sur origin). Toute modification de code se fait sur cette branche.
 
 Regles de la session

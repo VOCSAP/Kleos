@@ -289,4 +289,4 @@ reranking a tourné. Le vecteur brut n'est jamais sérialisé.
 | `skills/tool-find/SKILL.md` | prompt de recherche (double reformulation, fusion, présentation) |
 | `agents/toolbox.md` | sous-agent Claude Code, outils restreints, ne rend que le compte rendu |
 
-Le code est décrit dans `docs/dev-notes/local-patches.md`, section **Patch 53**.
+Le code est décrit dans `docs/history/vocsap-patch-journal.md`, section **Patch 53**.

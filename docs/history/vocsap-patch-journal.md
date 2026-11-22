@@ -1,3 +1,12 @@
+# Journal des patchs VOCSAP (archive figee)
+
+> Archive figee le 2026-11-22. Le depot amont `Ghost-Frame/Kleos` a ete retire
+> de GitHub et `VOCSAP/Kleos` est devenu le depot de reference. Ce journal
+> n'est plus alimente : il sert seulement a retrouver le contexte d'un
+> "Patch N" cite dans le code. Les mentions de `local/patches`, d'upstream, de
+> gel et de merge decrivent l'etat d'avant cette date. Les SHA cites ici sont
+> anterieurs a la reecriture d'historique du 2026-11-22 et ne resolvent plus.
+
 # Local Patches -- Kleos VOCSAP Fork
 
 **Date de création :** 2026-05-11

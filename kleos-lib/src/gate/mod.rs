@@ -1312,7 +1312,7 @@ mod tests {
         // Patch 25 rupture semantique (hyp_e1d4c948): glob-lite pattern without
         // wildcard is anchored at compile (^apt install$). To preserve the
         // original intent (match any command starting with `apt install`),
-        // append `*`. Documented in docs/dev-notes/local-patches.md Patch 25.
+        // append `*`. Documented in docs/history/vocsap-patch-journal.md Patch 25.
         let require_approval = vec!["apt install*".to_string()];
         let res = check_command_with_context(
             &db,

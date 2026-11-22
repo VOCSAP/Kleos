@@ -62,9 +62,7 @@ backup/
 KLEOS.md
 
 # docs/dev-notes : travail en cours / fait, NON public (depot public).
-# Seul local-patches.md reste tracke (reference des patches VOCSAP).
 docs/dev-notes/*
-!docs/dev-notes/local-patches.md
 
 # Plan/TODO/progress artefacts (racine, hors dev-notes)
 task_plan.md
